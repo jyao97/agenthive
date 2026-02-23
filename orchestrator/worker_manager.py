@@ -79,11 +79,12 @@ class WorkerManager:
             volumes={
                 "cc-projects": {"bind": "/projects", "mode": "rw"},
                 "cc-git-bare": {"bind": "/git-bare", "mode": "rw"},
+                os.path.expanduser("~/.claude"): {
+                    "bind": "/home/ccworker/.claude",
+                    "mode": "ro",
+                },
             },
             working_dir=f"/projects/{project.name}",
-            environment={
-                "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
-            },
             cpu_quota=int(WORKER_CPU_LIMIT * 100000),
             mem_limit=WORKER_MEM_LIMIT,
             network=WORKER_NETWORK,
