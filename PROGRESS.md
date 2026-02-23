@@ -90,3 +90,27 @@
 - Don't try to track directories that are in .gitignore, even with .gitkeep
 - Use `name:` on Docker networks that need to be referenced by containers created outside compose
 - Docker Compose only creates networks used by at least one service — unused network definitions are silently skipped. Orchestrator must be on cc-worker-net to talk to workers.
+
+---
+
+## [2026-02-23] Task 1.1–1.4: Phase 1 Scheduler Core | Project: cc-orchestrator
+
+### What was done
+- **1.1 Database Schema**: models.py (Task, Project, SystemConfig tables), database.py (SQLite WAL mode, session factory), config.py (env vars)
+- **1.2 FastAPI CRUD**: Full task lifecycle (create/list/get/cancel/retry), project listing, enhanced health check (DB + Docker), Pydantic schemas, registry.yaml loading on startup
+- **1.3 Worker Manager**: Docker SDK integration for container lifecycle — start/stop/logs/status/cleanup, resource limits, network isolation, shell-safe prompt quoting
+- **1.4 Task Dispatcher**: Async scheduling loop with harvest/timeout/retry/assign phases, startup crash recovery, concurrency limits (global + per-project)
+
+### Problems encountered
+- Worker entrypoint.sh received wrong args when worker_manager passed `command=["bash", "-c", ...]` — Docker concatenates ENTRYPOINT + CMD, so entrypoint.sh got `bash` as `$1` and `-c` as `$2`
+- Test tasks kept retrying because .env has placeholder API keys
+
+### Solutions
+- Override entrypoint in worker_manager: `entrypoint=["bash", "-c"]` bypasses the Dockerfile's ENTRYPOINT and runs the command string directly
+- Cancelled test tasks manually; auto-retry stops at MAX_RETRIES=3
+
+### Lessons learned
+- When Dockerfile has ENTRYPOINT and you pass a command via Docker SDK, the command becomes ARGS to the entrypoint — use `entrypoint=` override to bypass
+- SQLAlchemy `expire_on_commit=False` is essential for reading task fields after commit in the same session
+- SQLite WAL mode + `check_same_thread=False` needed for async dispatcher + sync API sharing the same DB
+- `datetime.now(timezone.utc)` instead of `datetime.utcnow()` to avoid naive datetime comparison issues
