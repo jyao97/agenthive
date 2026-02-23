@@ -1,12 +1,12 @@
+FROM node:20-slim AS build
+WORKDIR /app
+COPY package*.json .
+RUN npm ci
+COPY . .
+RUN npm run build
+
 FROM nginx:alpine
-
-# Remove default config
 RUN rm /etc/nginx/conf.d/default.conf
-
-# Copy custom nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-# Copy static placeholder (will be replaced by Vite build in Phase 3)
-COPY index.html /usr/share/nginx/html/index.html
-
+COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80

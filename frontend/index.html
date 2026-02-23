@@ -1,52 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#7c3aed" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <title>CC Orchestrator</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #1a1a2e;
-            color: #e0e0e0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-        }
-        .container {
-            text-align: center;
-            padding: 2rem;
-        }
-        h1 { color: #7c3aed; }
-        p { color: #9ca3af; }
-        .status {
-            margin-top: 1rem;
-            padding: 0.5rem 1rem;
-            background: #16213e;
-            border-radius: 8px;
-            display: inline-block;
-        }
-        .status.ok { border-left: 4px solid #10b981; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>CC Orchestrator</h1>
-        <p>Multi-instance Claude Code orchestration system</p>
-        <div class="status ok" id="status">Checking backend...</div>
-    </div>
-    <script>
-        fetch('/api/health')
-            .then(r => r.json())
-            .then(d => {
-                document.getElementById('status').textContent = 'Backend: ' + d.status;
-            })
-            .catch(() => {
-                document.getElementById('status').textContent = 'Backend: unreachable';
-                document.getElementById('status').style.borderLeftColor = '#ef4444';
-            });
-    </script>
-</body>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>
