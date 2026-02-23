@@ -1,0 +1,36 @@
+# Environment
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Database
+db/
+*.db
+
+# Backups (in Docker volume, not local)
+backups/
+
+# Logs
+logs/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
