@@ -1,0 +1,53 @@
+services:
+  orchestrator:
+    build: ./orchestrator
+    container_name: cc-orchestrator
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # Control worker containers
+      - cc-orch-db:/app/db
+      - cc-orch-backups:/app/backups
+      - cc-projects:/projects:ro                     # Read-only project access
+      - cc-logs:/app/logs
+      - ./projects:/app/project-configs:ro           # Project registry configs
+    env_file: .env
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    networks:
+      - cc-internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build: ./frontend
+    container_name: cc-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - orchestrator
+    networks:
+      - cc-internal
+    restart: unless-stopped
+
+networks:
+  cc-internal:
+    driver: bridge
+  cc-worker-net:
+    name: cc-worker-net
+    driver: bridge
+    # Worker network — iptables restrictions can be added via scripts/setup-network.sh
+
+volumes:
+  cc-orch-db:
+  cc-orch-backups:
+  cc-projects:
+  cc-git-bare:
+  cc-logs:
