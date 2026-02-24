@@ -5,6 +5,7 @@ import glob
 import logging
 import os
 import shutil
+import sqlite3
 from datetime import datetime, timezone
 
 from config import BACKUP_DIR, BACKUP_INTERVAL_HOURS, DB_PATH, MAX_BACKUPS, PROJECTS_DIR
@@ -38,15 +39,16 @@ def do_backup():
 
     files_backed = 0
 
-    # 1. SQLite database
+    # 1. SQLite database — use sqlite3 backup API for WAL-safe copy
     if os.path.exists(DB_PATH):
         dest = os.path.join(backup_subdir, "orchestrator.db")
-        # Use WAL-safe copy: copy main db + any wal/shm files
-        shutil.copy2(DB_PATH, dest)
-        for ext in (".db-wal", ".db-shm"):
-            wal = DB_PATH + ext.replace(".db", "")
-            if os.path.exists(wal):
-                shutil.copy2(wal, dest + ext.replace(".db", ""))
+        src_conn = sqlite3.connect(DB_PATH)
+        dst_conn = sqlite3.connect(dest)
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            dst_conn.close()
+            src_conn.close()
         files_backed += 1
         logger.debug("Backed up database")
 

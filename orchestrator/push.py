@@ -23,6 +23,8 @@ def send_push_notification(title: str, body: str, url: str = "/") -> None:
         logger.debug("pywebpush not installed — skipping push")
         return
 
+    from urllib.parse import urlparse
+
     from database import SessionLocal
     from models import PushSubscription
 
@@ -44,7 +46,6 @@ def send_push_notification(title: str, body: str, url: str = "/") -> None:
                 },
             }
             # aud must be the origin of the push endpoint (required by FCM)
-            from urllib.parse import urlparse
             parsed = urlparse(sub.endpoint)
             aud = f"{parsed.scheme}://{parsed.netloc}"
             vapid_claims = {"sub": VAPID_SUBJECT, "aud": aud}

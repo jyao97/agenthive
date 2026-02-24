@@ -17,12 +17,16 @@ class GitManager:
             return os.path.join(PROJECTS_DIR, project_name)
         return os.path.join("/projects", project_name)
 
-    def _run_git(self, project_name: str, git_args: str, timeout: int = 30) -> str:
-        """Run a git command against a project directory."""
+    def _run_git(self, project_name: str, git_args: list[str], timeout: int = 30) -> str:
+        """Run a git command against a project directory.
+
+        Args:
+            git_args: list of git arguments (e.g. ["log", "-n", "5"]).
+        """
         cwd = self._project_path(project_name)
         try:
             result = subprocess.run(
-                ["git"] + git_args.split(),
+                ["git"] + git_args,
                 cwd=cwd,
                 capture_output=True, text=True, timeout=timeout,
             )
@@ -39,41 +43,12 @@ class GitManager:
         except subprocess.TimeoutExpired:
             logger.warning("Git command timed out for %s", project_name)
             return "ERROR: command timed out"
-        except Exception as e:
-            logger.exception("Git operation failed for %s", project_name)
-            return f"ERROR: {str(e)}"
-
-    def _run_git_rw(self, project_name: str, command: str, timeout: int = 30) -> str:
-        """Run a shell command with read-write access (for merges)."""
-        cwd = self._project_path(project_name)
-        try:
-            result = subprocess.run(
-                ["sh", "-c", command],
-                cwd=cwd,
-                capture_output=True, text=True, timeout=timeout,
-            )
-            if result.returncode != 0:
-                stderr = result.stderr.strip()
-                if stderr:
-                    logger.warning("Git RW command failed for %s: %s", project_name, stderr)
-                    return f"ERROR: {stderr}"
-            return result.stdout.strip()
-        except FileNotFoundError:
-            msg = f"Project directory not found: {cwd}"
-            logger.warning(msg)
-            return f"ERROR: {msg}"
-        except subprocess.TimeoutExpired:
-            logger.warning("Git RW command timed out for %s", project_name)
-            return "ERROR: command timed out"
-        except Exception as e:
-            logger.exception("Git RW operation failed for %s", project_name)
-            return f"ERROR: {str(e)}"
 
     def get_log(self, project_name: str, limit: int = 30) -> list[dict]:
         """Get recent commits for a project."""
         sep = "|||"
         fmt = f"%H{sep}%an{sep}%ae{sep}%aI{sep}%s"
-        raw = self._run_git(project_name, f"log --format={fmt} -n {limit}")
+        raw = self._run_git(project_name, ["log", f"--format={fmt}", "-n", str(limit)])
         if raw.startswith("ERROR:"):
             return []
 
@@ -92,7 +67,10 @@ class GitManager:
 
     def get_branches(self, project_name: str) -> list[dict]:
         """Get branches for a project."""
-        raw = self._run_git(project_name, "branch -a --format=%(refname:short)|||%(objectname:short)|||%(HEAD)")
+        raw = self._run_git(
+            project_name,
+            ["branch", "-a", "--format=%(refname:short)|||%(objectname:short)|||%(HEAD)"],
+        )
         if raw.startswith("ERROR:"):
             return []
 
@@ -111,11 +89,11 @@ class GitManager:
 
     def get_status(self, project_name: str) -> dict:
         """Get git status for a project: branch, staged, unstaged, untracked."""
-        branch = self._run_git(project_name, "branch --show-current")
+        branch = self._run_git(project_name, ["branch", "--show-current"])
         if branch.startswith("ERROR:"):
             branch = "unknown"
 
-        raw = self._run_git(project_name, "status --porcelain")
+        raw = self._run_git(project_name, ["status", "--porcelain"])
         if raw.startswith("ERROR:"):
             return {"branch": branch, "clean": True, "staged": [], "unstaged": [], "untracked": []}
 
@@ -146,24 +124,23 @@ class GitManager:
 
     def get_diff(self, project_name: str, ref: str = "HEAD") -> str:
         """Get diff for a ref."""
-        return self._run_git(project_name, f"diff {ref}")
+        return self._run_git(project_name, ["diff", ref])
 
     def merge_branch(self, project_name: str, branch: str) -> dict:
         """Merge a branch into the current branch. Returns result dict."""
-        current = self._run_git(project_name, "branch --show-current")
+        current = self._run_git(project_name, ["branch", "--show-current"])
         if current.startswith("ERROR:"):
             return {"success": False, "error": current, "current_branch": "unknown"}
 
-        cmd = (
-            f"git config user.name 'AgentHive' && "
-            f"git config user.email 'agenthive@localhost' && "
-            f"git merge {branch} --no-edit"
-        )
-        result = self._run_git_rw(project_name, cmd)
+        # Configure git identity before merge (list-form, no shell)
+        self._run_git(project_name, ["config", "user.name", "AgentHive"])
+        self._run_git(project_name, ["config", "user.email", "agenthive@localhost"])
+
+        result = self._run_git(project_name, ["merge", branch, "--no-edit"])
 
         if result.startswith("ERROR:"):
             if "CONFLICT" in result or "conflict" in result:
-                self._run_git_rw(project_name, "git merge --abort")
+                self._run_git(project_name, ["merge", "--abort"])
                 return {
                     "success": False,
                     "error": "Merge conflict — manual resolution required",

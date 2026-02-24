@@ -103,7 +103,7 @@ projects: []
 #     display_name: "My Project"
 #     path: /projects/my-project
 #     git_remote: https://github.com/user/my-project.git
-#     default_model: claude-sonnet-4-5-20250514
+#     default_model: claude-opus-4-6
 #     max_concurrent: 2
 EOF
     ok "projects/registry.yaml created"

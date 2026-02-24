@@ -102,7 +102,7 @@ class ProjectOut(BaseModel):
     git_remote: str | None = None
     description: str | None = None
     max_concurrent: int = 2
-    default_model: str = "claude-sonnet-4-5-20250514"
+    default_model: str = "claude-opus-4-6"
     archived: bool = False
 
     model_config = {"from_attributes": True}

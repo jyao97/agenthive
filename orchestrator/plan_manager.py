@@ -1,5 +1,6 @@
 """Plan Manager — plan generation and approval workflow."""
 
+import json
 import logging
 import os
 import subprocess
@@ -63,9 +64,9 @@ class PlanManager:
 
         output_file = f"/tmp/claude-planner-{uuid.uuid4().hex[:8]}.log"
 
+        # No --dangerously-skip-permissions: the planner is read-only
         cmd = [
             CLAUDE_BIN, "-p", prompt,
-            "--dangerously-skip-permissions",
             "--output-format", "stream-json",
             "--verbose",
         ]
@@ -95,7 +96,6 @@ class PlanManager:
     @staticmethod
     def extract_plan(logs: str) -> str:
         """Extract the plan text from worker output."""
-        import json
         plan_parts = []
         for line in logs.strip().splitlines():
             line = line.strip()

@@ -15,7 +15,12 @@ from config import AUTH_TIMEOUT_MINUTES
 
 
 def hash_password(password: str) -> str:
-    """Hash a password with a random salt using SHA-256."""
+    """Hash a password with a random salt using SHA-256.
+
+    NOTE: SHA-256 is not ideal for password hashing (no key-stretching).
+    A purpose-built KDF like bcrypt/scrypt/argon2 would be stronger.
+    Kept as-is to avoid breaking existing stored hashes.
+    """
     salt = secrets.token_hex(16)
     h = hashlib.sha256((salt + password).encode()).hexdigest()
     return f"{salt}:{h}"

@@ -8,7 +8,7 @@ MAX_CONCURRENT_WORKERS = int(os.getenv("MAX_CONCURRENT_WORKERS", "5"))
 TASK_TIMEOUT_SECONDS = int(os.getenv("TASK_TIMEOUT_SECONDS", "600"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 MAX_IDLE_AGENTS = int(os.getenv("MAX_IDLE_AGENTS", "20"))
-CC_MODEL = os.getenv("CC_MODEL", "claude-sonnet-4-5-20250514")
+CC_MODEL = os.getenv("CC_MODEL", "claude-opus-4-6")
 
 # Claude CLI binary
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")

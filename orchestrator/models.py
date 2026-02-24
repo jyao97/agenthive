@@ -143,7 +143,7 @@ class Project(Base):
     container_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     max_concurrent: Mapped[int] = mapped_column(Integer, default=2)
     default_model: Mapped[str] = mapped_column(
-        String(100), default="claude-sonnet-4-5-20250514"
+        String(100), default="claude-opus-4-6"
     )
     archived: Mapped[bool] = mapped_column(default=False)
 

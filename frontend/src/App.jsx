@@ -68,24 +68,19 @@ function AuthGuard({ children }) {
   const navigate = useNavigate();
   const [checked, setChecked] = useState(false);
   const [authed, setAuthed] = useState(false);
+  const [serverDown, setServerDown] = useState(false);
 
   useEffect(() => {
     const token = getAuthToken();
     if (!token) {
-      // No token — check if password is even set (might be first-time)
+      // No token — redirect to login (whether needs_setup or not)
       authCheck()
-        .then((r) => {
-          if (r.needs_setup) {
-            // No password set yet — redirect to login for setup
-            navigate("/login", { replace: true });
-          } else {
-            // Password set but no token — must login
-            navigate("/login", { replace: true });
-          }
+        .then(() => {
+          navigate("/login", { replace: true });
         })
         .catch(() => {
-          // Server down? let through — API calls will fail with their own errors
-          setAuthed(true);
+          // Server unreachable — do NOT grant access
+          setServerDown(true);
         })
         .finally(() => setChecked(true));
     } else {
@@ -99,14 +94,13 @@ function AuthGuard({ children }) {
               setupPushNotifications().catch(() => {});
             }
           } else {
-            // Token expired or invalid — clear and redirect to login
             clearAuthToken();
             navigate("/login", { replace: true });
           }
         })
         .catch(() => {
-          // Server down? let through — API calls will fail with their own errors
-          setAuthed(true);
+          // Server unreachable — do NOT grant access
+          setServerDown(true);
         })
         .finally(() => setChecked(true));
     }
@@ -116,6 +110,21 @@ function AuthGuard({ children }) {
     return (
       <div className="flex items-center justify-center h-dvh bg-page">
         <div className="animate-pulse text-dim">Loading...</div>
+      </div>
+    );
+  }
+
+  if (serverDown) {
+    return (
+      <div className="flex flex-col items-center justify-center h-dvh bg-page gap-4">
+        <p className="text-label text-sm">Unable to reach server</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="px-4 py-2 rounded-lg bg-cyan-600 text-white text-sm hover:bg-cyan-500 transition-colors"
+        >
+          Retry
+        </button>
       </div>
     );
   }

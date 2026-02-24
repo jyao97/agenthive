@@ -122,24 +122,71 @@ export function renderMarkdown(text, project) {
   return <div className="space-y-0.5">{elements}</div>;
 }
 
-/** Inline formatting: bold, italic, inline code. */
+/** Inline formatting: bold, italic, inline code. Uses React elements only (no innerHTML). */
 export function renderInline(text) {
-  const parts = text.split(/(`[^`]+`)/g);
-  return parts.map((part, idx) => {
+  // Split on inline code first, then handle bold/italic within non-code segments
+  const codeParts = text.split(/(`[^`]+`)/g);
+  const elements = [];
+
+  for (let i = 0; i < codeParts.length; i++) {
+    const part = codeParts[i];
     if (part.startsWith("`") && part.endsWith("`")) {
-      return (
+      elements.push(
         <code
-          key={idx}
+          key={i}
           className="px-1 py-0.5 rounded bg-input text-cyan-300 text-xs font-mono"
         >
           {part.slice(1, -1)}
         </code>
       );
+    } else {
+      // Tokenize bold (**...**) and italic (*...*) into safe React elements
+      const tokens = tokenizeBoldItalic(part);
+      for (let j = 0; j < tokens.length; j++) {
+        const token = tokens[j];
+        const key = `${i}-${j}`;
+        if (token.type === "bold") {
+          elements.push(<strong key={key}>{token.text}</strong>);
+        } else if (token.type === "italic") {
+          elements.push(<em key={key}>{token.text}</em>);
+        } else {
+          elements.push(<span key={key}>{token.text}</span>);
+        }
+      }
     }
-    let processed = part.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
-    processed = processed.replace(/\*(.+?)\*/g, "<i>$1</i>");
-    return <span key={idx} dangerouslySetInnerHTML={{ __html: processed }} />;
-  });
+  }
+
+  return elements;
+}
+
+/**
+ * Split text into tokens of plain text, bold (**...**), and italic (*...*).
+ * Returns an array of { type: "text"|"bold"|"italic", text: string }.
+ */
+function tokenizeBoldItalic(text) {
+  const tokens = [];
+  // Match **bold** first, then *italic*
+  const re = /(\*\*(.+?)\*\*|\*(.+?)\*)/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      tokens.push({ type: "text", text: text.slice(lastIndex, match.index) });
+    }
+    if (match[2] !== undefined) {
+      tokens.push({ type: "bold", text: match[2] });
+    } else {
+      tokens.push({ type: "italic", text: match[3] });
+    }
+    lastIndex = re.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    tokens.push({ type: "text", text: text.slice(lastIndex) });
+  }
+
+  return tokens;
 }
 
 // File extensions we detect for inline previews

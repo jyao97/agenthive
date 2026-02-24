@@ -259,21 +259,21 @@ projects:
     display_name: "Safe Crowd Navigation"
     path: /projects/crowd-nav
     git_remote: git@github.com:username/crowd-nav.git
-    default_model: claude-sonnet-4-5-20250514
+    default_model: claude-opus-4-6
     max_concurrent: 2          # Max 2 workers for this project
 
   - name: vla-delivery
     display_name: "VLA Delivery Robot"
     path: /projects/vla-delivery
     git_remote: git@github.com:username/vla-delivery.git
-    default_model: claude-sonnet-4-5-20250514
+    default_model: claude-opus-4-6
     max_concurrent: 2
 
   - name: thermal-3dgs
     display_name: "Thermal 3D Gaussian Splatting"
     path: /projects/thermal-3dgs
     git_remote: git@github.com:username/thermal-3dgs.git
-    default_model: claude-sonnet-4-5-20250514
+    default_model: claude-opus-4-6
     max_concurrent: 1
 ```
 
@@ -408,7 +408,7 @@ WORKER_CPU_LIMIT = 2               # Max 2 CPUs per worker
 WORKER_MEM_LIMIT = "4g"            # Max 4GB RAM per worker
 TASK_TIMEOUT_SECONDS = 600         # Default 10 min timeout
 MAX_RETRIES = 3
-CC_MODEL = "claude-sonnet-4-5-20250514"
+CC_MODEL = "claude-opus-4-6"
 
 # Plan mode
 SKIP_PLAN_FOR_P2 = True

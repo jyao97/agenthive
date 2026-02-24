@@ -1,11 +1,10 @@
 """WebSocket hub — broadcasts real-time events to connected clients."""
 
-import asyncio
 import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 
 logger = logging.getLogger("orchestrator.ws")
 
@@ -72,8 +71,6 @@ async def websocket_endpoint(ws: WebSocket):
             data = await ws.receive_text()
             if data == "ping":
                 await ws.send_text(json.dumps({"type": "pong"}))
-    except WebSocketDisconnect:
-        ws_manager.disconnect(ws)
     except Exception:
         ws_manager.disconnect(ws)
 

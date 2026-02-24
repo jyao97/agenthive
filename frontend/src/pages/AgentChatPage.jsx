@@ -41,11 +41,10 @@ function ChatBubble({ message, project }) {
   }
 
   const isUser = message.role === "USER";
-  const isAgent = message.role === "AGENT";
 
   const attachments = useMemo(
-    () => (isAgent ? extractFileAttachments(message.content, project) : []),
-    [isAgent, message.content, project],
+    () => (!isUser ? extractFileAttachments(message.content, project) : []),
+    [isUser, message.content, project],
   );
 
   return (
@@ -293,7 +292,10 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }, []);
 
-  // Load agent + messages
+  // Load agent + messages.
+  // On initial load, errors propagate to console so failures are visible.
+  // On subsequent poll refreshes, errors are silenced (transient network issues).
+  const initialLoadDone = useRef(false);
   const loadData = useCallback(async () => {
     try {
       const [agentData, msgData] = await Promise.all([
@@ -302,8 +304,11 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       ]);
       setAgent(agentData);
       setMessages(msgData);
-    } catch {
-      // silently retry
+      initialLoadDone.current = true;
+    } catch (err) {
+      if (!initialLoadDone.current) {
+        console.error("AgentChatPage: initial load failed", err);
+      }
     } finally {
       setLoading(false);
     }
@@ -352,8 +357,8 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         await starSession(agent.project, sessionId);
       }
       setStarred(!starred);
-    } catch {
-      // silently fail
+    } catch (err) {
+      showToast("Failed to update star: " + err.message, "error");
     } finally {
       setStarLoading(false);
     }

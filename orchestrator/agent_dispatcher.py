@@ -1,13 +1,15 @@
 """Agent Dispatcher — scheduling loop for persistent agent processes."""
 
 import asyncio
+import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from config import MAX_CONCURRENT_WORKERS, MAX_IDLE_AGENTS
+from config import MAX_CONCURRENT_WORKERS
 from database import SessionLocal
 from log_config import save_worker_log
 from models import (
@@ -75,7 +77,6 @@ def _format_tool_summary(name: str, input_data: dict) -> str | None:
 
 def _extract_result(logs: str) -> str:
     """Extract agent response text and tool call summaries from stream-json."""
-    import json
     parts = []  # ordered list of text strings and tool summary strings
     result_event = None
     for line in logs.strip().splitlines():
@@ -131,7 +132,6 @@ def _extract_result(logs: str) -> str:
 
         text = "\n\n".join(groups)
         # Strip legacy EXIT_SUCCESS / EXIT_FAILURE markers
-        import re
         text = re.sub(r"\n?EXIT_SUCCESS\s*$", "", text).strip()
         text = re.sub(r"\n?EXIT_FAILURE:?.*$", "", text).strip()
         return text or "(no output)"
@@ -145,7 +145,6 @@ def _is_result_error(logs: str) -> bool:
     """Check if the stream-json result event indicates an error.
     Also returns True when the CLI crashed before producing any result event
     (e.g. nested-session error, missing binary, permission denied)."""
-    import json
     found_result = False
     for line in logs.strip().splitlines():
         line = line.strip()
@@ -164,7 +163,6 @@ def _is_result_error(logs: str) -> bool:
 
 def _extract_session_id(logs: str) -> str | None:
     """Extract session_id from the result event in stream-json output."""
-    import json
     for line in logs.strip().splitlines():
         line = line.strip()
         if not line:
@@ -193,6 +191,11 @@ class AgentDispatcher:
         # Planner processes (ephemeral, for PLAN-mode agents)
         # agent_id -> pid_str
         self._active_planners: dict[str, str] = {}
+
+        # Track stale session recovery retries per agent to avoid infinite loops.
+        # agent_id -> consecutive retry count
+        self._stale_session_retries: dict[str, int] = {}
+        self._max_stale_retries = 3
 
     def get_active_sessions(self) -> list[tuple[str, str]]:
         """Return (session_id, project_path) for all agents with sessions.
@@ -359,6 +362,7 @@ class AgentDispatcher:
             # Auto-recover from stale session: try cache restore + repair first.
             # Use previous_session_id (the one used for --resume) for cache lookup,
             # since the result event may contain a different (new) session_id.
+            # Track retries to avoid infinite loops when restore keeps failing.
             is_stale_session = (
                 is_error
                 and result_text
@@ -366,36 +370,47 @@ class AgentDispatcher:
             )
             restore_sid = previous_session_id or agent.session_id
             if is_stale_session and restore_sid:
-                project = db.get(Project, agent.project)
-                project_path = self.worker_mgr._get_project_path(
-                    project.name
-                ) if project else None
+                retry_count = self._stale_session_retries.get(agent_id, 0) + 1
+                self._stale_session_retries[agent_id] = retry_count
 
-                restored = False
-                if project_path:
-                    restored = restore_session(restore_sid, project_path)
-                    if restored:
-                        repair_session_jsonl(restore_sid, project_path)
-                        # Point agent back to the restored session
-                        agent.session_id = restore_sid
-                        logger.info(
-                            "Agent %s: restored session %s from cache — re-queuing",
-                            agent.id, restore_sid,
-                        )
-
-                if not restored:
+                if retry_count > self._max_stale_retries:
                     logger.warning(
-                        "Agent %s: stale session %s, no cache — clearing session_id",
-                        agent.id, restore_sid,
+                        "Agent %s: stale session %s, exhausted %d retries — clearing session_id",
+                        agent.id, restore_sid, self._max_stale_retries,
                     )
                     agent.session_id = None
+                    self._stale_session_retries.pop(agent_id, None)
+                    # Fall through to normal error handling below
+                else:
+                    project = db.get(Project, agent.project)
+                    project_path = self.worker_mgr._get_project_path(
+                        project.name
+                    ) if project else None
 
-                if message:
-                    message.status = MessageStatus.PENDING
-                    message.completed_at = None
-                agent.status = AgentStatus.IDLE
-                done_agents.append(agent_id)
-                continue
+                    restored = False
+                    if project_path:
+                        restored = restore_session(restore_sid, project_path)
+                        if restored:
+                            repair_session_jsonl(restore_sid, project_path)
+                            agent.session_id = restore_sid
+                            logger.info(
+                                "Agent %s: restored session %s from cache (attempt %d) — re-queuing",
+                                agent.id, restore_sid, retry_count,
+                            )
+
+                    if not restored:
+                        logger.warning(
+                            "Agent %s: stale session %s, no cache — clearing session_id (attempt %d)",
+                            agent.id, restore_sid, retry_count,
+                        )
+                        agent.session_id = None
+
+                    if message:
+                        message.status = MessageStatus.PENDING
+                        message.completed_at = None
+                    agent.status = AgentStatus.IDLE
+                    done_agents.append(agent_id)
+                    continue
 
             if is_error:
                 resp = Message(
@@ -418,6 +433,8 @@ class AgentDispatcher:
                 )
                 db.add(resp)
                 agent.status = AgentStatus.IDLE
+                # Successful completion — reset stale session retry counter
+                self._stale_session_retries.pop(agent_id, None)
 
             # Update agent denormalized fields
             preview = (result_text or "")[:200]
@@ -722,7 +739,7 @@ class AgentDispatcher:
             # Use --resume with session_id if available.
             # Pre-check: if the session file is missing, restore from cache
             # now instead of waiting for Claude to error out (~5s wasted).
-            resume_session_id = agent.session_id if agent.session_id else None
+            resume_session_id = agent.session_id or None
             if resume_session_id:
                 from session_cache import _session_source_dir
                 src_dir = _session_source_dir(project_path)
@@ -942,14 +959,3 @@ class AgentDispatcher:
                 logger.info("Recovered %d agents on startup", len(agents))
         finally:
             db.close()
-
-
-def _extract_error_line(logs: str) -> str:
-    """Extract error message from EXIT_FAILURE line."""
-    for line in logs.strip().splitlines():
-        if "EXIT_FAILURE" in line:
-            idx = line.find("EXIT_FAILURE:")
-            if idx >= 0:
-                return line[idx + len("EXIT_FAILURE:"):].strip()
-            return line.strip()
-    return "Unknown error"

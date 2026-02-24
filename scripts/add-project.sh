@@ -81,7 +81,7 @@ cat >> "$REGISTRY" << EOF
     display_name: "${PROJECT_NAME}"
     path: /projects/${PROJECT_NAME}
     git_remote: ${GIT_REMOTE}
-    default_model: claude-sonnet-4-5-20250514
+    default_model: claude-opus-4-6
     max_concurrent: 2
 EOF
 

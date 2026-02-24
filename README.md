@@ -255,7 +255,7 @@ All configuration is in `.env`. Key settings:
 | `WORKER_CPU_LIMIT` | `2` | CPU cores per worker container |
 | `WORKER_MEM_LIMIT` | `4g` | RAM per worker container |
 | `TASK_TIMEOUT_SECONDS` | `600` | Default task timeout (10 min) |
-| `CC_MODEL` | `claude-sonnet-4-5-20250514` | Default Claude model |
+| `CC_MODEL` | `claude-opus-4-6` | Default Claude model |
 | `OPENAI_API_KEY` | — | OpenAI key for voice input (optional) |
 | `PORT` | `8080` | Backend API port |
 | `FRONTEND_PORT` | `3000` | Frontend HTTPS port |

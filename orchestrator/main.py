@@ -10,6 +10,7 @@ import yaml
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.responses import JSONResponse
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
@@ -55,7 +56,6 @@ logger = logging.getLogger("orchestrator")
 
 
 def _utcnow():
-    from datetime import datetime, timezone
     return datetime.now(timezone.utc)
 
 
@@ -79,6 +79,12 @@ def _effective_task_status(msg: Message, agent: Agent) -> str:
     if agent.status == AgentStatus.STOPPED:
         return "CANCELLED"
     return "PENDING"
+
+
+def _validate_folder_name(name: str) -> None:
+    """Raise 400 if the folder name contains path traversal characters."""
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid folder name")
 
 
 def load_registry(db: Session):
@@ -207,14 +213,14 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ---- Auth middleware ----
 
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/files/", "/docs", "/openapi.json")
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/docs", "/openapi.json")
 
 
 @app.middleware("http")
@@ -238,13 +244,11 @@ async def auth_middleware(request: Request, call_next):
         # Verify bearer token
         auth_header = request.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
-            from starlette.responses import JSONResponse
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
 
         token = auth_header[7:]
         jwt_secret = get_jwt_secret(db)
         if not verify_token(token, jwt_secret):
-            from starlette.responses import JSONResponse
             return JSONResponse({"detail": "Token expired or invalid"}, status_code=401)
     finally:
         db.close()
@@ -537,7 +541,7 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
                 if c.get("status") == "running" and c.get("project"):
                     active_projects.add(c["project"])
         except Exception:
-            pass
+            logger.warning("Failed to list containers for active project detection")
 
     results = []
     for dirname in all_dirs:
@@ -609,6 +613,7 @@ async def list_trash_folders():
 @app.delete("/api/projects/trash/{name}", status_code=200)
 async def delete_trash_folder(name: str):
     """Permanently delete a project folder from .trash."""
+    _validate_folder_name(name)
     import shutil
     from config import PROJECTS_DIR
     projects_dir = PROJECTS_DIR or "/projects"
@@ -623,6 +628,7 @@ async def delete_trash_folder(name: str):
 @app.post("/api/projects/trash/{name}/restore", status_code=200)
 async def restore_trash_folder(name: str):
     """Restore a project folder from .trash back to projects dir."""
+    _validate_folder_name(name)
     import shutil
     from config import PROJECTS_DIR
     projects_dir = PROJECTS_DIR or "/projects"
@@ -801,6 +807,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
 @app.delete("/api/projects/{name}", status_code=200)
 async def delete_project(name: str, request: Request, db: Session = Depends(get_db)):
     """Delete a project — unregisters and moves files to .trash. Works even if not registered."""
+    _validate_folder_name(name)
     import shutil
 
     proj = db.get(Project, name)
@@ -1151,7 +1158,6 @@ async def list_agents(
 @app.get("/api/agents/unread")
 async def agents_unread_count(db: Session = Depends(get_db)):
     """Total unread message count across all agents."""
-    from sqlalchemy import func
     total = db.query(func.sum(Agent.unread_count)).scalar() or 0
     return {"unread": int(total)}
 

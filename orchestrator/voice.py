@@ -28,19 +28,19 @@ async def transcribe_audio(file: UploadFile):
     if len(content) > MAX_AUDIO_SIZE:
         raise HTTPException(status_code=400, detail=f"Audio file too large (max {MAX_AUDIO_SIZE // 1024 // 1024}MB)")
 
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
+    try:
         # Whisper accepts various formats: mp3, mp4, mpeg, mpga, m4a, wav, webm
         transcript = client.audio.transcriptions.create(
             model="whisper-1",
             file=(file.filename, content),
         )
-        text = transcript.text.strip()
-        logger.info("Transcribed %d bytes audio → %d chars text", len(content), len(text))
-        return {"text": text}
-
     except Exception as e:
         logger.exception("Whisper API error")
-        raise HTTPException(status_code=502, detail=f"Whisper API error: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Whisper API error: {e}")
+
+    text = transcript.text.strip()
+    logger.info("Transcribed %d bytes audio → %d chars text", len(content), len(text))
+    return {"text": text}
