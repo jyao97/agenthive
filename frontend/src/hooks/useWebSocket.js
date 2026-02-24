@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
+import { getAuthToken } from "../lib/api";
 
 /**
  * Auto-reconnecting WebSocket hook for real-time status updates.
@@ -18,7 +19,11 @@ export default function useWebSocket() {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/ws/status`;
+    let url = `${proto}//${window.location.host}/ws/status`;
+    const token = getAuthToken();
+    if (token) {
+      url += `?token=${encodeURIComponent(token)}`;
+    }
 
     try {
       const ws = new WebSocket(url);

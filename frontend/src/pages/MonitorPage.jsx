@@ -11,14 +11,6 @@ const HEALTH_COLORS = {
   unknown: "bg-gray-500",
 };
 
-const CONTAINER_STYLES = {
-  running: { dot: "bg-green-500 animate-pulse", label: "text-green-400", border: "border-green-500/20" },
-  exited: { dot: "bg-gray-500", label: "text-label", border: "border-gray-500/20" },
-  created: { dot: "bg-yellow-500", label: "text-yellow-400", border: "border-yellow-500/20" },
-  restarting: { dot: "bg-yellow-500 animate-pulse", label: "text-yellow-400", border: "border-yellow-500/20" },
-  dead: { dot: "bg-red-500", label: "text-red-400", border: "border-red-500/20" },
-};
-
 const AGENT_STATUS_ORDER = ["EXECUTING", "PLANNING", "PLAN_REVIEW", "IDLE", "STARTING", "ERROR", "STOPPED"];
 
 function UsageBar({ label, pct, detail }) {
@@ -53,53 +45,10 @@ function HealthCard({ label, status }) {
   );
 }
 
-function formatRuntime(createdStr) {
-  if (!createdStr) return "--";
-  try {
-    const created = new Date(createdStr);
-    const diffMs = Date.now() - created;
-    if (diffMs < 0) return "0s";
-    const totalSec = Math.floor(diffMs / 1000);
-    if (totalSec < 60) return `${totalSec}s`;
-    const min = Math.floor(totalSec / 60);
-    const sec = totalSec % 60;
-    if (min < 60) return `${min}m ${sec}s`;
-    const hr = Math.floor(min / 60);
-    return `${hr}h ${min % 60}m`;
-  } catch {
-    return "--";
-  }
-}
-
-function ContainerCard({ container }) {
-  const style = CONTAINER_STYLES[container.status] || CONTAINER_STYLES.exited;
-  return (
-    <div className={`rounded-xl bg-surface shadow-card p-4 border-l-2 ${style.border}`}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-mono font-medium text-heading truncate">{container.name}</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className={`inline-block w-2 h-2 rounded-full ${style.dot}`} />
-            <span className={`text-xs font-medium ${style.label}`}>{container.status}</span>
-          </div>
-        </div>
-        <div className="text-right shrink-0">
-          <p className="text-xs text-dim">Uptime</p>
-          <p className="text-sm font-mono text-body">{formatRuntime(container.created)}</p>
-        </div>
-      </div>
-      <p className="text-xs text-dim mt-1.5 font-mono truncate">
-        {container.id ? container.id.slice(0, 12) : "--"}
-      </p>
-    </div>
-  );
-}
-
 export default function MonitorPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
   const [health, setHealth] = useState(null);
   const [healthError, setHealthError] = useState(false);
-  const [containers, setContainers] = useState([]);
   const [agents, setAgents] = useState([]);
   const [agentCounts, setAgentCounts] = useState({});
   const [processes, setProcesses] = useState([]);
@@ -114,14 +63,6 @@ export default function MonitorPage({ theme, onToggleTheme }) {
     } catch {
       setHealthError(true);
     }
-  }, []);
-
-  const fetchContainers = useCallback(async () => {
-    try {
-      const res = await fetch("/api/containers");
-      if (!res.ok) return;
-      setContainers(await res.json());
-    } catch { /* retry next poll */ }
   }, []);
 
   const fetchAgents = useCallback(async () => {
@@ -154,23 +95,20 @@ export default function MonitorPage({ theme, onToggleTheme }) {
 
   useEffect(() => {
     fetchHealth();
-    fetchContainers();
     fetchAgents();
     fetchProcesses();
     fetchSysStats();
-  }, [fetchHealth, fetchContainers, fetchAgents, fetchProcesses, fetchSysStats]);
+  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats]);
 
   useEffect(() => {
-    const interval = setInterval(() => { fetchContainers(); fetchAgents(); fetchProcesses(); fetchSysStats(); }, 3000);
+    const interval = setInterval(() => { fetchAgents(); fetchProcesses(); fetchSysStats(); }, 3000);
     return () => clearInterval(interval);
-  }, [fetchContainers, fetchAgents, fetchProcesses, fetchSysStats]);
+  }, [fetchAgents, fetchProcesses, fetchSysStats]);
 
   useEffect(() => {
     const interval = setInterval(fetchHealth, 10000);
     return () => clearInterval(interval);
   }, [fetchHealth]);
-
-  const runningContainers = containers.filter((c) => c.status === "running");
 
   return (
     <div className="h-full overflow-y-auto overflow-x-hidden">
@@ -192,7 +130,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
             <div className="grid grid-cols-3 gap-3">
               <HealthCard label="Overall" status={health?.status || "unknown"} />
               <HealthCard label="Database" status={health?.db || "unknown"} />
-              <HealthCard label="Docker" status={health?.docker || "unknown"} />
+              <HealthCard label="Claude CLI" status={health?.claude_cli || "unknown"} />
             </div>
           )}
         </section>
@@ -253,19 +191,12 @@ export default function MonitorPage({ theme, onToggleTheme }) {
         )}
 
         {/* Summary Stats */}
-        <section className="grid grid-cols-3 gap-3">
+        <section className="grid grid-cols-2 gap-3">
           <div className="rounded-xl bg-surface shadow-card p-4">
-            <p className="text-xs text-dim uppercase tracking-wider">Processes</p>
+            <p className="text-xs text-dim uppercase tracking-wider">Claude Processes</p>
             <div className="mt-1 flex items-baseline gap-1">
               <span className={`text-2xl font-bold ${processes.length > 0 ? "text-cyan-400" : "text-dim"}`}>{processes.length}</span>
               <span className="text-sm text-dim">running</span>
-            </div>
-          </div>
-          <div className="rounded-xl bg-surface shadow-card p-4">
-            <p className="text-xs text-dim uppercase tracking-wider">Containers</p>
-            <div className="mt-1 flex items-baseline gap-1">
-              <span className={`text-2xl font-bold ${runningContainers.length > 0 ? "text-green-400" : "text-dim"}`}>{runningContainers.length}</span>
-              <span className="text-sm text-dim">alive</span>
             </div>
           </div>
           <div className="rounded-xl bg-surface shadow-card p-4">
@@ -336,28 +267,6 @@ export default function MonitorPage({ theme, onToggleTheme }) {
             </div>
           </section>
         )}
-
-        {/* Containers */}
-        <section>
-          <h2 className="text-xs font-semibold text-dim uppercase tracking-wider mb-2">
-            Project Containers ({containers.length})
-          </h2>
-          {containers.length === 0 ? (
-            <div className="rounded-xl bg-surface shadow-card p-8 flex flex-col items-center text-center">
-              <svg className="w-12 h-12 text-ghost mb-3" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 004.5 8.25v9a2.25 2.25 0 002.25 2.25z" />
-              </svg>
-              <p className="text-dim text-sm font-medium">No containers</p>
-              <p className="text-faint text-xs mt-1">Containers start when you create an agent.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {containers.map((c) => (
-                <ContainerCard key={c.id} container={c} />
-              ))}
-            </div>
-          )}
-        </section>
 
         {/* Active Agents */}
         <section>

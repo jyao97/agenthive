@@ -374,7 +374,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     );
   }
 
-  const isHealthy = health && health.status === "ok" && health.db === "ok" && health.docker === "ok";
+  const isHealthy = health && health.status === "ok" && health.db === "ok" && health.claude_cli === "ok";
   const healthChipCls = health === null
     ? "bg-gray-500/15 text-gray-400"
     : isHealthy

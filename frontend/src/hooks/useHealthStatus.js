@@ -14,7 +14,7 @@ export default function useHealthStatus() {
         const data = await res.json();
         if (!cancelled) setHealth(data);
       } catch {
-        if (!cancelled) setHealth({ status: "error", db: "unknown", docker: "unknown" });
+        if (!cancelled) setHealth({ status: "error", db: "unknown", claude_cli: "unknown" });
       }
     };
 

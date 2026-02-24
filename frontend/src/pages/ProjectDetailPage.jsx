@@ -279,14 +279,12 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                 )}
               </div>
               <div className="flex items-center gap-3 text-xs">
-                {project.container_running ? (
+                {project.container_running && (
                   <span className="inline-flex items-center gap-1 text-emerald-400">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    Container running
+                    Processes active
                   </span>
-                ) : project.active ? (
-                  <span className="text-dim">Container stopped</span>
-                ) : null}
+                )}
                 {project.agent_count > 0 && (
                   <span className="text-label">
                     <span className="font-medium text-heading">{project.agent_count}</span> agent{project.agent_count !== 1 ? "s" : ""}

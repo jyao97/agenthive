@@ -17,7 +17,7 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, child
   const navigate = useNavigate();
   const health = useHealthStatus();
 
-  const isHealthy = health && health.status === "ok" && health.db === "ok" && health.docker === "ok";
+  const isHealthy = health && health.status === "ok" && health.db === "ok" && health.claude_cli === "ok";
   const chipCls = health === null
     ? "bg-gray-500/15 text-gray-400"
     : isHealthy

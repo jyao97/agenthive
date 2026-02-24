@@ -48,7 +48,23 @@ ws_manager = ConnectionManager()
 
 
 async def websocket_endpoint(ws: WebSocket):
-    """WebSocket handler for /ws/status."""
+    """WebSocket handler for /ws/status. Requires ?token=<jwt> if password is set."""
+    # Auth check — verify token if password protection is enabled
+    from database import SessionLocal
+    from auth import get_password_hash, get_jwt_secret, verify_token
+
+    db = SessionLocal()
+    try:
+        pw_hash = get_password_hash(db)
+        if pw_hash is not None:
+            token = ws.query_params.get("token", "")
+            jwt_secret = get_jwt_secret(db)
+            if not token or not verify_token(token, jwt_secret):
+                await ws.close(code=4001, reason="Unauthorized")
+                return
+    finally:
+        db.close()
+
     await ws_manager.connect(ws)
     try:
         while True:

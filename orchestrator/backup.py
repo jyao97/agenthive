@@ -7,11 +7,9 @@ import os
 import shutil
 from datetime import datetime, timezone
 
-from config import BACKUP_INTERVAL_HOURS, DB_PATH, MAX_BACKUPS
+from config import BACKUP_DIR, BACKUP_INTERVAL_HOURS, DB_PATH, MAX_BACKUPS, PROJECTS_DIR
 
 logger = logging.getLogger("orchestrator.backup")
-
-BACKUP_DIR = "/app/backups"
 
 
 async def run_backup_loop():
@@ -53,7 +51,7 @@ def do_backup():
         logger.debug("Backed up database")
 
     # 2. All PROGRESS.md files from projects
-    projects_dir = "/projects"
+    projects_dir = PROJECTS_DIR or "/projects"
     if os.path.isdir(projects_dir):
         progress_dir = os.path.join(backup_subdir, "progress")
         os.makedirs(progress_dir, exist_ok=True)
@@ -64,7 +62,8 @@ def do_backup():
                 files_backed += 1
 
     # 3. registry.yaml
-    registry = "/app/project-configs/registry.yaml"
+    from config import PROJECT_CONFIGS_PATH
+    registry = os.path.join(PROJECT_CONFIGS_PATH, "registry.yaml")
     if os.path.isfile(registry):
         shutil.copy2(registry, os.path.join(backup_subdir, "registry.yaml"))
         files_backed += 1

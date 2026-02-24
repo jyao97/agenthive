@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
 import ProjectsPage from "./pages/ProjectsPage";
 import TrashPage from "./pages/TrashPage";
 import ProjectDetailPage from "./pages/ProjectDetailPage";
@@ -9,8 +9,9 @@ import TasksPage from "./pages/TasksPage";
 import NewPage from "./pages/NewPage";
 import MonitorPage from "./pages/MonitorPage";
 import GitPage from "./pages/GitPage";
+import LoginPage from "./pages/LoginPage";
 import useTheme from "./hooks/useTheme";
-import { fetchUnreadCount } from "./lib/api";
+import { authCheck, clearAuthToken, fetchUnreadCount, getAuthToken } from "./lib/api";
 
 const tabs = [
   {
@@ -62,35 +63,102 @@ const tabs = [
   },
 ];
 
+function AuthGuard({ children }) {
+  const navigate = useNavigate();
+  const [checked, setChecked] = useState(false);
+  const [authed, setAuthed] = useState(false);
+
+  useEffect(() => {
+    const token = getAuthToken();
+    if (!token) {
+      // No token — check if password is even set (might be first-time)
+      authCheck()
+        .then((r) => {
+          if (r.needs_setup) {
+            // No password set yet — redirect to login for setup
+            navigate("/login", { replace: true });
+          } else {
+            // Password set but no token — must login
+            navigate("/login", { replace: true });
+          }
+        })
+        .catch(() => {
+          // Server down? let through — API calls will fail with their own errors
+          setAuthed(true);
+        })
+        .finally(() => setChecked(true));
+    } else {
+      // Has token — verify it's still valid
+      authCheck()
+        .then((r) => {
+          if (r.authenticated) {
+            setAuthed(true);
+          } else {
+            // Token expired or invalid — clear and redirect to login
+            clearAuthToken();
+            navigate("/login", { replace: true });
+          }
+        })
+        .catch(() => {
+          // Server down? let through — API calls will fail with their own errors
+          setAuthed(true);
+        })
+        .finally(() => setChecked(true));
+    }
+  }, [navigate]);
+
+  if (!checked) {
+    return (
+      <div className="flex items-center justify-center h-dvh bg-page">
+        <div className="animate-pulse text-dim">Loading...</div>
+      </div>
+    );
+  }
+
+  return authed ? children : null;
+}
+
 export default function App() {
   const { theme, toggle } = useTheme();
   const themeProps = { theme, onToggleTheme: toggle };
   const location = useLocation();
-  const hideNav = location.pathname.match(/^\/agents\/[^/]+$/);
+  const hideNav = location.pathname.match(/^\/agents\/[^/]+$/) || location.pathname === "/login";
   const [unread, setUnread] = useState(0);
 
   useEffect(() => {
+    // Only poll unread when not on login page and has a token
+    if (location.pathname === "/login" || !getAuthToken()) return;
     const poll = () => fetchUnreadCount().then((r) => setUnread(r.unread)).catch(() => {});
     poll();
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [location.pathname]);
 
   return (
     <div className="flex flex-col h-dvh bg-page text-heading min-w-[320px] overflow-x-hidden">
       {/* Main content area */}
       <main className="flex-1 min-h-0 overflow-hidden">
         <Routes>
-          <Route path="/" element={<Navigate to="/projects" replace />} />
-          <Route path="/projects" element={<ProjectsPage {...themeProps} />} />
-          <Route path="/projects/trash" element={<TrashPage {...themeProps} />} />
-          <Route path="/projects/:name" element={<ProjectDetailPage {...themeProps} />} />
-          <Route path="/agents" element={<AgentsPage {...themeProps} />} />
-          <Route path="/agents/:id" element={<AgentChatPage {...themeProps} />} />
-          <Route path="/tasks" element={<TasksPage {...themeProps} />} />
-          <Route path="/new" element={<NewPage {...themeProps} />} />
-          <Route path="/monitor" element={<MonitorPage {...themeProps} />} />
-          <Route path="/git" element={<GitPage {...themeProps} />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/*"
+            element={
+              <AuthGuard>
+                <Routes>
+                  <Route path="/" element={<Navigate to="/projects" replace />} />
+                  <Route path="/projects" element={<ProjectsPage {...themeProps} />} />
+                  <Route path="/projects/trash" element={<TrashPage {...themeProps} />} />
+                  <Route path="/projects/:name" element={<ProjectDetailPage {...themeProps} />} />
+                  <Route path="/agents" element={<AgentsPage {...themeProps} />} />
+                  <Route path="/agents/:id" element={<AgentChatPage {...themeProps} />} />
+                  <Route path="/tasks" element={<TasksPage {...themeProps} />} />
+                  <Route path="/new" element={<NewPage {...themeProps} />} />
+                  <Route path="/monitor" element={<MonitorPage {...themeProps} />} />
+                  <Route path="/git" element={<GitPage {...themeProps} />} />
+                </Routes>
+              </AuthGuard>
+            }
+          />
         </Routes>
       </main>
 

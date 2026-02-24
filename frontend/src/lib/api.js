@@ -1,18 +1,57 @@
 /** Centralized API wrapper for CC Orchestrator. */
 
 const BASE = "";
+const TOKEN_KEY = "cc-auth-token";
+
+export function getAuthToken() {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setAuthToken(token) {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearAuthToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
 
 async function request(url, opts = {}) {
-  const res = await fetch(`${BASE}${url}`, {
-    headers: { "Content-Type": "application/json", ...opts.headers },
-    ...opts,
-  });
+  const headers = { "Content-Type": "application/json", ...opts.headers };
+  const token = getAuthToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${BASE}${url}`, { ...opts, headers });
+
+  if (res.status === 401) {
+    clearAuthToken();
+    // Redirect to login if not already there
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+    throw new Error("Not authenticated");
+  }
+
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || `HTTP ${res.status}`);
   }
   return res.json();
 }
+
+// --- Auth ---
+export const authCheck = () =>
+  request("/api/auth/check", { method: "POST" });
+export const authLogin = (password) =>
+  request("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+export const authSetPassword = (password) =>
+  request("/api/auth/set-password", { method: "POST", body: JSON.stringify({ password }) });
+export const authChangePassword = (current_password, new_password) =>
+  request("/api/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify({ current_password, new_password }),
+  });
 
 // --- Projects ---
 export const fetchProjects = () => request("/api/projects");
@@ -84,10 +123,23 @@ export const mergeGitBranch = (project, branch) =>
 export async function transcribeVoice(audioBlob) {
   const formData = new FormData();
   formData.append("file", audioBlob, "recording.webm");
+  const headers = {};
+  const token = getAuthToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
   const res = await fetch(`${BASE}/api/voice`, {
     method: "POST",
     body: formData,
+    headers,
   });
+  if (res.status === 401) {
+    clearAuthToken();
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+    throw new Error("Not authenticated");
+  }
   if (!res.ok) throw new Error(`Voice API error (${res.status})`);
   return res.json();
 }

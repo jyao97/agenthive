@@ -126,3 +126,16 @@ def init_db():
         if "priority" in columns and "mode" in columns:
             conn.execute(text("ALTER TABLE tasks DROP COLUMN priority"))
             conn.commit()
+
+        # Clear stale container_ids on startup (host mode — no persistent containers)
+        conn.execute(text("UPDATE projects SET container_id = NULL WHERE container_id IS NOT NULL"))
+        conn.execute(text("UPDATE agents SET container_id = NULL WHERE container_id IS NOT NULL"))
+        conn.commit()
+
+    # Ensure jwt_secret exists in SystemConfig
+    from auth import get_jwt_secret
+    db = SessionLocal()
+    try:
+        get_jwt_secret(db)
+    finally:
+        db.close()

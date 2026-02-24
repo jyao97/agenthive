@@ -38,7 +38,7 @@ function FolderCard({ folder, onClick, onActivate, onArchive, busy }) {
               </span>
             )}
             {folder.container_running && (
-              <span className="shrink-0 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Container running" />
+              <span className="shrink-0 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Processes active" />
             )}
           </div>
           {folder.git_remote && (

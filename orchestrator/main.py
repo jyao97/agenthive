@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from config import PROJECT_CONFIGS_PATH
+from config import AUTH_TIMEOUT_MINUTES, PROJECT_CONFIGS_PATH
 from database import SessionLocal, get_db, init_db
 from log_config import setup_logging
 from models import (
@@ -37,6 +37,14 @@ from schemas import (
     ProjectOut,
     ProjectWithStats,
     SendMessage,
+)
+from auth import (
+    create_token,
+    get_jwt_secret,
+    get_password_hash,
+    set_password_hash,
+    verify_password,
+    verify_token,
 )
 
 setup_logging()
@@ -184,6 +192,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---- Auth middleware ----
+
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/docs", "/openapi.json")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Reject unauthenticated requests to protected endpoints."""
+    path = request.url.path
+
+    # Skip auth for exempt paths and non-API static assets
+    if any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
+        return await call_next(request)
+    if not path.startswith("/api/"):
+        return await call_next(request)
+
+    # Check for password — if none set, allow all requests (first-time setup)
+    db = SessionLocal()
+    try:
+        pw_hash = get_password_hash(db)
+        if pw_hash is None:
+            return await call_next(request)
+
+        # Verify bearer token
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            from starlette.responses import JSONResponse
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+
+        token = auth_header[7:]
+        jwt_secret = get_jwt_secret(db)
+        if not verify_token(token, jwt_secret):
+            from starlette.responses import JSONResponse
+            return JSONResponse({"detail": "Token expired or invalid"}, status_code=401)
+    finally:
+        db.close()
+
+    return await call_next(request)
+
+
 # Voice router
 from voice import router as voice_router
 app.include_router(voice_router)
@@ -193,11 +241,90 @@ from websocket import websocket_endpoint
 app.websocket("/ws/status")(websocket_endpoint)
 
 
+# ---- Auth ----
+
+@app.post("/api/auth/check")
+async def auth_check(request: Request, db: Session = Depends(get_db)):
+    """Check auth state — returns whether password is set and if token is valid."""
+    pw_hash = get_password_hash(db)
+    if pw_hash is None:
+        return {"authenticated": False, "needs_setup": True}
+
+    # Password is set — verify the bearer token if provided
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        jwt_secret = get_jwt_secret(db)
+        if verify_token(token, jwt_secret):
+            return {"authenticated": True, "needs_setup": False}
+
+    return {"authenticated": False, "needs_setup": False}
+
+
+@app.post("/api/auth/set-password")
+async def auth_set_password(request: Request, db: Session = Depends(get_db)):
+    """First-time password setup. Only works if no password has been set yet."""
+    pw_hash = get_password_hash(db)
+    if pw_hash is not None:
+        raise HTTPException(status_code=400, detail="Password already set")
+
+    body = await request.json()
+    password = body.get("password", "")
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+
+    set_password_hash(db, password)
+    jwt_secret = get_jwt_secret(db)
+    token = create_token(jwt_secret)
+    logger.info("Initial password set")
+    return {"token": token, "expires_minutes": AUTH_TIMEOUT_MINUTES}
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request, db: Session = Depends(get_db)):
+    """Login with password. Returns JWT token."""
+    pw_hash = get_password_hash(db)
+    if pw_hash is None:
+        raise HTTPException(status_code=400, detail="No password set — use /api/auth/set-password")
+
+    body = await request.json()
+    password = body.get("password", "")
+    if not verify_password(password, pw_hash):
+        raise HTTPException(status_code=401, detail="Wrong password")
+
+    jwt_secret = get_jwt_secret(db)
+    token = create_token(jwt_secret)
+    return {"token": token, "expires_minutes": AUTH_TIMEOUT_MINUTES}
+
+
+@app.post("/api/auth/change-password")
+async def auth_change_password(request: Request, db: Session = Depends(get_db)):
+    """Change password. Requires current password for verification."""
+    pw_hash = get_password_hash(db)
+    if pw_hash is None:
+        raise HTTPException(status_code=400, detail="No password set")
+
+    body = await request.json()
+    current = body.get("current_password", "")
+    new_pw = body.get("new_password", "")
+
+    if not verify_password(current, pw_hash):
+        raise HTTPException(status_code=401, detail="Current password is wrong")
+    if len(new_pw) < 4:
+        raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
+
+    set_password_hash(db, new_pw)
+    jwt_secret = get_jwt_secret(db)
+    token = create_token(jwt_secret)
+    logger.info("Password changed")
+    return {"token": token, "expires_minutes": AUTH_TIMEOUT_MINUTES}
+
+
 # ---- Health ----
 
 @app.get("/api/health", response_model=HealthResponse)
-async def health():
-    """System health check — verifies DB is writable and Docker is reachable."""
+async def health(request: Request):
+    """System health check — verifies DB is writable and Claude CLI is reachable."""
     result = HealthResponse(status="ok")
 
     # Check DB
@@ -209,14 +336,12 @@ async def health():
         result.db = "error"
         result.status = "degraded"
 
-    # Check Docker
-    try:
-        import docker
-        client = docker.from_env()
-        client.ping()
-        result.docker = "ok"
-    except Exception:
-        result.docker = "unavailable"
+    # Check Claude CLI
+    wm = getattr(request.app.state, "worker_manager", None)
+    if wm and wm.ping():
+        result.claude_cli = "ok"
+    else:
+        result.claude_cli = "unavailable"
         result.status = "degraded"
 
     return result
@@ -370,8 +495,9 @@ async def list_projects(db: Session = Depends(get_db)):
 
 @app.get("/api/projects/folders")
 async def list_all_folders(request: Request, db: Session = Depends(get_db)):
-    """List ALL folders in /projects/ with activation status, container status, and stats."""
-    projects_dir = "/projects"
+    """List ALL folders in projects dir with activation status and stats."""
+    from config import PROJECTS_DIR
+    projects_dir = PROJECTS_DIR or "/projects"
     try:
         all_dirs = sorted([
             d for d in os.listdir(projects_dir)
@@ -382,14 +508,14 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
 
     db_projects = {p.name: p for p in db.query(Project).all()}
 
-    # Check running containers
-    running_containers = set()
+    # Check which projects have active processes
+    active_projects = set()
     wm = getattr(request.app.state, "worker_manager", None)
     if wm:
         try:
             for c in wm.list_containers():
                 if c.get("status") == "running" and c.get("project"):
-                    running_containers.add(c["project"])
+                    active_projects.add(c["project"])
         except Exception:
             pass
 
@@ -409,7 +535,7 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
             "name": dirname,
             "display_name": proj.display_name if proj else dirname,
             "active": active,
-            "container_running": dirname in running_containers,
+            "container_running": dirname in active_projects,
             "agent_count": agent_count,
             "last_activity": last_activity,
             "git_remote": proj.git_remote if proj else None,
@@ -447,7 +573,9 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
 @app.get("/api/projects/trash")
 async def list_trash_folders():
     """List deleted project folders in .trash."""
-    trash_dir = "/projects/.trash"
+    from config import PROJECTS_DIR
+    projects_dir = PROJECTS_DIR or "/projects"
+    trash_dir = os.path.join(projects_dir, ".trash")
     try:
         dirs = sorted([
             d for d in os.listdir(trash_dir)
@@ -462,7 +590,9 @@ async def list_trash_folders():
 async def delete_trash_folder(name: str):
     """Permanently delete a project folder from .trash."""
     import shutil
-    target = os.path.join("/projects/.trash", name)
+    from config import PROJECTS_DIR
+    projects_dir = PROJECTS_DIR or "/projects"
+    target = os.path.join(projects_dir, ".trash", name)
     if not os.path.isdir(target):
         raise HTTPException(status_code=404, detail=f"Trash folder '{name}' not found")
     shutil.rmtree(target)
@@ -472,14 +602,16 @@ async def delete_trash_folder(name: str):
 
 @app.post("/api/projects/trash/{name}/restore", status_code=200)
 async def restore_trash_folder(name: str):
-    """Restore a project folder from .trash back to /projects."""
+    """Restore a project folder from .trash back to projects dir."""
     import shutil
-    src = os.path.join("/projects/.trash", name)
+    from config import PROJECTS_DIR
+    projects_dir = PROJECTS_DIR or "/projects"
+    src = os.path.join(projects_dir, ".trash", name)
     if not os.path.isdir(src):
         raise HTTPException(status_code=404, detail=f"Trash folder '{name}' not found")
-    dst = os.path.join("/projects", name)
+    dst = os.path.join(projects_dir, name)
     if os.path.exists(dst):
-        raise HTTPException(status_code=409, detail=f"Folder '{name}' already exists in /projects")
+        raise HTTPException(status_code=409, detail=f"Folder '{name}' already exists")
     shutil.move(src, dst)
     logger.info("Restored trash folder %s to %s", src, dst)
     return {"status": "restored", "name": name}
@@ -504,10 +636,12 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
         else:
             raise HTTPException(status_code=409, detail=f"Project '{body.name}' already exists")
     else:
+        from config import PROJECTS_DIR
+        projects_dir = PROJECTS_DIR or "/projects"
         proj = Project(
             name=body.name,
             display_name=body.name,
-            path=f"/projects/{body.name}",
+            path=os.path.join(projects_dir, body.name),
             git_remote=body.git_url,
             description=body.description,
         )
@@ -515,7 +649,7 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
         db.commit()
         db.refresh(proj)
 
-    # Ensure project directory and start container
+    # Ensure project directory exists
     wm = getattr(request.app.state, "worker_manager", None)
     if wm:
         try:
@@ -527,7 +661,7 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
             logger.warning("Failed to set up project directory for %s", body.name)
 
         # Auto-init git repo if not already one
-        project_path = os.path.join("/projects", body.name)
+        project_path = wm._get_project_path(body.name)
         if os.path.isdir(project_path) and not os.path.isdir(os.path.join(project_path, ".git")):
             try:
                 import subprocess
@@ -537,15 +671,6 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
                 logger.info("Auto-initialized git repo for %s", body.name)
             except Exception:
                 logger.warning("Failed to auto-init git repo for %s", body.name)
-
-        # Start container so agents can resume immediately
-        try:
-            container_id = wm.ensure_project_container(proj)
-            proj.container_id = container_id
-            db.commit()
-            db.refresh(proj)
-        except Exception:
-            logger.warning("Failed to start container for %s", body.name)
 
     # Append to registry.yaml
     registry_path = os.path.join(PROJECT_CONFIGS_PATH, "registry.yaml")
@@ -557,7 +682,7 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
             data = {}
         if "projects" not in data or data["projects"] is None:
             data["projects"] = []
-        entry = {"name": body.name, "path": f"/projects/{body.name}"}
+        entry = {"name": body.name, "path": os.path.join(projects_dir, body.name)}
         if body.git_url:
             entry["git_remote"] = body.git_url
         if body.description:
@@ -637,13 +762,13 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
         ))
     stopped_count = len(active_agents)
 
-    # Stop the project container
+    # Stop all running processes for this project
     wm = getattr(request.app.state, "worker_manager", None)
-    if wm and proj.container_id:
+    if wm:
         try:
-            wm.stop_project_container(proj.container_id)
+            wm.stop_project_processes(name)
         except Exception:
-            logger.warning("Failed to stop container for project %s", name)
+            logger.warning("Failed to stop processes for project %s", name)
         proj.container_id = None
 
     proj.archived = True
@@ -660,20 +785,19 @@ async def delete_project(name: str, request: Request, db: Session = Depends(get_
 
     proj = db.get(Project, name)
 
-    # If registered, clean up DB + container resources
+    # If registered, clean up DB resources
     if proj:
         _check_no_active_agents(name, db)
-        wm = getattr(request.app.state, "worker_manager", None)
-        if wm:
-            wm.remove_session_volume(name)
         db.delete(proj)
         db.commit()
         _remove_from_registry(name)
 
     # Move files to .trash regardless of DB registration
-    src = os.path.join("/projects", name)
+    from config import PROJECTS_DIR
+    projects_dir = PROJECTS_DIR or "/projects"
+    src = os.path.join(projects_dir, name)
     if os.path.isdir(src):
-        trash_dir = "/projects/.trash"
+        trash_dir = os.path.join(projects_dir, ".trash")
         os.makedirs(trash_dir, exist_ok=True)
         dst = os.path.join(trash_dir, name)
         if os.path.exists(dst):
@@ -918,10 +1042,7 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
         raise HTTPException(status_code=500, detail="Worker manager not available")
 
     try:
-        # Reuse or create the shared project container
-        container_id = wm.ensure_project_container(project)
-        project.container_id = container_id
-        agent.container_id = container_id
+        wm.ensure_project_ready(project)
         agent.status = AgentStatus.IDLE
 
         msg = Message(
@@ -937,7 +1058,7 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
         return agent
     except Exception as e:
         logger.exception("Failed to resume agent %s", agent.id)
-        raise HTTPException(status_code=500, detail=f"Failed to start container: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to verify project directory: {e}")
 
 
 @app.get("/api/agents/{agent_id}/messages", response_model=list[MessageOut])
@@ -1091,7 +1212,7 @@ async def reject_agent_plan(
 
 @app.get("/api/containers")
 async def list_containers(request: Request):
-    """List all project containers (persistent agent environments)."""
+    """List all tracked Claude processes (backward-compatible endpoint)."""
     wm = getattr(request.app.state, "worker_manager", None)
     if not wm:
         return []
@@ -1099,7 +1220,7 @@ async def list_containers(request: Request):
 
 @app.get("/api/processes")
 async def list_processes(request: Request):
-    """List running Claude processes (active docker execs)."""
+    """List running Claude processes (active agent execs)."""
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if not ad:
         return []
@@ -1184,14 +1305,16 @@ async def git_merge(project: str, branch: str, request: Request, db: Session = D
 async def serve_project_file(project: str, path: str, db: Session = Depends(get_db)):
     """Serve a file from a project's directory (images, videos, etc.)."""
     import mimetypes
+    from config import PROJECTS_DIR
 
     proj = db.get(Project, project)
     if not proj:
         raise HTTPException(status_code=404, detail=f"Project '{project}' not found")
 
-    # Resolve and validate path to prevent directory traversal
-    full_path = os.path.normpath(os.path.join("/projects", project, path))
-    if not full_path.startswith(f"/projects/{project}/"):
+    projects_dir = PROJECTS_DIR or "/projects"
+    base_dir = os.path.join(projects_dir, project)
+    full_path = os.path.normpath(os.path.join(base_dir, path))
+    if not full_path.startswith(os.path.normpath(base_dir) + os.sep):
         raise HTTPException(status_code=400, detail="Invalid path")
     if not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail="File not found")

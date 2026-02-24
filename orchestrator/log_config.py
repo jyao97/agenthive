@@ -4,7 +4,7 @@ import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
 
-LOG_DIR = os.getenv("LOG_DIR", "/app/logs")
+LOG_DIR = os.getenv("LOG_DIR", "./logs")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 
@@ -36,7 +36,6 @@ def setup_logging():
 
     # Quiet down noisy libraries
     logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("docker").setLevel(logging.WARNING)
 
     logging.info("Logging configured: level=%s, file=%s", LOG_LEVEL, log_file)
 

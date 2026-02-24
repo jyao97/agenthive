@@ -1,15 +1,17 @@
 """Plan Manager — plan generation and approval workflow."""
 
 import logging
-import shlex
+import os
+import subprocess
+import uuid
 
-from config import CLAUDE_CODE_OAUTH_TOKEN, HOST_USER_UID, WORKER_CPU_LIMIT, WORKER_IMAGE, WORKER_MEM_LIMIT, WORKER_NETWORK
+from config import CLAUDE_BIN, PROJECTS_DIR
 from models import Project, Task
 
 logger = logging.getLogger("orchestrator.plan")
 
 PLAN_PROMPT_TEMPLATE = """You are a task planner for project: {project_name}
-Project path: /projects/{project_path}
+Project path: {project_path}
 
 First read the project's CLAUDE.md to understand the codebase.
 
@@ -45,63 +47,50 @@ class PlanManager:
     def __init__(self, worker_manager):
         self.worker_mgr = worker_manager
 
-    def start_planning(self, task: Task, project: Project) -> str:
-        """Start a planning worker container. Returns container_id."""
-        import os
+    def _get_project_path(self, project_name: str) -> str:
+        if PROJECTS_DIR:
+            return os.path.join(PROJECTS_DIR, project_name)
+        return os.path.join("/projects", project_name)
 
+    def start_planning(self, task: Task, project: Project) -> str:
+        """Start a planning subprocess. Returns PID string."""
+        project_path = self._get_project_path(project.name)
         prompt = PLAN_PROMPT_TEMPLATE.format(
             project_name=project.display_name,
-            project_path=project.name,
+            project_path=project_path,
             task_prompt=task.prompt,
         )
-        escaped_prompt = shlex.quote(prompt)
-        container_name = f"cc-planner-{task.id}"
 
-        # Clean up leftover
-        import docker.errors
-        try:
-            old = self.worker_mgr.docker_client.containers.get(container_name)
-            old.remove(force=True)
-        except docker.errors.NotFound:
-            pass
+        output_file = f"/tmp/claude-planner-{uuid.uuid4().hex[:8]}.log"
 
-        volumes = {
-            "cc-projects": {"bind": "/projects", "mode": "ro"},  # Read-only for planning
+        cmd = [
+            CLAUDE_BIN, "-p", prompt,
+            "--dangerously-skip-permissions",
+            "--output-format", "stream-json",
+            "--verbose",
+        ]
+
+        with open(output_file, "w") as out_f:
+            process = subprocess.Popen(
+                cmd,
+                cwd=project_path,
+                stdout=out_f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+
+        pid_str = str(process.pid)
+
+        # Track in worker manager so it can be monitored/stopped
+        self.worker_mgr._processes[pid_str] = {
+            "process": process,
+            "output_file": output_file,
+            "project": project.name,
+            "type": "planner",
         }
 
-        setup_cmds = (
-            "git config --global user.name 'CC Worker' && "
-            "git config --global user.email 'cc-worker@localhost'"
-        )
-
-        env = {"HOME": "/worker-home"}
-        if CLAUDE_CODE_OAUTH_TOKEN:
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = CLAUDE_CODE_OAUTH_TOKEN
-
-        container = self.worker_mgr.docker_client.containers.run(
-            image=WORKER_IMAGE,
-            entrypoint=["bash", "-c"],
-            command=[
-                f"{setup_cmds} && "
-                f"cd /projects/{project.name} && "
-                f"claude -p {escaped_prompt} "
-                f"--dangerously-skip-permissions "
-                f"--output-format stream-json --verbose"
-            ],
-            volumes=volumes,
-            working_dir=f"/projects/{project.name}",
-            environment=env,
-            tmpfs={"/worker-home": f"uid={HOST_USER_UID},gid={HOST_USER_UID}"},
-            user=f"{HOST_USER_UID}:{HOST_USER_UID}",
-            cpu_quota=int(WORKER_CPU_LIMIT * 100000),
-            mem_limit=WORKER_MEM_LIMIT,
-            network=WORKER_NETWORK,
-            auto_remove=False,
-            detach=True,
-            name=container_name,
-        )
-        logger.info("Started planner %s for task %s", container_name, task.id)
-        return container.id
+        logger.info("Started planner PID %s for task %s", pid_str, task.id)
+        return pid_str
 
     @staticmethod
     def extract_plan(logs: str) -> str:

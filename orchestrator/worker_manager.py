@@ -1,84 +1,97 @@
-"""Worker Manager — Docker container lifecycle for CC workers and agents."""
+"""Worker Manager — host subprocess lifecycle for CC workers and agents."""
 
 import logging
-import shlex
+import os
+import signal
+import subprocess
+import uuid
 
-import docker
-import docker.errors
-
-from config import (
-    CLAUDE_CODE_OAUTH_TOKEN,
-    HOST_CLAUDE_DIR,
-    HOST_PROJECTS_DIR,
-    HOST_USER_UID,
-    WORKER_CPU_LIMIT,
-    WORKER_IMAGE,
-    WORKER_MEM_LIMIT,
-    WORKER_NETWORK,
-)
+from config import CLAUDE_BIN, PROJECTS_DIR
 from models import Agent, Project, Task
 
 logger = logging.getLogger("orchestrator.worker")
 
-# Git config applied at container startup (auth is handled via CLAUDE_CODE_OAUTH_TOKEN env var)
-_SETUP_CMDS = (
-    "git config --global user.name 'CC Worker' && "
-    "git config --global user.email 'cc-worker@localhost' && "
-    "git config --global init.defaultBranch main"
-)
-
 
 class WorkerManager:
-    """Manages CC worker Docker containers (ephemeral tasks and persistent agents)."""
+    """Manages CC worker subprocesses (ephemeral tasks and persistent agents)."""
 
     def __init__(self):
-        self.docker_client = docker.from_env()
-        self._verify_image()
+        # pid_str -> {process, output_file, project, started_at}
+        self._processes: dict[str, dict] = {}
+        self._verify_claude()
 
-    def _verify_image(self):
-        """Check that the worker image exists."""
+    def _verify_claude(self):
+        """Check that the claude CLI is available."""
         try:
-            self.docker_client.images.get(WORKER_IMAGE)
-            logger.info("Worker image '%s' found", WORKER_IMAGE)
-        except docker.errors.ImageNotFound:
-            logger.warning(
-                "Worker image '%s' not found — build it with: "
-                "docker build -t %s ./worker/",
-                WORKER_IMAGE, WORKER_IMAGE,
+            result = subprocess.run(
+                [CLAUDE_BIN, "--version"],
+                capture_output=True, text=True, timeout=10,
             )
+            if result.returncode == 0:
+                version = result.stdout.strip()
+                logger.info("Claude CLI found: %s", version)
+            else:
+                logger.warning("Claude CLI returned non-zero: %s", result.stderr.strip())
+        except FileNotFoundError:
+            logger.warning(
+                "Claude CLI '%s' not found — install it or set CLAUDE_BIN",
+                CLAUDE_BIN,
+            )
+        except Exception as e:
+            logger.warning("Failed to verify claude CLI: %s", e)
 
-    def _projects_volume(self, mode="rw"):
-        """Return the projects volume spec — host bind mount or named volume."""
-        if HOST_PROJECTS_DIR:
-            return {HOST_PROJECTS_DIR: {"bind": "/projects", "mode": mode}}
-        return {"cc-projects": {"bind": "/projects", "mode": mode}}
-
-    def _base_volumes(self, rw=True):
-        """Build the common volumes dict."""
-        mode = "rw" if rw else "ro"
-        return {
-            **self._projects_volume(mode),
-            "cc-git-bare": {"bind": "/git-bare", "mode": mode},
-        }
-
-    def _worker_env(self):
-        """Build the environment dict for worker containers."""
-        env = {"HOME": "/worker-home"}
-        if CLAUDE_CODE_OAUTH_TOKEN:
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = CLAUDE_CODE_OAUTH_TOKEN
-        else:
-            logger.warning("CLAUDE_CODE_OAUTH_TOKEN not set — workers will not be authenticated")
-        return env
+    def _get_project_path(self, project_name: str) -> str:
+        """Return the absolute path for a project directory."""
+        if PROJECTS_DIR:
+            return os.path.join(PROJECTS_DIR, project_name)
+        return os.path.join("/projects", project_name)
 
     # =====================================================================
-    # Ephemeral task workers (original one-shot behavior)
+    # Project setup
+    # =====================================================================
+
+    def ensure_project_ready(self, project: Project) -> str:
+        """Validate project directory exists. Returns the project path."""
+        project_path = self._get_project_path(project.name)
+        if not os.path.isdir(project_path):
+            raise FileNotFoundError(f"Project directory not found: {project_path}")
+        logger.debug("Project %s ready at %s", project.name, project_path)
+        return project_path
+
+    def clone_project(self, project_name: str, git_url: str):
+        """Clone a git repo into the projects directory."""
+        project_path = self._get_project_path(project_name)
+        if os.path.isdir(project_path):
+            logger.info("Project dir %s already exists, skipping clone", project_path)
+            return
+        try:
+            subprocess.run(
+                ["git", "clone", git_url, project_path],
+                check=True, capture_output=True, text=True, timeout=120,
+            )
+            logger.info("Cloned project %s from %s", project_name, git_url)
+        except subprocess.CalledProcessError as e:
+            logger.warning(
+                "Git clone failed for %s: %s — creating empty directory",
+                project_name, e.stderr.strip(),
+            )
+            os.makedirs(project_path, exist_ok=True)
+
+    def ensure_project_dir(self, project_name: str):
+        """Ensure the project directory exists."""
+        project_path = self._get_project_path(project_name)
+        os.makedirs(project_path, exist_ok=True)
+
+    # =====================================================================
+    # Ephemeral task workers (one-shot)
     # =====================================================================
 
     def _build_prompt(self, task: Task, project: Project) -> str:
         """Wrap the user prompt with worker instructions."""
+        project_path = self._get_project_path(project.name)
         return (
             f"You are working in project: {project.display_name}\n"
-            f"Project path: /projects/{project.name}\n"
+            f"Project path: {project_path}\n"
             f"\n"
             f"First read the project's CLAUDE.md to understand project conventions.\n"
             f"\n"
@@ -93,350 +106,219 @@ class WorkerManager:
         )
 
     def start_worker(self, task: Task, project: Project) -> str:
-        """Start an ephemeral worker container for a task. Returns container ID."""
+        """Start an ephemeral worker subprocess for a task. Returns PID string."""
         prompt = self._build_prompt(task, project)
-        escaped_prompt = shlex.quote(prompt)
-        container_name = f"cc-worker-{task.id}"
+        project_path = self._get_project_path(project.name)
+        output_file = f"/tmp/claude-output-{uuid.uuid4().hex[:8]}.log"
 
-        # Clean up any leftover container with the same name
-        try:
-            old = self.docker_client.containers.get(container_name)
-            old.remove(force=True)
-            logger.warning("Removed leftover container %s", container_name)
-        except docker.errors.NotFound:
-            pass
+        cmd = [
+            CLAUDE_BIN, "-p", prompt,
+            "--dangerously-skip-permissions",
+            "--output-format", "stream-json",
+            "--verbose",
+        ]
 
-        volumes = self._base_volumes(rw=True)
+        with open(output_file, "w") as out_f:
+            process = subprocess.Popen(
+                cmd,
+                cwd=project_path,
+                stdout=out_f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
 
-        container = self.docker_client.containers.run(
-            image=WORKER_IMAGE,
-            entrypoint=["bash", "-c"],
-            command=[
-                f"{_SETUP_CMDS} && "
-                f"cd /projects/{project.name} && "
-                f"claude -p {escaped_prompt} "
-                f"--dangerously-skip-permissions "
-                f"--output-format stream-json --verbose"
-            ],
-            volumes=volumes,
-            working_dir=f"/projects/{project.name}",
-            environment=self._worker_env(),
-            tmpfs={"/worker-home": f"uid={HOST_USER_UID},gid={HOST_USER_UID}"},
-            user=f"{HOST_USER_UID}:{HOST_USER_UID}",
-            cpu_quota=int(WORKER_CPU_LIMIT * 100000),
-            mem_limit=WORKER_MEM_LIMIT,
-            network=WORKER_NETWORK,
-            auto_remove=False,
-            detach=True,
-            name=container_name,
-        )
+        pid_str = str(process.pid)
+        self._processes[pid_str] = {
+            "process": process,
+            "output_file": output_file,
+            "project": project.name,
+            "type": "worker",
+        }
+
         logger.info(
-            "Started worker %s for task %s (project: %s)",
-            container_name, task.id, project.name,
+            "Started worker PID %s for task %s (project: %s)",
+            pid_str, task.id, project.name,
         )
-        return container.id
+        return pid_str
 
     # =====================================================================
-    # Persistent agent containers
+    # Agent exec (persistent conversations)
     # =====================================================================
-
-    def _ensure_session_symlink(self, project_name: str):
-        """Create a symlink so `claude --resume` on the host finds container sessions.
-
-        Inside the container, sessions are stored under the project key
-        derived from /projects/{name}.  On the host, `claude --resume`
-        looks for the key derived from HOST_PROJECTS_DIR/{name}.
-        A symlink bridges the two.
-        """
-        if not HOST_CLAUDE_DIR or not HOST_PROJECTS_DIR:
-            return
-        import os
-
-        uid = int(HOST_USER_UID)
-        projects_dir = os.path.join(HOST_CLAUDE_DIR, "projects")
-        # Container key: /projects/{name} → -projects-{name}
-        container_key = f"-projects-{project_name}"
-        # Host key: /home/user/cc-projects/{name} → -home-user-cc-projects-{name}
-        host_key = HOST_PROJECTS_DIR.replace("/", "-").lstrip("-")
-        host_key = f"-{host_key}-{project_name}"
-
-        src = os.path.join(projects_dir, host_key)
-        dst = os.path.join(projects_dir, container_key)
-
-        # Ensure the container key dir exists (sessions will be written there)
-        os.makedirs(dst, exist_ok=True)
-        os.chown(dst, uid, uid)
-
-        if os.path.islink(src):
-            return  # already linked
-        if os.path.isdir(src) and not os.listdir(src):
-            os.rmdir(src)  # empty dir, replace with symlink
-        elif os.path.exists(src):
-            return  # non-empty dir, don't clobber
-
-        try:
-            os.symlink(container_key, src)
-            os.lchown(src, uid, uid)
-            logger.info("Session symlink: %s -> %s", src, dst)
-        except OSError:
-            logger.warning("Failed to create session symlink for %s", project_name)
-
-    def remove_session_volume(self, project_name: str):
-        """Remove the session volume for a project (call on project deletion)."""
-        vol_name = f"cc-session-{project_name}"
-        try:
-            vol = self.docker_client.volumes.get(vol_name)
-            vol.remove(force=True)
-            logger.info("Removed session volume %s", vol_name)
-        except docker.errors.NotFound:
-            logger.debug("Session volume %s not found (already removed)", vol_name)
-
-    def ensure_project_container(self, project: Project) -> str:
-        """Get or create a persistent container for a project. PID 1 = sleep infinity.
-        Returns container ID.  All agents in the same project share this container.
-        """
-        container_name = f"cc-project-{project.name}"
-
-        # Check if a running container already exists
-        try:
-            existing = self.docker_client.containers.get(container_name)
-            if existing.status == "running":
-                logger.debug("Reusing project container %s", container_name)
-                return existing.id
-            # Exists but not running — remove and recreate
-            existing.remove(force=True)
-            logger.warning("Removed non-running project container %s", container_name)
-        except docker.errors.NotFound:
-            pass
-
-        volumes = self._base_volumes(rw=True)
-        # Mount host ~/.claude/ so sessions persist and are accessible from host
-        if HOST_CLAUDE_DIR:
-            volumes[HOST_CLAUDE_DIR] = {"bind": "/worker-home/.claude", "mode": "rw"}
-            self._ensure_session_symlink(project.name)
-
-        container = self.docker_client.containers.run(
-            image=WORKER_IMAGE,
-            entrypoint=["bash", "-c"],
-            command=[f"{_SETUP_CMDS} && exec sleep infinity"],
-            volumes=volumes,
-            working_dir=f"/projects/{project.name}",
-            environment=self._worker_env(),
-            tmpfs={"/worker-home": f"uid={HOST_USER_UID},gid={HOST_USER_UID}"},
-            user=f"{HOST_USER_UID}:{HOST_USER_UID}",
-            cpu_quota=int(WORKER_CPU_LIMIT * 100000),
-            mem_limit=WORKER_MEM_LIMIT,
-            network=WORKER_NETWORK,
-            auto_remove=False,
-            detach=True,
-            name=container_name,
-        )
-        logger.info(
-            "Started project container %s (project: %s)",
-            container_name, project.name,
-        )
-        return container.id
 
     def exec_claude_in_agent(
         self,
-        container_id: str,
+        project_path: str,
         prompt: str,
         project: Project,
         agent: Agent,
         resume_session_id: str | None = None,
     ) -> tuple[str, str]:
-        """Run claude via docker exec inside a persistent agent container.
-        Returns (exec_id, output_file) for monitoring.
+        """Run claude as a subprocess for an agent message.
+        Returns (pid_str, output_file) for monitoring.
         """
-        escaped_prompt = shlex.quote(prompt)
-        # Use a unique output file per invocation
-        import uuid
         output_file = f"/tmp/claude-output-{uuid.uuid4().hex[:8]}.log"
 
-        resume_flag = f"--resume {shlex.quote(resume_session_id)}" if resume_session_id else ""
-        worktree_flag = f"--worktree {shlex.quote(agent.worktree)}" if agent.worktree else ""
-        cmd = (
-            f"cd /projects/{project.name} && "
-            f"claude -p {escaped_prompt} "
-            f"--dangerously-skip-permissions "
-            f"--output-format stream-json --verbose "
-            f"{worktree_flag} "
-            f"{resume_flag} "
-            f"2>&1 | tee {output_file}"
-        )
+        cmd = [CLAUDE_BIN, "-p", prompt, "--dangerously-skip-permissions",
+               "--output-format", "stream-json", "--verbose"]
 
-        container = self.docker_client.containers.get(container_id)
-        exec_result = self.docker_client.api.exec_create(
-            container.id,
-            ["bash", "-c", cmd],
-            workdir=f"/projects/{project.name}",
-            user=f"{HOST_USER_UID}:{HOST_USER_UID}",
-            environment=self._worker_env(),
-        )
-        exec_id = exec_result["Id"]
+        if agent.worktree:
+            cmd.extend(["--worktree", agent.worktree])
+        if resume_session_id:
+            cmd.extend(["--resume", resume_session_id])
 
-        # Start the exec (non-blocking — we use detach=True via socket=False, stream=False)
-        self.docker_client.api.exec_start(exec_id, detach=True)
+        with open(output_file, "w") as out_f:
+            process = subprocess.Popen(
+                cmd,
+                cwd=project_path,
+                stdout=out_f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+
+        pid_str = str(process.pid)
+        self._processes[pid_str] = {
+            "process": process,
+            "output_file": output_file,
+            "project": project.name,
+            "type": "agent",
+        }
 
         logger.info(
-            "Exec started in agent %s (exec_id=%s, resume=%s)",
-            agent.id, exec_id[:12], bool(resume_session_id),
+            "Exec started for agent %s (pid=%s, resume=%s)",
+            agent.id, pid_str, bool(resume_session_id),
         )
-        return exec_id, output_file
+        return pid_str, output_file
 
-    def is_exec_running(self, exec_id: str) -> bool:
-        """Check if a docker exec is still running."""
-        try:
-            info = self.docker_client.api.exec_inspect(exec_id)
-            return info.get("Running", False)
-        except docker.errors.APIError:
+    def is_exec_running(self, pid_str: str) -> bool:
+        """Check if a subprocess is still running."""
+        info = self._processes.get(pid_str)
+        if not info:
             return False
+        return info["process"].poll() is None
 
-    def read_exec_output(self, container_id: str, output_file: str) -> str:
-        """Read the output file from inside a container."""
+    def read_exec_output(self, pid_str: str, output_file: str) -> str:
+        """Read the output file from a process."""
+        # Use the output_file directly (it's on the host filesystem)
         try:
-            container = self.docker_client.containers.get(container_id)
-            exit_code, output = container.exec_run(
-                ["cat", output_file],
-                user=f"{HOST_USER_UID}:{HOST_USER_UID}",
-            )
-            if exit_code == 0:
-                return output.decode("utf-8", errors="replace")
+            with open(output_file, "r", errors="replace") as f:
+                return f.read()
+        except (FileNotFoundError, OSError):
             return ""
-        except (docker.errors.NotFound, docker.errors.APIError):
-            return ""
-
-    def stop_project_container(self, container_id: str):
-        """Stop and remove a project container."""
-        try:
-            container = self.docker_client.containers.get(container_id)
-            if container.status == "running":
-                container.stop(timeout=10)
-            container.remove(force=True)
-            logger.info("Stopped and removed project container %s", container_id[:12])
-        except docker.errors.NotFound:
-            logger.debug("Project container %s already removed", container_id[:12])
-
-    # =====================================================================
-    # Project setup
-    # =====================================================================
-
-    def clone_project(self, project_name: str, git_url: str):
-        """Clone a git repo into the projects directory via a temporary container."""
-        volumes = self._projects_volume("rw")
-        try:
-            self.docker_client.containers.run(
-                image="alpine/git",
-                command=["clone", git_url, f"/projects/{project_name}"],
-                volumes=volumes,
-                auto_remove=True,
-                detach=False,
-            )
-            logger.info("Cloned project %s from %s", project_name, git_url)
-        except docker.errors.ContainerError:
-            # Clone failed (private repo, bad URL, etc.) — create empty dir
-            logger.warning("Git clone failed for %s — creating empty directory", project_name)
-            self.docker_client.containers.run(
-                image="alpine",
-                command=["mkdir", "-p", f"/projects/{project_name}"],
-                volumes=volumes,
-                auto_remove=True,
-                detach=False,
-            )
-
-    def ensure_project_dir(self, project_name: str):
-        """Ensure the project directory exists in the projects volume."""
-        volumes = self._projects_volume("rw")
-        self.docker_client.containers.run(
-            image="alpine",
-            command=["mkdir", "-p", f"/projects/{project_name}"],
-            volumes=volumes,
-            auto_remove=True,
-            detach=False,
-        )
 
     # =====================================================================
     # Common operations
     # =====================================================================
 
-    def get_status(self, container_id: str) -> str:
-        """Get container status: running / exited / error / removed."""
-        try:
-            container = self.docker_client.containers.get(container_id)
-            return container.status
-        except docker.errors.NotFound:
+    def get_status(self, pid_str: str) -> str:
+        """Get process status: running / exited / removed."""
+        info = self._processes.get(pid_str)
+        if not info:
             return "removed"
+        rc = info["process"].poll()
+        if rc is None:
+            return "running"
+        return "exited"
 
-    def get_logs(self, container_id: str, tail: int = 0) -> str:
-        """Get container logs. tail=0 means all logs."""
+    def get_logs(self, pid_str: str, tail: int = 0) -> str:
+        """Get process output logs."""
+        info = self._processes.get(pid_str)
+        if not info:
+            return ""
+        output_file = info.get("output_file", "")
+        if not output_file:
+            return ""
         try:
-            container = self.docker_client.containers.get(container_id)
-            kwargs = {"stdout": True, "stderr": True}
+            with open(output_file, "r", errors="replace") as f:
+                content = f.read()
             if tail > 0:
-                kwargs["tail"] = tail
-            return container.logs(**kwargs).decode("utf-8", errors="replace")
-        except docker.errors.NotFound:
+                lines = content.splitlines()
+                return "\n".join(lines[-tail:])
+            return content
+        except (FileNotFoundError, OSError):
             return ""
 
-    def stream_logs(self, container_id: str):
-        """Stream container logs line by line."""
-        try:
-            container = self.docker_client.containers.get(container_id)
-            for chunk in container.logs(stream=True, follow=True):
-                yield chunk.decode("utf-8", errors="replace")
-        except docker.errors.NotFound:
+    def stop_worker(self, pid_str: str):
+        """Stop a worker subprocess."""
+        info = self._processes.get(pid_str)
+        if not info:
+            logger.debug("Process %s not found (already cleaned up)", pid_str)
             return
 
-    def stop_worker(self, container_id: str):
-        """Stop and remove a worker container."""
-        try:
-            container = self.docker_client.containers.get(container_id)
-            if container.status == "running":
-                container.stop(timeout=10)
-            container.remove(force=True)
-            logger.info("Stopped and removed container %s", container_id[:12])
-        except docker.errors.NotFound:
-            logger.debug("Container %s already removed", container_id[:12])
+        process = info["process"]
+        if process.poll() is None:
+            # Try graceful termination first
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    process.terminate()
+                except (ProcessLookupError, OSError):
+                    pass
+
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                # Force kill
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        process.kill()
+                    except (ProcessLookupError, OSError):
+                        pass
+
+            logger.info("Stopped process %s", pid_str)
+        else:
+            logger.debug("Process %s already exited", pid_str)
+
+        # Clean up tracking
+        self._processes.pop(pid_str, None)
+
+    def stop_project_processes(self, project_name: str):
+        """Stop all tracked processes for a project."""
+        to_stop = [
+            pid_str for pid_str, info in self._processes.items()
+            if info.get("project") == project_name
+        ]
+        for pid_str in to_stop:
+            self.stop_worker(pid_str)
+        if to_stop:
+            logger.info("Stopped %d processes for project %s", len(to_stop), project_name)
 
     def cleanup_exited(self):
-        """Remove all exited cc-worker containers."""
-        containers = self.docker_client.containers.list(
-            all=True,
-            filters={"name": "cc-worker-", "status": "exited"},
-        )
-        for c in containers:
-            try:
-                c.remove()
-                logger.debug("Cleaned up exited container %s", c.name)
-            except docker.errors.APIError:
-                pass
-        if containers:
-            logger.info("Cleaned up %d exited worker containers", len(containers))
+        """Remove tracking entries for exited processes."""
+        exited = [
+            pid_str for pid_str, info in self._processes.items()
+            if info["process"].poll() is not None
+        ]
+        for pid_str in exited:
+            self._processes.pop(pid_str, None)
+        if exited:
+            logger.info("Cleaned up %d exited processes", len(exited))
 
     def list_containers(self) -> list[dict]:
-        """List all cc-project and cc-worker containers with their status."""
+        """List all tracked processes (backward-compatible name)."""
         results = []
-        for prefix in ("cc-project-", "cc-worker-"):
-            containers = self.docker_client.containers.list(
-                all=True,
-                filters={"name": prefix},
-            )
-            results.extend(
-                {
-                    "id": c.id,
-                    "name": c.name,
-                    "status": c.status,
-                    "created": c.attrs.get("Created", ""),
-                    "project": c.name.replace("cc-project-", "").replace("cc-worker-", "") if c.name else "",
-                }
-                for c in containers
-            )
+        for pid_str, info in self._processes.items():
+            process = info["process"]
+            rc = process.poll()
+            status = "running" if rc is None else "exited"
+            results.append({
+                "id": pid_str,
+                "name": f"claude-{info.get('type', 'worker')}-{pid_str}",
+                "status": status,
+                "created": "",
+                "project": info.get("project", ""),
+            })
         return results
 
     def ping(self) -> bool:
-        """Check if Docker daemon is reachable."""
+        """Check if claude CLI is reachable."""
         try:
-            self.docker_client.ping()
-            return True
+            result = subprocess.run(
+                [CLAUDE_BIN, "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return result.returncode == 0
         except Exception:
             return False

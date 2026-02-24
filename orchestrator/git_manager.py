@@ -1,88 +1,78 @@
-"""Git Manager — read-only git operations via temporary Docker containers."""
+"""Git Manager — git operations via host subprocess."""
 
 import logging
 import os
+import subprocess
 
-import docker
-from docker.errors import ContainerError, NotFound
-
-from config import HOST_USER_UID
+from config import PROJECTS_DIR
 
 logger = logging.getLogger("orchestrator.git")
 
-# Use a lightweight image for git operations
-GIT_IMAGE = "alpine/git"
-
-# Host path for bind-mounting into git containers
-_HOST_PROJECTS = os.environ.get("HOST_PROJECTS_DIR", "/projects")
-
 
 class GitManager:
-    """Read-only git operations executed inside temporary containers."""
+    """Git operations executed as host subprocesses."""
 
-    def __init__(self):
-        self.docker_client = docker.from_env()
+    def _project_path(self, project_name: str) -> str:
+        if PROJECTS_DIR:
+            return os.path.join(PROJECTS_DIR, project_name)
+        return os.path.join("/projects", project_name)
 
     def _run_git(self, project_name: str, git_args: str, timeout: int = 30) -> str:
-        """Run a git command in a temporary container against a project volume."""
+        """Run a git command against a project directory."""
+        cwd = self._project_path(project_name)
         try:
-            output = self.docker_client.containers.run(
-                image=GIT_IMAGE,
-                command=git_args,
-                volumes={_HOST_PROJECTS: {"bind": "/projects", "mode": "ro"}},
-                working_dir=f"/projects/{project_name}",
-                user=f"{HOST_USER_UID}:{HOST_USER_UID}",
-                environment={
-                    "GIT_CONFIG_COUNT": "1",
-                    "GIT_CONFIG_KEY_0": "safe.directory",
-                    "GIT_CONFIG_VALUE_0": f"/projects/{project_name}",
-                },
-                auto_remove=True,
-                stdout=True,
-                stderr=True,
+            result = subprocess.run(
+                ["git"] + git_args.split(),
+                cwd=cwd,
+                capture_output=True, text=True, timeout=timeout,
             )
-            return output.decode("utf-8", errors="replace").strip()
-        except ContainerError as e:
-            stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else str(e)
-            logger.warning("Git command failed for %s: %s", project_name, stderr)
-            return f"ERROR: {stderr}"
+            if result.returncode != 0:
+                stderr = result.stderr.strip()
+                if stderr:
+                    logger.warning("Git command failed for %s: %s", project_name, stderr)
+                    return f"ERROR: {stderr}"
+            return result.stdout.strip()
+        except FileNotFoundError:
+            msg = f"Project directory not found: {cwd}"
+            logger.warning(msg)
+            return f"ERROR: {msg}"
+        except subprocess.TimeoutExpired:
+            logger.warning("Git command timed out for %s", project_name)
+            return "ERROR: command timed out"
         except Exception as e:
             logger.exception("Git operation failed for %s", project_name)
             return f"ERROR: {str(e)}"
 
-    def _run_git_rw(self, project_name: str, command: str) -> str:
-        """Run a git command with read-write access (for merges)."""
+    def _run_git_rw(self, project_name: str, command: str, timeout: int = 30) -> str:
+        """Run a shell command with read-write access (for merges)."""
+        cwd = self._project_path(project_name)
         try:
-            output = self.docker_client.containers.run(
-                image=GIT_IMAGE,
-                entrypoint=["sh", "-c"],
-                command=[command],
-                volumes={_HOST_PROJECTS: {"bind": "/projects", "mode": "rw"}},
-                working_dir=f"/projects/{project_name}",
-                user=f"{HOST_USER_UID}:{HOST_USER_UID}",
-                environment={
-                    "GIT_CONFIG_COUNT": "1",
-                    "GIT_CONFIG_KEY_0": "safe.directory",
-                    "GIT_CONFIG_VALUE_0": f"/projects/{project_name}",
-                },
-                auto_remove=True,
-                stdout=True,
-                stderr=True,
+            result = subprocess.run(
+                ["sh", "-c", command],
+                cwd=cwd,
+                capture_output=True, text=True, timeout=timeout,
             )
-            return output.decode("utf-8", errors="replace").strip()
-        except ContainerError as e:
-            stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else str(e)
-            logger.warning("Git RW command failed for %s: %s", project_name, stderr)
-            return f"ERROR: {stderr}"
+            if result.returncode != 0:
+                stderr = result.stderr.strip()
+                if stderr:
+                    logger.warning("Git RW command failed for %s: %s", project_name, stderr)
+                    return f"ERROR: {stderr}"
+            return result.stdout.strip()
+        except FileNotFoundError:
+            msg = f"Project directory not found: {cwd}"
+            logger.warning(msg)
+            return f"ERROR: {msg}"
+        except subprocess.TimeoutExpired:
+            logger.warning("Git RW command timed out for %s", project_name)
+            return "ERROR: command timed out"
         except Exception as e:
             logger.exception("Git RW operation failed for %s", project_name)
             return f"ERROR: {str(e)}"
 
     def get_log(self, project_name: str, limit: int = 30) -> list[dict]:
         """Get recent commits for a project."""
-        # Use a delimiter that won't appear in commit messages
         sep = "|||"
-        fmt = f"%H{sep}%an{sep}%ae{sep}%ai{sep}%s"
+        fmt = f"%H{sep}%an{sep}%ae{sep}%aI{sep}%s"
         raw = self._run_git(project_name, f"log --format={fmt} -n {limit}")
         if raw.startswith("ERROR:"):
             return []
@@ -121,12 +111,10 @@ class GitManager:
 
     def get_status(self, project_name: str) -> dict:
         """Get git status for a project: branch, staged, unstaged, untracked."""
-        # Current branch
         branch = self._run_git(project_name, "branch --show-current")
         if branch.startswith("ERROR:"):
             branch = "unknown"
 
-        # Porcelain status for reliable parsing
         raw = self._run_git(project_name, "status --porcelain")
         if raw.startswith("ERROR:"):
             return {"branch": branch, "clean": True, "staged": [], "unstaged": [], "untracked": []}
@@ -162,12 +150,10 @@ class GitManager:
 
     def merge_branch(self, project_name: str, branch: str) -> dict:
         """Merge a branch into the current branch. Returns result dict."""
-        # First check current branch
         current = self._run_git(project_name, "branch --show-current")
         if current.startswith("ERROR:"):
             return {"success": False, "error": current, "current_branch": "unknown"}
 
-        # Attempt merge with read-write access
         cmd = (
             f"git config user.name 'CC Orchestrator' && "
             f"git config user.email 'cc-orchestrator@localhost' && "
@@ -176,9 +162,7 @@ class GitManager:
         result = self._run_git_rw(project_name, cmd)
 
         if result.startswith("ERROR:"):
-            # Check if it's a merge conflict
             if "CONFLICT" in result or "conflict" in result:
-                # Abort the failed merge
                 self._run_git_rw(project_name, "git merge --abort")
                 return {
                     "success": False,

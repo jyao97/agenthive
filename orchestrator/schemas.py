@@ -136,4 +136,4 @@ class HealthResponse(BaseModel):
     status: str
     service: str = "cc-orchestrator"
     db: str = "ok"
-    docker: str = "unknown"
+    claude_cli: str = "unknown"
