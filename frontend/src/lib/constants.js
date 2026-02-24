@@ -52,6 +52,26 @@ export const AGENT_MODES = [
   { value: "AUTO", label: "Auto" },
 ];
 
+export const MODEL_OPTIONS = [
+  { value: "claude-opus-4-6", label: "Opus 4.6" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+];
+
+/** Map full model ID to short display name. */
+export function modelDisplayName(modelId) {
+  if (!modelId) return null;
+  const opt = MODEL_OPTIONS.find((m) => m.value === modelId);
+  if (opt) return opt.label;
+  // Fallback: strip "claude-" prefix and date suffixes
+  return modelId
+    .replace(/^claude-/, "")
+    .replace(/-\d{8}$/, "")
+    .split("-")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join(" ");
+}
+
 export const STATUS_TABS = [
   { key: "ALL", label: "All" },
   { key: "PENDING", label: "Pending" },

@@ -15,7 +15,7 @@ import {
 } from "../lib/api";
 import { relativeTime, renderMarkdown, extractFileAttachments } from "../lib/formatters";
 import FileAttachments from "../components/FilePreview";
-import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS } from "../lib/constants";
+import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, modelDisplayName } from "../lib/constants";
 import VoiceRecorder from "../components/VoiceRecorder";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import useWebSocket from "../hooks/useWebSocket";
@@ -538,6 +538,11 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
             <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
               <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusDot}`} />
               <span className={`text-xs ${statusText}`}>{agent.status.toLowerCase().replace("_", " ")}</span>
+              {agent.model && (
+                <span className="text-[10px] text-faint font-medium px-1.5 py-0.5 rounded bg-elevated">
+                  {modelDisplayName(agent.model)}
+                </span>
+              )}
               <span className="text-xs text-dim">{agent.project}</span>
               {agent.branch && (
                 <span className="text-xs text-violet-400 font-mono truncate max-w-[120px]">

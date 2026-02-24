@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { createAgent, createProject } from "../lib/api";
+import { MODEL_OPTIONS } from "../lib/constants";
 import ProjectSelector from "../components/ProjectSelector";
 import ModePicker from "../components/ModePicker";
 import WorktreePicker from "../components/WorktreePicker";
@@ -119,6 +120,7 @@ function NewAgentForm({ showToast, navigate }) {
   const [project, setProject] = useState("");
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState("AUTO");
+  const [model, setModel] = useState(MODEL_OPTIONS[0].value);
   const [worktree, setWorktree] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef(null);
@@ -141,7 +143,7 @@ function NewAgentForm({ showToast, navigate }) {
     if (!prompt.trim()) { showToast("Enter a description.", "error"); return; }
     setSubmitting(true);
     try {
-      const agent = await createAgent({ project, prompt: prompt.trim(), mode, worktree });
+      const agent = await createAgent({ project, prompt: prompt.trim(), mode, model, worktree });
       showToast("Agent created!");
       setTimeout(() => navigate(`/agents/${agent.id}`), 400);
     } catch (err) {
@@ -192,6 +194,26 @@ function NewAgentForm({ showToast, navigate }) {
         <label className="block text-sm font-medium text-label mb-3">Mode</label>
         <ModePicker value={mode} onChange={setMode} />
         <p className="text-xs text-dim mt-2">Interview: chat only. Plan: review before executing. Auto: execute immediately.</p>
+      </div>
+
+      <div className="rounded-xl bg-surface shadow-card p-4">
+        <label className="block text-sm font-medium text-label mb-3">Model</label>
+        <div className="flex gap-2 flex-wrap">
+          {MODEL_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setModel(opt.value)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                model === opt.value
+                  ? "bg-cyan-600 text-white"
+                  : "bg-input text-label hover:bg-elevated hover:text-body"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <button

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchAgents } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
-import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, POLL_INTERVAL } from "../lib/constants";
+import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, POLL_INTERVAL, modelDisplayName } from "../lib/constants";
 import BotIcon from "../components/BotIcon";
 import PageHeader from "../components/PageHeader";
 
@@ -72,7 +72,12 @@ function AgentRow({ agent, onClick }) {
         <div className="flex items-center gap-1.5 mt-1.5">
           <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusDotColor}`} />
           <span className={`text-xs lowercase ${statusTextColor}`}>{agent.status.toLowerCase().replace("_", " ")}</span>
-          <span className="text-xs text-dim ml-auto">{agent.project}</span>
+          {agent.model && (
+            <span className="text-[10px] text-faint font-medium px-1.5 py-0.5 rounded bg-elevated ml-auto">
+              {modelDisplayName(agent.model)}
+            </span>
+          )}
+          <span className={`text-xs text-dim ${agent.model ? "" : "ml-auto"}`}>{agent.project}</span>
         </div>
       </div>
     </button>

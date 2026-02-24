@@ -33,6 +33,7 @@ class AgentCreate(BaseModel):
     project: str
     prompt: str
     mode: AgentMode = AgentMode.AUTO
+    model: str | None = None  # None = use project default
     worktree: str | None = None  # None = shared main, string = worktree name
     timeout_seconds: int = 600
     resume_session_id: str | None = None  # Resume an existing Claude session
@@ -49,6 +50,7 @@ class AgentOut(BaseModel):
     worktree: str | None = None
     plan: str | None = None
     plan_approved: bool = False
+    model: str | None = None
     last_message_preview: str | None = None
     last_message_at: datetime | None = None
     unread_count: int = 0
@@ -67,6 +69,7 @@ class AgentBrief(BaseModel):
     status: AgentStatus
     branch: str | None = None
     worktree: str | None = None
+    model: str | None = None
     last_message_preview: str | None = None
     last_message_at: datetime | None = None
     unread_count: int = 0

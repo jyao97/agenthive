@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from config import AUTH_TIMEOUT_MINUTES, PROJECT_CONFIGS_PATH
+from config import AUTH_TIMEOUT_MINUTES, CC_MODEL, PROJECT_CONFIGS_PATH
 from database import SessionLocal, get_db, init_db
 from log_config import setup_logging
 from models import (
@@ -1103,10 +1103,14 @@ async def create_agent(body: AgentCreate, db: Session = Depends(get_db)):
     if len(body.prompt) > 50:
         name += "..."
 
+    # Resolve model: explicit > project default > global default
+    agent_model = body.model or project.default_model or CC_MODEL
+
     agent = Agent(
         project=body.project,
         name=name,
         mode=body.mode,
+        model=agent_model,
         worktree=body.worktree,
         timeout_seconds=body.timeout_seconds,
         session_id=body.resume_session_id,

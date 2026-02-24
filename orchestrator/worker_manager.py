@@ -176,6 +176,8 @@ class WorkerManager:
         cmd = [CLAUDE_BIN, "-p", prompt, "--dangerously-skip-permissions",
                "--output-format", "stream-json", "--verbose"]
 
+        if agent.model:
+            cmd.extend(["--model", agent.model])
         if agent.worktree:
             cmd.extend(["--worktree", agent.worktree])
         if resume_session_id:

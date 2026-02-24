@@ -105,6 +105,7 @@ class Agent(Base):
     plan: Mapped[str | None] = mapped_column(Text, nullable=True)
     plan_approved: Mapped[bool] = mapped_column(Boolean, default=False)
     session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     last_message_preview: Mapped[str | None] = mapped_column(String(200), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     unread_count: Mapped[int] = mapped_column(Integer, default=0)
