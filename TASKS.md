@@ -154,7 +154,7 @@ Create docker-compose.yml:
 services:
   orchestrator:
     build: ./orchestrator
-    container_name: cc-orchestrator
+    container_name: agenthive
     ports:
       - "${PORT:-8080}:8080"
     volumes:

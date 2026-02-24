@@ -14,9 +14,9 @@
 
 ```bash
 # scp the entire folder, or git clone
-scp -r cc-orchestrator/ lab-machine:~/cc-orchestrator/
+scp -r agenthive/ lab-machine:~/agenthive/
 ssh lab-machine
-cd ~/cc-orchestrator
+cd ~/agenthive
 ```
 
 ---
@@ -93,7 +93,7 @@ On iPhone: Safari → Share → Add to Home Screen
 Once Phase 0 is running, remaining phases can be built by CC:
 
 ```bash
-cd ~/cc-orchestrator
+cd ~/agenthive
 
 # Execute specific tasks
 claude -p "Read TASKS.md and execute Task 1.1: Database Schema. Follow CLAUDE.md conventions strictly. Commit when done." \
@@ -156,7 +156,7 @@ After deployment, verify:
   ```
 - [ ] Backups are running
   ```bash
-  docker exec cc-orchestrator ls /app/backups/
+  docker exec agenthive ls /app/backups/
   ```
 
 ---

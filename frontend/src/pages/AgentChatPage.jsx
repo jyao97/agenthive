@@ -9,6 +9,9 @@ import {
   markAgentRead,
   approveAgentPlan,
   rejectAgentPlan,
+  fetchProjectSessions,
+  starSession,
+  unstarSession,
 } from "../lib/api";
 import { relativeTime, renderMarkdown, extractFileAttachments } from "../lib/formatters";
 import FileAttachments from "../components/FilePreview";
@@ -77,11 +80,30 @@ function ChatBubble({ message, project }) {
 function TypingIndicator() {
   return (
     <div className="flex justify-start my-2">
-      <div className="bg-surface shadow-card rounded-2xl rounded-bl-md px-4 py-3 flex items-center gap-1.5">
-        <span className="w-2 h-2 rounded-full bg-dim animate-bounce" style={{ animationDelay: "0ms" }} />
-        <span className="w-2 h-2 rounded-full bg-dim animate-bounce" style={{ animationDelay: "150ms" }} />
-        <span className="w-2 h-2 rounded-full bg-dim animate-bounce" style={{ animationDelay: "300ms" }} />
+      <div className="bg-surface shadow-card rounded-2xl rounded-bl-md px-5 py-3.5 flex items-center gap-[5px]">
+        <span className="typing-dot" style={{ animationDelay: "0ms" }} />
+        <span className="typing-dot" style={{ animationDelay: "200ms" }} />
+        <span className="typing-dot" style={{ animationDelay: "400ms" }} />
       </div>
+      <style>{`
+        .typing-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background-color: #9ca3af;
+          animation: typingPulse 1.4s infinite ease-in-out;
+        }
+        @keyframes typingPulse {
+          0%, 60%, 100% {
+            transform: translateY(0);
+            opacity: 0.4;
+          }
+          30% {
+            transform: translateY(-4px);
+            opacity: 1;
+          }
+        }
+      `}</style>
     </div>
   );
 }
@@ -226,6 +248,8 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const [starred, setStarred] = useState(false);
+  const [starLoading, setStarLoading] = useState(false);
   const messagesEndRef = useRef(null);
   const toastTimer = useRef(null);
   const health = useHealthStatus();
@@ -271,6 +295,36 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       markAgentRead(id).catch(() => {});
     }
   }, [id, messages.length, agent?.unread_count]);
+
+  // Fetch starred status once agent is loaded
+  useEffect(() => {
+    if (!agent) return;
+    const sessionId = agent.session_id || agent.id;
+    fetchProjectSessions(agent.project)
+      .then((sessions) => {
+        const match = sessions.find((s) => s.session_id === sessionId);
+        setStarred(match?.starred ?? false);
+      })
+      .catch(() => {});
+  }, [agent?.project, agent?.session_id, agent?.id]);
+
+  const handleToggleStar = async () => {
+    if (!agent || starLoading) return;
+    const sessionId = agent.session_id || agent.id;
+    setStarLoading(true);
+    try {
+      if (starred) {
+        await unstarSession(agent.project, sessionId);
+      } else {
+        await starSession(agent.project, sessionId);
+      }
+      setStarred(!starred);
+    } catch {
+      // silently fail
+    } finally {
+      setStarLoading(false);
+    }
+  };
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -465,6 +519,25 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
           >
             <span className={`inline-block w-1.5 h-1.5 rounded-full ${healthDotColor} ${!isHealthy && health !== null ? "animate-pulse" : ""}`} />
             {healthLabel}
+          </button>
+
+          {/* Star toggle */}
+          <button
+            type="button"
+            onClick={handleToggleStar}
+            disabled={starLoading}
+            title={starred ? "Unstar session" : "Star session"}
+            className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors disabled:opacity-50"
+          >
+            {starred ? (
+              <svg className="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 text-dim hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+              </svg>
+            )}
           </button>
 
           {/* Theme toggle */}

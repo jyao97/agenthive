@@ -1,4 +1,4 @@
-/** Centralized API wrapper for CC Orchestrator. */
+/** Centralized API wrapper for AgentHive. */
 
 const BASE = "";
 const TOKEN_KEY = "cc-auth-token";
@@ -86,6 +86,10 @@ export const fetchProjectWorktrees = (name) =>
   request(`/api/projects/${name}/worktrees`);
 export const fetchProjectSessions = (name) =>
   request(`/api/projects/${name}/sessions`);
+export const starSession = (project, sessionId) =>
+  request(`/api/projects/${project}/sessions/${sessionId}/star`, { method: "PUT" });
+export const unstarSession = (project, sessionId) =>
+  request(`/api/projects/${project}/sessions/${sessionId}/star`, { method: "DELETE" });
 
 // --- Tasks (agent-sourced: each USER message = one task) ---
 export const fetchTasks = (params = "") =>

@@ -1,4 +1,4 @@
-"""Database models for CC Orchestrator."""
+"""Database models for AgentHive."""
 
 import enum
 import uuid
@@ -146,6 +146,14 @@ class Project(Base):
         String(100), default="claude-sonnet-4-5-20250514"
     )
     archived: Mapped[bool] = mapped_column(default=False)
+
+
+class StarredSession(Base):
+    __tablename__ = "starred_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    project: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class SystemConfig(Base):

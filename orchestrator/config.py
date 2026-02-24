@@ -1,4 +1,4 @@
-"""CC Orchestrator configuration — loaded from environment variables."""
+"""AgentHive configuration — loaded from environment variables."""
 
 import os
 

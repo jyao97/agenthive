@@ -155,8 +155,8 @@ class GitManager:
             return {"success": False, "error": current, "current_branch": "unknown"}
 
         cmd = (
-            f"git config user.name 'CC Orchestrator' && "
-            f"git config user.email 'cc-orchestrator@localhost' && "
+            f"git config user.name 'AgentHive' && "
+            f"git config user.email 'agenthive@localhost' && "
             f"git merge {branch} --no-edit"
         )
         result = self._run_git_rw(project_name, cmd)
