@@ -168,12 +168,21 @@ if [ -f "$SCRIPT_DIR/certs/selfsigned.key" ] && [ -f "$SCRIPT_DIR/certs/selfsign
     ok "SSL certificates already exist"
 else
     mkdir -p "$SCRIPT_DIR/certs"
+    LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
         -keyout "$SCRIPT_DIR/certs/selfsigned.key" \
         -out "$SCRIPT_DIR/certs/selfsigned.crt" \
         -subj "/CN=agenthive" \
+        -addext "subjectAltName=DNS:agenthive,DNS:localhost,IP:127.0.0.1,IP:${LAN_IP}" \
         2>/dev/null
     ok "Self-signed SSL certificates generated (valid 365 days)"
+fi
+
+# Install cert into system trust store (for server-side tools like curl)
+if [ -f "$SCRIPT_DIR/certs/selfsigned.crt" ]; then
+    sudo cp "$SCRIPT_DIR/certs/selfsigned.crt" /usr/local/share/ca-certificates/agenthive.crt
+    sudo update-ca-certificates > /dev/null 2>&1
+    ok "CA certificate added to system trust store"
 fi
 
 # ─────────────────────────────────────────────
@@ -281,6 +290,11 @@ echo -e "    ${BOLD}https://localhost:3000${NC}   (from this machine)"
 echo ""
 echo "  On iPhone/Android: open the URL in Safari/Chrome,"
 echo "  then Share → Add to Home Screen for a native app experience."
+echo ""
+echo -e "  ${YELLOW}To avoid browser security warnings on other devices:${NC}"
+echo "    Download the CA certificate from this machine and install it:"
+echo -e "    ${BOLD}scp $(whoami)@${LAN_IP}:${SCRIPT_DIR}/certs/selfsigned.crt ~/agenthive.crt${NC}"
+echo "    See README.md for per-device install instructions."
 echo ""
 echo "  Next steps:"
 echo "    1. Register a project:"

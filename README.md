@@ -123,10 +123,21 @@ HTTPS is required for microphone access on mobile devices:
 
 ```bash
 mkdir -p certs
+LAN_IP=$(hostname -I | awk '{print $1}')
 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
   -keyout certs/selfsigned.key -out certs/selfsigned.crt \
-  -subj "/CN=agenthive"
+  -subj "/CN=agenthive" \
+  -addext "subjectAltName=DNS:agenthive,DNS:localhost,IP:127.0.0.1,IP:${LAN_IP}"
 ```
+
+Install the cert into the system trust store (so server-side tools like `curl` trust it):
+
+```bash
+sudo cp certs/selfsigned.crt /usr/local/share/ca-certificates/agenthive.crt
+sudo update-ca-certificates
+```
+
+To avoid browser warnings on other devices, see [Installing the CA Certificate](#installing-the-ca-certificate) below.
 
 ### 7. Build and start services
 
@@ -265,6 +276,54 @@ Claude Max has usage limits. Reduce `MAX_CONCURRENT_WORKERS` or switch `CC_MODEL
 
 **Disk full?**
 Run `docker system prune -a` to clean unused images. Check backup volume size with `docker system df -v`.
+
+## Installing the CA Certificate
+
+AgentHive uses a self-signed SSL certificate. The installer adds it to the server's system trust store automatically, but **other devices** (your phone, laptop, etc.) will show a browser security warning unless you manually install the certificate.
+
+### Download the certificate
+
+From another machine on the same network:
+
+```bash
+scp user@server-ip:~/AgentHive/certs/selfsigned.crt ~/agenthive.crt
+```
+
+Or open `http://<server-ip>:3080/api/health` in a browser — the HTTP port redirects to HTTPS, and you can download the cert from the browser warning page.
+
+### iPhone / iPad
+
+1. AirDrop or email `selfsigned.crt` to your device
+2. Open the file — a "Profile Downloaded" prompt appears
+3. Go to **Settings > General > VPN & Device Management** > tap the profile > **Install**
+4. Go to **Settings > General > About > Certificate Trust Settings** > toggle **full trust** for "agenthive"
+
+### Android
+
+1. Transfer `selfsigned.crt` to the device
+2. Go to **Settings > Security > Encryption & credentials > Install a certificate > CA certificate**
+3. Select the file and confirm
+
+### macOS
+
+```bash
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain agenthive.crt
+```
+
+### Windows
+
+```powershell
+certutil -addstore "Root" agenthive.crt
+```
+
+### Linux (other machines)
+
+```bash
+sudo cp agenthive.crt /usr/local/share/ca-certificates/agenthive.crt
+sudo update-ca-certificates
+```
+
+After installing the certificate, restart your browser. The security warning should disappear.
 
 ## Security
 
