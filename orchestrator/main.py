@@ -422,7 +422,7 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
 
 
 @app.delete("/api/projects/{name}", status_code=200)
-async def delete_project(name: str, db: Session = Depends(get_db)):
+async def delete_project(name: str, request: Request, db: Session = Depends(get_db)):
     """Delete a project (must have no active agents)."""
     proj = db.get(Project, name)
     if not proj:
@@ -446,6 +446,11 @@ async def delete_project(name: str, db: Session = Depends(get_db)):
             status_code=409,
             detail=f"Cannot delete project with {active_agents} active agent(s)",
         )
+
+    # Clean up session volume for this project
+    wm = getattr(request.app.state, "worker_manager", None)
+    if wm:
+        wm.remove_session_volume(name)
 
     db.delete(proj)
     db.commit()

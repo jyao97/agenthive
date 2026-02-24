@@ -20,9 +20,21 @@ from models import Agent, Project, Task
 
 logger = logging.getLogger("orchestrator.worker")
 
-# Setup commands shared between workers and agents
-_SETUP_CMDS = (
+# Setup for ephemeral workers (always overwrite — tmpfs is fresh each time)
+_SETUP_CMDS_EPHEMERAL = (
     "cp -a /claude-config-ro/.claude $HOME/.claude 2>/dev/null; "
+    "cp /claude-config-ro/.claude.json $HOME/.claude.json 2>/dev/null; "
+    "git config --global user.name 'CC Worker' && "
+    "git config --global user.email 'cc-worker@localhost' && "
+    "git config --global init.defaultBranch main"
+)
+
+# Setup for persistent agent containers (preserve refreshed tokens in named volume)
+_SETUP_CMDS_PERSISTENT = (
+    "if [ ! -f \"$HOME/.claude/.credentials.json\" ]; then "
+    "  cp -a /claude-config-ro/.claude/* $HOME/.claude/ 2>/dev/null; "
+    "  cp -a /claude-config-ro/.claude/.[!.]* $HOME/.claude/ 2>/dev/null; "
+    "fi; "
     "cp /claude-config-ro/.claude.json $HOME/.claude.json 2>/dev/null; "
     "git config --global user.name 'CC Worker' && "
     "git config --global user.email 'cc-worker@localhost' && "
@@ -119,7 +131,7 @@ class WorkerManager:
             image=WORKER_IMAGE,
             entrypoint=["bash", "-c"],
             command=[
-                f"{_SETUP_CMDS} && "
+                f"{_SETUP_CMDS_EPHEMERAL} && "
                 f"cd /projects/{project.name} && "
                 f"claude -p {escaped_prompt} "
                 f"--dangerously-skip-permissions "
@@ -147,6 +159,47 @@ class WorkerManager:
     # Persistent agent containers
     # =====================================================================
 
+    def _ensure_session_volume(self, project_name: str) -> str:
+        """Ensure a named volume for Claude session data exists with correct ownership.
+        Returns volume name."""
+        vol_name = f"cc-session-{project_name}"
+        created = False
+        try:
+            self.docker_client.volumes.get(vol_name)
+            logger.debug("Session volume %s already exists", vol_name)
+        except docker.errors.NotFound:
+            self.docker_client.volumes.create(
+                name=vol_name,
+                driver="local",
+                labels={"managed-by": "cc-orchestrator", "project": project_name},
+            )
+            created = True
+            logger.info("Created session volume %s", vol_name)
+
+        if created:
+            # New volume root dir is owned by root — fix ownership with a
+            # throwaway container so the non-root worker can write to it.
+            self.docker_client.containers.run(
+                image="alpine",
+                command=["chown", f"{HOST_USER_UID}:{HOST_USER_UID}", "/vol"],
+                volumes={vol_name: {"bind": "/vol", "mode": "rw"}},
+                auto_remove=True,
+                detach=False,
+            )
+            logger.debug("Set ownership on %s to uid %s", vol_name, HOST_USER_UID)
+
+        return vol_name
+
+    def remove_session_volume(self, project_name: str):
+        """Remove the session volume for a project (call on project deletion)."""
+        vol_name = f"cc-session-{project_name}"
+        try:
+            vol = self.docker_client.volumes.get(vol_name)
+            vol.remove(force=True)
+            logger.info("Removed session volume %s", vol_name)
+        except docker.errors.NotFound:
+            logger.debug("Session volume %s not found (already removed)", vol_name)
+
     def ensure_project_container(self, project: Project) -> str:
         """Get or create a persistent container for a project. PID 1 = sleep infinity.
         Returns container ID.  All agents in the same project share this container.
@@ -165,12 +218,18 @@ class WorkerManager:
         except docker.errors.NotFound:
             pass
 
+        # Named volume keeps .claude/ session data across container restarts
+        session_vol = self._ensure_session_volume(project.name)
+
         volumes = self._base_volumes(rw=True)
+        # Mount session volume at $HOME/.claude/ — persists sessions + refreshed tokens.
+        # Tmpfs stays for $HOME (scratch space), the named volume sub-mount takes precedence.
+        volumes[session_vol] = {"bind": "/worker-home/.claude", "mode": "rw"}
 
         container = self.docker_client.containers.run(
             image=WORKER_IMAGE,
             entrypoint=["bash", "-c"],
-            command=[f"{_SETUP_CMDS} && exec sleep infinity"],
+            command=[f"{_SETUP_CMDS_PERSISTENT} && exec sleep infinity"],
             volumes=volumes,
             working_dir=f"/projects/{project.name}",
             environment={"HOME": "/worker-home"},
@@ -184,8 +243,8 @@ class WorkerManager:
             name=container_name,
         )
         logger.info(
-            "Started project container %s (project: %s)",
-            container_name, project.name,
+            "Started project container %s (project: %s, session_vol: %s)",
+            container_name, project.name, session_vol,
         )
         return container.id
 
