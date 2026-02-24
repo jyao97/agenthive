@@ -185,7 +185,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
   );
 
   return (
-    <div className="h-full overflow-y-auto overflow-x-hidden">
+    <div className="h-full flex flex-col">
       <PageHeader title="Projects" theme={theme} onToggleTheme={onToggleTheme} actions={refreshButton}>
         <div className="flex gap-1 px-4 pb-3">
           {FILTER_TABS.map((tab) => {
@@ -210,6 +210,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
           })}
         </div>
       </PageHeader>
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-20 p-4 max-w-2xl mx-auto w-full">
 
       {loading && folders.length === 0 && (
@@ -260,6 +261,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
           Deleted projects ({trashCount})
         </button>
       )}
+      </div>
       </div>
     </div>
   );

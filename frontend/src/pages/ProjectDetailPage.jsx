@@ -468,7 +468,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   if (!project) return null;
 
   return (
-    <div className="h-full overflow-y-auto overflow-x-hidden">
+    <div className="h-full flex flex-col">
       {/* Toast */}
       {toast && (
         <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
@@ -476,8 +476,8 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         </div>
       )}
 
-      {/* Sticky Header */}
-      <div className="sticky top-0 z-10 bg-page border-b border-divider px-4 pt-3 pb-3">
+      {/* Fixed Header */}
+      <div className="shrink-0 bg-page border-b border-divider px-4 pt-3 pb-3 z-10">
         <div className="max-w-2xl mx-auto">
           <button
             type="button"
@@ -521,6 +521,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         </div>
       </div>
 
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-20 p-4 max-w-2xl mx-auto w-full space-y-5">
 
       {/* Inactive project banner */}
@@ -756,6 +757,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           </div>
         </div>
       )}
+      </div>
       </div>
     </div>
   );
