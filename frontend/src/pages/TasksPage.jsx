@@ -57,7 +57,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
   );
 
   return (
-    <div className="h-full overflow-y-auto overflow-x-hidden">
+    <div className="h-full flex flex-col">
       <PageHeader title="Tasks" theme={theme} onToggleTheme={onToggleTheme}>
         <div className="overflow-x-auto scrollbar-none">
           <div className="flex gap-1 px-4 pb-3 min-w-max">
@@ -86,6 +86,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
         </div>
       </PageHeader>
 
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       {/* Task list */}
       <div className="pb-20 px-4 py-3 space-y-3">
         {loading && tasks.length === 0 && (
@@ -134,6 +135,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
         })}
 
         <div className="h-4" />
+      </div>
       </div>
     </div>
   );

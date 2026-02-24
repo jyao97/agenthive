@@ -62,8 +62,9 @@ export default function TrashPage({ theme, onToggleTheme }) {
   );
 
   return (
-    <div className="h-full overflow-y-auto overflow-x-hidden">
+    <div className="h-full flex flex-col">
       <PageHeader title="Deleted Projects" theme={theme} onToggleTheme={onToggleTheme} actions={backButton} />
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-20 p-4 max-w-2xl mx-auto w-full">
 
         {loading && (
@@ -117,6 +118,7 @@ export default function TrashPage({ theme, onToggleTheme }) {
             </div>
           ))}
         </div>
+      </div>
       </div>
     </div>
   );

@@ -113,7 +113,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
         : agents.filter((a) => a.status === "STOPPED");
 
   return (
-    <div className="h-full overflow-y-auto overflow-x-hidden">
+    <div className="h-full flex flex-col">
       <PageHeader title="Agents" theme={theme} onToggleTheme={onToggleTheme}>
         <div className="flex gap-1 px-4 pb-3">
           {FILTER_TABS.map((tab) => {
@@ -145,6 +145,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
         </div>
       </PageHeader>
 
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       {/* Agent list */}
       <div className="pb-20 px-4 py-3 space-y-2">
         {loading && agents.length === 0 && (
@@ -181,6 +182,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
         ))}
 
         <div className="h-4" />
+      </div>
       </div>
     </div>
   );

@@ -237,14 +237,23 @@ class AgentDispatcher:
         """Check active execs that have finished."""
         done_agents = []
         for agent_id, info in list(self._active_execs.items()):
+            agent = db.get(Agent, agent_id)
+
+            # If agent was stopped by user, kill the process and clean up
+            if not agent or agent.status == AgentStatus.STOPPED:
+                self.worker_mgr.stop_worker(info["pid_str"])
+                message = db.get(Message, info["message_id"])
+                if message and message.status == MessageStatus.EXECUTING:
+                    message.status = MessageStatus.FAILED
+                    message.error_message = "Agent stopped by user"
+                    message.completed_at = _utcnow()
+                done_agents.append(agent_id)
+                continue
+
             if self.worker_mgr.is_exec_running(info["pid_str"]):
                 continue
 
             # Exec finished — read output
-            agent = db.get(Agent, agent_id)
-            if not agent or agent.status == AgentStatus.STOPPED:
-                done_agents.append(agent_id)
-                continue
 
             logs = self.worker_mgr.read_exec_output(
                 info["pid_str"], info["output_file"]

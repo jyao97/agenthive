@@ -50,8 +50,9 @@ export default function NewPage({ theme, onToggleTheme }) {
   // ---------- Landing ----------
   if (!activeCard) {
     return (
-      <div className="h-full overflow-y-auto overflow-x-hidden">
+      <div className="h-full flex flex-col">
         <PageHeader title="Create" theme={theme} onToggleTheme={onToggleTheme} />
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="pb-20 p-4 max-w-xl mx-auto w-full">
         <div className="space-y-3">
           {CARDS.map((card) => (
@@ -73,13 +74,14 @@ export default function NewPage({ theme, onToggleTheme }) {
           ))}
         </div>
         </div>
+        </div>
       </div>
     );
   }
 
   // ---------- Forms ----------
   return (
-    <div className="h-full overflow-y-auto overflow-x-hidden">
+    <div className="h-full flex flex-col">
       {/* Toast */}
       {toast && (
         <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
@@ -88,7 +90,7 @@ export default function NewPage({ theme, onToggleTheme }) {
       )}
 
       {/* Back header */}
-      <div className="sticky top-0 z-10 bg-page border-b border-divider px-4 pt-4 pb-2">
+      <div className="shrink-0 bg-page border-b border-divider px-4 pt-4 pb-2 z-10">
         <button type="button" onClick={goBack} className="flex items-center gap-1 text-sm text-label hover:text-heading">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
@@ -97,6 +99,7 @@ export default function NewPage({ theme, onToggleTheme }) {
         </button>
       </div>
 
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-20 p-4 max-w-xl mx-auto w-full">
         {activeCard === "agent" && (
           <NewAgentForm showToast={showToast} navigate={navigate} />
@@ -104,6 +107,7 @@ export default function NewPage({ theme, onToggleTheme }) {
         {activeCard === "project" && (
           <NewProjectForm showToast={showToast} navigate={navigate} />
         )}
+      </div>
       </div>
     </div>
   );

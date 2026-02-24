@@ -110,13 +110,14 @@ export default function MonitorPage({ theme, onToggleTheme }) {
   }, [fetchHealth]);
 
   return (
-    <div className="h-full overflow-y-auto overflow-x-hidden">
+    <div className="h-full flex flex-col">
       <PageHeader title="Monitor" theme={theme} onToggleTheme={onToggleTheme}>
         <div className="px-4 pb-2">
           <span className="text-xs text-faint">Auto-refreshing every 3s</span>
         </div>
       </PageHeader>
 
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-20 p-4 space-y-5 max-w-2xl mx-auto w-full">
         {/* System Health */}
         <section>
@@ -307,6 +308,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
             </div>
           )}
         </section>
+      </div>
       </div>
     </div>
   );

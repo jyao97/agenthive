@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -1174,6 +1175,16 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
         raise HTTPException(status_code=400, detail="Agent is already stopped")
 
     agent.status = AgentStatus.STOPPED
+
+    # Mark any EXECUTING messages as FAILED so they don't stay stuck
+    executing_msgs = db.query(Message).filter(
+        Message.agent_id == agent.id,
+        Message.status == MessageStatus.EXECUTING,
+    ).all()
+    for m in executing_msgs:
+        m.status = MessageStatus.FAILED
+        m.error_message = "Agent stopped by user"
+        m.completed_at = datetime.now(timezone.utc)
 
     # Add system message
     msg = Message(
