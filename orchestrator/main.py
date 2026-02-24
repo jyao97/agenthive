@@ -196,7 +196,7 @@ app.add_middleware(
 
 # ---- Auth middleware ----
 
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/docs", "/openapi.json")
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/files/", "/docs", "/openapi.json")
 
 
 @app.middleware("http")
@@ -1472,6 +1472,64 @@ async def serve_project_file(project: str, path: str, db: Session = Depends(get_
 
     media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
     return FileResponse(full_path, media_type=media_type)
+
+
+# ---- Push Notifications ----
+
+@app.get("/api/push/vapid-public-key")
+async def push_vapid_public_key():
+    """Return the VAPID public key for Web Push subscription."""
+    from config import VAPID_PUBLIC_KEY
+    if not VAPID_PUBLIC_KEY:
+        raise HTTPException(status_code=503, detail="VAPID keys not configured")
+    return {"publicKey": VAPID_PUBLIC_KEY}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request, db: Session = Depends(get_db)):
+    """Register a push subscription (upsert by endpoint)."""
+    from models import PushSubscription
+
+    body = await request.json()
+    endpoint = body.get("endpoint", "")
+    keys = body.get("keys", {})
+    p256dh = keys.get("p256dh", "")
+    auth = keys.get("auth", "")
+
+    if not endpoint or not p256dh or not auth:
+        raise HTTPException(status_code=400, detail="Missing endpoint or keys")
+
+    existing = db.query(PushSubscription).filter(
+        PushSubscription.endpoint == endpoint
+    ).first()
+    if existing:
+        existing.p256dh_key = p256dh
+        existing.auth_key = auth
+    else:
+        db.add(PushSubscription(
+            endpoint=endpoint,
+            p256dh_key=p256dh,
+            auth_key=auth,
+        ))
+    db.commit()
+    return {"status": "subscribed"}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request, db: Session = Depends(get_db)):
+    """Remove a push subscription by endpoint."""
+    from models import PushSubscription
+
+    body = await request.json()
+    endpoint = body.get("endpoint", "")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Missing endpoint")
+
+    db.query(PushSubscription).filter(
+        PushSubscription.endpoint == endpoint
+    ).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "unsubscribed"}
 
 
 # ---- Logs ----

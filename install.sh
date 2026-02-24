@@ -245,6 +245,34 @@ else
     fi
 fi
 
+# Generate VAPID keys for Web Push if not already set
+if grep -q "^VAPID_PRIVATE_KEY=$" "$SCRIPT_DIR/.env" 2>/dev/null || ! grep -q "VAPID_PRIVATE_KEY" "$SCRIPT_DIR/.env" 2>/dev/null; then
+    info "Generating VAPID keys for Web Push notifications..."
+    if [ -f "$SCRIPT_DIR/.venv/bin/pip" ]; then
+        "$SCRIPT_DIR/.venv/bin/pip" install --quiet pywebpush 2>/dev/null
+    fi
+    VAPID_OUTPUT=$("$SCRIPT_DIR/scripts/generate-vapid-keys.sh" 2>/dev/null) || true
+    if [ -n "$VAPID_OUTPUT" ]; then
+        VAPID_PRIV=$(echo "$VAPID_OUTPUT" | grep "^VAPID_PRIVATE_KEY=" | head -1)
+        VAPID_PUB=$(echo "$VAPID_OUTPUT" | grep "^VAPID_PUBLIC_KEY=" | head -1)
+        if grep -q "VAPID_PRIVATE_KEY" "$SCRIPT_DIR/.env"; then
+            sed -i "s|VAPID_PRIVATE_KEY=.*|$VAPID_PRIV|g" "$SCRIPT_DIR/.env"
+            sed -i "s|VAPID_PUBLIC_KEY=.*|$VAPID_PUB|g" "$SCRIPT_DIR/.env"
+        else
+            echo "" >> "$SCRIPT_DIR/.env"
+            echo "# === Web Push (VAPID) ===" >> "$SCRIPT_DIR/.env"
+            echo "$VAPID_PRIV" >> "$SCRIPT_DIR/.env"
+            echo "$VAPID_PUB" >> "$SCRIPT_DIR/.env"
+            echo "VAPID_SUBJECT=mailto:agenthive@localhost" >> "$SCRIPT_DIR/.env"
+        fi
+        ok "VAPID keys generated and saved to .env"
+    else
+        warn "Could not generate VAPID keys — run ./scripts/generate-vapid-keys.sh manually"
+    fi
+else
+    ok "VAPID keys already configured"
+fi
+
 # ─────────────────────────────────────────────
 # Step 8: Build Docker images & start services
 # ─────────────────────────────────────────────

@@ -25,6 +25,9 @@ logs/
 # TLS certificates (self-signed, regenerate with: openssl req -x509 ...)
 certs/
 
+# VAPID keys
+*.pem
+
 # Docker
 .docker/
 

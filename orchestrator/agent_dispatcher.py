@@ -275,6 +275,14 @@ class AgentDispatcher:
             self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
             self._emit(emit_new_message(agent.id, resp.id))
 
+            from push import send_push_notification
+            status_emoji = "\u274c" if is_error else "\u2705"
+            send_push_notification(
+                title=f"{status_emoji} {agent.name}",
+                body=preview[:100],
+                url=f"/agents/{agent.id}",
+            )
+
             done_agents.append(agent_id)
 
         for agent_id in done_agents:

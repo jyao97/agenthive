@@ -12,6 +12,7 @@ import GitPage from "./pages/GitPage";
 import LoginPage from "./pages/LoginPage";
 import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchUnreadCount, getAuthToken } from "./lib/api";
+import { isPushSupported, isPushEnabled, setupPushNotifications } from "./lib/pushNotifications";
 
 const tabs = [
   {
@@ -93,6 +94,10 @@ function AuthGuard({ children }) {
         .then((r) => {
           if (r.authenticated) {
             setAuthed(true);
+            // Auto-enable push notifications if supported and not yet set up
+            if (isPushSupported() && !isPushEnabled()) {
+              setupPushNotifications().catch(() => {});
+            }
           } else {
             // Token expired or invalid — clear and redirect to login
             clearAuthToken();

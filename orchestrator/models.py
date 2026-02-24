@@ -156,6 +156,16 @@ class StarredSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(12), primary_key=True, default=_new_uuid)
+    endpoint: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
+    p256dh_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    auth_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 class SystemConfig(Base):
     __tablename__ = "system_config"
 
