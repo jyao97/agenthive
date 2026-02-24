@@ -3,7 +3,7 @@
 import logging
 import shlex
 
-from config import HOST_CLAUDE_DIR, HOST_CLAUDE_JSON, HOST_USER_UID, WORKER_CPU_LIMIT, WORKER_IMAGE, WORKER_MEM_LIMIT, WORKER_NETWORK
+from config import CLAUDE_CODE_OAUTH_TOKEN, HOST_USER_UID, WORKER_CPU_LIMIT, WORKER_IMAGE, WORKER_MEM_LIMIT, WORKER_NETWORK
 from models import Project, Task
 
 logger = logging.getLogger("orchestrator.plan")
@@ -68,17 +68,15 @@ class PlanManager:
         volumes = {
             "cc-projects": {"bind": "/projects", "mode": "ro"},  # Read-only for planning
         }
-        if HOST_CLAUDE_DIR:
-            volumes[HOST_CLAUDE_DIR] = {"bind": "/claude-config-ro/.claude", "mode": "ro"}
-        if HOST_CLAUDE_JSON:
-            volumes[HOST_CLAUDE_JSON] = {"bind": "/claude-config-ro/.claude.json", "mode": "ro"}
 
         setup_cmds = (
-            "cp -a /claude-config-ro/.claude $HOME/.claude 2>/dev/null; "
-            "cp /claude-config-ro/.claude.json $HOME/.claude.json 2>/dev/null; "
             "git config --global user.name 'CC Worker' && "
             "git config --global user.email 'cc-worker@localhost'"
         )
+
+        env = {"HOME": "/worker-home"}
+        if CLAUDE_CODE_OAUTH_TOKEN:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = CLAUDE_CODE_OAUTH_TOKEN
 
         container = self.worker_mgr.docker_client.containers.run(
             image=WORKER_IMAGE,
@@ -92,7 +90,7 @@ class PlanManager:
             ],
             volumes=volumes,
             working_dir=f"/projects/{project.name}",
-            environment={"HOME": "/worker-home"},
+            environment=env,
             tmpfs={"/worker-home": f"uid={HOST_USER_UID},gid={HOST_USER_UID}"},
             user=f"{HOST_USER_UID}:{HOST_USER_UID}",
             cpu_quota=int(WORKER_CPU_LIMIT * 100000),

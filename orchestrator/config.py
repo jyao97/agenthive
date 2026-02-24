@@ -36,10 +36,8 @@ WORKER_NETWORK = os.getenv("WORKER_NETWORK", "cc-worker-net")
 # Projects directory on the host (bind-mounted into workers as /projects)
 HOST_PROJECTS_DIR = os.getenv("HOST_PROJECTS_DIR", "")
 
-# Claude OAuth
-# Directory: ~/.claude/ (contains .credentials.json, settings, etc.)
-HOST_CLAUDE_DIR = os.getenv("HOST_CLAUDE_DIR", "")
-# Config file: ~/.claude.json (main config file, separate from the directory)
-HOST_CLAUDE_JSON = os.getenv("HOST_CLAUDE_JSON", "")
-# UID of the host user who owns ~/.claude/ — worker runs as this UID to read OAuth tokens
+# Claude auth — 1-year OAuth token from `claude setup-token`
+CLAUDE_CODE_OAUTH_TOKEN = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+# UID for non-root worker user inside containers
 HOST_USER_UID = os.getenv("HOST_USER_UID", "1000")

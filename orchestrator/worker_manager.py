@@ -7,8 +7,7 @@ import docker
 import docker.errors
 
 from config import (
-    HOST_CLAUDE_DIR,
-    HOST_CLAUDE_JSON,
+    CLAUDE_CODE_OAUTH_TOKEN,
     HOST_PROJECTS_DIR,
     HOST_USER_UID,
     WORKER_CPU_LIMIT,
@@ -20,22 +19,8 @@ from models import Agent, Project, Task
 
 logger = logging.getLogger("orchestrator.worker")
 
-# Setup for ephemeral workers (always overwrite — tmpfs is fresh each time)
-_SETUP_CMDS_EPHEMERAL = (
-    "cp -a /claude-config-ro/.claude $HOME/.claude 2>/dev/null; "
-    "cp /claude-config-ro/.claude.json $HOME/.claude.json 2>/dev/null; "
-    "git config --global user.name 'CC Worker' && "
-    "git config --global user.email 'cc-worker@localhost' && "
-    "git config --global init.defaultBranch main"
-)
-
-# Setup for persistent agent containers (preserve refreshed tokens in named volume)
-_SETUP_CMDS_PERSISTENT = (
-    "if [ ! -f \"$HOME/.claude/.credentials.json\" ]; then "
-    "  cp -a /claude-config-ro/.claude/* $HOME/.claude/ 2>/dev/null; "
-    "  cp -a /claude-config-ro/.claude/.[!.]* $HOME/.claude/ 2>/dev/null; "
-    "fi; "
-    "cp /claude-config-ro/.claude.json $HOME/.claude.json 2>/dev/null; "
+# Git config applied at container startup (auth is handled via CLAUDE_CODE_OAUTH_TOKEN env var)
+_SETUP_CMDS = (
     "git config --global user.name 'CC Worker' && "
     "git config --global user.email 'cc-worker@localhost' && "
     "git config --global init.defaultBranch main"
@@ -70,24 +55,19 @@ class WorkerManager:
     def _base_volumes(self, rw=True):
         """Build the common volumes dict."""
         mode = "rw" if rw else "ro"
-        volumes = {
+        return {
             **self._projects_volume(mode),
             "cc-git-bare": {"bind": "/git-bare", "mode": mode},
         }
-        if HOST_CLAUDE_DIR:
-            volumes[HOST_CLAUDE_DIR] = {
-                "bind": "/claude-config-ro/.claude",
-                "mode": "ro",
-            }
-        else:
-            logger.warning("HOST_CLAUDE_DIR not set — worker will have no OAuth credentials")
 
-        if HOST_CLAUDE_JSON:
-            volumes[HOST_CLAUDE_JSON] = {
-                "bind": "/claude-config-ro/.claude.json",
-                "mode": "ro",
-            }
-        return volumes
+    def _worker_env(self):
+        """Build the environment dict for worker containers."""
+        env = {"HOME": "/worker-home"}
+        if CLAUDE_CODE_OAUTH_TOKEN:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = CLAUDE_CODE_OAUTH_TOKEN
+        else:
+            logger.warning("CLAUDE_CODE_OAUTH_TOKEN not set — workers will not be authenticated")
+        return env
 
     # =====================================================================
     # Ephemeral task workers (original one-shot behavior)
@@ -131,7 +111,7 @@ class WorkerManager:
             image=WORKER_IMAGE,
             entrypoint=["bash", "-c"],
             command=[
-                f"{_SETUP_CMDS_EPHEMERAL} && "
+                f"{_SETUP_CMDS} && "
                 f"cd /projects/{project.name} && "
                 f"claude -p {escaped_prompt} "
                 f"--dangerously-skip-permissions "
@@ -139,7 +119,7 @@ class WorkerManager:
             ],
             volumes=volumes,
             working_dir=f"/projects/{project.name}",
-            environment={"HOME": "/worker-home"},
+            environment=self._worker_env(),
             tmpfs={"/worker-home": f"uid={HOST_USER_UID},gid={HOST_USER_UID}"},
             user=f"{HOST_USER_UID}:{HOST_USER_UID}",
             cpu_quota=int(WORKER_CPU_LIMIT * 100000),
@@ -229,10 +209,10 @@ class WorkerManager:
         container = self.docker_client.containers.run(
             image=WORKER_IMAGE,
             entrypoint=["bash", "-c"],
-            command=[f"{_SETUP_CMDS_PERSISTENT} && exec sleep infinity"],
+            command=[f"{_SETUP_CMDS} && exec sleep infinity"],
             volumes=volumes,
             working_dir=f"/projects/{project.name}",
-            environment={"HOME": "/worker-home"},
+            environment=self._worker_env(),
             tmpfs={"/worker-home": f"uid={HOST_USER_UID},gid={HOST_USER_UID}"},
             user=f"{HOST_USER_UID}:{HOST_USER_UID}",
             cpu_quota=int(WORKER_CPU_LIMIT * 100000),
@@ -282,7 +262,7 @@ class WorkerManager:
             ["bash", "-c", cmd],
             workdir=f"/projects/{project.name}",
             user=f"{HOST_USER_UID}:{HOST_USER_UID}",
-            environment={"HOME": "/worker-home"},
+            environment=self._worker_env(),
         )
         exec_id = exec_result["Id"]
 
