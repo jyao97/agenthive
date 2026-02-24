@@ -2,17 +2,26 @@
 
 import asyncio
 import logging
+import shutil
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
 from config import MAX_CONCURRENT_WORKERS, MAX_RETRIES, SKIP_PLAN_FOR_P2
 from database import SessionLocal
+from log_config import save_worker_log
 from models import Priority, Project, Task, TaskStatus
 from plan_manager import PlanManager
 from worker_manager import WorkerManager
 
 logger = logging.getLogger("orchestrator.dispatcher")
+
+# Zombie detection: kill containers silent for this many seconds
+ZOMBIE_SILENCE_THRESHOLD = 120
+# Disk usage threshold (fraction) — pause new tasks above this
+DISK_USAGE_THRESHOLD = 0.90
+# How often (in ticks, ~2s each) to run housekeeping checks
+HOUSEKEEPING_INTERVAL = 30  # ~60 seconds
 
 
 def _utcnow():
@@ -26,6 +35,9 @@ class TaskDispatcher:
         self.worker_mgr = worker_manager
         self.plan_mgr = PlanManager(worker_manager)
         self.running = False
+        self._tick_count = 0
+        self._paused_disk = False
+        self._docker_available = True
 
     async def run(self):
         """Start the dispatcher loop."""
@@ -37,6 +49,11 @@ class TaskDispatcher:
 
         while self.running:
             try:
+                # Check Docker daemon is reachable
+                if not self._check_docker():
+                    await asyncio.sleep(5)
+                    continue
+
                 db = SessionLocal()
                 try:
                     self._tick(db)
@@ -52,8 +69,17 @@ class TaskDispatcher:
         """Signal the dispatcher to stop."""
         self.running = False
 
+    def _emit(self, coro):
+        """Fire-and-forget an async event (WebSocket broadcast)."""
+        try:
+            asyncio.ensure_future(coro)
+        except Exception:
+            pass
+
     def _tick(self, db: Session):
         """Single iteration of the dispatch loop."""
+        self._tick_count += 1
+
         # 1. Harvest completed workers (both execution and planning)
         self._harvest_completed(db)
         self._harvest_planners(db)
@@ -64,9 +90,15 @@ class TaskDispatcher:
         # 3. Auto-retry failed tasks
         self._auto_retry(db)
 
-        # 4. Start planning for new tasks, then assign approved tasks
-        self._start_planning(db)
-        self._assign_tasks(db)
+        # 4. Periodic housekeeping (disk check, orphan cleanup)
+        if self._tick_count % HOUSEKEEPING_INTERVAL == 0:
+            self._check_disk_usage()
+            self._cleanup_orphan_containers(db)
+
+        # 5. Start planning for new tasks, then assign approved tasks
+        if not self._paused_disk:
+            self._start_planning(db)
+            self._assign_tasks(db)
 
         db.commit()
 
@@ -103,6 +135,11 @@ class TaskDispatcher:
                 task.status = TaskStatus.FAILED
                 task.error_message = "Worker exited without EXIT_SUCCESS or EXIT_FAILURE signal"
                 logger.warning("Task %s: worker exited without status signal", task.id)
+
+            # Save worker log to file and emit WebSocket event
+            save_worker_log(task.id, logs)
+            from websocket import emit_task_update
+            self._emit(emit_task_update(task.id, task.status.value, task.project))
 
             # Clean up container
             if status != "removed":
@@ -213,6 +250,8 @@ class TaskDispatcher:
                     "Assigned task %s to worker (project: %s, active: %d/%d)",
                     task.id, task.project, total_active, MAX_CONCURRENT_WORKERS,
                 )
+                from websocket import emit_worker_update
+                self._emit(emit_worker_update("created", f"cc-worker-{task.id[:8]}", task.project))
             except Exception:
                 logger.exception("Failed to start worker for task %s", task.id)
                 task.status = TaskStatus.FAILED
@@ -286,6 +325,8 @@ class TaskDispatcher:
                 task.status = TaskStatus.PLAN_REVIEW
                 task.container_id = None
                 logger.info("Task %s plan ready for review", task.id)
+                from websocket import emit_plan_ready
+                self._emit(emit_plan_ready(task.id, task.project))
             else:
                 task.plan = "(Planning failed — worker did not produce a plan)"
                 task.status = TaskStatus.PLAN_REVIEW
@@ -304,6 +345,74 @@ class TaskDispatcher:
                     c.remove(force=True)
             except Exception:
                 pass
+
+    # ---- Housekeeping ----
+
+    def _check_docker(self) -> bool:
+        """Verify Docker daemon is reachable. Returns False if unavailable."""
+        try:
+            self.worker_mgr.docker_client.ping()
+            if not self._docker_available:
+                logger.info("Docker daemon reconnected")
+                self._docker_available = True
+            return True
+        except Exception:
+            if self._docker_available:
+                logger.error("Docker daemon unavailable — pausing task assignment")
+                self._docker_available = False
+            return False
+
+    def _check_disk_usage(self):
+        """Check disk usage and pause task assignment if above threshold."""
+        try:
+            usage = shutil.disk_usage("/")
+            fraction = usage.used / usage.total
+            if fraction > DISK_USAGE_THRESHOLD:
+                if not self._paused_disk:
+                    logger.warning(
+                        "Disk usage %.1f%% exceeds %.0f%% threshold — pausing new tasks",
+                        fraction * 100, DISK_USAGE_THRESHOLD * 100,
+                    )
+                    self._paused_disk = True
+                    # Try to emit alert (async-safe)
+                    try:
+                        import asyncio
+                        from websocket import emit_system_alert
+                        asyncio.ensure_future(emit_system_alert(
+                            f"Disk usage {fraction*100:.0f}% — new tasks paused", "error"
+                        ))
+                    except Exception:
+                        pass
+            else:
+                if self._paused_disk:
+                    logger.info("Disk usage back to %.1f%% — resuming", fraction * 100)
+                    self._paused_disk = False
+        except Exception:
+            logger.debug("Could not check disk usage")
+
+    def _cleanup_orphan_containers(self, db: Session):
+        """Remove cc-worker-* and cc-planner-* containers not tracked in task table."""
+        try:
+            known_ids = set()
+            active = db.query(Task).filter(
+                Task.status.in_([TaskStatus.EXECUTING, TaskStatus.PLANNING]),
+                Task.container_id.is_not(None),
+            ).all()
+            for t in active:
+                known_ids.add(t.container_id)
+
+            for prefix in ("cc-worker-", "cc-planner-"):
+                containers = self.worker_mgr.docker_client.containers.list(
+                    all=True, filters={"name": prefix}
+                )
+                for c in containers:
+                    if c.id not in known_ids and c.short_id not in known_ids:
+                        # Check it's actually an orphan (not just starting up)
+                        if c.status in ("exited", "dead"):
+                            logger.info("Removing orphan container %s (%s)", c.name, c.status)
+                            c.remove(force=True)
+        except Exception:
+            logger.debug("Orphan cleanup failed", exc_info=True)
 
     # ---- Recovery ----
 

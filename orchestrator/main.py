@@ -13,13 +13,11 @@ from sqlalchemy.orm import Session
 
 from config import PROJECT_CONFIGS_PATH
 from database import SessionLocal, get_db, init_db
+from log_config import setup_logging
 from models import Priority, Project, Task, TaskStatus
 from schemas import HealthResponse, PlanReject, ProjectOut, TaskBrief, TaskCreate, TaskOut
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+setup_logging()
 logger = logging.getLogger("orchestrator")
 
 
@@ -73,6 +71,8 @@ async def lifespan(app: FastAPI):
         db.close()
 
     # Start dispatcher and git manager
+    dispatch_task = None
+    backup_task = None
     try:
         from dispatcher import TaskDispatcher
         from git_manager import GitManager
@@ -87,18 +87,27 @@ async def lifespan(app: FastAPI):
         logger.info("Dispatcher started")
     except Exception:
         logger.exception("Failed to start dispatcher — running without scheduling")
-        dispatch_task = None
+
+    # Start backup loop
+    try:
+        from backup import run_backup_loop
+        backup_task = asyncio.create_task(run_backup_loop())
+        logger.info("Backup loop started")
+    except Exception:
+        logger.exception("Failed to start backup loop")
 
     yield
 
-    # Shutdown dispatcher
+    # Shutdown
+    for task in (dispatch_task, backup_task):
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     if dispatch_task:
         dispatcher.stop()
-        dispatch_task.cancel()
-        try:
-            await dispatch_task
-        except asyncio.CancelledError:
-            pass
     logger.info("CC Orchestrator shutting down...")
 
 
@@ -116,6 +125,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Voice router
+from voice import router as voice_router
+app.include_router(voice_router)
+
+# WebSocket
+from websocket import websocket_endpoint
+app.websocket("/ws/status")(websocket_endpoint)
 
 
 # ---- Health ----
@@ -359,3 +376,12 @@ async def serve_project_file(project: str, path: str, db: Session = Depends(get_
 
     media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
     return FileResponse(full_path, media_type=media_type)
+
+
+# ---- Logs ----
+
+@app.get("/api/logs")
+async def get_logs(level: str = "", limit: int = 100):
+    """Get recent orchestrator log lines, optionally filtered by level."""
+    from log_config import get_recent_logs
+    return {"lines": get_recent_logs(level=level, limit=limit)}
