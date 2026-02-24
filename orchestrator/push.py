@@ -33,7 +33,6 @@ def send_push_notification(title: str, body: str, url: str = "/") -> None:
             return
 
         payload = json.dumps({"title": title, "body": body, "url": url})
-        vapid_claims = {"sub": VAPID_SUBJECT}
         expired_ids = []
 
         for sub in subs:
@@ -44,6 +43,11 @@ def send_push_notification(title: str, body: str, url: str = "/") -> None:
                     "auth": sub.auth_key,
                 },
             }
+            # aud must be the origin of the push endpoint (required by FCM)
+            from urllib.parse import urlparse
+            parsed = urlparse(sub.endpoint)
+            aud = f"{parsed.scheme}://{parsed.netloc}"
+            vapid_claims = {"sub": VAPID_SUBJECT, "aud": aud}
             try:
                 webpush(
                     subscription_info=subscription_info,

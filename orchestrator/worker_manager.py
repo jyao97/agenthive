@@ -163,11 +163,15 @@ class WorkerManager:
         project: Project,
         agent: Agent,
         resume_session_id: str | None = None,
+        message_id: str | None = None,
     ) -> tuple[str, str]:
         """Run claude as a subprocess for an agent message.
         Returns (pid_str, output_file) for monitoring.
         """
-        output_file = f"/tmp/claude-output-{uuid.uuid4().hex[:8]}.log"
+        # Use message_id for predictable file name so partial output
+        # can be recovered after a crash.
+        file_tag = message_id or uuid.uuid4().hex[:8]
+        output_file = f"/tmp/claude-output-{file_tag}.log"
 
         cmd = [CLAUDE_BIN, "-p", prompt, "--dangerously-skip-permissions",
                "--output-format", "stream-json", "--verbose"]

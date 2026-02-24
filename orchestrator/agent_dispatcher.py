@@ -37,10 +37,46 @@ def _truncate(text: str, max_len: int) -> str:
     return text[:max_len] + "\n... [truncated]"
 
 
+def _short_path(path: str) -> str:
+    """Shorten a file path for display (last 2 components)."""
+    parts = path.rstrip("/").split("/")
+    if len(parts) <= 2:
+        return path
+    return "/".join(parts[-2:])
+
+
+def _format_tool_summary(name: str, input_data: dict) -> str | None:
+    """Format a tool call as a brief one-line markdown summary."""
+    if name == "Bash":
+        desc = input_data.get("description", "")
+        if not desc:
+            cmd = input_data.get("command", "")
+            desc = cmd.split("\n")[0]
+            if len(desc) > 60:
+                desc = desc[:57] + "..."
+        return f"> `Bash` {desc}"
+    if name in ("Read", "Edit", "Write"):
+        path = input_data.get("file_path", "")
+        return f"> `{name}` {_short_path(path)}"
+    if name == "Grep":
+        pat = input_data.get("pattern", "")
+        if len(pat) > 40:
+            pat = pat[:37] + "..."
+        return f'> `Grep` "{pat}"'
+    if name == "Glob":
+        return f"> `Glob` {input_data.get('pattern', '')}"
+    if name == "Task":
+        return f"> `Task` {input_data.get('description', '')}"
+    # Skip noisy internal tools
+    if name in ("ToolSearch",):
+        return None
+    return f"> `{name}`"
+
+
 def _extract_result(logs: str) -> str:
-    """Extract agent response text from stream-json output."""
+    """Extract agent response text and tool call summaries from stream-json."""
     import json
-    parts = []
+    parts = []  # ordered list of text strings and tool summary strings
     result_event = None
     for line in logs.strip().splitlines():
         line = line.strip()
@@ -51,11 +87,23 @@ def _extract_result(logs: str) -> str:
             if event.get("type") == "result":
                 result_event = event
             if event.get("type") == "assistant" and "message" in event:
+                # Skip subagent messages (Task agents)
+                if event.get("parent_tool_use_id"):
+                    continue
                 msg = event["message"]
                 if isinstance(msg, dict):
                     for block in msg.get("content", []):
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            parts.append(block["text"])
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "text":
+                            parts.append(("text", block["text"]))
+                        elif block.get("type") == "tool_use":
+                            summary = _format_tool_summary(
+                                block.get("name", ""),
+                                block.get("input", {}),
+                            )
+                            if summary:
+                                parts.append(("tool", summary))
         except (json.JSONDecodeError, KeyError, TypeError):
             continue
 
@@ -67,7 +115,21 @@ def _extract_result(logs: str) -> str:
                 return "This session's conversation data is no longer available. It may have been cleaned up or created on a different machine. Please start a new conversation instead."
 
     if parts:
-        text = "\n".join(parts)
+        # Group consecutive tool summaries together, separate with blank lines
+        groups = []
+        current_tools = []
+        for kind, content in parts:
+            if kind == "tool":
+                current_tools.append(content)
+            else:
+                if current_tools:
+                    groups.append("\n".join(current_tools))
+                    current_tools = []
+                groups.append(content)
+        if current_tools:
+            groups.append("\n".join(current_tools))
+
+        text = "\n\n".join(groups)
         # Strip legacy EXIT_SUCCESS / EXIT_FAILURE markers
         import re
         text = re.sub(r"\n?EXIT_SUCCESS\s*$", "", text).strip()
@@ -693,6 +755,7 @@ class AgentDispatcher:
                 pid_str, output_file = self.worker_mgr.exec_claude_in_agent(
                     project_path, prompt, project, agent,
                     resume_session_id=resume_session_id,
+                    message_id=pending_msg.id,
                 )
                 self._active_execs[agent.id] = {
                     "pid_str": pid_str,
@@ -832,19 +895,47 @@ class AgentDispatcher:
                     msg = Message(
                         agent_id=agent.id,
                         role=MessageRole.SYSTEM,
-                        content="Agent recovered after restart — set to IDLE",
+                        content="Agent recovered after restart — re-queuing pending messages",
                         status=MessageStatus.COMPLETED,
                     )
                     db.add(msg)
 
-                # Reset any EXECUTING messages to FAILED
+                # Re-queue EXECUTING messages so the original prompt is
+                # re-dispatched automatically instead of being lost.
+                # Also salvage any partial output from the crashed process.
                 executing_msgs = db.query(Message).filter(
                     Message.agent_id == agent.id,
                     Message.status == MessageStatus.EXECUTING,
                 ).all()
                 for m in executing_msgs:
-                    m.status = MessageStatus.FAILED
-                    m.error_message = "Orchestrator restarted"
+                    # Try to recover partial output from the predictable file
+                    partial_file = f"/tmp/claude-output-{m.id}.log"
+                    if os.path.exists(partial_file):
+                        try:
+                            with open(partial_file, "r", errors="replace") as f:
+                                partial_logs = f.read()
+                            if partial_logs.strip():
+                                partial_text = _extract_result(partial_logs)
+                                if partial_text and partial_text != "(no output)":
+                                    partial_msg = Message(
+                                        agent_id=agent.id,
+                                        role=MessageRole.AGENT,
+                                        content=f"*(partial — interrupted by restart)*\n\n{partial_text}",
+                                        status=MessageStatus.COMPLETED,
+                                    )
+                                    db.add(partial_msg)
+                                    logger.info(
+                                        "Recovered partial output for message %s (%d chars)",
+                                        m.id, len(partial_text),
+                                    )
+                            # Clean up the temp file
+                            os.unlink(partial_file)
+                        except OSError:
+                            pass
+
+                    m.status = MessageStatus.PENDING
+                    m.completed_at = None
+                    m.error_message = None
 
             if agents:
                 db.commit()
