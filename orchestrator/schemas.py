@@ -35,6 +35,7 @@ class AgentCreate(BaseModel):
     mode: AgentMode = AgentMode.AUTO
     worktree: str | None = None  # None = shared main, string = worktree name
     timeout_seconds: int = 600
+    resume_session_id: str | None = None  # Resume an existing Claude session
 
 
 class AgentOut(BaseModel):
@@ -140,12 +141,13 @@ class SessionSummary(BaseModel):
     last_activity_at: int     # Unix ms
     project_path: str
     linked_agent_id: str | None = None
+    starred: bool = False
 
 
 # --- System schemas ---
 
 class HealthResponse(BaseModel):
     status: str
-    service: str = "cc-orchestrator"
+    service: str = "agenthive"
     db: str = "ok"
     claude_cli: str = "unknown"

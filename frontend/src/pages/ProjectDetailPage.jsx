@@ -8,6 +8,8 @@ import {
   createProject,
   deleteProject as deleteProjectApi,
   archiveProject as archiveProjectApi,
+  starSession,
+  unstarSession,
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import VoiceRecorder from "../components/VoiceRecorder";
@@ -18,6 +20,7 @@ import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS } from "../lib/constants";
 
 const AGENT_TABS = [
+  { key: "starred", label: "Starred" },
   { key: "active", label: "Active" },
   { key: "stopped", label: "Stopped" },
   { key: "sessions", label: "Sessions" },
@@ -37,10 +40,11 @@ function agentBotState(status) {
   return "idle";
 }
 
-function AgentRow({ agent, onClick }) {
+function AgentRow({ agent, onClick, starred, onToggleStar, project }) {
   const statusDot = AGENT_STATUS_COLORS[agent.status] || "bg-gray-500";
   const statusText = AGENT_STATUS_TEXT_COLORS[agent.status] || "text-dim";
   const [copied, setCopied] = useState(false);
+  const [starLoading, setStarLoading] = useState(false);
 
   const handleCopyId = (e) => {
     e.stopPropagation();
@@ -48,6 +52,25 @@ function AgentRow({ agent, onClick }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
+  };
+
+  const handleStarClick = async (e) => {
+    e.stopPropagation();
+    if (starLoading) return;
+    setStarLoading(true);
+    const sessionId = agent.session_id || agent.id;
+    try {
+      if (starred) {
+        await unstarSession(project, sessionId);
+      } else {
+        await starSession(project, sessionId);
+      }
+      if (onToggleStar) onToggleStar(sessionId, !starred);
+    } catch {
+      // silently fail
+    } finally {
+      setStarLoading(false);
+    }
   };
 
   return (
@@ -92,6 +115,23 @@ function AgentRow({ agent, onClick }) {
           )}
         </div>
       </div>
+      <div
+        role="button"
+        tabIndex={-1}
+        onClick={handleStarClick}
+        className="shrink-0 p-1.5 rounded-lg hover:bg-input transition-colors disabled:opacity-50"
+        title={starred ? "Unstar" : "Star"}
+      >
+        {starred ? (
+          <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+          </svg>
+        ) : (
+          <svg className="w-5 h-5 text-label hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+          </svg>
+        )}
+      </div>
     </button>
   );
 }
@@ -111,8 +151,11 @@ function formatSessionTime(unixMs) {
   return d.toLocaleDateString();
 }
 
-function SessionRow({ session }) {
+function SessionRow({ session, project, projectActive, onResume, onError, onToggleStar }) {
+  const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [starLoading, setStarLoading] = useState(false);
 
   const handleCopyId = (e) => {
     e.stopPropagation();
@@ -122,8 +165,60 @@ function SessionRow({ session }) {
     });
   };
 
+  const handleStarClick = async (e) => {
+    e.stopPropagation();
+    if (starLoading) return;
+    setStarLoading(true);
+    try {
+      if (session.starred) {
+        await unstarSession(project, session.session_id);
+      } else {
+        await starSession(project, session.session_id);
+      }
+      if (onToggleStar) onToggleStar(session.session_id, !session.starred);
+    } catch {
+      // silently fail
+    } finally {
+      setStarLoading(false);
+    }
+  };
+
+  const handleClick = async () => {
+    if (resuming) return;
+    // Block resume for inactive projects
+    if (!projectActive && !session.linked_agent_id) {
+      if (onError) onError("Please activate this project first");
+      return;
+    }
+    // If already linked to an agent, navigate directly
+    if (session.linked_agent_id) {
+      navigate(`/agents/${session.linked_agent_id}`);
+      return;
+    }
+    // Otherwise, create a new agent that resumes this session
+    setResuming(true);
+    try {
+      const agent = await createAgent({
+        project,
+        prompt: session.first_message || "Continue previous conversation",
+        mode: "AUTO",
+        resume_session_id: session.session_id,
+      });
+      if (onResume) onResume();
+      navigate(`/agents/${agent.id}`);
+    } catch (err) {
+      setResuming(false);
+      if (onError) onError(err.message);
+    }
+  };
+
   return (
-    <div className="w-full text-left rounded-xl bg-surface shadow-card p-4 flex items-center gap-3">
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={resuming}
+      className="w-full text-left rounded-xl bg-surface shadow-card p-4 flex items-center gap-3 transition-colors active:bg-input focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 hover:ring-1 hover:ring-ring-hover disabled:opacity-60"
+    >
       <div
         className="relative shrink-0 cursor-pointer hover:opacity-70 transition-opacity"
         onClick={handleCopyId}
@@ -153,14 +248,43 @@ function SessionRow({ session }) {
           <span className="text-xs text-label">
             {session.message_count} message{session.message_count !== 1 ? "s" : ""}
           </span>
-          {session.linked_agent_id && (
+          {session.linked_agent_id ? (
             <span className="inline-flex items-center gap-1 text-xs text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded font-medium">
               Linked to agent
+            </span>
+          ) : resuming ? (
+            <span className="inline-flex items-center gap-1 text-xs text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded font-medium animate-pulse">
+              Resuming...
+            </span>
+          ) : !projectActive ? (
+            <span className="inline-flex items-center gap-1 text-xs text-dim bg-elevated px-1.5 py-0.5 rounded font-medium">
+              Activate to resume
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-xs text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded font-medium">
+              Click to resume
             </span>
           )}
         </div>
       </div>
-    </div>
+      <button
+        type="button"
+        onClick={handleStarClick}
+        disabled={starLoading}
+        className="shrink-0 p-1.5 rounded-lg hover:bg-input transition-colors disabled:opacity-50"
+        title={session.starred ? "Unstar session" : "Star session"}
+      >
+        {session.starred ? (
+          <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+          </svg>
+        ) : (
+          <svg className="w-5 h-5 text-label hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+          </svg>
+        )}
+      </button>
+    </button>
   );
 }
 
@@ -176,6 +300,9 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   // Sessions (lazy-loaded)
   const [sessions, setSessions] = useState(null);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+
+  // Starred session IDs (eagerly loaded for agent rows)
+  const [starredIds, setStarredIds] = useState(new Set());
 
   // Agent creation
   const [prompt, setPrompt] = useState("");
@@ -238,9 +365,18 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     return () => clearInterval(interval);
   }, [loadData]);
 
-  // Lazy-fetch sessions when tab is selected
+  // Fetch starred IDs on mount (for agent row stars)
   useEffect(() => {
-    if (agentTab !== "sessions" || sessions !== null) return;
+    fetchProjectSessions(name)
+      .then((data) => {
+        setStarredIds(new Set(data.filter((s) => s.starred).map((s) => s.session_id)));
+      })
+      .catch(() => {});
+  }, [name]);
+
+  // Lazy-fetch sessions when starred or sessions tab is selected
+  useEffect(() => {
+    if ((agentTab !== "sessions" && agentTab !== "starred") || sessions !== null) return;
     let cancelled = false;
     setSessionsLoading(true);
     fetchProjectSessions(name)
@@ -452,17 +588,19 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           {AGENT_TABS.map((tab) => {
             const isActive = agentTab === tab.key;
             const count =
-              tab.key === "active"
-                ? agents.filter((a) => a.status !== "STOPPED").length
-                : tab.key === "stopped"
-                  ? agents.filter((a) => a.status === "STOPPED").length
-                  : sessions ? sessions.length : "…";
+              tab.key === "starred"
+                ? sessions ? sessions.filter((s) => s.starred).length : "…"
+                : tab.key === "active"
+                  ? agents.filter((a) => a.status !== "STOPPED").length
+                  : tab.key === "stopped"
+                    ? agents.filter((a) => a.status === "STOPPED").length
+                    : sessions ? sessions.length : "…";
             return (
               <button
                 key={tab.key}
                 type="button"
                 onClick={() => setAgentTab(tab.key)}
-                className={`min-h-[36px] px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                className={`min-h-[36px] min-w-[5.5rem] px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
                   isActive
                     ? "bg-cyan-600 text-white"
                     : "bg-surface text-label hover:bg-input"
@@ -477,18 +615,39 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           })}
         </div>
 
-        {agentTab === "sessions" ? (
+        {agentTab === "sessions" || agentTab === "starred" ? (
           sessionsLoading ? (
             <div className="text-center py-8 text-faint text-sm animate-pulse">Loading sessions...</div>
-          ) : !sessions || sessions.length === 0 ? (
-            <div className="text-center py-8 text-faint text-sm">No sessions found</div>
-          ) : (
-            <div className="space-y-2">
-              {sessions.map((s) => (
-                <SessionRow key={s.session_id} session={s} />
-              ))}
-            </div>
-          )
+          ) : (() => {
+            const list = agentTab === "starred"
+              ? (sessions || []).filter((s) => s.starred)
+              : sessions || [];
+            return list.length === 0 ? (
+              <div className="text-center py-8 text-faint text-sm">
+                {agentTab === "starred" ? "No starred sessions" : "No sessions found"}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {list.map((s) => (
+                  <SessionRow
+                    key={s.session_id}
+                    session={s}
+                    project={name}
+                    projectActive={project?.active}
+                    onResume={() => { setSessions(null); loadData(); }}
+                    onError={(msg) => showToast(msg, "error")}
+                    onToggleStar={(sid, starred) => {
+                      setSessions((prev) =>
+                        prev ? prev.map((ss) =>
+                          ss.session_id === sid ? { ...ss, starred } : ss
+                        ) : prev
+                      );
+                    }}
+                  />
+                ))}
+              </div>
+            );
+          })()
         ) : filtered.length === 0 ? (
           <div className="text-center py-8 text-faint text-sm">
             No {agentTab} agents
@@ -499,7 +658,21 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
               <AgentRow
                 key={agent.id}
                 agent={agent}
+                project={name}
+                starred={starredIds.has(agent.session_id || agent.id)}
                 onClick={() => navigate(`/agents/${agent.id}`)}
+                onToggleStar={(sid, newStarred) => {
+                  setStarredIds((prev) => {
+                    const next = new Set(prev);
+                    newStarred ? next.add(sid) : next.delete(sid);
+                    return next;
+                  });
+                  setSessions((prev) =>
+                    prev ? prev.map((ss) =>
+                      ss.session_id === sid ? { ...ss, starred: newStarred } : ss
+                    ) : prev
+                  );
+                }}
               />
             ))}
           </div>

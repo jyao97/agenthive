@@ -1,6 +1,6 @@
 {
-  "name": "CC Orchestrator",
-  "short_name": "CC Orch",
+  "name": "AgentHive",
+  "short_name": "AgentHive",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#1a1a2e",

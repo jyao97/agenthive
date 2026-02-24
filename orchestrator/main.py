@@ -1,4 +1,4 @@
-"""CC Orchestrator — FastAPI entry point."""
+"""AgentHive — FastAPI entry point."""
 
 import asyncio
 import logging
@@ -23,6 +23,7 @@ from models import (
     MessageStatus,
     AgentMode,
     Project,
+    StarredSession,
 )
 from schemas import (
     AgentBrief,
@@ -120,7 +121,7 @@ def load_registry(db: Session):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    logger.info("CC Orchestrator starting up...")
+    logger.info("AgentHive starting up...")
     init_db()
     logger.info("Database initialized")
 
@@ -175,11 +176,11 @@ async def lifespan(app: FastAPI):
         dispatcher.stop()
     if agent_dispatch_task:
         agent_dispatcher.stop()
-    logger.info("CC Orchestrator shutting down...")
+    logger.info("AgentHive shutting down...")
 
 
 app = FastAPI(
-    title="CC Orchestrator",
+    title="AgentHive",
     description="Multi-instance Claude Code orchestration system",
     version="0.2.0",
     lifespan=lifespan,
@@ -881,11 +882,17 @@ async def list_project_sessions(name: str, db: Session = Depends(get_db)):
     for aid, asid in agent_rows:
         linked_agents[asid] = aid
 
-    # Build summaries
+    # Build summaries from history.jsonl
+    seen_session_ids: set[str] = set()
     results = []
     for sid, entries in matched.items():
         entries.sort(key=lambda e: e.get("timestamp", 0))
         first_msg = entries[0].get("display", "")
+
+        # Skip sessions that were interrupted before producing useful output
+        if "[Request interrupted by user]" in (first_msg or ""):
+            continue
+
         created = entries[0].get("timestamp", 0)
         last = entries[-1].get("timestamp", 0)
         project_path = entries[0].get("project", "")
@@ -899,10 +906,73 @@ async def list_project_sessions(name: str, db: Session = Depends(get_db)):
             project_path=project_path,
             linked_agent_id=linked_agents.get(sid),
         ))
+        seen_session_ids.add(sid)
+
+    # Also include orchestrator agents not found in history.jsonl
+    all_agents = db.query(Agent).filter(Agent.project == name).all()
+    for agent in all_agents:
+        # Skip agents whose session_id is already covered by history.jsonl
+        if agent.session_id and agent.session_id in seen_session_ids:
+            continue
+
+        # Use agent.id as the session identifier for agents without a session_id
+        sid = agent.session_id or agent.id
+
+        # Count user messages for this agent
+        msg_count = (
+            db.query(func.count(Message.id))
+            .filter(Message.agent_id == agent.id, Message.role == MessageRole.USER)
+            .scalar()
+        )
+        if msg_count == 0:
+            continue
+
+        created_ms = int(agent.created_at.timestamp() * 1000) if agent.created_at else 0
+        last_ms = int(agent.last_message_at.timestamp() * 1000) if agent.last_message_at else created_ms
+
+        results.append(SessionSummary(
+            session_id=sid,
+            first_message=agent.name,
+            message_count=msg_count,
+            created_at=created_ms,
+            last_activity_at=last_ms,
+            project_path=os.path.join(projects_dir, name),
+            linked_agent_id=agent.id,
+        ))
 
     # Sort by most recent first
     results.sort(key=lambda s: s.last_activity_at, reverse=True)
+
+    # Mark starred sessions
+    starred_ids = set(
+        row[0] for row in db.query(StarredSession.session_id)
+        .filter(StarredSession.project == name)
+        .all()
+    )
+    for s in results:
+        s.starred = s.session_id in starred_ids
+
     return results
+
+
+@app.put("/api/projects/{name}/sessions/{session_id}/star")
+async def star_session(name: str, session_id: str, db: Session = Depends(get_db)):
+    """Star a session."""
+    existing = db.get(StarredSession, session_id)
+    if not existing:
+        db.add(StarredSession(session_id=session_id, project=name))
+        db.commit()
+    return {"starred": True}
+
+
+@app.delete("/api/projects/{name}/sessions/{session_id}/star")
+async def unstar_session(name: str, session_id: str, db: Session = Depends(get_db)):
+    """Unstar a session."""
+    existing = db.get(StarredSession, session_id)
+    if existing:
+        db.delete(existing)
+        db.commit()
+    return {"starred": False}
 
 
 # ---- Tasks (agent-sourced: each USER message = one task) ----
@@ -1014,6 +1084,7 @@ async def create_agent(body: AgentCreate, db: Session = Depends(get_db)):
         mode=body.mode,
         worktree=body.worktree,
         timeout_seconds=body.timeout_seconds,
+        session_id=body.resume_session_id,
         last_message_preview=name,
         last_message_at=_utcnow(),
     )

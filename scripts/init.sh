@@ -2,7 +2,7 @@
 set -e
 
 echo "========================================="
-echo "  CC Orchestrator — Initialization"
+echo "  AgentHive — Initialization"
 echo "========================================="
 echo ""
 
@@ -92,7 +92,7 @@ ok "Local directories created"
 # 6. Initialize projects/registry.yaml
 if [ ! -f projects/registry.yaml ]; then
     cat > projects/registry.yaml << 'EOF'
-# CC Orchestrator Project Registry
+# AgentHive Project Registry
 # Use ./scripts/add-project.sh to add projects, or edit manually
 
 projects: []

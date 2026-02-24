@@ -1,4 +1,4 @@
-# CLAUDE.md — CC Orchestrator (Multi-Instance Claude Code Orchestration System)
+# CLAUDE.md — AgentHive (Multi-Instance Claude Code Orchestration System)
 
 ## Project Overview
 
@@ -33,7 +33,7 @@ This is a shared lab machine. Safety is the #1 priority:
 ```
 Lab Computer (Host — DO NOT TOUCH)
 │
-├── cc-orchestrator/                 ← This project directory
+├── agenthive/                 ← This project directory
 │   ├── docker-compose.yml           ← One command to start everything
 │   ├── orchestrator/                ← Scheduler container
 │   ├── worker/                      ← CC worker container template
@@ -69,7 +69,7 @@ Lab Computer (Host — DO NOT TOUCH)
 ## Directory Structure
 
 ```
-cc-orchestrator/
+agenthive/
 ├── CLAUDE.md                  # This file (global instructions)
 ├── TASKS.md                   # Task breakdown
 ├── PROGRESS.md                # Lessons learned

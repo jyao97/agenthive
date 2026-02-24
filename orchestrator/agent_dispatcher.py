@@ -39,12 +39,15 @@ def _extract_result(logs: str) -> str:
     """Extract agent response text from stream-json output."""
     import json
     parts = []
+    result_event = None
     for line in logs.strip().splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             event = json.loads(line)
+            if event.get("type") == "result":
+                result_event = event
             if event.get("type") == "assistant" and "message" in event:
                 msg = event["message"]
                 if isinstance(msg, dict):
@@ -53,6 +56,13 @@ def _extract_result(logs: str) -> str:
                             parts.append(block["text"])
         except (json.JSONDecodeError, KeyError, TypeError):
             continue
+
+    # Friendly error messages for known error patterns
+    if result_event and result_event.get("is_error"):
+        errors = result_event.get("errors", [])
+        for err in errors:
+            if isinstance(err, str) and "No conversation found with session ID" in err:
+                return "This session's conversation data is no longer available. It may have been cleaned up or created on a different machine. Please start a new conversation instead."
 
     if parts:
         text = "\n".join(parts)

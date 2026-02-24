@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 
-const STORAGE_KEY = "cc-orch-theme";
+const STORAGE_KEY = "agenthive-theme";
 
 function getSystemTheme() {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";

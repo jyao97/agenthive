@@ -112,7 +112,7 @@ export default function LoginPage() {
 
         {/* Title */}
         <div className="text-center mb-6">
-          <h1 className="text-lg font-semibold text-heading">CC Orchestrator</h1>
+          <h1 className="text-lg font-semibold text-heading">AgentHive</h1>
           <p className="text-sm text-dim mt-1">
             {needsSetup ? "Set a password to get started" : "Locked"}
           </p>
