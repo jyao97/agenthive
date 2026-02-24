@@ -2,7 +2,11 @@
 export function relativeTime(dateStr) {
   if (!dateStr) return "";
   const now = Date.now();
-  const then = new Date(dateStr).getTime();
+  // Backend returns UTC datetimes without timezone suffix — append Z so
+  // JavaScript doesn't misinterpret them as local time.
+  let str = String(dateStr);
+  if (/^\d{4}-\d{2}-\d{2}T[\d:.]+$/.test(str)) str += "Z";
+  const then = new Date(str).getTime();
   const diff = Math.max(0, now - then);
   const seconds = Math.floor(diff / 1000);
   if (seconds < 60) return `${seconds}s ago`;
@@ -138,31 +142,70 @@ export function renderInline(text) {
   });
 }
 
-/** Scan text for image-like paths and render them as images below the text. */
-export function extractImages(text, project) {
-  if (!text) return null;
-  const imgRegex = /(?:^|\s)(\S+\.(?:png|jpg|jpeg|gif|svg|webp))(?:\s|$)/gim;
-  const matches = [];
-  let m;
-  while ((m = imgRegex.exec(text)) !== null) {
-    matches.push(m[1]);
+// File extensions we detect for inline previews
+const IMAGE_EXTS = /\.(png|jpg|jpeg|gif|svg|webp)$/i;
+const VIDEO_EXTS = /\.(mp4|webm|mov)$/i;
+const CSV_EXT = /\.csv$/i;
+const ALL_EXTS = /\.(png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|csv)$/i;
+
+// Compiled regexes for path detection
+const RE_MD_IMAGE = /!\[.*?\]\((\S+?\.(?:png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|csv))\)/gi;
+const RE_BACKTICK = /`([^`]*\/[^`]*\.(?:png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|csv))`/gi;
+const RE_BARE_PATH = /(?:^|[\s(])([^\s()\[\]!]*\/[^\s()\[\]]+\.(?:png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|csv))(?=[\s),\]]|$)/gim;
+
+/**
+ * Extract file attachments (images, videos, CSVs) from message text.
+ * Returns an array of { path, resolvedUrl, type, ext } objects (data, not JSX).
+ * Skips images that renderMarkdown already renders inline (full-line ![](...)
+ * or bare filename lines) to avoid double-rendering.
+ */
+export function extractFileAttachments(text, project) {
+  if (!text) return [];
+
+  // Collect paths already rendered inline by renderMarkdown
+  const inlineRendered = new Set();
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    // Full-line markdown image: ![...](path.ext)
+    const mdFull = trimmed.match(/^!\[.*?\]\((.+?)\)$/);
+    if (mdFull) inlineRendered.add(mdFull[1]);
+    // Bare filename on its own line: image.png
+    const bareFull = trimmed.match(/^(\S+\.(?:png|jpg|jpeg|gif|svg|webp))$/i);
+    if (bareFull) inlineRendered.add(bareFull[1]);
   }
-  if (matches.length === 0) return null;
-  return (
-    <div className="flex flex-wrap gap-2 mt-2">
-      {matches.map((src, idx) => {
-        const resolvedSrc = src.startsWith("http")
-          ? src
-          : `/api/files/${project}/${src.replace(/^\/+/, "")}`;
-        return (
-          <img
-            key={idx}
-            src={resolvedSrc}
-            alt=""
-            className="max-w-full max-h-48 rounded-lg border border-divider"
-          />
-        );
-      })}
-    </div>
-  );
+
+  const seen = new Set();
+  const results = [];
+
+  const addPath = (rawPath) => {
+    if (!rawPath || !ALL_EXTS.test(rawPath)) return;
+    // Strip container-absolute prefix
+    let path = rawPath.replace(/^\/projects\/[^/]+\//, "");
+    path = path.replace(/^\/+/, "");
+    if (seen.has(path) || inlineRendered.has(rawPath)) return;
+    seen.add(path);
+
+    const resolvedUrl = rawPath.startsWith("http")
+      ? rawPath
+      : `/api/files/${project}/${path}`;
+
+    let type = "unknown";
+    if (IMAGE_EXTS.test(path)) type = "image";
+    else if (VIDEO_EXTS.test(path)) type = "video";
+    else if (CSV_EXT.test(path)) type = "csv";
+
+    const ext = path.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
+    results.push({ path, resolvedUrl, type, ext });
+  };
+
+  // Match all three patterns
+  let m;
+  RE_MD_IMAGE.lastIndex = 0;
+  while ((m = RE_MD_IMAGE.exec(text)) !== null) addPath(m[1]);
+  RE_BACKTICK.lastIndex = 0;
+  while ((m = RE_BACKTICK.exec(text)) !== null) addPath(m[1]);
+  RE_BARE_PATH.lastIndex = 0;
+  while ((m = RE_BARE_PATH.exec(text)) !== null) addPath(m[1]);
+
+  return results;
 }

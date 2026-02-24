@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   fetchAgent,
@@ -10,7 +10,8 @@ import {
   approveAgentPlan,
   rejectAgentPlan,
 } from "../lib/api";
-import { relativeTime, renderMarkdown } from "../lib/formatters";
+import { relativeTime, renderMarkdown, extractFileAttachments } from "../lib/formatters";
+import FileAttachments from "../components/FilePreview";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS } from "../lib/constants";
 import VoiceRecorder from "../components/VoiceRecorder";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
@@ -31,32 +32,41 @@ function ChatBubble({ message, project }) {
   }
 
   const isUser = message.role === "USER";
+  const isAgent = message.role === "AGENT";
+
+  const attachments = useMemo(
+    () => (isAgent ? extractFileAttachments(message.content, project) : []),
+    [isAgent, message.content, project],
+  );
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-2`}>
-      <div
-        className={`max-w-[85%] rounded-2xl px-4 py-2.5 ${
-          isUser
-            ? "bg-cyan-600 text-white rounded-br-md"
-            : "bg-surface shadow-card text-body rounded-bl-md"
-        }`}
-      >
-        {isUser ? (
-          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-        ) : (
-          <div className="text-sm">
-            {renderMarkdown(message.content, project)}
+      <div className="max-w-[85%]">
+        <div
+          className={`rounded-2xl px-4 py-2.5 ${
+            isUser
+              ? "bg-cyan-600 text-white rounded-br-md"
+              : "bg-surface shadow-card text-body rounded-bl-md"
+          }`}
+        >
+          {isUser ? (
+            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+          ) : (
+            <div className="text-sm">
+              {renderMarkdown(message.content, project)}
+            </div>
+          )}
+          <div className={`text-xs mt-1 ${isUser ? "text-cyan-200" : "text-dim"}`}>
+            {relativeTime(message.created_at)}
+            {message.status === "FAILED" && (
+              <span className="ml-2 text-red-400">Failed</span>
+            )}
+            {message.status === "TIMEOUT" && (
+              <span className="ml-2 text-orange-400">Timed out</span>
+            )}
           </div>
-        )}
-        <div className={`text-xs mt-1 ${isUser ? "text-cyan-200" : "text-dim"}`}>
-          {relativeTime(message.created_at)}
-          {message.status === "FAILED" && (
-            <span className="ml-2 text-red-400">Failed</span>
-          )}
-          {message.status === "TIMEOUT" && (
-            <span className="ml-2 text-orange-400">Timed out</span>
-          )}
         </div>
+        {attachments.length > 0 && <FileAttachments attachments={attachments} />}
       </div>
     </div>
   );

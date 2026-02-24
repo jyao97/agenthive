@@ -95,6 +95,13 @@ body {
   word-break: break-word;
 }
 
+/* ── dvh fallback for browsers that don't support it ── */
+@supports not (height: 100dvh) {
+  .h-dvh {
+    height: 100vh;
+  }
+}
+
 /* ── Safe area for iOS notch/home indicator ── */
 .safe-area-pb {
   padding-bottom: env(safe-area-inset-bottom, 0px);

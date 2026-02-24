@@ -1,4 +1,4 @@
-import { Routes, Route, NavLink, Navigate } from "react-router-dom";
+import { Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
 import ProjectsPage from "./pages/ProjectsPage";
 import ProjectDetailPage from "./pages/ProjectDetailPage";
 import AgentsPage from "./pages/AgentsPage";
@@ -61,11 +61,13 @@ const tabs = [
 export default function App() {
   const { theme, toggle } = useTheme();
   const themeProps = { theme, onToggleTheme: toggle };
+  const location = useLocation();
+  const hideNav = location.pathname.match(/^\/agents\/[^/]+$/);
 
   return (
-    <div className="flex flex-col h-screen bg-page text-heading min-w-[320px] overflow-x-hidden">
+    <div className="flex flex-col h-dvh bg-page text-heading min-w-[320px] overflow-x-hidden">
       {/* Main content area */}
-      <main className="flex-1 overflow-hidden">
+      <main className="flex-1 min-h-0 overflow-hidden">
         <Routes>
           <Route path="/" element={<Navigate to="/projects" replace />} />
           <Route path="/projects" element={<ProjectsPage {...themeProps} />} />
@@ -79,43 +81,45 @@ export default function App() {
         </Routes>
       </main>
 
-      {/* Bottom tab bar */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-surface border-t border-divider safe-area-pb z-40">
-        <div className="grid grid-cols-5 items-center max-w-lg mx-auto">
-          {tabs.map((tab) =>
-            tab.isCenter ? (
-              <NavLink
-                key={tab.to}
-                to={tab.to}
-                className={({ isActive }) =>
-                  `flex items-center justify-center mx-auto -mt-5 w-14 h-14 rounded-full transition-colors shadow-lg shadow-cyan-500/20 ${
-                    isActive
-                      ? "bg-cyan-500 text-white"
-                      : "bg-cyan-600 text-white hover:bg-cyan-500"
-                  }`
-                }
-              >
-                {tab.icon}
-              </NavLink>
-            ) : (
-              <NavLink
-                key={tab.to}
-                to={tab.to}
-                className={({ isActive }) =>
-                  `flex flex-col items-center justify-center min-h-[44px] py-2 transition-colors ${
-                    isActive
-                      ? "text-cyan-400"
-                      : "text-dim hover:text-body"
-                  }`
-                }
-              >
-                {tab.icon}
-                <span className="text-xs mt-1">{tab.label}</span>
-              </NavLink>
-            )
-          )}
-        </div>
-      </nav>
+      {/* Bottom tab bar — completely unmounted on chat page (has its own header + back button) */}
+      {!hideNav && (
+        <nav className="fixed bottom-0 left-0 right-0 bg-surface border-t border-divider safe-area-pb z-40">
+          <div className="grid grid-cols-5 items-center max-w-lg mx-auto">
+            {tabs.map((tab) =>
+              tab.isCenter ? (
+                <NavLink
+                  key={tab.to}
+                  to={tab.to}
+                  className={({ isActive }) =>
+                    `flex items-center justify-center mx-auto -mt-5 w-14 h-14 rounded-full transition-colors shadow-lg shadow-cyan-500/20 ${
+                      isActive
+                        ? "bg-cyan-500 text-white"
+                        : "bg-cyan-600 text-white hover:bg-cyan-500"
+                    }`
+                  }
+                >
+                  {tab.icon}
+                </NavLink>
+              ) : (
+                <NavLink
+                  key={tab.to}
+                  to={tab.to}
+                  className={({ isActive }) =>
+                    `flex flex-col items-center justify-center min-h-[44px] py-2 transition-colors ${
+                      isActive
+                        ? "text-cyan-400"
+                        : "text-dim hover:text-body"
+                    }`
+                  }
+                >
+                  {tab.icon}
+                  <span className="text-xs mt-1">{tab.label}</span>
+                </NavLink>
+              )
+            )}
+          </div>
+        </nav>
+      )}
 
     </div>
   );
