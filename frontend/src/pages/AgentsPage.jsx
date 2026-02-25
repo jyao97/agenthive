@@ -13,7 +13,7 @@ const FILTER_TABS = [
 ];
 
 function agentBotState(status) {
-  if (status === "EXECUTING" || status === "PLANNING") return "running";
+  if (status === "EXECUTING" || status === "PLANNING" || status === "SYNCING") return "running";
   if (status === "ERROR") return "error";
   if (status === "IDLE" || status === "PLAN_REVIEW") return "completed";
   if (status === "STOPPED") return "idle";

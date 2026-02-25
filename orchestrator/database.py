@@ -107,6 +107,15 @@ def init_db():
             ))
             conn.commit()
 
+        # Add cli_sync column to agents if missing
+        result = conn.execute(text("PRAGMA table_info(agents)"))
+        columns = {row[1] for row in result}
+        if "cli_sync" not in columns:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN cli_sync BOOLEAN NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+
         # Drop old priority column now that mode has been migrated
         result = conn.execute(text("PRAGMA table_info(agents)"))
         columns = {row[1] for row in result}

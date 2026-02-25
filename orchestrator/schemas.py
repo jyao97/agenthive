@@ -37,6 +37,7 @@ class AgentCreate(BaseModel):
     worktree: str | None = None  # None = shared main, string = worktree name
     timeout_seconds: int = 1800
     resume_session_id: str | None = None  # Resume an existing Claude session
+    sync_session: bool = False  # Import history from CLI session and live-sync
 
 
 class AgentOut(BaseModel):
@@ -49,6 +50,7 @@ class AgentOut(BaseModel):
     worktree: str | None = None
     plan: str | None = None
     plan_approved: bool = False
+    cli_sync: bool = False
     model: str | None = None
     last_message_preview: str | None = None
     last_message_at: datetime | None = None

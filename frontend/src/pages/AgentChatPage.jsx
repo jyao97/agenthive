@@ -298,8 +298,8 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
 
   // Polling — faster when executing
   useEffect(() => {
-    const isExecuting = agent?.status === "EXECUTING" || agent?.status === "PLANNING";
-    const interval = isExecuting ? 3000 : 10000;
+    const isActive = agent?.status === "EXECUTING" || agent?.status === "PLANNING" || agent?.status === "SYNCING";
+    const interval = isActive ? 3000 : 10000;
     const timer = setInterval(loadData, interval);
     return () => clearInterval(timer);
   }, [loadData, agent?.status]);
@@ -502,6 +502,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const statusDot = AGENT_STATUS_COLORS[agent.status] || "bg-gray-500";
   const statusText = AGENT_STATUS_TEXT_COLORS[agent.status] || "text-dim";
   const isExecuting = agent.status === "EXECUTING" || agent.status === "PLANNING";
+  const isSyncing = agent.status === "SYNCING";
   const isStopped = agent.status === "STOPPED";
   const isError = agent.status === "ERROR";
   const isPlanReview = agent.status === "PLAN_REVIEW";
@@ -509,6 +510,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   let disabledReason = "";
   if (isStopped) disabledReason = "Agent is stopped — click Resume to restart";
   else if (isError) disabledReason = "Agent errored — click Resume to restart";
+  else if (isSyncing) disabledReason = "Syncing from CLI session...";
   else if (isExecuting) disabledReason = "Agent is working...";
 
   return (
@@ -683,7 +685,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       {/* Input bar */}
       <ChatInput
         onSend={handleSend}
-        disabled={isStopped || isError || isExecuting}
+        disabled={isStopped || isError || isExecuting || isSyncing}
         disabledReason={disabledReason}
       />
 

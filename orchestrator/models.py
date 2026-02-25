@@ -35,6 +35,7 @@ class AgentStatus(str, enum.Enum):
     EXECUTING = "EXECUTING"
     PLANNING = "PLANNING"
     PLAN_REVIEW = "PLAN_REVIEW"
+    SYNCING = "SYNCING"       # Importing conversation from CLI session
     ERROR = "ERROR"
     STOPPED = "STOPPED"
 
@@ -104,6 +105,7 @@ class Agent(Base):
     plan: Mapped[str | None] = mapped_column(Text, nullable=True)
     plan_approved: Mapped[bool] = mapped_column(Boolean, default=False)
     session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    cli_sync: Mapped[bool] = mapped_column(Boolean, default=False)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     last_message_preview: Mapped[str | None] = mapped_column(String(200), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
