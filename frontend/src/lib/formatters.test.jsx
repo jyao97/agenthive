@@ -132,9 +132,9 @@ describe("extractFileAttachments", () => {
     expect(result[0].type).toBe("csv");
   });
 
-  // --- Container prefix stripping ---
+  // --- Workspace prefix stripping ---
 
-  it("strips /projects/{project}/ prefix from absolute container paths", () => {
+  it("strips /projects/{project}/ prefix from absolute workspace paths", () => {
     const text = "File at `/projects/crowd-nav/output/result.png`";
     const result = extractFileAttachments(text, PROJECT);
     expect(result).toHaveLength(1);
