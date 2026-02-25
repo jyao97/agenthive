@@ -516,8 +516,16 @@ class AgentDispatcher:
                 agent.last_message_at = _utcnow()
                 agent.unread_count += 1
 
-                from websocket import emit_agent_update
+                from websocket import emit_agent_update, emit_new_message
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
+                self._emit(emit_new_message(agent.id, msg.id))
+
+                from push import send_push_notification
+                send_push_notification(
+                    title=f"\U0001f4cb {agent.name}",
+                    body="Plan ready for review",
+                    url=f"/agents/{agent.id}",
+                )
             else:
                 agent.plan = "(Planning failed)"
                 agent.status = AgentStatus.PLAN_REVIEW
@@ -531,6 +539,17 @@ class AgentDispatcher:
                 agent.last_message_preview = "Planning failed"
                 agent.last_message_at = _utcnow()
                 agent.unread_count += 1
+
+                from websocket import emit_agent_update, emit_new_message
+                self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
+                self._emit(emit_new_message(agent.id, msg.id))
+
+                from push import send_push_notification
+                send_push_notification(
+                    title=f"\u274c {agent.name}",
+                    body="Planning failed",
+                    url=f"/agents/{agent.id}",
+                )
 
             # Clean up planner process tracking
             self.worker_mgr._processes.pop(pid_str, None)
@@ -595,6 +614,17 @@ class AgentDispatcher:
                 agent.last_message_at = now
                 agent.unread_count += 1
 
+                from websocket import emit_agent_update, emit_new_message
+                self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
+                self._emit(emit_new_message(agent.id, sys_msg.id))
+
+                from push import send_push_notification
+                send_push_notification(
+                    title=f"\u23f0 {agent.name}",
+                    body=f"Timed out after {int(idle_seconds)}s of inactivity",
+                    url=f"/agents/{agent.id}",
+                )
+
                 timed_out.append(agent_id)
 
         for agent_id in timed_out:
@@ -618,6 +648,15 @@ class AgentDispatcher:
                     status=MessageStatus.FAILED,
                 )
                 db.add(msg)
+
+                from websocket import emit_agent_update
+                self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
+                from push import send_push_notification
+                send_push_notification(
+                    title=f"\u274c {agent.name}",
+                    body=f"Project '{agent.project}' not found",
+                    url=f"/agents/{agent.id}",
+                )
                 continue
 
             try:
@@ -645,6 +684,15 @@ class AgentDispatcher:
                     status=MessageStatus.FAILED,
                 )
                 db.add(msg)
+
+                from websocket import emit_agent_update
+                self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
+                from push import send_push_notification
+                send_push_notification(
+                    title=f"\u274c {agent.name}",
+                    body="Failed to start — project directory not found",
+                    url=f"/agents/{agent.id}",
+                )
 
     # ---- Step 5: Planning ----
 
