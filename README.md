@@ -6,18 +6,40 @@ AgentHive runs Claude Code CLI instances inside isolated Docker containers, so y
 
 ## Features
 
+### Core
 - **Multi-project management** — Register any number of Git repositories; agents work in isolated containers per project
 - **Mobile-first UI** — Responsive React frontend with PWA support (Add to Home Screen on iOS/Android)
-- **Voice input** — Dictate tasks using OpenAI Whisper speech-to-text
 - **Plan mode with approval** — Agents generate plans before executing; approve or reject from the UI
-- **Real-time streaming** — WebSocket-based live output from running agents
-- **Session persistence** — Resume previous agent conversations; star important sessions for quick access
 - **Agent lifecycle control** — Start, stop, resume, and monitor agents from the dashboard
+- **Model selection** — Choose between Claude models (Opus, Sonnet, Haiku) per agent
+
+### CLI Session Sync
+- **Sync CLI sessions to the web app** — Import conversations from `claude` CLI sessions running on the same machine and view them in the web UI
+- **Read-only live tailing** — The sync is strictly read-only; it tails the CLI's session JSONL without writing to it or interfering with the CLI process
+- **Auto-resume on restart** — Active CLI syncs automatically resume when the server restarts
+- **Generating indicator** — Shows a typing indicator while the CLI agent is mid-response
+- **Content reconciliation** — Detects and updates messages whose content grew since initial import (e.g. long tool-call chains)
+
+### Real-time
+- **Live streaming output** — WebSocket-based streaming of agent responses as they generate, with tool call summaries
+- **Browser notifications** — Notification API triggered directly from WebSocket events when the tab is in the background; no expiring push subscriptions needed
+- **Push notifications (fallback)** — Server-side Web Push via VAPID for when the browser is fully closed, with auto-resubscribe on every page load
+
+### Developer Experience
+- **Session persistence** — Resume previous agent conversations; star important sessions for quick access
+- **iOS-style multi-select** — Batch operations on agents (stop, delete) with swipe-friendly selection
+- **Rich markdown rendering** — Code blocks, tables, headers, bold/italic, inline images in chat
 - **Git integration** — View commit history, diffs, and branch status per project
+- **Voice input** — Dictate tasks using OpenAI Whisper speech-to-text
+
+### Operations
+- **Inactivity-based timeouts** — Agents time out based on idle time, not wall clock, so long-running tasks aren't killed prematurely
+- **Crash recovery** — Partial output recovery from interrupted agent processes; stale session repair on restart
 - **Resource limits** — CPU/RAM caps per agent container; per-project concurrency limits
 - **Automatic backups** — Hourly SQLite database backups with configurable retention
 - **Dark/light themes** — System-aware theme toggle
 - **GPU monitoring** — Built-in nvidia-smi integration for GPU-equipped machines
+- **Security hardening** — Login rate limiting with exponential backoff, inactivity-based auth lock
 
 ## Screenshots
 
