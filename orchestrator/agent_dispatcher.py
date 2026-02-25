@@ -921,13 +921,14 @@ class AgentDispatcher:
             if proj_executing >= project.max_concurrent:
                 continue
 
-            # Find the oldest pending user message
+            # Find the oldest pending user message (skip scheduled ones not yet due)
             pending_msg = (
                 db.query(Message)
                 .filter(
                     Message.agent_id == agent.id,
                     Message.role == MessageRole.USER,
                     Message.status == MessageStatus.PENDING,
+                    (Message.scheduled_at == None) | (Message.scheduled_at <= _utcnow()),
                 )
                 .order_by(Message.created_at.asc())
                 .first()

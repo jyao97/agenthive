@@ -170,10 +170,131 @@ function PlanReviewBar({ onApprove, onReject }) {
   );
 }
 
+// --- Send Later Time Picker ---
+
+function SendLaterPicker({ onSelect, onClose }) {
+  const [showCustom, setShowCustom] = useState(false);
+  const [customValue, setCustomValue] = useState("");
+  const pickerRef = useRef(null);
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target)) onClose();
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [onClose]);
+
+  const presets = [
+    { label: "30 minutes", minutes: 30 },
+    { label: "1 hour", minutes: 60 },
+    { label: "2 hours", minutes: 120 },
+    { label: "4 hours", minutes: 240 },
+  ];
+
+  // "Tomorrow 9 AM" in local time
+  const tomorrowMorning = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(9, 0, 0, 0);
+    return d;
+  };
+
+  const handlePreset = (minutes) => {
+    const d = new Date(Date.now() + minutes * 60000);
+    onSelect(d.toISOString());
+  };
+
+  const handleTomorrow = () => {
+    onSelect(tomorrowMorning().toISOString());
+  };
+
+  const handleCustom = () => {
+    if (!customValue) return;
+    const d = new Date(customValue);
+    if (isNaN(d.getTime()) || d <= new Date()) return;
+    onSelect(d.toISOString());
+  };
+
+  return (
+    <div
+      ref={pickerRef}
+      className="absolute bottom-12 right-0 w-56 bg-surface border border-divider rounded-xl shadow-lg overflow-hidden z-50"
+    >
+      <div className="px-3 py-2 border-b border-divider">
+        <span className="text-xs font-semibold text-heading">Send Later</span>
+      </div>
+      <div className="py-1">
+        {presets.map((p) => (
+          <button
+            key={p.minutes}
+            type="button"
+            onClick={() => handlePreset(p.minutes)}
+            className="w-full text-left px-3 py-2 text-sm text-body hover:bg-input transition-colors flex items-center gap-2"
+          >
+            <svg className="w-4 h-4 text-amber-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+            </svg>
+            {p.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={handleTomorrow}
+          className="w-full text-left px-3 py-2 text-sm text-body hover:bg-input transition-colors flex items-center gap-2"
+        >
+          <svg className="w-4 h-4 text-orange-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+          </svg>
+          Tomorrow 9 AM
+        </button>
+      </div>
+      <div className="border-t border-divider px-3 py-2 space-y-2">
+        {showCustom ? (
+          <>
+            <input
+              type="datetime-local"
+              value={customValue}
+              onChange={(e) => setCustomValue(e.target.value)}
+              min={new Date().toISOString().slice(0, 16)}
+              className="w-full rounded-lg bg-input border border-edge px-2 py-1.5 text-sm text-heading focus:border-cyan-500 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={handleCustom}
+              disabled={!customValue}
+              className="w-full rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-sm py-1.5 font-medium transition-colors disabled:opacity-50"
+            >
+              Schedule
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setShowCustom(true)}
+            className="w-full text-left text-sm text-cyan-400 hover:text-cyan-300 transition-colors flex items-center gap-2"
+          >
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            Pick a time...
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // --- Chat Input ---
 
-function ChatInput({ onSend, disabled, disabledReason }) {
+function ChatInput({ onSend, onSendLater, disabled, disabledReason, isBusy }) {
   const [text, setText] = useState("");
+  const [showPicker, setShowPicker] = useState(false);
   const textareaRef = useRef(null);
 
   const voice = useVoiceRecorder({
@@ -195,23 +316,37 @@ function ChatInput({ onSend, disabled, disabledReason }) {
     setText("");
   };
 
+  const handleSchedule = (scheduledAt) => {
+    if (!text.trim()) return;
+    onSendLater(text.trim(), scheduledAt);
+    setText("");
+    setShowPicker(false);
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (isBusy) {
+        // When busy, Enter opens the time picker instead of sending
+        if (text.trim()) setShowPicker(true);
+      } else {
+        handleSend();
+      }
     }
   };
 
+  const canType = !disabled || isBusy;
+
   return (
     <div className="border-t border-input bg-surface px-3 py-2 pb-[max(12px,env(safe-area-inset-bottom,12px))]">
-      <div className="flex items-end gap-2 max-w-2xl mx-auto">
+      <div className="flex items-end gap-2 max-w-2xl mx-auto relative">
         <textarea
           ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={disabled ? disabledReason : "Type a message..."}
-          disabled={disabled}
+          placeholder={isBusy ? "Queue a message..." : disabled ? disabledReason : "Type a message..."}
+          disabled={!canType}
           rows={1}
           className="flex-1 min-h-[40px] max-h-[160px] rounded-xl bg-input border border-edge px-3 py-2.5 text-sm text-heading placeholder-hint resize-none focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors disabled:opacity-50"
         />
@@ -222,6 +357,31 @@ function ChatInput({ onSend, disabled, disabledReason }) {
           micError={voice.micError}
           onToggle={voice.toggleRecording}
         />
+        {/* Send later (clock) button — always visible between mic and send */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => text.trim() && setShowPicker(!showPicker)}
+            disabled={!text.trim()}
+            title="Schedule message for later"
+            className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+              !text.trim()
+                ? "bg-elevated text-dim cursor-not-allowed"
+                : "bg-amber-500 hover:bg-amber-400 text-white"
+            }`}
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+            </svg>
+          </button>
+          {showPicker && (
+            <SendLaterPicker
+              onSelect={handleSchedule}
+              onClose={() => setShowPicker(false)}
+            />
+          )}
+        </div>
+        {/* Send button */}
         <button
           type="button"
           onClick={handleSend}
@@ -425,6 +585,19 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const handleSend = async (content) => {
     try {
       await sendMessage(id, content);
+      loadData();
+    } catch (err) {
+      showToast("Failed: " + err.message, "error");
+    }
+  };
+
+  // Send later (queued with scheduled_at)
+  const handleSendLater = async (content, scheduledAt) => {
+    try {
+      await sendMessage(id, content, { queue: true, scheduled_at: scheduledAt });
+      const when = new Date(scheduledAt);
+      const timeStr = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      showToast(`Scheduled for ${timeStr}`);
       loadData();
     } catch (err) {
       showToast("Failed: " + err.message, "error");
@@ -693,8 +866,10 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       {/* Input bar */}
       <ChatInput
         onSend={handleSend}
+        onSendLater={handleSendLater}
         disabled={isStopped || isError || isExecuting || isSyncing}
         disabledReason={disabledReason}
+        isBusy={isExecuting || isSyncing}
       />
 
       {/* Stop confirmation modal */}

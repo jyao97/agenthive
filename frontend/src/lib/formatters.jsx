@@ -88,9 +88,10 @@ export function renderMarkdown(text, project) {
       !imgMatch && line.trim().match(/^(\S+\.(png|jpg|jpeg|gif|svg|webp))$/i);
     if (imgMatch || plainImgMatch) {
       const src = imgMatch ? imgMatch[1] : plainImgMatch[1];
+      const cleanSrc = src.replace(/^\/projects\/[^/]+\//, "").replace(/^\/+/, "");
       const resolvedSrc = src.startsWith("http")
         ? src
-        : `/api/files/${project}/${src.replace(/^\/+/, "")}`;
+        : `/api/files/${encodeURIComponent(project)}/${cleanSrc.split("/").map(encodeURIComponent).join("/")}`;
       elements.push(
         <img
           key={elements.length}
@@ -282,7 +283,7 @@ export function extractFileAttachments(text, project) {
 
     const resolvedUrl = rawPath.startsWith("http")
       ? rawPath
-      : `/api/files/${project}/${path}`;
+      : `/api/files/${encodeURIComponent(project)}/${path.split("/").map(encodeURIComponent).join("/")}`;
 
     let type = "unknown";
     if (IMAGE_EXTS.test(path)) type = "image";

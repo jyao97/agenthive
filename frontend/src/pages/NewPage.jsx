@@ -269,11 +269,11 @@ function NewProjectForm({ showToast, navigate }) {
           <input
             type="text"
             value={name}
-            onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+            onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ""))}
             placeholder="my-project"
             className="w-full min-h-[44px] rounded-lg bg-input border border-edge px-3 py-2 text-heading placeholder-hint font-mono focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors"
           />
-          <p className="text-xs text-dim mt-1">Lowercase letters, numbers, hyphens, underscores</p>
+          <p className="text-xs text-dim mt-1">Lowercase letters, numbers, hyphens, underscores, dots</p>
         </div>
 
         <div>
