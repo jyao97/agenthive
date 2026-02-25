@@ -95,6 +95,8 @@ class MessageOut(BaseModel):
 
 class SendMessage(BaseModel):
     content: str = Field(..., min_length=1)
+    queue: bool = False
+    scheduled_at: str | None = None  # ISO datetime string for scheduled send
 
 
 # --- Project schemas ---

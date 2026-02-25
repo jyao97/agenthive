@@ -84,10 +84,14 @@ def _effective_task_status(msg: Message, agent: Agent) -> str:
     return "PENDING"
 
 
+_RESERVED_FOLDER_NAMES = {"trash", "folders"}
+
 def _validate_folder_name(name: str) -> None:
-    """Raise 400 if the folder name contains path traversal characters."""
-    if not name or "/" in name or "\\" in name or name in (".", ".."):
+    """Raise 400 if the folder name contains path traversal or reserved characters."""
+    if not name or "/" in name or "\\" in name or name in (".", "..") or "\x00" in name:
         raise HTTPException(status_code=400, detail="Invalid folder name")
+    if name.lower() in _RESERVED_FOLDER_NAMES:
+        raise HTTPException(status_code=400, detail=f"'{name}' is a reserved name")
 
 
 def load_registry(db: Session):
@@ -105,7 +109,13 @@ def load_registry(db: Session):
         logger.info("No projects in registry.yaml")
         return
 
+    import re
+    _valid_name = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
     for p in projects:
+        pname = p.get("name", "")
+        if not pname or not _valid_name.match(pname) or "/" in pname or "\\" in pname:
+            logger.warning("Skipping project with invalid name: %r", pname)
+            continue
         existing = db.get(Project, p["name"])
         if existing:
             existing.display_name = p.get("display_name", p["name"])
@@ -1361,16 +1371,24 @@ async def send_agent_message(
         raise HTTPException(status_code=404, detail="Agent not found")
     if agent.status == AgentStatus.STOPPED:
         raise HTTPException(status_code=400, detail="Agent is stopped")
-    if agent.status == AgentStatus.EXECUTING:
-        raise HTTPException(status_code=400, detail="Agent is currently executing — wait for completion")
-    if agent.status == AgentStatus.SYNCING:
-        raise HTTPException(status_code=400, detail="Agent is syncing from CLI — input disabled")
+    is_busy = agent.status in (AgentStatus.EXECUTING, AgentStatus.SYNCING)
+    if is_busy and not body.queue:
+        raise HTTPException(status_code=400, detail="Agent is busy — use send later to queue")
+
+    scheduled_at = None
+    if body.scheduled_at:
+        from datetime import datetime, timezone
+        try:
+            scheduled_at = datetime.fromisoformat(body.scheduled_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scheduled_at format")
 
     msg = Message(
         agent_id=agent.id,
         role=MessageRole.USER,
         content=body.content,
         status=MessageStatus.PENDING,
+        scheduled_at=scheduled_at,
     )
     db.add(msg)
 
@@ -1569,10 +1587,9 @@ async def serve_project_file(project: str, path: str, db: Session = Depends(get_
     if not proj:
         raise HTTPException(status_code=404, detail=f"Project '{project}' not found")
 
-    projects_dir = PROJECTS_DIR or "/projects"
-    base_dir = os.path.join(projects_dir, project)
-    full_path = os.path.normpath(os.path.join(base_dir, path))
-    if not full_path.startswith(os.path.normpath(base_dir) + os.sep):
+    base_dir = os.path.realpath(proj.path)
+    full_path = os.path.realpath(os.path.join(base_dir, path))
+    if not full_path.startswith(base_dir + os.sep):
         raise HTTPException(status_code=400, detail="Invalid path")
     if not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail="File not found")

@@ -67,29 +67,30 @@ export const authChangePassword = (current_password, new_password) =>
   });
 
 // --- Projects ---
+const e = encodeURIComponent;
 export const fetchProjects = () => request("/api/projects");
 export const createProject = (data) =>
   request("/api/projects", { method: "POST", body: JSON.stringify(data) });
 export const fetchAllFolders = () => request("/api/projects/folders");
 export const archiveProject = (name) =>
-  request(`/api/projects/${name}/archive`, { method: "POST" });
+  request(`/api/projects/${e(name)}/archive`, { method: "POST" });
 export const fetchTrashFolders = () => request("/api/projects/trash");
 export const deleteProject = (name) =>
-  request(`/api/projects/${name}`, { method: "DELETE" });
+  request(`/api/projects/${e(name)}`, { method: "DELETE" });
 export const deleteTrashFolder = (name) =>
-  request(`/api/projects/trash/${name}`, { method: "DELETE" });
+  request(`/api/projects/trash/${e(name)}`, { method: "DELETE" });
 export const restoreTrashFolder = (name) =>
-  request(`/api/projects/trash/${name}/restore`, { method: "POST" });
+  request(`/api/projects/trash/${e(name)}/restore`, { method: "POST" });
 export const fetchProjectAgents = (name, params = "") =>
-  request(`/api/projects/${name}/agents${params ? `?${params}` : ""}`);
+  request(`/api/projects/${e(name)}/agents${params ? `?${params}` : ""}`);
 export const fetchProjectWorktrees = (name) =>
-  request(`/api/projects/${name}/worktrees`);
+  request(`/api/projects/${e(name)}/worktrees`);
 export const fetchProjectSessions = (name) =>
-  request(`/api/projects/${name}/sessions`);
+  request(`/api/projects/${e(name)}/sessions`);
 export const starSession = (project, sessionId) =>
-  request(`/api/projects/${project}/sessions/${sessionId}/star`, { method: "PUT" });
+  request(`/api/projects/${e(project)}/sessions/${e(sessionId)}/star`, { method: "PUT" });
 export const unstarSession = (project, sessionId) =>
-  request(`/api/projects/${project}/sessions/${sessionId}/star`, { method: "DELETE" });
+  request(`/api/projects/${e(project)}/sessions/${e(sessionId)}/star`, { method: "DELETE" });
 
 // --- Tasks (agent-sourced: each USER message = one task) ---
 export const fetchTasks = (params = "") =>
@@ -109,10 +110,10 @@ export const resumeAgent = (id) =>
   request(`/api/agents/${id}/resume`, { method: "POST" });
 export const fetchMessages = (agentId, limit = 100) =>
   request(`/api/agents/${agentId}/messages?limit=${limit}`);
-export const sendMessage = (agentId, content) =>
+export const sendMessage = (agentId, content, { queue = false, scheduled_at = null } = {}) =>
   request(`/api/agents/${agentId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, queue, scheduled_at }),
   });
 export const markAgentRead = (agentId) =>
   request(`/api/agents/${agentId}/read`, { method: "PUT" });
@@ -129,13 +130,13 @@ export const fetchHealth = () => request("/api/health");
 
 // --- Git ---
 export const fetchGitLog = (project, limit = 30) =>
-  request(`/api/git/${project}/log?limit=${limit}`);
+  request(`/api/git/${e(project)}/log?limit=${limit}`);
 export const fetchGitBranches = (project) =>
-  request(`/api/git/${project}/branches`);
+  request(`/api/git/${e(project)}/branches`);
 export const fetchGitStatus = (project) =>
-  request(`/api/git/${project}/status`);
+  request(`/api/git/${e(project)}/status`);
 export const mergeGitBranch = (project, branch) =>
-  request(`/api/git/${project}/merge/${branch}`, { method: "POST" });
+  request(`/api/git/${e(project)}/merge/${e(branch)}`, { method: "POST" });
 
 // --- System ---
 export const fetchSystemStats = () => request("/api/system/stats");

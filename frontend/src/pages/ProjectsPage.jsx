@@ -244,7 +244,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
           <FolderCard
             key={folder.name}
             folder={folder}
-            onClick={() => navigate(`/projects/${folder.name}`)}
+            onClick={() => navigate(`/projects/${encodeURIComponent(folder.name)}`)}
             onActivate={handleActivate}
             onArchive={handleArchive}
             busy={busy === folder.name}
