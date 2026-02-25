@@ -340,11 +340,13 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
                         assistant_parts.append(("tool", summary))
 
         elif entry_type == "system":
-            # Auto-compaction summary — treat as system message
             flush_assistant()
-            summary_data = entry.get("summary", "")
-            if summary_data:
-                turns.append(("system", f"*(context compressed)*"))
+            # Use structured fields from JSONL (subtype, content)
+            content = entry.get("content", "")
+            subtype = entry.get("subtype", "")
+            if subtype or content:
+                label = content or subtype.replace("_", " ")
+                turns.append(("system", label))
 
     # Flush any remaining assistant content
     flush_assistant()
@@ -1908,30 +1910,45 @@ class AgentDispatcher:
         if initial_turns:
             last_tail_hash = str(len(initial_turns[-1][1]))
 
-        # Reconcile: update any existing DB messages whose content grew
-        # since they were first imported (e.g. assistant was mid-response).
+        # Reconcile: update the last agent message if its content grew
+        # since it was first imported (e.g. assistant was mid-response).
+        # Only update the single last AGENT message by matching content
+        # prefix, to avoid positional misalignment bugs.
         db = SessionLocal()
         try:
-            role_map = {"user": MessageRole.USER, "assistant": MessageRole.AGENT}
-            existing_msgs = db.query(Message).filter(
+            last_agent_msg = db.query(Message).filter(
                 Message.agent_id == agent_id,
-                Message.role.in_([MessageRole.USER, MessageRole.AGENT]),
-            ).order_by(Message.created_at).all()
-            updated = 0
-            for msg, (role, content) in zip(existing_msgs, initial_turns):
-                if role not in role_map:
-                    continue
-                if len(msg.content) < len(content):
-                    msg.content = content
-                    msg.completed_at = _utcnow()
-                    updated += 1
-            if updated:
-                db.commit()
-                self._emit(emit_new_message(agent_id, "sync", _sync_agent_name, _sync_project))
-                logger.info(
-                    "Reconciled %d stale messages for agent %s",
-                    updated, agent_id,
-                )
+                Message.role == MessageRole.AGENT,
+            ).order_by(Message.created_at.desc()).first()
+
+            if last_agent_msg and initial_turns:
+                # Find the last assistant turn in JSONL
+                last_assistant_turn = None
+                for role, content in reversed(initial_turns):
+                    if role == "assistant":
+                        last_assistant_turn = content
+                        break
+                # Only update if the JSONL version is a superset (starts
+                # with the same text but has more content appended).
+                if (
+                    last_assistant_turn
+                    and len(last_agent_msg.content) < len(last_assistant_turn)
+                    and last_assistant_turn.startswith(
+                        last_agent_msg.content[:200]
+                    )
+                ):
+                    last_agent_msg.content = last_assistant_turn
+                    last_agent_msg.completed_at = _utcnow()
+                    db.commit()
+                    self._emit(emit_new_message(
+                        agent_id, "sync", _sync_agent_name, _sync_project,
+                    ))
+                    logger.info(
+                        "Reconciled last agent message for agent %s "
+                        "(%d -> %d chars)",
+                        agent_id, len(last_agent_msg.content),
+                        len(last_assistant_turn),
+                    )
         finally:
             db.close()
 
@@ -1942,6 +1959,20 @@ class AgentDispatcher:
             try:
                 current_size = os.path.getsize(jsonl_path)
             except OSError:
+                continue
+
+            # Detect JSONL rewrite (e.g. /compact shrinks the file)
+            if current_size < last_size:
+                logger.info(
+                    "Session file shrank for agent %s (%d → %d bytes, "
+                    "likely /compact), resetting sync state",
+                    agent_id, last_size, current_size,
+                )
+                turns = _parse_session_turns(jsonl_path)
+                last_turn_count = len(turns)
+                last_tail_hash = str(len(turns[-1][1])) if turns else ""
+                last_size = current_size
+                idle_polls = 0
                 continue
 
             if current_size <= last_size:
@@ -1980,6 +2011,19 @@ class AgentDispatcher:
 
             # Parse full file for turns
             turns = _parse_session_turns(jsonl_path)
+
+            # Detect turn count decrease (compact may produce a larger
+            # file but with fewer turns if the summary is long)
+            if len(turns) < last_turn_count:
+                logger.info(
+                    "Turn count decreased for agent %s (%d → %d, "
+                    "likely /compact), resetting sync state",
+                    agent_id, last_turn_count, len(turns),
+                )
+                last_turn_count = len(turns)
+                last_tail_hash = str(len(turns[-1][1])) if turns else ""
+                continue
+
             new_turns = turns[last_turn_count:]
 
             # Check if the last existing turn's content grew (same turn count
@@ -2108,9 +2152,17 @@ class AgentDispatcher:
                     self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
 
                     from push import send_push_notification
+                    # Use the last assistant turn as preview, fall back to last turn
+                    _push_body = ""
+                    for _r, _c in reversed(new_turns):
+                        if _r == "assistant":
+                            _push_body = _c[:120]
+                            break
+                    if not _push_body:
+                        _push_body = (new_turns[-1][1] or "")[:120]
                     send_push_notification(
                         title=_sync_agent_name or f"Agent {agent_id[:8]}",
-                        body=f"New message ({_sync_project})" if _sync_project else "New message",
+                        body=_push_body,
                         url=f"/agents/{agent_id}",
                     )
 

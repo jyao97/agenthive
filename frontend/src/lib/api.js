@@ -139,9 +139,13 @@ export const fetchSystemStats = () => request("/api/system/stats");
 export const fetchProcesses = () => request("/api/processes");
 
 // --- Voice ---
-export async function transcribeVoice(audioBlob) {
+export async function transcribeVoice(audioBlob, mimeType) {
+  // Pick file extension matching actual format (Safari = mp4, Chrome = webm)
+  const ext = mimeType && mimeType.includes("mp4") ? "mp4"
+    : mimeType && mimeType.includes("ogg") ? "ogg"
+    : "webm";
   const formData = new FormData();
-  formData.append("file", audioBlob, "recording.webm");
+  formData.append("file", audioBlob, `recording.${ext}`);
   const headers = {};
   const token = getAuthToken();
   if (token) {
@@ -159,6 +163,9 @@ export async function transcribeVoice(audioBlob) {
     }
     throw new Error("Not authenticated");
   }
-  if (!res.ok) throw new Error(`Voice API error (${res.status})`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || `Voice API error (${res.status})`);
+  }
   return res.json();
 }

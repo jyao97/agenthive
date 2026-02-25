@@ -277,8 +277,15 @@ function ChatInput({ onSend, onSendLater, disabled, disabledReason, isBusy, tmux
 
   const voice = useVoiceRecorder({
     onTranscript: (t) => setText((prev) => (prev ? prev + " " + t : t)),
-    onError: () => {},
+    onError: (msg) => setVoiceError(msg),
   });
+  const [voiceError, setVoiceError] = useState(null);
+  useEffect(() => {
+    if (voiceError) {
+      const t = setTimeout(() => setVoiceError(null), 4000);
+      return () => clearTimeout(t);
+    }
+  }, [voiceError]);
 
   // Auto-grow textarea
   useEffect(() => {
@@ -332,7 +339,7 @@ function ChatInput({ onSend, onSendLater, disabled, disabledReason, isBusy, tmux
           recording={voice.recording}
           voiceLoading={voice.voiceLoading}
           analyserNode={voice.analyserNode}
-          micError={voice.micError}
+          micError={voice.micError || voiceError}
           onToggle={voice.toggleRecording}
         />
         {/* Send later (clock) button — always visible between mic and send */}
@@ -859,7 +866,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         {(isExecuting || isSyncing) && (
           streamingContent !== null
             ? (streamingContent ? <StreamingBubble content={streamingContent} project={agent.project} /> : <TypingIndicator />)
-            : isExecuting ? <TypingIndicator /> : null
+            : isExecuting ? <TypingIndicator />
+            : isSyncing && messages.length > 0 && messages[messages.length - 1].role === "USER" ? <TypingIndicator />
+            : null
         )}
 
         <div ref={messagesEndRef} />
