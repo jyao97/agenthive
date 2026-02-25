@@ -1845,6 +1845,161 @@ class AgentDispatcher:
         if task and not task.done():
             task.cancel()
 
+    def _detect_successor_session(
+        self, current_sid: str, project_path: str, agent_id: str,
+    ) -> str | None:
+        """Check if a newer session JSONL supersedes the current one.
+
+        Returns the new session_id if found, otherwise None.
+        Used to detect when Claude auto-continues into a new session
+        (e.g. context too long).
+        """
+        session_dir = _session_source_dir(project_path)
+        try:
+            current_mtime = os.path.getmtime(
+                os.path.join(session_dir, f"{current_sid}.jsonl")
+            )
+        except OSError:
+            return None
+
+        # Get the tmux pane PID for this agent so we can verify ownership
+        pane_pid: int | None = None
+        db = SessionLocal()
+        try:
+            agent = db.get(Agent, agent_id)
+            if agent and agent.tmux_pane:
+                pane_info = _build_tmux_claude_map().get(agent.tmux_pane)
+                if pane_info:
+                    pane_pid = pane_info["pid"]
+
+            # Collect active session IDs to avoid stealing another agent's session
+            active_sids: set[str] = set()
+            for a in db.query(Agent).filter(
+                Agent.session_id.is_not(None),
+                Agent.status != AgentStatus.STOPPED,
+            ).all():
+                active_sids.add(a.session_id)
+        finally:
+            db.close()
+
+        # Look for a JSONL newer than the current one
+        best_sid, best_mtime = None, current_mtime
+        try:
+            for fname in os.listdir(session_dir):
+                if not fname.endswith(".jsonl"):
+                    continue
+                sid = fname.replace(".jsonl", "")
+                if sid == current_sid or sid in active_sids:
+                    continue
+                fpath = os.path.join(session_dir, fname)
+                mtime = os.path.getmtime(fpath)
+                if mtime > best_mtime:
+                    # Verify it belongs to the same tmux pane via PID
+                    session_pid = _get_session_pid(sid)
+                    if session_pid is not None:
+                        if pane_pid is not None and session_pid != pane_pid:
+                            continue  # belongs to a different pane
+                    else:
+                        # No debug log yet — only accept if notably newer
+                        if mtime - current_mtime < 5:
+                            continue
+                    best_sid, best_mtime = sid, mtime
+        except OSError:
+            pass
+        return best_sid
+
+    def _spawn_successor_agent(
+        self, old_agent_id: str, new_sid: str, project_path: str,
+    ):
+        """Stop the old agent and create a new SYNCING agent for the continued session."""
+        from websocket import emit_agent_update
+
+        db = SessionLocal()
+        try:
+            old_agent = db.get(Agent, old_agent_id)
+            if not old_agent:
+                return
+
+            project_name = old_agent.project
+            tmux_pane = old_agent.tmux_pane
+            model = old_agent.model
+
+            # Stop old agent
+            self._cancel_sync_task(old_agent_id)
+            old_agent.status = AgentStatus.STOPPED
+            old_agent.tmux_pane = None
+            db.flush()
+            self._emit(emit_agent_update(old_agent_id, "STOPPED", project_name))
+
+            # Parse new session for name and turns
+            new_fpath = os.path.join(
+                _session_source_dir(project_path), f"{new_sid}.jsonl"
+            )
+            agent_name = "CLI session (continued)"
+            turns = []
+            detected_model = model
+            try:
+                turns = _parse_session_turns(new_fpath)
+                for role, content in turns:
+                    if role == "user" and content:
+                        agent_name = (content or "")[:80]
+                        break
+                detected_model = _detect_session_model(new_fpath) or model
+            except Exception:
+                turns = []
+
+            # Create new agent
+            new_agent = Agent(
+                project=project_name,
+                name=agent_name,
+                mode=AgentMode.AUTO,
+                status=AgentStatus.SYNCING,
+                model=detected_model,
+                session_id=new_sid,
+                cli_sync=True,
+                tmux_pane=tmux_pane,
+                plan_approved=True,
+                last_message_preview=agent_name,
+                last_message_at=_utcnow(),
+            )
+            db.add(new_agent)
+            db.flush()
+
+            # Import existing turns
+            for role, content in turns:
+                if role == "user":
+                    msg = Message(
+                        agent_id=new_agent.id,
+                        role=MessageRole.USER,
+                        content=content,
+                        status=MessageStatus.COMPLETED,
+                        source="cli",
+                        completed_at=_utcnow(),
+                    )
+                elif role == "assistant":
+                    msg = Message(
+                        agent_id=new_agent.id,
+                        role=MessageRole.AGENT,
+                        content=content,
+                        status=MessageStatus.COMPLETED,
+                        source="cli",
+                        completed_at=_utcnow(),
+                    )
+                else:
+                    continue
+                db.add(msg)
+
+            db.commit()
+            self._emit(emit_agent_update(new_agent.id, "SYNCING", project_name))
+            self.start_session_sync(new_agent.id, new_sid, project_path)
+
+            logger.info(
+                "Spawned successor agent %s for session %s (old: %s)",
+                new_agent.id, new_sid[:12], old_agent_id,
+            )
+        finally:
+            db.close()
+
     async def _sync_session_loop(
         self, agent_id: str, session_id: str, project_path: str
     ):
@@ -1939,6 +2094,24 @@ class AgentDispatcher:
                             break
                     finally:
                         db.close()
+
+                # After a few idle polls, check if Claude continued into
+                # a new session (context too long → auto-continuation).
+                # Detect by looking for a newer JSONL in the same dir.
+                if idle_polls >= 3 and idle_polls % 3 == 0:
+                    new_sid = self._detect_successor_session(
+                        session_id, project_path, agent_id,
+                    )
+                    if new_sid:
+                        logger.info(
+                            "Session continuation detected for agent %s: "
+                            "%s → %s — stopping old, creating new",
+                            agent_id, session_id[:12], new_sid[:12],
+                        )
+                        self._spawn_successor_agent(
+                            agent_id, new_sid, project_path,
+                        )
+                        return
                 continue
             idle_polls = 0
             last_size = current_size
