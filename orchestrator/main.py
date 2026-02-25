@@ -1332,6 +1332,25 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
         raise HTTPException(status_code=500, detail=f"Failed to verify project directory: {e}")
 
 
+@app.put("/api/agents/{agent_id}", response_model=AgentOut)
+async def update_agent(agent_id: str, request: Request, db: Session = Depends(get_db)):
+    """Update agent properties (currently: name)."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    body = await request.json()
+    if "name" in body:
+        name = str(body["name"]).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        if len(name) > 200:
+            raise HTTPException(status_code=400, detail="Name too long (max 200)")
+        agent.name = name
+    db.commit()
+    db.refresh(agent)
+    return agent
+
+
 @app.get("/api/agents/{agent_id}/messages", response_model=list[MessageOut])
 async def get_agent_messages(
     agent_id: str,

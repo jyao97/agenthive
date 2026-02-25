@@ -104,6 +104,8 @@ export const fetchAgent = (id) => request(`/api/agents/${id}`);
 export const fetchUnreadCount = () => request("/api/agents/unread");
 export const createAgent = (data) =>
   request("/api/agents", { method: "POST", body: JSON.stringify(data) });
+export const renameAgent = (id, name) =>
+  request(`/api/agents/${id}`, { method: "PUT", body: JSON.stringify({ name }) });
 export const stopAgent = (id) =>
   request(`/api/agents/${id}`, { method: "DELETE" });
 export const resumeAgent = (id) =>

@@ -6,6 +6,7 @@ import {
   sendMessage,
   stopAgent,
   resumeAgent,
+  renameAgent,
   markAgentRead,
   approveAgentPlan,
   rejectAgentPlan,
@@ -426,6 +427,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const [starLoading, setStarLoading] = useState(false);
   const [notifEnabled, setNotifEnabled] = useState(() => isNotificationsEnabled());
   const [streamingContent, setStreamingContent] = useState(null);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const nameInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const toastTimer = useRef(null);
   const health = useHealthStatus();
@@ -590,6 +594,28 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     return () => { if (toastTimer.current) clearTimeout(toastTimer.current); };
   }, []);
 
+  // Rename agent
+  const startRename = () => {
+    setNameDraft(agent?.name || "");
+    setEditingName(true);
+    setTimeout(() => nameInputRef.current?.select(), 0);
+  };
+  const submitRename = async () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === agent?.name) {
+      setEditingName(false);
+      return;
+    }
+    try {
+      await renameAgent(id, trimmed);
+      setAgent((prev) => prev ? { ...prev, name: trimmed } : prev);
+      showToast("Renamed");
+    } catch (err) {
+      showToast("Rename failed: " + err.message, "error");
+    }
+    setEditingName(false);
+  };
+
   // Send message
   const handleSend = async (content) => {
     try {
@@ -731,7 +757,28 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
               </svg>
             </button>
 
-            <h1 className="text-sm font-semibold text-heading truncate min-w-0 flex-1">{agent.name}</h1>
+            {editingName ? (
+              <input
+                ref={nameInputRef}
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onBlur={submitRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitRename();
+                  if (e.key === "Escape") setEditingName(false);
+                }}
+                maxLength={200}
+                className="text-sm font-semibold text-heading min-w-0 flex-1 bg-input border border-cyan-500 rounded px-1.5 py-0.5 outline-none"
+              />
+            ) : (
+              <h1
+                onDoubleClick={startRename}
+                title="Double-tap to rename"
+                className="text-sm font-semibold text-heading truncate min-w-0 flex-1 select-none"
+              >
+                {agent.name}
+              </h1>
+            )}
 
             <span className="shrink-0 text-xs text-dim">{agent.project}</span>
 
