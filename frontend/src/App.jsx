@@ -180,7 +180,7 @@ export default function App() {
         </Routes>
       </main>
 
-      {/* Bottom tab bar — completely unmounted on chat page (has its own header + back button) */}
+      {/* Bottom tab bar */}
       {!hideNav && (
         <nav className="fixed bottom-0 left-0 right-0 bg-surface border-t border-divider safe-area-pb-tight z-40">
           <div className="grid grid-cols-5 items-center max-w-lg mx-auto">
@@ -204,7 +204,7 @@ export default function App() {
                   key={tab.to}
                   to={tab.to}
                   className={({ isActive }) =>
-                    `relative flex flex-col items-center justify-center min-h-[44px] py-2 transition-colors ${
+                    `relative flex flex-col items-center justify-center min-h-[48px] py-2 transition-colors ${
                       isActive
                         ? "text-cyan-400"
                         : "text-dim hover:text-body"

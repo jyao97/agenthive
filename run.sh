@@ -1,0 +1,33 @@
+#!/bin/bash
+# AgentHive — host-mode launch script
+# Run the orchestrator directly on the host (no Docker)
+
+set -euo pipefail
+
+# Load .env if present
+if [ -f .env ]; then
+    set -a
+    source .env
+    set +a
+fi
+
+# Resolve PROJECTS_DIR from either name
+export PROJECTS_DIR="${PROJECTS_DIR:-${HOST_PROJECTS_DIR:-}}"
+
+# Resolve absolute paths from project root (before cd orchestrator)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export DB_PATH="${DB_PATH:-${SCRIPT_DIR}/data/orchestrator.db}"
+export LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs}"
+export BACKUP_DIR="${BACKUP_DIR:-${SCRIPT_DIR}/backups}"
+export PROJECT_CONFIGS_PATH="${PROJECT_CONFIGS_PATH:-${SCRIPT_DIR}/project-configs}"
+
+# Ensure directories exist
+mkdir -p "${SCRIPT_DIR}/data" "${SCRIPT_DIR}/logs" "${SCRIPT_DIR}/backups" "${SCRIPT_DIR}/project-configs"
+
+# Activate venv if present
+if [ -d .venv ]; then
+    source .venv/bin/activate
+fi
+
+# Start the orchestrator
+cd orchestrator && exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8080}"

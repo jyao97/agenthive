@@ -520,139 +520,146 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         </div>
       )}
 
-      {/* Fixed Header */}
-      <div className="fixed top-0 left-0 right-0 z-10 bg-surface border-b border-divider px-4 py-3">
-        <div className="flex items-center gap-2 max-w-2xl mx-auto">
-          <button
-            type="button"
-            onClick={() => navigate("/agents")}
-            className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
-          >
-            <svg className="w-5 h-5 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
+      {/* Header */}
+      <div className="shrink-0 bg-surface border-b border-divider px-4 py-2 safe-area-pt z-10">
+        <div className="max-w-2xl mx-auto space-y-1.5">
+          {/* Row 1: Back + name | project + icon buttons */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigate("/agents")}
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
+            >
+              <svg className="w-5 h-5 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
 
-          <div className="min-w-0 flex-1">
-            <h1 className="text-sm font-semibold text-heading truncate">{agent.name}</h1>
-            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-              <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusDot}`} />
-              <span className={`text-xs ${statusText}`}>{agent.status.toLowerCase().replace("_", " ")}</span>
+            <h1 className="text-sm font-semibold text-heading truncate min-w-0 flex-1">{agent.name}</h1>
+
+            <span className="shrink-0 text-xs text-dim">{agent.project}</span>
+
+            {/* Icon buttons */}
+            <div className="shrink-0 flex items-center">
+              {isPushSupported() && (
+                <button
+                  type="button"
+                  onClick={handleTogglePush}
+                  disabled={pushLoading}
+                  title={pushEnabled ? "Disable push notifications" : "Enable push notifications"}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors disabled:opacity-50"
+                >
+                  {pushEnabled ? (
+                    <svg className="w-3.5 h-3.5 text-cyan-400" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 002 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3.5 h-3.5 text-dim hover:text-cyan-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                    </svg>
+                  )}
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleToggleStar}
+                disabled={starLoading}
+                title={starred ? "Unstar session" : "Star session"}
+                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors disabled:opacity-50"
+              >
+                {starred ? (
+                  <svg className="w-3.5 h-3.5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5 text-dim hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                  </svg>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={onToggleTheme}
+                title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-dim hover:text-heading hover:bg-input transition-colors"
+              >
+                {theme === "dark" ? (
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Row 2: Status + model + branch | action buttons (ml-9 aligns with name after back btn) */}
+          <div className="flex items-center gap-2 ml-9">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
+              <span className={`text-xs shrink-0 ${statusText}`}>{agent.status.toLowerCase().replace("_", " ")}</span>
               {agent.model && (
-                <span className="text-[10px] text-faint font-medium px-1.5 py-0.5 rounded bg-elevated">
+                <span className="text-[10px] text-faint font-medium px-1.5 py-0.5 rounded bg-elevated shrink-0">
                   {modelDisplayName(agent.model)}
                 </span>
               )}
-              <span className="text-xs text-dim">{agent.project}</span>
               {agent.branch && (
                 <span className="text-xs text-violet-400 font-mono truncate max-w-[120px]">
                   {agent.branch}
                 </span>
               )}
             </div>
-          </div>
 
-          {isStopped || isError ? (
-            <button
-              type="button"
-              onClick={handleResume}
-              disabled={resuming}
-              className="shrink-0 px-3 h-8 flex items-center gap-1.5 rounded-lg text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white transition-colors disabled:opacity-50"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
-              </svg>
-              {resuming ? "Resuming..." : "Resume"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setShowStopConfirm(true)}
-              className="shrink-0 px-3 h-8 flex items-center gap-1.5 rounded-lg text-xs font-medium text-red-400 hover:bg-red-600/20 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <rect x="6" y="6" width="12" height="12" rx="2" />
-              </svg>
-              Stop
-            </button>
-          )}
-
-          {/* Monitor chip */}
-          <button
-            type="button"
-            onClick={() => navigate("/monitor")}
-            title={health === null ? "Checking..." : isHealthy ? "System healthy" : "System issue"}
-            className={`shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-colors hover:opacity-80 ${healthChipCls}`}
-          >
-            <span className={`inline-block w-1.5 h-1.5 rounded-full ${healthDotColor} ${!isHealthy && health !== null ? "animate-pulse" : ""}`} />
-            {healthLabel}
-          </button>
-
-          {/* Push notification toggle */}
-          {isPushSupported() && (
-            <button
-              type="button"
-              onClick={handleTogglePush}
-              disabled={pushLoading}
-              title={pushEnabled ? "Disable push notifications" : "Enable push notifications"}
-              className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors disabled:opacity-50"
-            >
-              {pushEnabled ? (
-                <svg className="w-4 h-4 text-cyan-400" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 002 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
-                </svg>
+            <div className="shrink-0 flex items-center gap-1.5">
+              {isStopped || isError ? (
+                <button
+                  type="button"
+                  onClick={handleResume}
+                  disabled={resuming}
+                  className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white transition-colors disabled:opacity-50"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
+                  </svg>
+                  {resuming ? "..." : "Resume"}
+                </button>
               ) : (
-                <svg className="w-4 h-4 text-dim hover:text-cyan-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-                </svg>
+                <button
+                  type="button"
+                  onClick={() => setShowStopConfirm(true)}
+                  className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium text-red-400 hover:bg-red-600/20 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
+                  Stop
+                </button>
               )}
-            </button>
-          )}
 
-          {/* Star toggle */}
-          <button
-            type="button"
-            onClick={handleToggleStar}
-            disabled={starLoading}
-            title={starred ? "Unstar session" : "Star session"}
-            className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors disabled:opacity-50"
-          >
-            {starred ? (
-              <svg className="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4 text-dim hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-              </svg>
-            )}
-          </button>
-
-          {/* Theme toggle */}
-          <button
-            type="button"
-            onClick={onToggleTheme}
-            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-dim hover:text-heading hover:bg-input transition-colors"
-          >
-            {theme === "dark" ? (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-              </svg>
-            )}
-          </button>
+              <button
+                type="button"
+                onClick={() => navigate("/monitor")}
+                title={health === null ? "Checking..." : isHealthy ? "System healthy" : "System issue"}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors hover:opacity-80 ${healthChipCls}`}
+              >
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${healthDotColor} ${!isHealthy && health !== null ? "animate-pulse" : ""}`} />
+                {healthLabel}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Messages — offset for fixed header */}
+      {/* Messages */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 pt-[70px] max-w-2xl mx-auto w-full"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 max-w-2xl mx-auto w-full"
       >
         {messages.map((msg) => (
           <ChatBubble key={msg.id} message={msg} project={agent.project} />
