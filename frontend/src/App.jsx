@@ -12,7 +12,8 @@ import GitPage from "./pages/GitPage";
 import LoginPage from "./pages/LoginPage";
 import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchUnreadCount, getAuthToken } from "./lib/api";
-import { isPushSupported, isPushEnabled, setupPushNotifications } from "./lib/pushNotifications";
+import { isPushSupported, setupPushNotifications } from "./lib/pushNotifications";
+import { isNotificationsEnabled } from "./hooks/useWebSocket";
 import useIdleLock from "./hooks/useIdleLock";
 
 const tabs = [
@@ -237,9 +238,13 @@ export default function App() {
                   {tab.icon}
                   <span className="text-xs mt-1">{tab.label}</span>
                   {tab.key === "agents" && unread > 0 && (
-                    <span className="absolute top-1.5 left-[calc(50%+6px)] inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold leading-none">
-                      {unread > 99 ? "99+" : unread}
-                    </span>
+                    isNotificationsEnabled() ? (
+                      <span className="absolute top-1.5 left-[calc(50%+6px)] inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold leading-none">
+                        {unread > 99 ? "99+" : unread}
+                      </span>
+                    ) : (
+                      <span className="absolute top-2 left-[calc(50%+8px)] w-2.5 h-2.5 rounded-full bg-red-500" />
+                    )
                   )}
                 </NavLink>
               )

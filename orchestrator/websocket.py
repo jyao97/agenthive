@@ -115,10 +115,13 @@ async def emit_agent_update(agent_id: str, status: str, project: str):
     })
 
 
-async def emit_new_message(agent_id: str, message_id: str):
+async def emit_new_message(agent_id: str, message_id: str,
+                           agent_name: str = "", project: str = ""):
     await ws_manager.broadcast("new_message", {
         "agent_id": agent_id,
         "message_id": message_id,
+        "agent_name": agent_name,
+        "project": project,
     })
 
 

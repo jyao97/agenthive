@@ -18,11 +18,10 @@ import FileAttachments from "../components/FilePreview";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, modelDisplayName } from "../lib/constants";
 import VoiceRecorder from "../components/VoiceRecorder";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
-import useWebSocket from "../hooks/useWebSocket";
+import useWebSocket, { isNotificationsEnabled, setNotificationsEnabled, clearAgentNotified } from "../hooks/useWebSocket";
 import useHealthStatus from "../hooks/useHealthStatus";
 import {
   isPushSupported,
-  isPushEnabled,
   setupPushNotifications,
   teardownPushNotifications,
 } from "../lib/pushNotifications";
@@ -256,8 +255,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const [resuming, setResuming] = useState(false);
   const [starred, setStarred] = useState(false);
   const [starLoading, setStarLoading] = useState(false);
-  const [pushEnabled, setPushEnabled] = useState(() => isPushEnabled());
-  const [pushLoading, setPushLoading] = useState(false);
+  const [notifEnabled, setNotifEnabled] = useState(() => isNotificationsEnabled());
   const [streamingContent, setStreamingContent] = useState(null);
   const messagesEndRef = useRef(null);
   const toastTimer = useRef(null);
@@ -291,10 +289,11 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     }
   }, [id]);
 
-  // Initial load
+  // Initial load + clear notification flag for this agent
   useEffect(() => {
+    clearAgentNotified(id);
     loadData();
-  }, [loadData]);
+  }, [loadData, id]);
 
   // Polling — faster when executing
   useEffect(() => {
@@ -341,27 +340,39 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     }
   };
 
-  const handleTogglePush = async () => {
-    if (pushLoading) return;
-    setPushLoading(true);
-    try {
-      if (pushEnabled) {
-        await teardownPushNotifications();
-        setPushEnabled(false);
-        showToast("Push notifications disabled");
-      } else {
-        const ok = await setupPushNotifications();
-        if (ok) {
-          setPushEnabled(true);
-          showToast("Push notifications enabled");
-        } else {
-          showToast("Push permission denied or setup failed", "error");
+  const handleToggleNotif = async () => {
+    const next = !notifEnabled;
+    setNotificationsEnabled(next);
+    setNotifEnabled(next);
+    if (next) {
+      // Request permission if needed
+      if (typeof Notification !== "undefined" && Notification.permission === "default") {
+        try {
+          const perm = await Notification.requestPermission();
+          if (perm !== "granted") {
+            showToast(`Notification permission: ${perm}`, "error");
+            return;
+          }
+        } catch (e) {
+          showToast(`Permission error: ${e.message}`, "error");
+          return;
         }
       }
-    } catch {
-      showToast("Push toggle failed", "error");
-    } finally {
-      setPushLoading(false);
+      // Set up push notifications
+      if (isPushSupported()) {
+        try {
+          const ok = await setupPushNotifications();
+          showToast(ok ? "Notifications enabled" : "Push setup failed — check browser settings", ok ? "success" : "error");
+        } catch (e) {
+          showToast(`Push error: ${e.message}`, "error");
+        }
+      } else {
+        showToast("Notifications enabled (push not supported on this browser)");
+      }
+    } else {
+      // Tear down push when disabling
+      teardownPushNotifications().catch(() => {});
+      showToast("Notifications disabled");
     }
   };
 
@@ -543,25 +554,22 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
 
             {/* Icon buttons */}
             <div className="shrink-0 flex items-center">
-              {isPushSupported() && (
-                <button
-                  type="button"
-                  onClick={handleTogglePush}
-                  disabled={pushLoading}
-                  title={pushEnabled ? "Disable push notifications" : "Enable push notifications"}
-                  className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors disabled:opacity-50"
-                >
-                  {pushEnabled ? (
-                    <svg className="w-3.5 h-3.5 text-cyan-400" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 002 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
-                    </svg>
-                  ) : (
-                    <svg className="w-3.5 h-3.5 text-dim hover:text-cyan-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-                    </svg>
-                  )}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={handleToggleNotif}
+                title={notifEnabled ? "Disable notifications" : "Enable notifications"}
+                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
+              >
+                {notifEnabled ? (
+                  <svg className="w-3.5 h-3.5 text-cyan-400" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 002 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5 text-dim hover:text-cyan-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                  </svg>
+                )}
+              </button>
 
               <button
                 type="button"

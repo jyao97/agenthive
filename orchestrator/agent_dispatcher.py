@@ -572,7 +572,7 @@ class AgentDispatcher:
 
             from websocket import emit_agent_update, emit_new_message
             self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
-            self._emit(emit_new_message(agent.id, resp.id))
+            self._emit(emit_new_message(agent.id, resp.id, agent.name, agent.project))
 
             from push import send_push_notification
             status_emoji = "\u274c" if is_error else "\u2705"
@@ -624,7 +624,7 @@ class AgentDispatcher:
 
                 from websocket import emit_agent_update, emit_new_message
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
-                self._emit(emit_new_message(agent.id, msg.id))
+                self._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
 
                 from push import send_push_notification
                 send_push_notification(
@@ -648,7 +648,7 @@ class AgentDispatcher:
 
                 from websocket import emit_agent_update, emit_new_message
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
-                self._emit(emit_new_message(agent.id, msg.id))
+                self._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
 
                 from push import send_push_notification
                 send_push_notification(
@@ -722,7 +722,7 @@ class AgentDispatcher:
 
                 from websocket import emit_agent_update, emit_new_message
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
-                self._emit(emit_new_message(agent.id, sys_msg.id))
+                self._emit(emit_new_message(agent.id, sys_msg.id, agent.name, agent.project))
 
                 from push import send_push_notification
                 send_push_notification(
@@ -1209,6 +1209,18 @@ class AgentDispatcher:
 
         from websocket import emit_agent_stream, emit_agent_update, emit_new_message
 
+        # Cache agent name/project for notification payloads
+        _sync_agent_name = ""
+        _sync_project = ""
+        db = SessionLocal()
+        try:
+            _ag = db.get(Agent, agent_id)
+            if _ag:
+                _sync_agent_name = _ag.name
+                _sync_project = _ag.project
+        finally:
+            db.close()
+
         last_size = 0
         last_turn_count = 0
         last_tail_hash = ""  # Hash of last turn content to detect updates
@@ -1245,7 +1257,7 @@ class AgentDispatcher:
                     updated += 1
             if updated:
                 db.commit()
-                self._emit(emit_new_message(agent_id, "sync"))
+                self._emit(emit_new_message(agent_id, "sync", _sync_agent_name, _sync_project))
                 logger.info(
                     "Reconciled %d stale messages for agent %s",
                     updated, agent_id,
@@ -1304,7 +1316,7 @@ class AgentDispatcher:
                         agent.last_message_preview = (turns[-1][1] or "")[:200]
                         agent.last_message_at = _utcnow()
                         db.commit()
-                        self._emit(emit_new_message(agent.id, "sync"))
+                        self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
                         last_tail_hash = tail_hash
                         is_generating = False
                         logger.info(
@@ -1376,7 +1388,15 @@ class AgentDispatcher:
                     self._emit(emit_agent_update(
                         agent.id, agent.status.value, agent.project
                     ))
-                    self._emit(emit_new_message(agent.id, "sync"))
+                    self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
+
+                    from push import send_push_notification
+                    send_push_notification(
+                        title=_sync_agent_name or f"Agent {agent_id[:8]}",
+                        body=f"New message ({_sync_project})" if _sync_project else "New message",
+                        url=f"/agents/{agent_id}",
+                    )
+
                     logger.info(
                         "Synced %d new turns for agent %s",
                         len(new_turns), agent_id,
@@ -1442,7 +1462,14 @@ class AgentDispatcher:
                         self._emit(emit_agent_update(
                             agent.id, agent.status.value, agent.project
                         ))
-                        self._emit(emit_new_message(agent.id, sys_msg.id))
+                        self._emit(emit_new_message(agent.id, sys_msg.id, _sync_agent_name, _sync_project))
+
+                        from push import send_push_notification
+                        send_push_notification(
+                            title=f"\u2705 {_sync_agent_name or agent_id[:8]}",
+                            body="CLI session ended — sync complete",
+                            url=f"/agents/{agent_id}",
+                        )
                 finally:
                     db.close()
                 break
