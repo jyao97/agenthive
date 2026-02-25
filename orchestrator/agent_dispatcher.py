@@ -471,6 +471,7 @@ class AgentDispatcher:
         if self._cli_detect_counter >= self._cli_detect_interval:
             self._cli_detect_counter = 0
             self._auto_detect_cli_sessions(db)
+            self._reap_stale_syncing_agents(db)
 
         db.commit()
 
@@ -1243,6 +1244,38 @@ class AgentDispatcher:
         # Start sync tasks (after commit)
         for aid, sid, ppath in agents_to_sync:
             self.start_session_sync(aid, sid, ppath)
+
+    def _reap_stale_syncing_agents(self, db: Session):
+        """Stop SYNCING agents whose session file hasn't been written to recently."""
+        import time
+
+        stale_threshold = 1800  # 30 minutes without writes → session is done
+        syncing = db.query(Agent).filter(
+            Agent.status == AgentStatus.SYNCING,
+            Agent.cli_sync == True,
+        ).all()
+
+        for agent in syncing:
+            if not agent.session_id:
+                continue
+            proj = db.get(Project, agent.project)
+            if not proj:
+                continue
+            session_dir = _session_source_dir(proj.path)
+            fpath = os.path.join(session_dir, f"{agent.session_id}.jsonl")
+            try:
+                age = time.time() - os.path.getmtime(fpath)
+            except OSError:
+                age = float("inf")
+
+            if age > stale_threshold:
+                logger.info(
+                    "Stopping stale syncing agent %s (session file idle %.0fs)",
+                    agent.id, age,
+                )
+                agent.status = AgentStatus.STOPPED
+                from websocket import emit_agent_update
+                self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
 
     # ---- Streaming output ----
 
