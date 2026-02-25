@@ -1,5 +1,6 @@
 export const STATUS_COLORS = {
   PENDING: "bg-gray-500",
+  SYNCING: "bg-violet-500",
   PLANNING: "bg-blue-500",
   PLAN_REVIEW: "bg-amber-500",
   EXECUTING: "bg-cyan-500",
@@ -11,6 +12,7 @@ export const STATUS_COLORS = {
 
 export const STATUS_TEXT_COLORS = {
   PENDING: "text-dim",
+  SYNCING: "text-violet-400",
   PLANNING: "text-blue-400",
   PLAN_REVIEW: "text-amber-400",
   EXECUTING: "text-cyan-400",
@@ -77,6 +79,7 @@ export function modelDisplayName(modelId) {
 export const STATUS_TABS = [
   { key: "ALL", label: "All" },
   { key: "PENDING", label: "Pending" },
+  { key: "SYNCING", label: "Syncing" },
   { key: "PLANNING", label: "Planning" },
   { key: "PLAN_REVIEW", label: "Review" },
   { key: "EXECUTING", label: "Executing" },

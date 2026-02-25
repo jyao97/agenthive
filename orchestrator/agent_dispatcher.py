@@ -220,6 +220,23 @@ def _parse_session_model(jsonl_path: str) -> str | None:
     return None
 
 
+def _detect_session_model(jsonl_path: str) -> str | None:
+    """Extract the model ID from a session JSONL (from assistant messages)."""
+    try:
+        with open(jsonl_path) as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                model = entry.get("message", {}).get("model")
+                if model:
+                    return model
+    except OSError:
+        pass
+    return None
+
+
 def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
     """Parse a Claude Code session JSONL into conversation turns.
 
@@ -322,6 +339,10 @@ class AgentDispatcher:
         # CLI session sync tasks: agent_id -> asyncio.Task
         self._sync_tasks: dict[str, asyncio.Task] = {}
 
+        # CLI auto-detect tick counter (run every ~30s, not every 2s tick)
+        self._cli_detect_counter = 0
+        self._cli_detect_interval = 15  # ticks (15 * 2s = 30s)
+
     def get_active_sessions(self) -> list[tuple[str, str]]:
         """Return (session_id, project_path) for all agents with sessions.
 
@@ -419,6 +440,12 @@ class AgentDispatcher:
 
         # 6. Dispatch pending messages to idle agents
         self._dispatch_pending_messages(db)
+
+        # 7. Auto-detect running CLI sessions (every ~30s)
+        self._cli_detect_counter += 1
+        if self._cli_detect_counter >= self._cli_detect_interval:
+            self._cli_detect_counter = 0
+            self._auto_detect_cli_sessions(db)
 
         db.commit()
 
@@ -1042,6 +1069,129 @@ class AgentDispatcher:
             lines.append(f"[{role}]: {content}")
         lines.append("--- End of history ---\n")
         return "\n".join(lines)
+
+    # ---- Auto-detect running CLI sessions ----
+
+    def _auto_detect_cli_sessions(self, db: Session):
+        """Check for active CLI sessions by scanning session JSONL files.
+
+        For each registered project, look for recently modified .jsonl files
+        in ~/.claude/projects/. If found and not already linked to an agent,
+        auto-create a syncing agent so it appears in the web UI.
+        """
+        import time
+
+        # Get all registered (non-archived) projects
+        projects = db.query(Project).filter(Project.archived == False).all()
+        if not projects:
+            return
+
+        # Get session IDs already linked to active agents
+        active_session_ids = set()
+        active_agents = db.query(Agent).filter(
+            Agent.status.notin_([AgentStatus.STOPPED]),
+            Agent.session_id.is_not(None),
+        ).all()
+        for a in active_agents:
+            active_session_ids.add(a.session_id)
+
+        now = time.time()
+        agents_to_sync: list[tuple[str, str, str]] = []  # (agent_id, session_id, project_path)
+
+        for proj in projects:
+            session_dir = _session_source_dir(proj.path)
+            if not os.path.isdir(session_dir):
+                continue
+
+            # Find .jsonl files modified in the last 60 seconds
+            try:
+                for fname in os.listdir(session_dir):
+                    if not fname.endswith(".jsonl"):
+                        continue
+                    fpath = os.path.join(session_dir, fname)
+                    if not os.path.isfile(fpath):
+                        continue
+
+                    mtime = os.path.getmtime(fpath)
+                    if now - mtime > 60:
+                        continue  # Not actively being written
+
+                    session_id = fname.replace(".jsonl", "")
+                    if session_id in active_session_ids:
+                        continue
+
+                    # New active session found
+                    logger.info(
+                        "Auto-detected active CLI session %s in project %s",
+                        session_id[:12], proj.name,
+                    )
+
+                    # Extract agent name and model from session
+                    agent_name = "CLI session"
+                    detected_model = None
+                    try:
+                        turns = _parse_session_turns(fpath)
+                        for role, content in turns:
+                            if role == "user" and content:
+                                agent_name = (content or "")[:80]
+                                break
+                        detected_model = _detect_session_model(fpath)
+                    except Exception:
+                        turns = []
+
+                    agent = Agent(
+                        project=proj.name,
+                        name=agent_name,
+                        mode=AgentMode.AUTO,
+                        status=AgentStatus.SYNCING,
+                        model=detected_model,
+                        session_id=session_id,
+                        cli_sync=True,
+                        plan_approved=True,
+                        last_message_preview=agent_name,
+                        last_message_at=_utcnow(),
+                    )
+                    db.add(agent)
+                    db.flush()
+
+                    # Import existing turns as messages
+                    try:
+                        for role, content in turns:
+                            if role == "user":
+                                msg = Message(
+                                    agent_id=agent.id,
+                                    role=MessageRole.USER,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    completed_at=_utcnow(),
+                                )
+                            elif role == "assistant":
+                                msg = Message(
+                                    agent_id=agent.id,
+                                    role=MessageRole.AGENT,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    completed_at=_utcnow(),
+                                )
+                            else:
+                                continue
+                            db.add(msg)
+                    except Exception:
+                        logger.debug("Failed to import turns for auto-detected session", exc_info=True)
+
+                    db.commit()
+                    active_session_ids.add(session_id)
+                    agents_to_sync.append((agent.id, session_id, proj.path))
+
+                    from websocket import emit_agent_update
+                    self._emit(emit_agent_update(agent.id, agent.status.value, proj.name))
+
+            except OSError:
+                continue
+
+        # Start sync tasks (after commit)
+        for aid, sid, ppath in agents_to_sync:
+            self.start_session_sync(aid, sid, ppath)
 
     # ---- Streaming output ----
 
