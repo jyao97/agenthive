@@ -2,7 +2,7 @@
 
 A self-hosted, mobile-friendly web UI for orchestrating multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents across your projects. Submit tasks from your phone, approve plans, monitor agent progress in real time, and manage everything from a single dashboard.
 
-AgentHive runs Claude Code CLI instances inside isolated Docker containers, so your host machine stays safe while agents work on your code autonomously.
+AgentHive is **not a replacement for the Claude Code CLI** — it's a companion. Keep using `claude` in your terminal the way you always have. AgentHive adds a layer on top: sync your CLI sessions to the web for mobile monitoring, run multiple agents in parallel, and manage everything from one place. You don't have to change your workflow — just extend it.
 
 ## Features
 
@@ -25,9 +25,15 @@ AgentHive runs Claude Code CLI instances inside isolated Docker containers, so y
 - **Browser notifications** — Notification API triggered directly from WebSocket events when the tab is in the background; no expiring push subscriptions needed
 - **Push notifications (fallback)** — Server-side Web Push via VAPID for when the browser is fully closed, with auto-resubscribe on every page load
 
+### Agent Management
+- **Project folders** — Group projects by category (e.g. "robotics", "infrastructure") for clean organization
+- **Starred sessions** — Pin important conversations for quick access across projects
+- **Unread counts** — See which agents have new output at a glance, like a messaging app
+- **iOS-style multi-select** — Batch stop/delete agents with swipe-friendly selection
+- **Status filtering** — Instantly see which agents are running, idle, syncing, or errored
+
 ### Developer Experience
-- **Session persistence** — Resume previous agent conversations; star important sessions for quick access
-- **iOS-style multi-select** — Batch operations on agents (stop, delete) with swipe-friendly selection
+- **Session persistence** — Resume previous agent conversations; pick up exactly where you left off
 - **Rich markdown rendering** — Code blocks, tables, headers, bold/italic, inline images in chat
 - **Git integration** — View commit history, diffs, and branch status per project
 - **Voice input** — Dictate tasks using OpenAI Whisper speech-to-text
