@@ -199,6 +199,31 @@ def _extract_session_id(logs: str) -> str | None:
     return None
 
 
+def _extract_session_id_from_output(output_file: str) -> str | None:
+    """Read the session_id from a stream-json output file (init or result event).
+
+    Only reads the first few lines to avoid scanning large files.
+    """
+    try:
+        with open(output_file, "r", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 20:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    sid = event.get("session_id")
+                    if sid:
+                        return sid
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
+    except OSError:
+        pass
+    return None
+
+
 def _parse_session_model(jsonl_path: str) -> str | None:
     """Extract the model from the first assistant message in a session JSONL."""
     try:
@@ -1087,19 +1112,44 @@ class AgentDispatcher:
         if not projects:
             return
 
-        # Get session IDs already linked to active agents
-        active_session_ids = set()
-        active_agents = db.query(Agent).filter(
-            Agent.status.notin_([AgentStatus.STOPPED]),
+        # Collect ALL session IDs already known to any agent (active or stopped)
+        # to avoid creating duplicates for web-app-started agents or re-syncing
+        # sessions that have already been tracked.
+        known_session_ids = set()
+        all_agents_with_session = db.query(Agent).filter(
             Agent.session_id.is_not(None),
         ).all()
-        for a in active_agents:
-            active_session_ids.add(a.session_id)
+        for a in all_agents_with_session:
+            known_session_ids.add(a.session_id)
+
+        # Also extract session_ids from currently-executing agents' output files,
+        # since web-app agents don't get session_id until execution completes.
+        # Track projects with web-app agents that are mid-execution but don't have
+        # a session_id yet — skip ALL new detections for those projects to avoid
+        # the race window between subprocess start and init event.
+        projects_with_pending_webapp = set()
+        for agent_id, info in self._active_execs.items():
+            agent = db.get(Agent, agent_id)
+            if not agent or agent.cli_sync:
+                continue
+            output_file = info.get("output_file", "")
+            if output_file and os.path.isfile(output_file):
+                sid = _extract_session_id_from_output(output_file)
+                if sid:
+                    known_session_ids.add(sid)
+                    continue
+            # Output file missing or no session_id yet — block this project
+            projects_with_pending_webapp.add(agent.project)
 
         now = time.time()
         agents_to_sync: list[tuple[str, str, str]] = []  # (agent_id, session_id, project_path)
 
         for proj in projects:
+            # Skip projects where a web-app agent is executing but hasn't
+            # received its session_id yet — avoids race-condition duplicates.
+            if proj.name in projects_with_pending_webapp:
+                continue
+
             session_dir = _session_source_dir(proj.path)
             if not os.path.isdir(session_dir):
                 continue
@@ -1118,7 +1168,7 @@ class AgentDispatcher:
                         continue  # Not actively being written
 
                     session_id = fname.replace(".jsonl", "")
-                    if session_id in active_session_ids:
+                    if session_id in known_session_ids:
                         continue
 
                     # New active session found
@@ -1181,7 +1231,7 @@ class AgentDispatcher:
                         logger.debug("Failed to import turns for auto-detected session", exc_info=True)
 
                     db.commit()
-                    active_session_ids.add(session_id)
+                    known_session_ids.add(session_id)
                     agents_to_sync.append((agent.id, session_id, proj.path))
 
                     from websocket import emit_agent_update
