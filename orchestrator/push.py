@@ -1,26 +1,60 @@
-"""Web Push notification sender — best-effort, never blocks dispatch."""
+"""Push notification sender — best-effort, never blocks dispatch.
+
+Supports two backends:
+1. Web Push (VAPID) — browser-based, works when PWA is open
+2. Telegram Bot — reliable push via Telegram Bot API
+"""
 
 import json
 import logging
 
-from config import VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY, VAPID_SUBJECT
+import requests as _requests
+
+from config import (
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+    VAPID_PRIVATE_KEY,
+    VAPID_PUBLIC_KEY,
+    VAPID_SUBJECT,
+)
 
 logger = logging.getLogger("orchestrator.push")
 
 
 def send_push_notification(title: str, body: str, url: str = "/") -> None:
-    """Send a push notification to all subscribed browsers.
+    """Send a push notification via all configured backends."""
+    _send_telegram(title, body, url)
+    _send_webpush(title, body, url)
 
-    Silently catches all errors — push is best-effort.
-    Removes subscriptions that return 410 Gone (expired).
-    """
+
+def _send_telegram(title: str, body: str, url: str = "/") -> None:
+    """Send a notification via Telegram Bot API."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        text = f"*{title}*\n{body}"
+        _requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "Markdown",
+            },
+            timeout=5,
+        )
+    except Exception:
+        logger.debug("Telegram send failed", exc_info=True)
+
+
+def _send_webpush(title: str, body: str, url: str = "/") -> None:
+    """Send a Web Push notification to all subscribed browsers."""
     if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
         return
 
     try:
         from pywebpush import WebPushException, webpush
     except ImportError:
-        logger.debug("pywebpush not installed — skipping push")
+        logger.debug("pywebpush not installed — skipping web push")
         return
 
     from urllib.parse import urlparse
@@ -45,7 +79,6 @@ def send_push_notification(title: str, body: str, url: str = "/") -> None:
                     "auth": sub.auth_key,
                 },
             }
-            # aud must be the origin of the push endpoint (required by FCM)
             parsed = urlparse(sub.endpoint)
             aud = f"{parsed.scheme}://{parsed.netloc}"
             vapid_claims = {"sub": VAPID_SUBJECT, "aud": aud}

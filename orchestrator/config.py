@@ -50,3 +50,7 @@ PROJECT_CONFIGS_PATH = os.getenv("PROJECT_CONFIGS_PATH", "./project-configs")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
 VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:agenthive@example.com")
+
+# Telegram Bot
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")

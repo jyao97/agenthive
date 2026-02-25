@@ -221,7 +221,7 @@ app.add_middleware(
 
 # ---- Auth middleware ----
 
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/docs", "/openapi.json")
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/docs", "/openapi.json")
 
 
 @app.middleware("http")
@@ -390,14 +390,20 @@ async def health(request: Request):
 
 @app.post("/api/test/notify")
 async def test_notify():
-    """Send a test notification via WebSocket (for debugging)."""
+    """Send a test notification via all channels (for debugging)."""
     from websocket import ws_manager
     count = await ws_manager.broadcast("agent_update", {
         "agent_id": "test",
         "status": "IDLE",
         "project": "test",
     })
-    return {"sent_to": count}
+    from push import send_push_notification
+    send_push_notification(
+        title="AgentHive Test",
+        body="Test notification from webapp",
+        url="/agents",
+    )
+    return {"sent_to_ws": count, "push_sent": True}
 
 
 @app.get("/api/system/stats")

@@ -3,7 +3,7 @@
 ## Project Overview
 
 A self-hosted web UI for orchestrating multiple Claude Code agents across projects.
-Agents run as **host subprocesses** (not Docker containers), managed by a FastAPI backend.
+Agents run as **host subprocesses**, managed by a FastAPI backend.
 The frontend is a mobile-first PWA built with React + TailwindCSS.
 
 Core capabilities:
@@ -147,7 +147,7 @@ cc-orchestrator/
 
 ## Agent Execution Model
 
-Agents run as **host subprocesses** via `subprocess.Popen`. No Docker containers are used.
+Agents run as **host subprocesses** via `subprocess.Popen`.
 
 ### Worker Manager (`worker_manager.py`)
 
@@ -264,7 +264,7 @@ class Project:
 
 ### Supporting Models
 
-- **Task**: Legacy ephemeral tasks (container_id stores PID string)
+- **Task**: Legacy ephemeral tasks (PID tracked via container_id field)
 - **StarredSession**: Bookmarked Claude sessions
 - **PushSubscription**: Web Push endpoints (endpoint, p256dh_key, auth_key)
 - **SystemConfig**: Key-value store (jwt_secret, password_hash)

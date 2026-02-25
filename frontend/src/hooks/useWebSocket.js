@@ -1,26 +1,60 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { getAuthToken } from "../lib/api";
 
+const NOTIF_KEY = "agenthive-notifications-enabled";
+
+/** Check if browser notifications are enabled (default: true). */
+export function isNotificationsEnabled() {
+  const v = localStorage.getItem(NOTIF_KEY);
+  return v === null || v === "true"; // default on
+}
+
+/** Set browser notification enabled state. */
+export function setNotificationsEnabled(enabled) {
+  localStorage.setItem(NOTIF_KEY, enabled ? "true" : "false");
+}
+
+/** Tracks which agents have already shown a notification.
+ *  Cleared when the user navigates to that agent's chat page. */
+const _notifiedAgents = new Set();
+
+/** Call this when the user views an agent's chat to allow future notifications. */
+export function clearAgentNotified(agentId) {
+  _notifiedAgents.delete(agentId);
+}
+
 /** Show a browser notification for relevant WebSocket events.
- *  Only fires when the tab is hidden (user is elsewhere). */
+ *  Fires immediately. Suppressed only if the user is viewing that agent's
+ *  chat or has already been notified for that agent (until they view it). */
 function showBrowserNotification(event) {
-  if (document.visibilityState === "visible") return;
+  if (!isNotificationsEnabled()) return;
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
 
   const d = event.data || {};
   let title, body;
 
-  if (event.type === "agent_update") {
+  if (event.type === "new_message") {
+    if (d.agent_id && window.location.pathname === `/agents/${d.agent_id}`) return;
+    if (d.agent_id && _notifiedAgents.has(d.agent_id)) return;
+    title = d.agent_name || `Agent ${d.agent_id?.slice(0, 8)}`;
+    body = d.project ? `New message (${d.project})` : "New message";
+  } else if (event.type === "agent_update") {
+    if (d.agent_id && window.location.pathname === `/agents/${d.agent_id}`) return;
     const s = d.status;
-    if (s === "IDLE") { title = "Agent done"; body = d.agent_id?.slice(0, 8); }
-    else if (s === "ERROR") { title = "Agent error"; body = d.agent_id?.slice(0, 8); }
-    else return; // Don't notify for EXECUTING/SYNCING transitions
+    // Always notify for IDLE/ERROR even if previously notified
+    if (s === "IDLE") { title = "Agent done"; body = d.agent_name || d.agent_id?.slice(0, 8); }
+    else if (s === "ERROR") { title = "Agent error"; body = d.agent_name || d.agent_id?.slice(0, 8); }
+    else return;
+    _notifiedAgents.delete(d.agent_id); // allow re-notification after status change
   } else {
-    return; // Only notify on agent status changes
+    return;
   }
 
+  if (d.agent_id) _notifiedAgents.add(d.agent_id);
+
   try {
-    const n = new Notification(title, { body, tag: d.agent_id, renotify: true });
+    const tag = `${event.type}-${d.agent_id}`;
+    const n = new Notification(title, { body, tag, renotify: true });
     n.onclick = () => { window.focus(); n.close(); };
     setTimeout(() => n.close(), 8000);
   } catch { /* ignore */ }
