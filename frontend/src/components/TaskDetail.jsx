@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchTask } from "../lib/api";
-import { relativeTime, renderMarkdown } from "../lib/formatters";
+import { relativeTime, renderMarkdown, extractFileAttachments } from "../lib/formatters";
+import FileAttachments from "./FilePreview";
 import { POLL_INTERVAL } from "../lib/constants";
 
 function MiniChatBubble({ message, project }) {
@@ -17,31 +18,39 @@ function MiniChatBubble({ message, project }) {
 
   const isUser = message.role === "USER";
 
+  const attachments = useMemo(
+    () => (!isUser ? extractFileAttachments(message.content, project) : []),
+    [isUser, message.content, project],
+  );
+
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-1`}>
-      <div
-        className={`max-w-[85%] rounded-xl px-3 py-2 ${
-          isUser
-            ? "bg-cyan-600 text-white rounded-br-sm"
-            : "bg-inset text-body rounded-bl-sm"
-        }`}
-      >
-        {isUser ? (
-          <p className="text-xs whitespace-pre-wrap">{message.content}</p>
-        ) : (
-          <div className="text-xs max-h-48 overflow-y-auto">
-            {renderMarkdown(message.content, project)}
+      <div className="max-w-[85%]">
+        <div
+          className={`rounded-xl px-3 py-2 ${
+            isUser
+              ? "bg-cyan-600 text-white rounded-br-sm"
+              : "bg-inset text-body rounded-bl-sm"
+          }`}
+        >
+          {isUser ? (
+            <p className="text-xs whitespace-pre-wrap">{message.content}</p>
+          ) : (
+            <div className="text-xs max-h-48 overflow-y-auto">
+              {renderMarkdown(message.content, project)}
+            </div>
+          )}
+          <div className={`text-[10px] mt-0.5 ${isUser ? "text-cyan-200" : "text-dim"}`}>
+            {relativeTime(message.created_at)}
+            {message.status === "FAILED" && (
+              <span className="ml-1 text-red-400">Failed</span>
+            )}
+            {message.status === "TIMEOUT" && (
+              <span className="ml-1 text-orange-400">Timed out</span>
+            )}
           </div>
-        )}
-        <div className={`text-[10px] mt-0.5 ${isUser ? "text-cyan-200" : "text-dim"}`}>
-          {relativeTime(message.created_at)}
-          {message.status === "FAILED" && (
-            <span className="ml-1 text-red-400">Failed</span>
-          )}
-          {message.status === "TIMEOUT" && (
-            <span className="ml-1 text-orange-400">Timed out</span>
-          )}
         </div>
+        {attachments.length > 0 && <FileAttachments attachments={attachments} />}
       </div>
     </div>
   );

@@ -71,6 +71,8 @@ def _effective_task_status(msg: Message, agent: Agent) -> str:
     if msg.status == MessageStatus.EXECUTING:
         return "EXECUTING"
     # PENDING — derive from agent state
+    if agent.status == AgentStatus.SYNCING:
+        return "SYNCING"
     if agent.status == AgentStatus.PLANNING:
         return "PLANNING"
     if agent.status == AgentStatus.PLAN_REVIEW:
@@ -221,7 +223,7 @@ app.add_middleware(
 
 # ---- Auth middleware ----
 
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/docs", "/openapi.json")
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/api/files/", "/docs", "/openapi.json")
 
 
 @app.middleware("http")
