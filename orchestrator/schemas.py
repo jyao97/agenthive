@@ -35,7 +35,7 @@ class AgentCreate(BaseModel):
     mode: AgentMode = AgentMode.AUTO
     model: str | None = None  # None = use project default
     worktree: str | None = None  # None = shared main, string = worktree name
-    timeout_seconds: int = 600
+    timeout_seconds: int = 1800
     resume_session_id: str | None = None  # Resume an existing Claude session
 
 
@@ -54,7 +54,7 @@ class AgentOut(BaseModel):
     last_message_at: datetime | None = None
     unread_count: int = 0
     created_at: datetime
-    timeout_seconds: int = 600
+    timeout_seconds: int = 1800
 
     model_config = {"from_attributes": True}
 

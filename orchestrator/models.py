@@ -84,7 +84,7 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    timeout_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
 
 
 class Agent(Base):
@@ -109,7 +109,7 @@ class Agent(Base):
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     unread_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    timeout_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
 
 
 class Message(Base):

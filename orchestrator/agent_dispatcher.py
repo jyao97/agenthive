@@ -202,7 +202,7 @@ class AgentDispatcher:
         self.running = False
 
         # In-memory tracking of active execs
-        # agent_id -> {pid_str, output_file, message_id, started_at}
+        # agent_id -> {pid_str, output_file, message_id, started_at, last_activity}
         self._active_execs: dict[str, dict] = {}
 
         # Planner processes (ephemeral, for PLAN-mode agents)
@@ -543,7 +543,7 @@ class AgentDispatcher:
     # ---- Step 3: Timeouts ----
 
     def _check_exec_timeouts(self, db: Session):
-        """Kill execs that exceed timeout. Agent goes back to IDLE."""
+        """Kill execs that have been idle (no new output) for too long."""
         now = _utcnow()
         timed_out = []
         for agent_id, info in list(self._active_execs.items()):
@@ -552,15 +552,18 @@ class AgentDispatcher:
                 timed_out.append(agent_id)
                 continue
 
-            started = info["started_at"]
-            if started.tzinfo is None:
-                started = started.replace(tzinfo=timezone.utc)
-            elapsed = (now - started).total_seconds()
+            last_activity = info.get("last_activity", info["started_at"])
+            if last_activity.tzinfo is None:
+                last_activity = last_activity.replace(tzinfo=timezone.utc)
+            idle_seconds = (now - last_activity).total_seconds()
+            elapsed = (now - info["started_at"].replace(tzinfo=timezone.utc)
+                        if info["started_at"].tzinfo is None
+                        else now - info["started_at"]).total_seconds()
 
-            if elapsed > agent.timeout_seconds:
+            if idle_seconds > agent.timeout_seconds:
                 logger.warning(
-                    "Agent %s exec timed out after %ds (limit %ds)",
-                    agent.id, int(elapsed), agent.timeout_seconds,
+                    "Agent %s exec timed out: idle %ds, total %ds (limit %ds)",
+                    agent.id, int(idle_seconds), int(elapsed), agent.timeout_seconds,
                 )
 
                 # Kill the process
@@ -575,20 +578,20 @@ class AgentDispatcher:
                 message = db.get(Message, info["message_id"])
                 if message:
                     message.status = MessageStatus.TIMEOUT
-                    message.error_message = f"Timed out after {int(elapsed)}s"
+                    message.error_message = f"Timed out after {int(idle_seconds)}s of inactivity"
                     message.completed_at = now
 
                 # Create system message
                 sys_msg = Message(
                     agent_id=agent.id,
                     role=MessageRole.SYSTEM,
-                    content=f"Message timed out after {int(elapsed)}s",
+                    content=f"Timed out after {int(idle_seconds)}s of inactivity (ran {int(elapsed)}s total)",
                     status=MessageStatus.COMPLETED,
                 )
                 db.add(sys_msg)
 
                 agent.status = AgentStatus.IDLE
-                agent.last_message_preview = f"Timed out after {int(elapsed)}s"
+                agent.last_message_preview = f"Timed out after {int(idle_seconds)}s of inactivity"
                 agent.last_message_at = now
                 agent.unread_count += 1
 
@@ -801,6 +804,7 @@ class AgentDispatcher:
                     "output_file": output_file,
                     "message_id": pending_msg.id,
                     "started_at": _utcnow(),
+                    "last_activity": _utcnow(),
                 }
                 agent.status = AgentStatus.EXECUTING
                 if agent.worktree:
@@ -917,6 +921,11 @@ class AgentDispatcher:
 
             if not new_data:
                 continue
+
+            # New output arrived — refresh inactivity timeout
+            info = self._active_execs.get(agent_id)
+            if info:
+                info["last_activity"] = _utcnow()
 
             # Re-read entire file to parse from scratch (stream-json
             # events can span multiple reads and we need the full picture)
