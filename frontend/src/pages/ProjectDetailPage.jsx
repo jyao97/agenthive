@@ -34,7 +34,7 @@ function projectBotState(proj) {
 }
 
 function agentBotState(status) {
-  if (status === "EXECUTING" || status === "PLANNING") return "running";
+  if (status === "EXECUTING" || status === "PLANNING" || status === "SYNCING") return "running";
   if (status === "ERROR") return "error";
   if (status === "IDLE" || status === "PLAN_REVIEW") return "completed";
   return "idle";
@@ -160,6 +160,7 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [starLoading, setStarLoading] = useState(false);
 
   const handleCopyId = (e) => {
@@ -188,8 +189,28 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
     }
   };
 
+  const handleSync = async (e) => {
+    e.stopPropagation();
+    if (syncing || resuming || !projectActive) return;
+    setSyncing(true);
+    try {
+      const agent = await createAgent({
+        project,
+        prompt: session.first_message || "Synced CLI session",
+        mode: "AUTO",
+        resume_session_id: session.session_id,
+        sync_session: true,
+      });
+      if (onResume) onResume();
+      navigate(`/agents/${agent.id}`);
+    } catch (err) {
+      setSyncing(false);
+      if (onError) onError(err.message);
+    }
+  };
+
   const handleClick = async () => {
-    if (resuming) return;
+    if (resuming || syncing) return;
     // Block resume for inactive projects
     if (!projectActive && !session.linked_agent_id) {
       if (onError) onError("Please activate this project first");
@@ -261,14 +282,31 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
             <span className="inline-flex items-center gap-1 text-xs text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded font-medium animate-pulse">
               Resuming...
             </span>
+          ) : syncing ? (
+            <span className="inline-flex items-center gap-1 text-xs text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded font-medium animate-pulse">
+              Syncing...
+            </span>
           ) : !projectActive ? (
             <span className="inline-flex items-center gap-1 text-xs text-dim bg-elevated px-1.5 py-0.5 rounded font-medium">
               Activate to resume
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 text-xs text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded font-medium">
-              Click to resume
-            </span>
+            <>
+              <span className="inline-flex items-center gap-1 text-xs text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded font-medium">
+                Click to resume
+              </span>
+              <button
+                type="button"
+                onClick={handleSync}
+                className="inline-flex items-center gap-1 text-xs text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded font-medium hover:bg-violet-500/20 transition-colors"
+                title="Import CLI history and live-sync"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Sync
+              </button>
+            </>
           )}
         </div>
       </div>

@@ -23,7 +23,13 @@ from models import (
     Task,
 )
 from plan_manager import PlanManager
-from session_cache import cache_session, evict_session, repair_session_jsonl, restore_session
+from session_cache import (
+    _session_source_dir,
+    cache_session,
+    evict_session,
+    repair_session_jsonl,
+    restore_session,
+)
 from worker_manager import WorkerManager
 
 logger = logging.getLogger("orchestrator.agent_dispatcher")
@@ -193,6 +199,102 @@ def _extract_session_id(logs: str) -> str | None:
     return None
 
 
+def _parse_session_model(jsonl_path: str) -> str | None:
+    """Extract the model from the first assistant message in a session JSONL."""
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get("type") == "assistant":
+                        model = entry.get("message", {}).get("model")
+                        if model:
+                            return model
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
+    except OSError:
+        pass
+    return None
+
+
+def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
+    """Parse a Claude Code session JSONL into conversation turns.
+
+    Returns a list of (role, content) tuples where role is "user" or "assistant".
+    Skips tool_result entries (intermediate tool calls) and queue-operations.
+    Groups consecutive assistant entries into a single turn using _format_parts style.
+    """
+    turns: list[tuple[str, str]] = []
+
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return turns
+
+    # Accumulate assistant blocks between user messages
+    assistant_parts: list[tuple[str, str]] = []
+
+    def flush_assistant():
+        if assistant_parts:
+            text = _format_parts(assistant_parts)
+            if text.strip():
+                turns.append(("assistant", text))
+            assistant_parts.clear()
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        entry_type = entry.get("type")
+
+        if entry_type == "user":
+            msg = entry.get("message", {})
+            content = msg.get("content", "")
+            # Real user message = string content (not tool_result list)
+            if isinstance(content, str) and content.strip():
+                flush_assistant()
+                turns.append(("user", content))
+            # list content = tool_result, skip (belongs to assistant turn)
+
+        elif entry_type == "assistant":
+            msg = entry.get("message", {})
+            # Skip subagent messages
+            if entry.get("parent_tool_use_id"):
+                continue
+            for block in msg.get("content", []):
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text", "").strip():
+                    assistant_parts.append(("text", block["text"]))
+                elif block.get("type") == "tool_use":
+                    summary = _format_tool_summary(
+                        block.get("name", ""),
+                        block.get("input", {}),
+                    )
+                    if summary:
+                        assistant_parts.append(("tool", summary))
+
+        elif entry_type == "system":
+            # Auto-compaction summary — treat as system message
+            flush_assistant()
+            summary_data = entry.get("summary", "")
+            if summary_data:
+                turns.append(("system", f"*(context compressed)*"))
+
+    # Flush any remaining assistant content
+    flush_assistant()
+    return turns
+
+
 class AgentDispatcher:
     """Dispatch loop for persistent agent processes."""
 
@@ -217,6 +319,9 @@ class AgentDispatcher:
         # Streaming output loops: agent_id -> asyncio.Task
         self._stream_tasks: dict[str, asyncio.Task] = {}
 
+        # CLI session sync tasks: agent_id -> asyncio.Task
+        self._sync_tasks: dict[str, asyncio.Task] = {}
+
     def get_active_sessions(self) -> list[tuple[str, str]]:
         """Return (session_id, project_path) for all agents with sessions.
 
@@ -229,6 +334,7 @@ class AgentDispatcher:
                 Agent.status.in_([
                     AgentStatus.IDLE, AgentStatus.EXECUTING,
                     AgentStatus.PLANNING, AgentStatus.PLAN_REVIEW,
+                    AgentStatus.SYNCING,
                 ]),
             ).all()
             results = []
@@ -814,7 +920,6 @@ class AgentDispatcher:
             # now instead of waiting for Claude to error out (~5s wasted).
             resume_session_id = agent.session_id or None
             if resume_session_id:
-                from session_cache import _session_source_dir
                 src_dir = _session_source_dir(project_path)
                 jsonl_path = os.path.join(
                     src_dir, f"{resume_session_id}.jsonl"
@@ -1006,6 +1111,277 @@ class AgentDispatcher:
         if task and not task.done():
             task.cancel()
 
+    # ---- CLI Session Sync ----
+
+    def import_session_history(
+        self, agent_id: str, session_id: str, project_path: str
+    ) -> int:
+        """Import existing session JSONL conversation into Messages table.
+
+        Returns the number of messages imported.
+        Also sets the agent's model from the session if detected.
+        """
+        jsonl_path = os.path.join(
+            _session_source_dir(project_path), f"{session_id}.jsonl"
+        )
+        turns = _parse_session_turns(jsonl_path)
+        if not turns:
+            return 0
+
+        # Detect the actual model used in the CLI session
+        session_model = _parse_session_model(jsonl_path)
+
+        db = SessionLocal()
+        try:
+            imported = 0
+            for role, content in turns:
+                if role == "user":
+                    msg = Message(
+                        agent_id=agent_id,
+                        role=MessageRole.USER,
+                        content=content,
+                        status=MessageStatus.COMPLETED,
+                        completed_at=_utcnow(),
+                    )
+                elif role == "assistant":
+                    msg = Message(
+                        agent_id=agent_id,
+                        role=MessageRole.AGENT,
+                        content=content,
+                        status=MessageStatus.COMPLETED,
+                        completed_at=_utcnow(),
+                    )
+                elif role == "system":
+                    msg = Message(
+                        agent_id=agent_id,
+                        role=MessageRole.SYSTEM,
+                        content=content,
+                        status=MessageStatus.COMPLETED,
+                        completed_at=_utcnow(),
+                    )
+                else:
+                    continue
+                db.add(msg)
+                imported += 1
+
+            if imported:
+                agent = db.get(Agent, agent_id)
+                if agent:
+                    agent.last_message_preview = (turns[-1][1] or "")[:200]
+                    agent.last_message_at = _utcnow()
+                    if session_model:
+                        agent.model = session_model
+
+                db.commit()
+            return imported
+        finally:
+            db.close()
+
+    def start_session_sync(self, agent_id: str, session_id: str, project_path: str):
+        """Start a background task to live-sync a CLI session JSONL."""
+        self._cancel_sync_task(agent_id)
+        task = asyncio.ensure_future(
+            self._sync_session_loop(agent_id, session_id, project_path)
+        )
+        self._sync_tasks[agent_id] = task
+        logger.info("Started sync task for agent %s (session %s)", agent_id, session_id)
+
+    def _cancel_sync_task(self, agent_id: str):
+        """Cancel and clean up a sync task."""
+        task = self._sync_tasks.pop(agent_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _sync_session_loop(
+        self, agent_id: str, session_id: str, project_path: str
+    ):
+        """Tail a CLI session JSONL and import new turns as they appear.
+
+        Stays in SYNCING until the session JSONL contains a 'result' event
+        (written by Claude Code when the session ends) or a new session file
+        supersedes this one. Only then transitions to IDLE.
+        """
+        POLL_INTERVAL = 3  # seconds between checks
+
+        jsonl_path = os.path.join(
+            _session_source_dir(project_path), f"{session_id}.jsonl"
+        )
+
+        from websocket import emit_agent_update, emit_new_message
+
+        last_size = 0
+        last_turn_count = 0
+
+        # Get the current file size and turn count so we only import new turns
+        try:
+            with open(jsonl_path, "r", errors="replace") as f:
+                last_size = f.seek(0, 2)  # seek to end
+        except OSError:
+            pass
+
+        initial_turns = _parse_session_turns(jsonl_path)
+        last_turn_count = len(initial_turns)
+
+        while True:
+            await asyncio.sleep(POLL_INTERVAL)
+
+            try:
+                current_size = os.path.getsize(jsonl_path)
+            except OSError:
+                continue
+
+            if current_size > last_size:
+                last_size = current_size
+
+                # Parse full file for new turns
+                turns = _parse_session_turns(jsonl_path)
+                new_turns = turns[last_turn_count:]
+
+                if new_turns:
+                    db = SessionLocal()
+                    try:
+                        agent = db.get(Agent, agent_id)
+                        if not agent or agent.status != AgentStatus.SYNCING:
+                            break
+
+                        for role, content in new_turns:
+                            if role == "user":
+                                msg = Message(
+                                    agent_id=agent_id,
+                                    role=MessageRole.USER,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    completed_at=_utcnow(),
+                                )
+                            elif role == "assistant":
+                                msg = Message(
+                                    agent_id=agent_id,
+                                    role=MessageRole.AGENT,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    completed_at=_utcnow(),
+                                )
+                            elif role == "system":
+                                msg = Message(
+                                    agent_id=agent_id,
+                                    role=MessageRole.SYSTEM,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    completed_at=_utcnow(),
+                                )
+                            else:
+                                continue
+                            db.add(msg)
+
+                        agent.last_message_preview = (new_turns[-1][1] or "")[:200]
+                        agent.last_message_at = _utcnow()
+                        agent.unread_count += len(new_turns)
+                        db.commit()
+
+                        self._emit(emit_agent_update(
+                            agent.id, agent.status.value, agent.project
+                        ))
+                        self._emit(emit_new_message(agent.id, "sync"))
+
+                        last_turn_count = len(turns)
+                        logger.info(
+                            "Synced %d new turns for agent %s",
+                            len(new_turns), agent_id,
+                        )
+                    finally:
+                        db.close()
+
+            # Check if the CLI session has ended by looking for a 'result' event
+            if self._session_has_ended(jsonl_path):
+                logger.info(
+                    "CLI session ended for agent %s — transitioning to IDLE",
+                    agent_id,
+                )
+                db = SessionLocal()
+                try:
+                    # Final parse to catch any remaining turns
+                    turns = _parse_session_turns(jsonl_path)
+                    final_new = turns[last_turn_count:]
+                    agent = db.get(Agent, agent_id)
+                    if agent and agent.status == AgentStatus.SYNCING:
+                        for role, content in final_new:
+                            if role == "user":
+                                msg = Message(
+                                    agent_id=agent_id,
+                                    role=MessageRole.USER,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    completed_at=_utcnow(),
+                                )
+                            elif role == "assistant":
+                                msg = Message(
+                                    agent_id=agent_id,
+                                    role=MessageRole.AGENT,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    completed_at=_utcnow(),
+                                )
+                            elif role == "system":
+                                msg = Message(
+                                    agent_id=agent_id,
+                                    role=MessageRole.SYSTEM,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    completed_at=_utcnow(),
+                                )
+                            else:
+                                continue
+                            db.add(msg)
+
+                        agent.status = AgentStatus.IDLE
+                        sys_msg = Message(
+                            agent_id=agent_id,
+                            role=MessageRole.SYSTEM,
+                            content="CLI session ended — sync complete",
+                            status=MessageStatus.COMPLETED,
+                        )
+                        db.add(sys_msg)
+                        if final_new:
+                            agent.last_message_preview = (final_new[-1][1] or "")[:200]
+                        agent.last_message_at = _utcnow()
+                        db.commit()
+
+                        self._emit(emit_agent_update(
+                            agent.id, agent.status.value, agent.project
+                        ))
+                        self._emit(emit_new_message(agent.id, sys_msg.id))
+                finally:
+                    db.close()
+                break
+
+        # Clean up
+        self._sync_tasks.pop(agent_id, None)
+
+    @staticmethod
+    def _session_has_ended(jsonl_path: str) -> bool:
+        """Check if a session JSONL contains a 'result' event (session ended)."""
+        try:
+            with open(jsonl_path, "rb") as f:
+                # Read last 4KB — result event is always at the end
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 4096))
+                tail = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return False
+
+        for line in tail.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+                if event.get("type") == "result":
+                    return True
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+        return False
+
     # ---- Recovery ----
 
     def _recover_agents(self):
@@ -1016,14 +1392,66 @@ class AgentDispatcher:
             alive_statuses = [
                 AgentStatus.IDLE, AgentStatus.EXECUTING,
                 AgentStatus.PLANNING, AgentStatus.PLAN_REVIEW,
-                AgentStatus.STARTING,
+                AgentStatus.STARTING, AgentStatus.SYNCING,
             ]
             agents = db.query(Agent).filter(
                 Agent.status.in_(alive_statuses)
             ).all()
 
+            # Collect agents that need sync restart (populated below,
+            # scheduled after DB commit since start_session_sync is async).
+            agents_to_sync: list[tuple[str, str, str]] = []  # (id, session_id, project_path)
+
             for agent in agents:
                 if agent.status == AgentStatus.STARTING:
+                    continue
+
+                # Check if this CLI-synced agent has an active session
+                if agent.cli_sync and agent.session_id and agent.status in (
+                    AgentStatus.SYNCING, AgentStatus.IDLE,
+                    AgentStatus.EXECUTING, AgentStatus.PLANNING,
+                ):
+                    project = db.get(Project, agent.project)
+                    if project:
+                        project_path = self.worker_mgr._get_project_path(
+                            project.name
+                        )
+                        jsonl_path = os.path.join(
+                            _session_source_dir(project_path),
+                            f"{agent.session_id}.jsonl",
+                        )
+                        if (
+                            os.path.exists(jsonl_path)
+                            and not self._session_has_ended(jsonl_path)
+                        ):
+                            # CLI session is still active — sync it
+                            agent.status = AgentStatus.SYNCING
+                            msg = Message(
+                                agent_id=agent.id,
+                                role=MessageRole.SYSTEM,
+                                content="Auto-syncing active CLI session after restart",
+                                status=MessageStatus.COMPLETED,
+                            )
+                            db.add(msg)
+                            agents_to_sync.append(
+                                (agent.id, agent.session_id, project_path)
+                            )
+                            logger.info(
+                                "Agent %s has active CLI session %s — will auto-sync",
+                                agent.id, agent.session_id,
+                            )
+                            continue
+
+                if agent.status == AgentStatus.SYNCING:
+                    # CLI session ended (or file missing) — go IDLE
+                    agent.status = AgentStatus.IDLE
+                    msg = Message(
+                        agent_id=agent.id,
+                        role=MessageRole.SYSTEM,
+                        content="CLI session ended — sync complete",
+                        status=MessageStatus.COMPLETED,
+                    )
+                    db.add(msg)
                     continue
 
                 if agent.status in (AgentStatus.EXECUTING, AgentStatus.PLANNING):
@@ -1092,5 +1520,9 @@ class AgentDispatcher:
             if agents:
                 db.commit()
                 logger.info("Recovered %d agents on startup", len(agents))
+
+            # Schedule sync tasks for agents with active CLI sessions
+            for aid, sid, ppath in agents_to_sync:
+                self.start_session_sync(aid, sid, ppath)
         finally:
             db.close()

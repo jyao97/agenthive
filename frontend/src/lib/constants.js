@@ -26,6 +26,7 @@ export const AGENT_STATUS_COLORS = {
   EXECUTING: "bg-cyan-500",
   PLANNING: "bg-blue-500",
   PLAN_REVIEW: "bg-amber-500",
+  SYNCING: "bg-violet-500",
   ERROR: "bg-red-500",
   STOPPED: "bg-gray-600",
 };
@@ -36,6 +37,7 @@ export const AGENT_STATUS_TEXT_COLORS = {
   EXECUTING: "text-cyan-400",
   PLANNING: "text-blue-400",
   PLAN_REVIEW: "text-amber-400",
+  SYNCING: "text-violet-400",
   ERROR: "text-red-400",
   STOPPED: "text-faint",
 };

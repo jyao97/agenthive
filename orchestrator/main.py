@@ -1106,7 +1106,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
 # ---- Agents ----
 
 @app.post("/api/agents", response_model=AgentOut, status_code=201)
-async def create_agent(body: AgentCreate, db: Session = Depends(get_db)):
+async def create_agent(body: AgentCreate, request: Request, db: Session = Depends(get_db)):
     """Create a new agent with an initial message."""
     project = db.get(Project, body.project)
     if not project:
@@ -1122,36 +1122,65 @@ async def create_agent(body: AgentCreate, db: Session = Depends(get_db)):
     # Resolve model: explicit > project default > global default
     agent_model = body.model or project.default_model or CC_MODEL
 
+    # Determine initial status: SYNCING if importing CLI session
+    is_sync = body.sync_session and body.resume_session_id
+    initial_status = AgentStatus.SYNCING if is_sync else AgentStatus.STARTING
+
     agent = Agent(
         project=body.project,
         name=name,
         mode=body.mode,
+        status=initial_status,
         model=agent_model,
         worktree=body.worktree,
         timeout_seconds=body.timeout_seconds,
         session_id=body.resume_session_id,
+        cli_sync=bool(is_sync),
         last_message_preview=name,
         last_message_at=_utcnow(),
     )
     db.add(agent)
     db.flush()  # Get agent.id
 
-    # Create the initial user message
-    msg = Message(
-        agent_id=agent.id,
-        role=MessageRole.USER,
-        content=body.prompt,
-        status=MessageStatus.PENDING,
-    )
-    db.add(msg)
+    if is_sync:
+        # Sync mode: import existing history, don't create initial user message
+        agent.plan_approved = True  # Allow dispatching after sync completes
+        db.commit()
+        db.refresh(agent)
 
-    # AUTO mode agents skip plan review
-    if body.mode == AgentMode.AUTO:
-        agent.plan_approved = True
+        # Import history and start live sync in background
+        ad = getattr(request.app.state, "agent_dispatcher", None)
+        if ad:
+            project_path = ad.worker_mgr._get_project_path(project.name)
+            imported = ad.import_session_history(
+                agent.id, body.resume_session_id, project_path
+            )
+            logger.info(
+                "Agent %s: imported %d messages from CLI session %s",
+                agent.id, imported, body.resume_session_id,
+            )
+            # Start live sync to tail ongoing CLI activity
+            ad.start_session_sync(
+                agent.id, body.resume_session_id, project_path
+            )
+    else:
+        # Normal mode: create the initial user message
+        msg = Message(
+            agent_id=agent.id,
+            role=MessageRole.USER,
+            content=body.prompt,
+            status=MessageStatus.PENDING,
+        )
+        db.add(msg)
 
-    db.commit()
-    db.refresh(agent)
-    logger.info("Agent %s created for project %s (mode %s)", agent.id, agent.project, agent.mode.value)
+        # AUTO mode agents skip plan review
+        if body.mode == AgentMode.AUTO:
+            agent.plan_approved = True
+
+        db.commit()
+        db.refresh(agent)
+
+    logger.info("Agent %s created for project %s (mode %s, sync=%s)", agent.id, agent.project, agent.mode.value, is_sync)
     return agent
 
 
@@ -1220,6 +1249,11 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
         status=MessageStatus.COMPLETED,
     )
     db.add(msg)
+
+    # Cancel any active sync task
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad:
+        ad._cancel_sync_task(agent.id)
 
     db.commit()
     db.refresh(agent)
@@ -1307,6 +1341,8 @@ async def send_agent_message(
         raise HTTPException(status_code=400, detail="Agent is stopped")
     if agent.status == AgentStatus.EXECUTING:
         raise HTTPException(status_code=400, detail="Agent is currently executing — wait for completion")
+    if agent.status == AgentStatus.SYNCING:
+        raise HTTPException(status_code=400, detail="Agent is syncing from CLI — input disabled")
 
     msg = Message(
         agent_id=agent.id,
