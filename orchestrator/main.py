@@ -741,6 +741,13 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
             except Exception:
                 logger.warning("Failed to auto-init git repo for %s", body.name)
 
+    # Migrate any old session directories that match this project
+    from session_cache import migrate_session_dirs
+    try:
+        migrate_session_dirs(proj.path)
+    except Exception:
+        logger.warning("Failed to check session dir migration for %s", body.name)
+
     # Append to registry.yaml
     registry_path = os.path.join(PROJECT_CONFIGS_PATH, "registry.yaml")
     try:
@@ -919,6 +926,10 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
             except OSError:
                 logger.warning("Failed to migrate %s dir: %s → %s", label, old_dir, new_dir)
 
+        # Fallback: scan for any old session dirs matching the project basename
+        from session_cache import migrate_session_dirs
+        migrate_session_dirs(new_path)
+
     logger.info("Project renamed: %s → %s", name, new_name)
     return new_proj
 
@@ -932,7 +943,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
     if proj.archived:
         raise HTTPException(status_code=400, detail="Project is already archived")
 
-    # Stop all active agents for this project
+    # Stop all active agents for this project (including SYNCING/tmux agents)
     active_agents = (
         db.query(Agent)
         .filter(
@@ -941,8 +952,22 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
         )
         .all()
     )
+    ad = getattr(request.app.state, "agent_dispatcher", None)
     for agent in active_agents:
+        # Kill tmux pane for CLI-synced agents
+        if agent.cli_sync and agent.tmux_pane:
+            import subprocess as _sp
+            try:
+                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=3)
+                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=3)
+                _sp.run(["tmux", "kill-pane", "-t", agent.tmux_pane], capture_output=True, timeout=3)
+            except Exception:
+                pass
+        # Cancel sync task
+        if ad:
+            ad._cancel_sync_task(agent.id)
         agent.status = AgentStatus.STOPPED
+        agent.tmux_pane = None
         db.add(Message(
             agent_id=agent.id,
             role=MessageRole.SYSTEM,
@@ -951,7 +976,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
         ))
     stopped_count = len(active_agents)
 
-    # Stop all running processes for this project
+    # Stop all running subprocess workers for this project
     wm = getattr(request.app.state, "worker_manager", None)
     if wm:
         try:
@@ -1503,6 +1528,10 @@ async def _launch_tmux_background(
     if not tui_ready:
         _mark_error("Claude TUI input prompt did not appear in pane %s within 15s" % pane_id)
         return
+
+    # Extra settle time — Ink's input handler may not be wired up
+    # immediately when ❯ first renders.
+    await asyncio.sleep(2)
 
     # Step 2: Send the prompt
     if not send_tmux_message(pane_id, prompt):

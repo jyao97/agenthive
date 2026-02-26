@@ -45,6 +45,67 @@ def session_cache_dir(project_path: str) -> str:
     return os.path.join(CACHE_DIR, encoded)
 
 
+def migrate_session_dirs(project_path: str) -> bool:
+    """Find and migrate existing Claude session dirs for a project.
+
+    When a project is registered at a new path (e.g. moved from
+    ~/Work/mast3r to ~/agenthive-projects/mast3r), the old session
+    directory under ~/.claude/projects/ still uses the old path encoding.
+
+    This scans for any existing session dir whose name ends with the same
+    project folder name (e.g. '-mast3r') and migrates it to match the
+    current project path encoding.
+
+    Returns True if a migration was performed.
+    """
+    target_dir = session_source_dir(project_path)
+    if os.path.isdir(target_dir):
+        return False  # Already exists, nothing to do
+
+    project_basename = os.path.basename(project_path.rstrip("/"))
+    if not project_basename:
+        return False
+
+    # Also migrate session cache if source is found
+    target_cache = session_cache_dir(project_path)
+    suffix = "-" + project_basename
+    projects_root = os.path.join(CLAUDE_HOME, "projects")
+
+    if not os.path.isdir(projects_root):
+        return False
+
+    for entry in os.listdir(projects_root):
+        if not entry.endswith(suffix):
+            continue
+        candidate = os.path.join(projects_root, entry)
+        if not os.path.isdir(candidate) or candidate == target_dir:
+            continue
+
+        # Found an old session dir for the same project basename
+        try:
+            os.rename(candidate, target_dir)
+            logger.info(
+                "Migrated session dir for %s: %s → %s",
+                project_basename, entry, encode_project_path(project_path),
+            )
+        except OSError:
+            logger.warning("Failed to migrate session dir %s → %s", entry, target_dir)
+            return False
+
+        # Also migrate the corresponding session cache dir
+        old_cache = os.path.join(CACHE_DIR, entry)
+        if os.path.isdir(old_cache) and not os.path.exists(target_cache):
+            try:
+                os.rename(old_cache, target_cache)
+                logger.info("Migrated session cache: %s → %s", entry, encode_project_path(project_path))
+            except OSError:
+                logger.warning("Failed to migrate session cache %s", entry)
+
+        return True
+
+    return False
+
+
 def ensure_cleanup_disabled() -> None:
     """Set cleanupPeriodDays to 36500 in ~/.claude/settings.json.
 
