@@ -58,6 +58,7 @@ class AgentOut(BaseModel):
     created_at: datetime
     timeout_seconds: int = 1800
     skip_permissions: bool = True
+    muted: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -78,6 +79,7 @@ class AgentBrief(BaseModel):
     unread_count: int = 0
     created_at: datetime
     skip_permissions: bool = True
+    muted: bool = False
 
     model_config = {"from_attributes": True}
 

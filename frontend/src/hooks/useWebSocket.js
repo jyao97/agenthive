@@ -1,17 +1,29 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { getAuthToken } from "../lib/api";
 
-const NOTIF_KEY = "agenthive-notifications-enabled";
+const MUTED_KEY = "agenthive-muted-agents";
 
-/** Check if browser notifications are enabled (default: true). */
-export function isNotificationsEnabled() {
-  const v = localStorage.getItem(NOTIF_KEY);
-  return v === null || v === "true"; // default on
+/** Get the set of muted agent IDs from localStorage. */
+function getMutedAgents() {
+  try {
+    const v = localStorage.getItem(MUTED_KEY);
+    return v ? new Set(JSON.parse(v)) : new Set();
+  } catch {
+    return new Set();
+  }
 }
 
-/** Set browser notification enabled state. */
-export function setNotificationsEnabled(enabled) {
-  localStorage.setItem(NOTIF_KEY, enabled ? "true" : "false");
+/** Check if a specific agent is muted. */
+export function isAgentMuted(agentId) {
+  return getMutedAgents().has(agentId);
+}
+
+/** Set mute state for a specific agent. */
+export function setAgentMuted(agentId, muted) {
+  const set = getMutedAgents();
+  if (muted) set.add(agentId);
+  else set.delete(agentId);
+  localStorage.setItem(MUTED_KEY, JSON.stringify([...set]));
 }
 
 /** Tracks which agents have already shown a notification.
@@ -24,10 +36,9 @@ export function clearAgentNotified(agentId) {
 }
 
 /** Show a browser notification for relevant WebSocket events.
- *  Fires immediately. Suppressed only if the user is viewing that agent's
- *  chat or has already been notified for that agent (until they view it). */
+ *  Suppressed if the agent is muted, the user is viewing that agent's
+ *  chat, or has already been notified for that agent (until they view it). */
 function showBrowserNotification(event) {
-  if (!isNotificationsEnabled()) return;
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
 
   const d = event.data || {};
@@ -35,11 +46,13 @@ function showBrowserNotification(event) {
 
   if (event.type === "new_message") {
     if (d.agent_id && window.location.pathname === `/agents/${d.agent_id}`) return;
+    if (d.agent_id && isAgentMuted(d.agent_id)) return;
     if (d.agent_id && _notifiedAgents.has(d.agent_id)) return;
     title = d.agent_name || `Agent ${d.agent_id?.slice(0, 8)}`;
     body = d.project ? `New message (${d.project})` : "New message";
   } else if (event.type === "agent_update") {
     if (d.agent_id && window.location.pathname === `/agents/${d.agent_id}`) return;
+    if (d.agent_id && isAgentMuted(d.agent_id)) return;
     const s = d.status;
     // Always notify for IDLE/ERROR even if previously notified
     if (s === "IDLE") { title = "Agent done"; body = d.agent_name || d.agent_id?.slice(0, 8); }

@@ -13,6 +13,7 @@ import {
   unstarSession,
   cancelMessage,
   updateMessage,
+  updateAgent,
 } from "../lib/api";
 import { relativeTime, renderMarkdown, extractFileAttachments } from "../lib/formatters";
 import FileAttachments from "../components/FilePreview";
@@ -20,13 +21,8 @@ import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, modelDisplayName } from 
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
-import useWebSocket, { isNotificationsEnabled, setNotificationsEnabled, clearAgentNotified } from "../hooks/useWebSocket";
+import useWebSocket, { isAgentMuted, setAgentMuted, clearAgentNotified } from "../hooks/useWebSocket";
 import useHealthStatus from "../hooks/useHealthStatus";
-import {
-  isPushSupported,
-  setupPushNotifications,
-  teardownPushNotifications,
-} from "../lib/pushNotifications";
 
 // --- Chat Bubble ---
 
@@ -619,7 +615,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const [resuming, setResuming] = useState(false);
   const [starred, setStarred] = useState(false);
   const [starLoading, setStarLoading] = useState(false);
-  const [notifEnabled, setNotifEnabled] = useState(() => isNotificationsEnabled());
+  const [muted, setMuted] = useState(() => isAgentMuted(id));
   const [streamingContent, setStreamingContent] = useState(null);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -646,6 +642,10 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       ]);
       setAgent(agentData);
       setMessages(msgData);
+      if (!initialLoadDone.current && agentData.muted != null) {
+        setMuted(agentData.muted);
+        setAgentMuted(id, agentData.muted);
+      }
       initialLoadDone.current = true;
     } catch (err) {
       if (!initialLoadDone.current) {
@@ -707,40 +707,16 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     }
   };
 
-  const handleToggleNotif = async () => {
-    const next = !notifEnabled;
-    setNotificationsEnabled(next);
-    setNotifEnabled(next);
-    if (next) {
-      // Request permission if needed
-      if (typeof Notification !== "undefined" && Notification.permission === "default") {
-        try {
-          const perm = await Notification.requestPermission();
-          if (perm !== "granted") {
-            showToast(`Notification permission: ${perm}`, "error");
-            return;
-          }
-        } catch (e) {
-          showToast(`Permission error: ${e.message}`, "error");
-          return;
-        }
-      }
-      // Set up push notifications
-      if (isPushSupported()) {
-        try {
-          const ok = await setupPushNotifications();
-          showToast(ok ? "Notifications enabled" : "Push setup failed — check browser settings", ok ? "success" : "error");
-        } catch (e) {
-          showToast(`Push error: ${e.message}`, "error");
-        }
-      } else {
-        showToast("Notifications enabled (push not supported on this browser)");
-      }
-    } else {
-      // Tear down push when disabling
-      teardownPushNotifications().catch(() => {});
-      showToast("Notifications disabled");
+  const handleToggleMute = async () => {
+    const nextMuted = !muted;
+    setAgentMuted(id, nextMuted);
+    setMuted(nextMuted);
+    try {
+      await updateAgent(id, { muted: nextMuted });
+    } catch {
+      // Backend update failed — local state still applies for browser notifs
     }
+    showToast(nextMuted ? "Notifications muted for this agent" : "Notifications enabled for this agent");
   };
 
   // Auto-scroll to bottom on new messages or streaming content
@@ -979,17 +955,17 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
             <div className="shrink-0 flex items-center">
               <button
                 type="button"
-                onClick={handleToggleNotif}
-                title={notifEnabled ? "Disable notifications" : "Enable notifications"}
+                onClick={handleToggleMute}
+                title={muted ? "Unmute notifications" : "Mute notifications"}
                 className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
               >
-                {notifEnabled ? (
-                  <svg className="w-3.5 h-3.5 text-cyan-400" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 002 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
+                {muted ? (
+                  <svg className="w-3.5 h-3.5 text-dim hover:text-cyan-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9.143 17.082a24.248 24.248 0 003.718.918m-3.718-.918A23.848 23.848 0 013.69 15.772 8.966 8.966 0 016 9.75V9a6 6 0 0112 0v.75m-9.857 7.332a3 3 0 005.714 0M3 3l18 18" />
                   </svg>
                 ) : (
-                  <svg className="w-3.5 h-3.5 text-dim hover:text-cyan-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                  <svg className="w-3.5 h-3.5 text-cyan-400" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 002 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
                   </svg>
                 )}
               </button>

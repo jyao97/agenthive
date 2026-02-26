@@ -953,13 +953,14 @@ class AgentDispatcher:
             self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
             self._emit(emit_new_message(agent.id, resp.id, agent.name, agent.project))
 
-            from push import send_push_notification
-            status_emoji = "\u274c" if is_error else "\u2705"
-            send_push_notification(
-                title=f"{status_emoji} {agent.name}",
-                body=preview[:100],
-                url=f"/agents/{agent.id}",
-            )
+            if not agent.muted:
+                from push import send_push_notification
+                status_emoji = "\u274c" if is_error else "\u2705"
+                send_push_notification(
+                    title=f"{status_emoji} {agent.name}",
+                    body=preview[:100],
+                    url=f"/agents/{agent.id}",
+                )
 
             done_agents.append(agent_id)
 
@@ -1026,12 +1027,13 @@ class AgentDispatcher:
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
                 self._emit(emit_new_message(agent.id, sys_msg.id, agent.name, agent.project))
 
-                from push import send_push_notification
-                send_push_notification(
-                    title=f"\u23f0 {agent.name}",
-                    body=f"Timed out after {int(idle_seconds)}s of inactivity",
-                    url=f"/agents/{agent.id}",
-                )
+                if not agent.muted:
+                    from push import send_push_notification
+                    send_push_notification(
+                        title=f"\u23f0 {agent.name}",
+                        body=f"Timed out after {int(idle_seconds)}s of inactivity",
+                        url=f"/agents/{agent.id}",
+                    )
 
                 timed_out.append(agent_id)
 
@@ -1066,12 +1068,13 @@ class AgentDispatcher:
 
                 from websocket import emit_agent_update
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
-                from push import send_push_notification
-                send_push_notification(
-                    title=f"\u274c {agent.name}",
-                    body=f"Project '{agent.project}' not found",
-                    url=f"/agents/{agent.id}",
-                )
+                if not agent.muted:
+                    from push import send_push_notification
+                    send_push_notification(
+                        title=f"\u274c {agent.name}",
+                        body=f"Project '{agent.project}' not found",
+                        url=f"/agents/{agent.id}",
+                    )
                 continue
 
             try:
@@ -1102,12 +1105,13 @@ class AgentDispatcher:
 
                 from websocket import emit_agent_update
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
-                from push import send_push_notification
-                send_push_notification(
-                    title=f"\u274c {agent.name}",
-                    body="Failed to start — project directory not found",
-                    url=f"/agents/{agent.id}",
-                )
+                if not agent.muted:
+                    from push import send_push_notification
+                    send_push_notification(
+                        title=f"\u274c {agent.name}",
+                        body="Failed to start — project directory not found",
+                        url=f"/agents/{agent.id}",
+                    )
 
     # ---- Step 4: Dispatch pending messages ----
 
@@ -2355,21 +2359,22 @@ class AgentDispatcher:
                     self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
 
                     # Only notify for agent/system turns (not user messages)
-                    _push_body = ""
-                    for _r, _c in reversed(new_turns):
-                        if _r == "assistant":
-                            _push_body = _c[:120]
-                            break
-                        if _r == "system":
-                            _push_body = _c[:120]
-                            break
-                    if _push_body:
-                        from push import send_push_notification
-                        send_push_notification(
-                            title=_sync_agent_name or f"Agent {agent_id[:8]}",
-                            body=_push_body,
-                            url=f"/agents/{agent_id}",
-                        )
+                    if not agent.muted:
+                        _push_body = ""
+                        for _r, _c in reversed(new_turns):
+                            if _r == "assistant":
+                                _push_body = _c[:120]
+                                break
+                            if _r == "system":
+                                _push_body = _c[:120]
+                                break
+                        if _push_body:
+                            from push import send_push_notification
+                            send_push_notification(
+                                title=_sync_agent_name or f"Agent {agent_id[:8]}",
+                                body=_push_body,
+                                url=f"/agents/{agent_id}",
+                            )
 
                     logger.info(
                         "Synced %d new turns for agent %s",
@@ -2464,12 +2469,13 @@ class AgentDispatcher:
                         ))
                         self._emit(emit_new_message(agent.id, sys_msg.id, _sync_agent_name, _sync_project))
 
-                        from push import send_push_notification
-                        send_push_notification(
-                            title=f"\u2705 {_sync_agent_name or agent_id[:8]}",
-                            body="CLI session ended — sync complete",
-                            url=f"/agents/{agent_id}",
-                        )
+                        if not agent.muted:
+                            from push import send_push_notification
+                            send_push_notification(
+                                title=f"\u2705 {_sync_agent_name or agent_id[:8]}",
+                                body="CLI session ended — sync complete",
+                                url=f"/agents/{agent_id}",
+                            )
                 finally:
                     db.close()
                 break

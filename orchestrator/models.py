@@ -105,6 +105,7 @@ class Agent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
     skip_permissions: Mapped[bool] = mapped_column(Boolean, default=True)
+    muted: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Message(Base):

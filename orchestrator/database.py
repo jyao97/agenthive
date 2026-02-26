@@ -170,6 +170,12 @@ def init_db():
             ))
             conn.commit()
 
+        if "muted" not in columns:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN muted BOOLEAN NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+
         # Drop old priority column now that mode has been migrated
         result = conn.execute(text("PRAGMA table_info(agents)"))
         columns = {row[1] for row in result}

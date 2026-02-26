@@ -110,6 +110,8 @@ export const createAgent = (data) =>
   request("/api/agents", { method: "POST", body: JSON.stringify(data) });
 export const renameAgent = (id, name) =>
   request(`/api/agents/${id}`, { method: "PUT", body: JSON.stringify({ name }) });
+export const updateAgent = (id, data) =>
+  request(`/api/agents/${id}`, { method: "PUT", body: JSON.stringify(data) });
 export const launchTmuxAgent = (data) =>
   request("/api/agents/launch-tmux", { method: "POST", body: JSON.stringify(data) });
 export const scanAgents = () =>

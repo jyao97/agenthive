@@ -1867,6 +1867,8 @@ async def update_agent(agent_id: str, request: Request, db: Session = Depends(ge
         if len(name) > 200:
             raise HTTPException(status_code=400, detail="Name too long (max 200)")
         agent.name = name
+    if "muted" in body:
+        agent.muted = bool(body["muted"])
     db.commit()
     db.refresh(agent)
     return agent
