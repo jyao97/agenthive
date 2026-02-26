@@ -59,7 +59,7 @@ function SystemBubble({ message }) {
   );
 }
 
-function ChatBubble({ message, project, onCancelMessage, onUpdateMessage }) {
+function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow }) {
   if (message.role === "SYSTEM") {
     return <SystemBubble message={message} />;
   }
@@ -113,6 +113,10 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage }) {
   const handleCancel = () => {
     setShowActions(false);
     onCancelMessage?.(message.id);
+  };
+  const handleSendNow = () => {
+    setShowActions(false);
+    onSendNow?.(message.id);
   };
   const handleEdit = () => {
     setShowActions(false);
@@ -262,6 +266,18 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage }) {
         {showActions && (
           <div className="absolute top-0 right-0 -translate-y-full mb-1 z-50">
             <div className="bg-surface border border-divider rounded-xl shadow-lg overflow-hidden flex">
+              {isScheduled && (
+                <button
+                  type="button"
+                  onClick={handleSendNow}
+                  className="px-3 py-2 text-xs font-medium text-emerald-400 hover:bg-emerald-600/10 transition-colors flex items-center gap-1.5"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                  </svg>
+                  Send now
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleEdit}
@@ -517,12 +533,7 @@ function ChatInput({ onSend, onSendLater, disabled, disabledReason, isBusy, tmux
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (isBusy) {
-        // When busy, Enter opens the time picker instead of sending
-        if (text.trim()) setShowPicker(true);
-      } else {
-        handleSend();
-      }
+      handleSend();
     }
   };
 
@@ -545,7 +556,7 @@ function ChatInput({ onSend, onSendLater, disabled, disabledReason, isBusy, tmux
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
             onBlur={handleBlur}
-            placeholder={tmuxMode ? "Send via tmux..." : isBusy ? "Queue a message..." : disabled ? disabledReason : "Type a message..."}
+            placeholder={tmuxMode ? "Send via tmux..." : isBusy ? "Send (queued until ready)..." : disabled ? disabledReason : "Type a message..."}
             disabled={!canType}
             rows={1}
             className="flex-1 min-h-[40px] max-h-[160px] rounded-xl bg-transparent px-3 py-2.5 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors disabled:opacity-50"
@@ -786,10 +797,12 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     setEditingName(false);
   };
 
-  // Send message
+  // Send message (auto-queues if agent is busy)
   const handleSend = async (content) => {
     try {
-      await sendMessage(id, content);
+      const busy = agent.status === "EXECUTING" || (agent.status === "SYNCING" && !agent.tmux_pane);
+      await sendMessage(id, content, busy ? { queue: true } : {});
+      if (busy) showToast("Queued — will send when ready");
       loadData();
     } catch (err) {
       showToast("Failed: " + err.message, "error");
@@ -826,6 +839,17 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       const updated = await updateMessage(id, messageId, data);
       setMessages((prev) => prev.map((m) => (m.id === messageId ? updated : m)));
       showToast("Message updated");
+    } catch (err) {
+      showToast("Failed: " + err.message, "error");
+    }
+  };
+
+  // Send a scheduled message immediately (clear its scheduled_at)
+  const handleSendNow = async (messageId) => {
+    try {
+      const updated = await updateMessage(id, messageId, { scheduled_at: "" });
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? updated : m)));
+      showToast("Sending now");
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     }
@@ -900,7 +924,6 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   if (isStopped) disabledReason = "Agent is stopped — click Resume to restart";
   else if (isError) disabledReason = "Agent errored — click Resume to restart";
   else if (isSyncing && !hasTmux) disabledReason = "Syncing from CLI session...";
-  else if (isExecuting) disabledReason = "Agent is working...";
 
   return (
     <div className="flex flex-col h-full">
@@ -1081,7 +1104,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         ) : (
           <>
             {messages.map((msg) => (
-              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} />
+              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} />
             ))}
 
             {/* Streaming output or typing indicator while executing/syncing */}
@@ -1102,9 +1125,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       <ChatInput
         onSend={handleSend}
         onSendLater={handleSendLater}
-        disabled={isStopped || isError || isExecuting || (isSyncing && !hasTmux)}
+        disabled={isStopped || isError || (isSyncing && !hasTmux)}
         disabledReason={disabledReason}
-        isBusy={isExecuting || (isSyncing && !hasTmux)}
+        isBusy={isExecuting}
         tmuxMode={hasTmux}
       />
 

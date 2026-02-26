@@ -785,7 +785,7 @@ class AgentDispatcher:
         self._dispatch_pending_messages(db)
 
         # 4b. Dispatch due scheduled messages to SYNCING agents via tmux
-        self._dispatch_tmux_scheduled(db)
+        self._dispatch_tmux_pending(db)
 
         # 5. Auto-detect running CLI sessions (every ~30s)
         self._cli_detect_counter += 1
@@ -1256,8 +1256,13 @@ class AgentDispatcher:
                 pending_msg.status = MessageStatus.FAILED
                 pending_msg.error_message = "Failed to start claude process"
 
-    def _dispatch_tmux_scheduled(self, db: Session):
-        """Send due scheduled messages to SYNCING agents via tmux."""
+    def _dispatch_tmux_pending(self, db: Session):
+        """Send pending messages to SYNCING agents via tmux.
+
+        Handles both scheduled messages whose time has arrived AND
+        non-scheduled queued messages (e.g. from "Send now" or messages
+        queued while the agent was busy).
+        """
         syncing_agents = db.query(Agent).filter(
             Agent.status == AgentStatus.SYNCING,
             Agent.cli_sync == True,
@@ -1271,8 +1276,7 @@ class AgentDispatcher:
                     Message.agent_id == agent.id,
                     Message.role == MessageRole.USER,
                     Message.status == MessageStatus.PENDING,
-                    Message.scheduled_at.is_not(None),
-                    Message.scheduled_at <= _utcnow(),
+                    (Message.scheduled_at == None) | (Message.scheduled_at <= _utcnow()),
                 )
                 .order_by(Message.created_at.asc())
                 .first()
@@ -1290,14 +1294,14 @@ class AgentDispatcher:
                 due_msg.completed_at = _utcnow()
                 due_msg.scheduled_at = None
                 logger.info(
-                    "Dispatched scheduled message %s to SYNCING agent %s via tmux",
+                    "Dispatched pending message %s to SYNCING agent %s via tmux",
                     due_msg.id, agent.id,
                 )
             else:
                 due_msg.status = MessageStatus.FAILED
                 due_msg.error_message = "Failed to send via tmux"
                 logger.warning(
-                    "Failed to dispatch scheduled message %s via tmux for agent %s",
+                    "Failed to dispatch pending message %s via tmux for agent %s",
                     due_msg.id, agent.id,
                 )
 
