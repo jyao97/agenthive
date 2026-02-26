@@ -76,7 +76,7 @@ export default function TaskDetail({ taskId, agentId, project, status }) {
 
   useEffect(() => {
     load();
-    const active = ["PENDING", "PLANNING", "PLAN_REVIEW", "EXECUTING"];
+    const active = ["PENDING", "EXECUTING"];
     if (!active.includes(status)) return;
     const interval = setInterval(load, POLL_INTERVAL);
     return () => clearInterval(interval);

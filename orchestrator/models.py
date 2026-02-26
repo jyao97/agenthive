@@ -14,14 +14,11 @@ class Base(DeclarativeBase):
 
 class AgentMode(str, enum.Enum):
     INTERVIEW = "INTERVIEW"    # Chat only — no auto-execution
-    PLAN = "PLAN"              # Generate plan → approve → execute
-    AUTO = "AUTO"              # Execute immediately, no plan step
+    AUTO = "AUTO"              # Execute immediately
 
 
 class TaskStatus(str, enum.Enum):
     PENDING = "PENDING"
-    PLANNING = "PLANNING"
-    PLAN_REVIEW = "PLAN_REVIEW"
     EXECUTING = "EXECUTING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -33,8 +30,6 @@ class AgentStatus(str, enum.Enum):
     STARTING = "STARTING"
     IDLE = "IDLE"
     EXECUTING = "EXECUTING"
-    PLANNING = "PLANNING"
-    PLAN_REVIEW = "PLAN_REVIEW"
     SYNCING = "SYNCING"       # Importing conversation from CLI session
     ERROR = "ERROR"
     STOPPED = "STOPPED"

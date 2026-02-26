@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS } from "../lib/constants";
@@ -17,7 +17,7 @@ const HEALTH_COLORS = {
   unknown: "bg-gray-500",
 };
 
-const AGENT_STATUS_ORDER = ["EXECUTING", "PLANNING", "PLAN_REVIEW", "IDLE", "STARTING", "ERROR", "STOPPED"];
+const AGENT_STATUS_ORDER = ["EXECUTING", "SYNCING", "IDLE", "STARTING", "ERROR", "STOPPED"];
 
 function UsageBar({ label, pct, detail }) {
   const barColor =
@@ -59,6 +59,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
   const [agentCounts, setAgentCounts] = useState({});
   const [processes, setProcesses] = useState([]);
   const [sysStats, setSysStats] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -92,6 +93,12 @@ export default function MonitorPage({ theme, onToggleTheme }) {
     } catch { /* retry next poll */ }
   }, []);
 
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await Promise.all([fetchHealth(), fetchAgents(), fetchProcesses(), fetchSysStats()]);
+    setTimeout(() => setRefreshing(false), 400);
+  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats]);
+
   useEffect(() => {
     fetchHealth();
     fetchAgents();
@@ -112,8 +119,18 @@ export default function MonitorPage({ theme, onToggleTheme }) {
   return (
     <div className="h-full flex flex-col">
       <PageHeader title="Monitor" theme={theme} onToggleTheme={onToggleTheme}>
-        <div className="px-4 pb-2">
+        <div className="px-4 pb-2 flex items-center justify-between">
           <span className="text-xs text-faint">Auto-refreshing every 3s</span>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            title="Refresh"
+            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
+          >
+            <svg className={`w-4 h-4 text-label ${refreshing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
         </div>
       </PageHeader>
 

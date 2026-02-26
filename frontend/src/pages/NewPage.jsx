@@ -84,13 +84,13 @@ export default function NewPage({ theme, onToggleTheme }) {
     <div className="h-full flex flex-col">
       {/* Toast */}
       {toast && (
-        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
+        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
           {toast.message}
         </div>
       )}
 
       {/* Back header */}
-      <div className="shrink-0 bg-page border-b border-divider px-4 pt-4 pb-2 z-10">
+      <div className="shrink-0 bg-page border-b border-divider px-4 pt-4 pb-2 z-10 safe-area-pt">
         <button type="button" onClick={goBack} className="flex items-center gap-1 text-sm text-label hover:text-heading">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
@@ -144,8 +144,8 @@ function NewAgentForm({ showToast, navigate }) {
     setSubmitting(true);
     try {
       if (syncMode) {
-        await launchTmuxAgent({ project, prompt: prompt.trim(), model, skip_permissions: skipPermissions });
-        showToast("Launched in tmux — will appear as syncing agent shortly");
+        const agent = await launchTmuxAgent({ project, prompt: prompt.trim(), model, skip_permissions: skipPermissions });
+        navigate(`/agents/${agent.id}`);
       } else {
         const agent = await createAgent({ project, prompt: prompt.trim(), mode: "AUTO", model, worktree, skip_permissions: skipPermissions });
         showToast("Agent created!");

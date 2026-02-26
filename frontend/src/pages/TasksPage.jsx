@@ -4,6 +4,7 @@ import { STATUS_TABS, POLL_INTERVAL } from "../lib/constants";
 import TaskCard from "../components/TaskCard";
 import TaskDetail from "../components/TaskDetail";
 import PageHeader from "../components/PageHeader";
+import FilterTabs from "../components/FilterTabs";
 
 export default function TasksPage({ theme, onToggleTheme }) {
   const [tasks, setTasks] = useState([]);
@@ -59,31 +60,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
   return (
     <div className="h-full flex flex-col">
       <PageHeader title="Tasks" theme={theme} onToggleTheme={onToggleTheme}>
-        <div className="overflow-x-auto scrollbar-none">
-          <div className="flex gap-1 px-4 pb-3 min-w-max">
-            {STATUS_TABS.map((tab) => {
-              const isActive = activeTab === tab.key;
-              const count = counts[tab.key] || 0;
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => setActiveTab(tab.key)}
-                  className={`min-h-[36px] px-3 py-1.5 rounded-full text-sm font-medium transition-colors whitespace-nowrap ${
-                    isActive
-                      ? "bg-cyan-600 text-white"
-                      : "bg-surface text-label hover:bg-input hover:text-body"
-                  }`}
-                >
-                  {tab.label}
-                  <span className={`ml-1.5 text-xs ${isActive ? "text-cyan-200" : "text-faint"}`}>
-                    {count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <FilterTabs tabs={STATUS_TABS} active={activeTab} onChange={setActiveTab} counts={counts} />
       </PageHeader>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">

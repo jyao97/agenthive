@@ -5,6 +5,17 @@ import os
 # Project root: one level up from this file (cc-orchestrator/)
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Load .env so the backend works regardless of how it's started
+# (run.sh, bare uvicorn, systemd, etc.)
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=False)
+
+# run.sh maps HOST_PROJECTS_DIR → PROJECTS_DIR; replicate that here
+# so direct starts work identically.
+if not os.getenv("PROJECTS_DIR") and os.getenv("HOST_PROJECTS_DIR"):
+    os.environ["PROJECTS_DIR"] = os.environ["HOST_PROJECTS_DIR"]
+
 
 def _resolve(path: str) -> str:
     """Resolve a path: absolute paths stay as-is, relative paths are

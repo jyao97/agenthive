@@ -9,8 +9,10 @@ import {
   createProject,
   deleteProject as deleteProjectApi,
   archiveProject as archiveProjectApi,
+  renameProject as renameProjectApi,
   starSession,
   unstarSession,
+  scanAgents,
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import VoiceRecorder from "../components/VoiceRecorder";
@@ -18,6 +20,7 @@ import WorktreePicker from "../components/WorktreePicker";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, MODEL_OPTIONS, modelDisplayName } from "../lib/constants";
+import FilterTabs from "../components/FilterTabs";
 
 const AGENT_TABS = [
   { key: "starred", label: "Starred" },
@@ -35,9 +38,9 @@ function projectBotState(proj) {
 }
 
 function agentBotState(status) {
-  if (status === "EXECUTING" || status === "PLANNING" || status === "SYNCING") return "running";
+  if (status === "EXECUTING" || status === "SYNCING") return "running";
   if (status === "ERROR") return "error";
-  if (status === "IDLE" || status === "PLAN_REVIEW") return "completed";
+  if (status === "IDLE") return "completed";
   return "idle";
 }
 
@@ -359,6 +362,15 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const toastTimer = useRef(null);
   const textareaRef = useRef(null);
 
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Rename
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [showRenameConfirm, setShowRenameConfirm] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const nameInputRef = useRef(null);
+
   // Activate / Archive / Delete
   const [activating, setActivating] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -370,6 +382,48 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     setToast({ message, type });
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }, []);
+
+  // Rename handlers
+  const startRename = () => {
+    setNameDraft(project?.display_name || project?.name || "");
+    setEditingName(true);
+    setTimeout(() => nameInputRef.current?.select(), 0);
+  };
+
+  const requestRename = () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === (project?.display_name || project?.name)) {
+      setEditingName(false);
+      return;
+    }
+    setEditingName(false);
+    setShowRenameConfirm(true);
+  };
+
+  const deriveSlug = (text) =>
+    text.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "-").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
+
+  const confirmRename = async () => {
+    const slug = deriveSlug(nameDraft);
+    if (!slug) {
+      showToast("Invalid project name", "error");
+      setShowRenameConfirm(false);
+      return;
+    }
+    setRenaming(true);
+    try {
+      const displayName = nameDraft.trim() !== slug ? nameDraft.trim() : undefined;
+      await renameProjectApi(name, slug, displayName);
+      showToast("Project renamed!");
+      setShowRenameConfirm(false);
+      navigate(`/projects/${encodeURIComponent(slug)}`, { replace: true });
+    } catch (err) {
+      showToast("Rename failed: " + err.message, "error");
+      setShowRenameConfirm(false);
+    } finally {
+      setRenaming(false);
+    }
+  };
 
   const voice = useVoiceRecorder({
     onTranscript: (text) => setPrompt((prev) => (prev ? prev + " " + text : text)),
@@ -404,6 +458,13 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       setLoading(false);
     }
   }, [name, navigate]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await scanAgents(); } catch {}
+    await loadData();
+    setTimeout(() => setRefreshing(false), 400);
+  }, [loadData]);
 
   useEffect(() => {
     loadData();
@@ -451,9 +512,8 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     setSubmitting(true);
     try {
       if (syncMode) {
-        await launchTmuxAgent({ project: name, prompt: prompt.trim(), model, skip_permissions: skipPermissions });
-        showToast("Launched in tmux — will appear as syncing agent shortly");
-        setPrompt("");
+        const agent = await launchTmuxAgent({ project: name, prompt: prompt.trim(), model, skip_permissions: skipPermissions });
+        navigate(`/agents/${agent.id}`);
       } else {
         const agent = await createAgent({ project: name, prompt: prompt.trim(), mode: "AUTO", model, worktree, skip_permissions: skipPermissions });
         showToast("Agent created!");
@@ -525,13 +585,13 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     <div className="h-full flex flex-col">
       {/* Toast */}
       {toast && (
-        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
+        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
           {toast.message}
         </div>
       )}
 
       {/* Fixed Header */}
-      <div className="shrink-0 bg-page border-b border-divider px-4 pt-3 pb-3 z-10">
+      <div className="shrink-0 bg-page border-b border-divider px-4 pt-3 pb-3 z-10 safe-area-pt">
         <div className="max-w-2xl mx-auto">
           <button
             type="button"
@@ -547,12 +607,43 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             <BotIcon state={projectBotState(project)} className="w-10 h-10 shrink-0" />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold text-heading truncate">{project.display_name || project.name}</h1>
+                {editingName ? (
+                  <input
+                    ref={nameInputRef}
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onBlur={requestRename}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") requestRename();
+                      if (e.key === "Escape") setEditingName(false);
+                    }}
+                    maxLength={100}
+                    className="text-lg font-bold text-heading min-w-0 flex-1 bg-input border border-cyan-500 rounded px-1.5 py-0.5 outline-none"
+                  />
+                ) : (
+                  <h1
+                    onDoubleClick={startRename}
+                    title="Double-tap to rename"
+                    className="text-lg font-bold text-heading truncate select-none"
+                  >
+                    {project.display_name || project.name}
+                  </h1>
+                )}
                 {project.active ? (
                   <span className="shrink-0 px-2 py-0.5 text-[10px] font-bold uppercase rounded-full bg-emerald-500/15 text-emerald-400 tracking-wide">Active</span>
                 ) : (
                   <span className="shrink-0 px-2 py-0.5 text-[10px] font-bold uppercase rounded-full bg-zinc-500/15 text-zinc-400 tracking-wide">Inactive</span>
                 )}
+                <button
+                  type="button"
+                  onClick={handleRefresh}
+                  title="Refresh"
+                  className="ml-auto w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
+                >
+                  <svg className={`w-4 h-4 text-label ${refreshing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
               </div>
               <div className="flex items-center gap-3 text-xs">
                 {project.process_running && (
@@ -682,24 +773,8 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
 
       {/* Agent tabs */}
       <div>
-        <div className="flex gap-1.5 mb-3 overflow-x-auto no-scrollbar">
-          {AGENT_TABS.map((tab) => {
-            const isActive = agentTab === tab.key;
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setAgentTab(tab.key)}
-                className={`shrink-0 min-h-[34px] px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-cyan-600 text-white"
-                    : "bg-surface text-label hover:bg-input"
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
+        <div className="mb-3 -mx-4">
+          <FilterTabs tabs={AGENT_TABS} active={agentTab} onChange={setAgentTab} />
         </div>
 
         {agentTab === "sessions" || agentTab === "starred" ? (
@@ -814,6 +889,39 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           </button>
         </div>
       </div>
+
+      {/* Rename confirmation modal */}
+      {showRenameConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="bg-surface rounded-2xl p-6 max-w-sm w-full space-y-4 shadow-card">
+            <h3 className="text-lg font-bold text-heading">Rename Project?</h3>
+            <p className="text-sm text-label">
+              This will rename <span className="font-semibold text-heading">"{name}"</span> to{" "}
+              <span className="font-semibold text-heading">"{deriveSlug(nameDraft)}"</span>.
+            </p>
+            <p className="text-xs text-dim">
+              All agents, tasks, session references, and local files will be updated. This cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                disabled={renaming}
+                onClick={confirmRename}
+                className="flex-1 min-h-[44px] rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-sm transition-colors disabled:opacity-50"
+              >
+                {renaming ? "Renaming..." : "Rename"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowRenameConfirm(false)}
+                className="flex-1 min-h-[44px] rounded-lg bg-input hover:bg-elevated text-body text-sm transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete confirmation modal */}
       {showDelete && (

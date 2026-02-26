@@ -4,6 +4,7 @@ import { fetchAllFolders, fetchTrashFolders, createProject, archiveProject } fro
 import { relativeTime } from "../lib/formatters";
 import BotIcon from "../components/BotIcon";
 import PageHeader from "../components/PageHeader";
+import FilterTabs from "../components/FilterTabs";
 
 function botState(folder) {
   if (!folder.active) return "idle";
@@ -121,7 +122,6 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
       setError(err.message);
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
   }, []);
 
@@ -166,20 +166,26 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     });
 
   const FILTER_TABS = [
-    { key: "ALL", label: "All", count: folders.length },
-    { key: "ACTIVE", label: "Active", count: activeCount },
-    { key: "INACTIVE", label: "Inactive", count: inactiveCount },
+    { key: "ALL", label: "All" },
+    { key: "ACTIVE", label: "Active" },
+    { key: "INACTIVE", label: "Inactive" },
   ];
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await load();
+    setTimeout(() => setRefreshing(false), 400);
+  }, [load]);
 
   const refreshButton = (
     <button
       type="button"
-      onClick={() => { setRefreshing(true); load(); }}
+      onClick={handleRefresh}
       title="Refresh"
-      className="p-2 rounded-lg text-label hover:text-heading hover:bg-input transition-colors"
+      className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
     >
-      <svg className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 1 1-2.64-6.36L21 3v5h-5" />
+      <svg className={`w-4 h-4 text-label ${refreshing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
       </svg>
     </button>
   );
@@ -187,28 +193,12 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
   return (
     <div className="h-full flex flex-col">
       <PageHeader title="Projects" theme={theme} onToggleTheme={onToggleTheme} actions={refreshButton}>
-        <div className="flex gap-1 px-4 pb-3">
-          {FILTER_TABS.map((tab) => {
-            const isActive = filter === tab.key;
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setFilter(tab.key)}
-                className={`min-h-[36px] px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-cyan-600 text-white"
-                    : "bg-surface text-label hover:bg-input hover:text-body"
-                }`}
-              >
-                {tab.label}
-                <span className={`ml-1.5 text-xs ${isActive ? "text-cyan-200" : "text-faint"}`}>
-                  {tab.count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        <FilterTabs
+          tabs={FILTER_TABS}
+          active={filter}
+          onChange={setFilter}
+          counts={{ ALL: folders.length, ACTIVE: activeCount, INACTIVE: inactiveCount }}
+        />
       </PageHeader>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-20 p-4 max-w-2xl mx-auto w-full">

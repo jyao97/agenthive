@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ from database import SessionLocal, get_db, init_db
 from log_config import setup_logging
 from models import (
     Agent,
+    AgentMode,
     AgentStatus,
     Message,
     MessageRole,
@@ -36,9 +38,11 @@ from schemas import (
     MessageOut,
     ProjectCreate,
     ProjectOut,
+    ProjectRename,
     ProjectWithStats,
     SendMessage,
     SessionSummary,
+    UpdateMessage,
 )
 from auth import (
     create_token,
@@ -614,7 +618,6 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
                     Agent.project == dirname,
                     Agent.status.in_([
                         AgentStatus.IDLE, AgentStatus.EXECUTING,
-                        AgentStatus.PLANNING, AgentStatus.PLAN_REVIEW,
                         AgentStatus.STARTING,
                     ]),
                 )
@@ -787,8 +790,7 @@ def _check_no_active_agents(name: str, db: Session):
             Agent.project == name,
             Agent.status.in_([
                 AgentStatus.STARTING, AgentStatus.IDLE,
-                AgentStatus.EXECUTING, AgentStatus.PLANNING,
-                AgentStatus.PLAN_REVIEW,
+                AgentStatus.EXECUTING,
             ]),
         )
         .count()
@@ -798,6 +800,100 @@ def _check_no_active_agents(name: str, db: Session):
             status_code=409,
             detail=f"Cannot modify project with {active_agents} active agent(s)",
         )
+
+
+@app.put("/api/projects/{name}/rename", response_model=ProjectOut)
+async def rename_project(name: str, body: ProjectRename, request: Request, db: Session = Depends(get_db)):
+    """Rename a project — updates all agent/task/session references, registry, and directory."""
+    from sqlalchemy import update, text
+
+    proj = db.get(Project, name)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    new_name = body.new_name
+    if new_name == name:
+        return proj
+
+    _validate_folder_name(new_name)
+
+    # Check new name is free
+    if db.get(Project, new_name):
+        raise HTTPException(status_code=409, detail=f"Project '{new_name}' already exists")
+
+    # Block rename when agents are actively running (including SYNCING)
+    busy = (
+        db.query(Agent)
+        .filter(
+            Agent.project == name,
+            Agent.status.in_([
+                AgentStatus.STARTING, AgentStatus.IDLE,
+                AgentStatus.EXECUTING, AgentStatus.SYNCING,
+            ]),
+        )
+        .count()
+    )
+    if busy > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot rename project with {busy} active agent(s). Stop them first.",
+        )
+
+    old_path = proj.path
+    new_display = body.display_name or (new_name if proj.display_name == name else proj.display_name)
+
+    # --- Database updates (single transaction, raw SQL for PK change) ---
+    # Expire ORM cache so it doesn't conflict with raw SQL
+    db.expire_all()
+
+    db.execute(text(
+        "UPDATE projects SET name = :new_name, display_name = :display WHERE name = :old_name"
+    ), {"new_name": new_name, "display": new_display, "old_name": name})
+    db.execute(update(Agent).where(Agent.project == name).values(project=new_name))
+    db.execute(update(StarredSession).where(StarredSession.project == name).values(project=new_name))
+    try:
+        from models import Task
+        db.execute(update(Task).where(Task.project == name).values(project=new_name))
+    except Exception:
+        pass
+
+    db.commit()
+
+    new_proj = db.get(Project, new_name)
+
+    # --- Registry.yaml ---
+    registry_path = os.path.join(PROJECT_CONFIGS_PATH, "registry.yaml")
+    try:
+        if os.path.exists(registry_path):
+            with open(registry_path) as f:
+                data = yaml.safe_load(f) or {}
+            projects_list = data.get("projects") or []
+            for entry in projects_list:
+                if entry.get("name") == name:
+                    entry["name"] = new_name
+                    # Update path in registry if it contained old name
+                    if entry.get("path", "").endswith(f"/{name}"):
+                        entry["path"] = entry["path"].rsplit("/", 1)[0] + f"/{new_name}"
+                    break
+            with open(registry_path, "w") as f:
+                yaml.dump(data, f, default_flow_style=False)
+    except Exception:
+        logger.warning("Failed to update registry.yaml during rename %s → %s", name, new_name)
+
+    # --- Rename directory on disk ---
+    if old_path.endswith(f"/{name}") and os.path.isdir(old_path):
+        new_path = old_path.rsplit("/", 1)[0] + f"/{new_name}"
+        if not os.path.exists(new_path):
+            try:
+                os.rename(old_path, new_path)
+                new_proj.path = new_path
+                db.commit()
+                logger.info("Renamed project directory %s → %s", old_path, new_path)
+            except OSError:
+                logger.warning("Failed to rename project directory %s → %s", old_path, new_path)
+
+    logger.info("Project renamed: %s → %s", name, new_name)
+    return new_proj
 
 
 @app.post("/api/projects/{name}/archive", status_code=200)
@@ -1204,9 +1300,14 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
 
 @app.post("/api/agents/launch-tmux", status_code=201)
 async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
-    """Launch a claude CLI session in a new tmux pane for a project.
+    """Launch an interactive claude CLI session in a new tmux pane.
 
-    The auto-detect loop will pick it up as a SYNCING agent within ~30s.
+    Starts Claude in interactive mode (full TUI), then sends the prompt
+    as input after Claude finishes loading.  The user can attach to the
+    tmux pane to interact with Claude directly.
+
+    A background task detects the session JSONL and starts live-syncing
+    the conversation into the webapp.
     """
     import shlex
     import subprocess
@@ -1227,56 +1328,179 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     if not os.path.isdir(proj.path):
         raise HTTPException(status_code=400, detail="Project directory not found on disk")
 
-    # Build the claude command
-    cmd_parts = [CLAUDE_BIN, "--output-format", "stream-json", "--verbose"]
+    # Build the claude command in INTERACTIVE mode (no -p, so the user
+    # gets the full TUI and can attach via tmux).
+    cmd_parts = [CLAUDE_BIN]
     if skip_permissions:
         cmd_parts.append("--dangerously-skip-permissions")
     if model:
         cmd_parts += ["--model", model]
-    if prompt:
-        cmd_parts += ["-p", prompt]
     claude_cmd = " ".join(shlex.quote(p) for p in cmd_parts)
 
-    tmux_session = "agenthive"
-    window_name = (prompt or "claude")[:30].replace(" ", "-").replace("'", "").replace('"', "")
+    # Each agent gets its own tmux session: "project-HHMM-subject"
+    now = datetime.now(timezone.utc)
+    time_tag = now.strftime("%H%M")
+    subject = (prompt or "claude")[:30]
+    # Clean for tmux session name: no dots, colons, or spaces
+    subject_clean = re.sub(r'[^a-zA-Z0-9_-]', '-', subject).strip('-')[:30]
+    tmux_session = f"{project_name}-{time_tag}-{subject_clean}"
 
-    # Ensure tmux session exists
-    check = subprocess.run(
-        ["tmux", "has-session", "-t", tmux_session],
-        capture_output=True,
+    # Create a new detached tmux session for this agent
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", tmux_session,
+         "-c", proj.path],
+        check=True,
     )
-    if check.returncode != 0:
-        # Create session with a detached initial window
-        subprocess.run(
-            ["tmux", "new-session", "-d", "-s", tmux_session,
-             "-c", proj.path, "-n", window_name],
-            check=True,
-        )
-        pane_id = subprocess.run(
-            ["tmux", "display-message", "-t", f"{tmux_session}:{window_name}", "-p", "#{pane_id}"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-    else:
-        # Create new window in existing session
-        result = subprocess.run(
-            ["tmux", "new-window", "-t", tmux_session,
-             "-c", proj.path, "-n", window_name,
-             "-P", "-F", "#{pane_id}"],
-            capture_output=True, text=True, check=True,
-        )
-        pane_id = result.stdout.strip()
+    pane_id = subprocess.run(
+        ["tmux", "display-message", "-t", tmux_session, "-p", "#{pane_id}"],
+        capture_output=True, text=True,
+    ).stdout.strip()
 
-    # Send the claude command to the pane
+    # Start Claude interactively (full TUI — user can attach and interact)
     subprocess.run(
         ["tmux", "send-keys", "-t", pane_id, claude_cmd, "Enter"],
         check=True,
     )
 
-    logger.info(
-        "Launched tmux claude session in pane %s for project %s",
-        pane_id, project_name,
+    # Create Agent record immediately so the frontend can navigate to it.
+    agent_name = (prompt or "CLI session")[:80]
+    agent = Agent(
+        project=project_name,
+        name=agent_name,
+        mode=AgentMode.AUTO,
+        status=AgentStatus.STARTING,
+        model=model or proj.default_model,
+        cli_sync=True,
+        tmux_pane=pane_id,
+        skip_permissions=skip_permissions,
+        last_message_preview=agent_name,
+        last_message_at=datetime.now(timezone.utc),
     )
-    return {"status": "launched", "tmux_pane": pane_id, "project": project_name}
+    db.add(agent)
+    db.flush()
+
+    # Save the initial prompt as a user message so it shows in the chat
+    if prompt:
+        msg = Message(
+            agent_id=agent.id,
+            role=MessageRole.USER,
+            content=prompt,
+            status=MessageStatus.COMPLETED,
+            source="web",
+            completed_at=datetime.now(timezone.utc),
+        )
+        db.add(msg)
+
+    db.commit()
+    db.refresh(agent)
+
+    # Schedule background task: wait for Claude TUI to load, send prompt,
+    # detect session JSONL, and start sync.
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad and prompt:
+        asyncio.ensure_future(
+            _launch_tmux_background(ad, agent.id, pane_id, prompt, proj.path)
+        )
+
+    logger.info(
+        "Launched tmux claude session in pane %s for project %s (agent %s)",
+        pane_id, project_name, agent.id,
+    )
+    return AgentOut.model_validate(agent)
+
+
+async def _launch_tmux_background(
+    ad, agent_id: str, pane_id: str, prompt: str, project_path: str,
+):
+    """Background task for tmux agent launch.
+
+    1. Wait for Claude's TUI to start (polls for a claude process in the pane)
+    2. Send the user prompt
+    3. Detect the session JSONL and start the sync loop
+    """
+    from agent_dispatcher import (
+        _build_tmux_claude_map,
+        _session_source_dir,
+        send_tmux_message,
+    )
+    from database import SessionLocal
+    from websocket import emit_agent_update
+
+    # Step 1: Wait for Claude's TUI to load (up to 30s)
+    for _ in range(30):
+        await asyncio.sleep(1)
+        pane_map = _build_tmux_claude_map()
+        if pane_id in pane_map and not pane_map[pane_id]["is_orchestrator"]:
+            break
+    else:
+        logger.warning("Claude TUI did not start in pane %s within 30s", pane_id)
+        return
+
+    # Extra settle time for Ink TUI to render
+    await asyncio.sleep(2)
+
+    # Step 2: Send the prompt
+    send_tmux_message(pane_id, prompt)
+    logger.info("Sent initial prompt to tmux pane %s for agent %s", pane_id, agent_id)
+
+    # Step 3: Wait for session JSONL to appear (up to 60s)
+    session_dir = _session_source_dir(project_path)
+    session_id = None
+    for _ in range(60):
+        await asyncio.sleep(1)
+        try:
+            candidates = []
+            for fname in os.listdir(session_dir):
+                if not fname.endswith(".jsonl"):
+                    continue
+                fpath = os.path.join(session_dir, fname)
+                candidates.append((fname.replace(".jsonl", ""), os.path.getmtime(fpath)))
+            if candidates:
+                # Pick the most recently modified
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                session_id = candidates[0][0]
+                break
+        except OSError:
+            continue
+
+    if not session_id:
+        logger.warning("No session JSONL appeared for agent %s", agent_id)
+        return
+
+    # Update agent with session_id and transition to SYNCING
+    db = SessionLocal()
+    try:
+        agent = db.get(Agent, agent_id)
+        if not agent or agent.status == AgentStatus.STOPPED:
+            return
+        agent.session_id = session_id
+        agent.status = AgentStatus.SYNCING
+        db.commit()
+
+        ad._emit(emit_agent_update(agent_id, "SYNCING", agent.project))
+    finally:
+        db.close()
+
+    # Start the session sync loop
+    ad.start_session_sync(agent_id, session_id, project_path)
+    logger.info(
+        "Started sync for launched tmux agent %s (session %s)",
+        agent_id, session_id[:12],
+    )
+
+
+@app.post("/api/agents/scan")
+async def scan_agents(request: Request, db: Session = Depends(get_db)):
+    """Trigger an immediate liveness scan of all agents.
+
+    Runs the same reaping logic as the periodic dispatcher tick, so dead
+    CLI agents are marked STOPPED right away instead of waiting ~30s.
+    """
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad:
+        ad._reap_dead_agents(db)
+        db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/agents", response_model=list[AgentBrief])
@@ -1323,10 +1547,22 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="Agent not found")
     if agent.status == AgentStatus.STOPPED:
         raise HTTPException(status_code=400, detail="Agent is already stopped")
-    if agent.status == AgentStatus.SYNCING:
-        raise HTTPException(status_code=400, detail="Agent is syncing from CLI — stop the CLI session instead")
+
+    # Kill the tmux pane if this is a CLI-synced agent
+    if agent.cli_sync and agent.tmux_pane:
+        import subprocess as _sp
+        pane = agent.tmux_pane
+        try:
+            # Send Ctrl-C to interrupt Claude, then close the pane
+            _sp.run(["tmux", "send-keys", "-t", pane, "C-c"], capture_output=True, timeout=3)
+            _sp.run(["tmux", "send-keys", "-t", pane, "C-c"], capture_output=True, timeout=3)
+            _sp.run(["tmux", "kill-pane", "-t", pane], capture_output=True, timeout=3)
+            logger.info("Killed tmux pane %s for agent %s", pane, agent.id)
+        except Exception:
+            logger.debug("Failed to kill tmux pane %s", pane, exc_info=True)
 
     agent.status = AgentStatus.STOPPED
+    agent.tmux_pane = None
 
     # Mark any EXECUTING messages as FAILED so they don't stay stuck
     executing_msgs = db.query(Message).filter(
@@ -1515,6 +1751,7 @@ async def send_agent_message(
         role=MessageRole.USER,
         content=body.content,
         status=MessageStatus.PENDING,
+        source="web",
         scheduled_at=scheduled_at,
     )
     db.add(msg)
@@ -1538,6 +1775,57 @@ async def mark_agent_read(agent_id: str, db: Session = Depends(get_db)):
     agent.unread_count = 0
     db.commit()
     return {"detail": "ok"}
+
+
+@app.delete("/api/agents/{agent_id}/messages/{message_id}")
+async def cancel_message(agent_id: str, message_id: str, db: Session = Depends(get_db)):
+    """Cancel a pending/scheduled message. Only allowed if status is PENDING."""
+    msg = db.get(Message, message_id)
+    if not msg or msg.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg.status != MessageStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Only PENDING messages can be cancelled")
+    db.delete(msg)
+    db.commit()
+    logger.info("Message %s cancelled for agent %s", message_id, agent_id)
+    return {"detail": "Message cancelled"}
+
+
+@app.put("/api/agents/{agent_id}/messages/{message_id}", response_model=MessageOut)
+async def update_message(
+    agent_id: str,
+    message_id: str,
+    body: UpdateMessage,
+    db: Session = Depends(get_db),
+):
+    """Update content and/or scheduled_at of a PENDING message."""
+    msg = db.get(Message, message_id)
+    if not msg or msg.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg.status != MessageStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Only PENDING messages can be updated")
+
+    if body.content is not None:
+        if not body.content.strip():
+            raise HTTPException(status_code=400, detail="Content cannot be empty")
+        msg.content = body.content.strip()
+
+    if body.scheduled_at is not None:
+        if body.scheduled_at == "":
+            # Clear scheduled_at (convert to immediate pending)
+            msg.scheduled_at = None
+        else:
+            try:
+                msg.scheduled_at = datetime.fromisoformat(
+                    body.scheduled_at.replace("Z", "+00:00")
+                )
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid scheduled_at format")
+
+    db.commit()
+    db.refresh(msg)
+    logger.info("Message %s updated for agent %s", message_id, agent_id)
+    return msg
 
 
 # ---- Processes ----

@@ -766,12 +766,15 @@ class AgentDispatcher:
         # 4. Dispatch pending messages to idle agents
         self._dispatch_pending_messages(db)
 
+        # 4b. Dispatch due scheduled messages to SYNCING agents via tmux
+        self._dispatch_tmux_scheduled(db)
+
         # 5. Auto-detect running CLI sessions (every ~30s)
         self._cli_detect_counter += 1
         if self._cli_detect_counter >= self._cli_detect_interval:
             self._cli_detect_counter = 0
             self._auto_detect_cli_sessions(db)
-            self._reap_stale_syncing_agents(db)
+            self._reap_dead_agents(db)
 
         db.commit()
 
@@ -1035,8 +1038,15 @@ class AgentDispatcher:
     # ---- Step 4: Start new agents ----
 
     def _start_new_agents(self, db: Session):
-        """Validate project dirs for STARTING agents and set them to IDLE."""
-        starting = db.query(Agent).filter(Agent.status == AgentStatus.STARTING).all()
+        """Validate project dirs for STARTING agents and set them to IDLE.
+
+        Skips cli_sync agents — they follow a different lifecycle
+        (STARTING → SYNCING via the background launch task).
+        """
+        starting = db.query(Agent).filter(
+            Agent.status == AgentStatus.STARTING,
+            Agent.cli_sync == False,
+        ).all()
 
         for agent in starting:
             project = db.get(Project, agent.project)
@@ -1211,6 +1221,51 @@ class AgentDispatcher:
                 )
                 pending_msg.status = MessageStatus.FAILED
                 pending_msg.error_message = "Failed to start claude process"
+
+    def _dispatch_tmux_scheduled(self, db: Session):
+        """Send due scheduled messages to SYNCING agents via tmux."""
+        syncing_agents = db.query(Agent).filter(
+            Agent.status == AgentStatus.SYNCING,
+            Agent.cli_sync == True,
+            Agent.tmux_pane.is_not(None),
+        ).all()
+
+        for agent in syncing_agents:
+            due_msg = (
+                db.query(Message)
+                .filter(
+                    Message.agent_id == agent.id,
+                    Message.role == MessageRole.USER,
+                    Message.status == MessageStatus.PENDING,
+                    Message.scheduled_at.is_not(None),
+                    Message.scheduled_at <= _utcnow(),
+                )
+                .order_by(Message.created_at.asc())
+                .first()
+            )
+            if not due_msg:
+                continue
+
+            if not verify_tmux_pane(agent.tmux_pane):
+                agent.tmux_pane = None
+                continue
+
+            ok = send_tmux_message(agent.tmux_pane, due_msg.content)
+            if ok:
+                due_msg.status = MessageStatus.COMPLETED
+                due_msg.completed_at = _utcnow()
+                due_msg.scheduled_at = None
+                logger.info(
+                    "Dispatched scheduled message %s to SYNCING agent %s via tmux",
+                    due_msg.id, agent.id,
+                )
+            else:
+                due_msg.status = MessageStatus.FAILED
+                due_msg.error_message = "Failed to send via tmux"
+                logger.warning(
+                    "Failed to dispatch scheduled message %s via tmux for agent %s",
+                    due_msg.id, agent.id,
+                )
 
     def _build_agent_prompt(
         self, agent: Agent, project: Project, user_message: str,
@@ -1494,71 +1549,127 @@ class AgentDispatcher:
         for aid, sid, ppath in agents_to_sync:
             self.start_session_sync(aid, sid, ppath)
 
-    def _reap_stale_syncing_agents(self, db: Session):
-        """Stop SYNCING agents whose session file hasn't been written to recently.
-        Also detects tmux panes for SYNCING agents that don't have one yet.
+    def _reap_dead_agents(self, db: Session):
+        """Stop agents whose underlying process is dead.
+
+        Checks all non-STOPPED agents:
+        - CLI-synced agents (STARTING/SYNCING/IDLE/ERROR): verifies the
+          tmux pane still has a running claude process, or falls back to
+          session file freshness.
+        - Orchestrator agents: checks EXECUTING agents are still tracked.
         """
         import time
+        from websocket import emit_agent_update
 
         stale_threshold = 1800  # 30 minutes without writes → session is done
-        syncing = db.query(Agent).filter(
-            Agent.status == AgentStatus.SYNCING,
+
+        # Include STARTING so launched tmux agents that never got a
+        # session_id are still reaped when their process dies.
+        candidates = db.query(Agent).filter(
+            Agent.status.in_([
+                AgentStatus.STARTING, AgentStatus.SYNCING,
+                AgentStatus.IDLE, AgentStatus.ERROR,
+                AgentStatus.EXECUTING,
+            ]),
         ).all()
 
-        for agent in syncing:
-            if not agent.session_id:
-                continue
-            proj = db.get(Project, agent.project)
-            if not proj:
-                continue
+        # Build the tmux pane map once (expensive), reuse for all agents
+        pane_map = _build_tmux_claude_map()
 
-            # Try to detect tmux pane if not yet set
-            if not agent.tmux_pane:
-                pane = _detect_tmux_pane_for_session(agent.session_id, proj.path)
-                if pane:
-                    agent.tmux_pane = pane
+        for agent in candidates:
+            # --- Orchestrator-spawned agents (cli_sync=False) ---
+            if not agent.cli_sync:
+                if agent.status == AgentStatus.EXECUTING:
+                    if agent.id in self._active_execs:
+                        continue
+                    # Not tracked — subprocess vanished; mark STOPPED
                     logger.info(
-                        "Detected tmux pane %s for existing agent %s",
-                        pane, agent.id,
+                        "Orchestrator agent %s EXECUTING but not tracked — stopping",
+                        agent.id,
                     )
+                    agent.status = AgentStatus.STOPPED
+                    self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
+                # IDLE/ERROR/STARTING orchestrator agents are fine
+                continue
 
-            # Determine if this agent's own process is alive.
-            # If it has a tmux pane, check that specific pane.
-            # If no pane, fall back to session file freshness — do NOT
-            # count other claude processes in the same project as "alive"
-            # (that caused orphaned SYNCING agents to never stop).
+            # --- CLI-synced agents (cli_sync=True) ---
+            # Determine if this agent's underlying process is alive.
+            # Priority: tmux pane check > session file freshness.
             alive = False
+
             if agent.tmux_pane:
-                pane_map = _build_tmux_claude_map()
                 info = pane_map.get(agent.tmux_pane)
                 if info and not info["is_orchestrator"]:
                     alive = True
                 elif not verify_tmux_pane(agent.tmux_pane):
-                    # Pane is gone
+                    # Pane is gone entirely
                     agent.tmux_pane = None
-            else:
+                # else: pane exists but claude isn't running in it → not alive
+            elif agent.session_id:
                 # No pane — check if session file was recently written
-                src_dir = _session_source_dir(proj.path)
-                jsonl_path = os.path.join(src_dir, f"{agent.session_id}.jsonl")
-                try:
-                    mtime = os.path.getmtime(jsonl_path)
-                    age = time.time() - mtime
-                    alive = age < stale_threshold
-                except OSError:
-                    alive = False
+                proj = db.get(Project, agent.project)
+                if proj:
+                    src_dir = _session_source_dir(proj.path)
+                    jsonl_path = os.path.join(
+                        src_dir, f"{agent.session_id}.jsonl"
+                    )
+                    try:
+                        mtime = os.path.getmtime(jsonl_path)
+                        age = time.time() - mtime
+                        alive = age < stale_threshold
+                    except OSError:
+                        alive = False
+
+            # For STARTING agents without pane or session_id, give them
+            # a grace period (60s) for the background task to set things up.
+            if (
+                not alive
+                and agent.status == AgentStatus.STARTING
+                and not agent.tmux_pane
+                and not agent.session_id
+            ):
+                created = agent.created_at
+                if created and hasattr(created, 'replace'):
+                    created = created.replace(tzinfo=timezone.utc)
+                age = (_utcnow() - created).total_seconds() if created else 9999
+                if age < 60:
+                    continue  # Still within grace period
 
             if alive:
                 continue
 
+            # Try to detect tmux pane before giving up (SYNCING agents only)
+            if (
+                not alive
+                and agent.session_id
+                and not agent.tmux_pane
+                and agent.status == AgentStatus.SYNCING
+            ):
+                proj = db.get(Project, agent.project)
+                if proj:
+                    pane = _detect_tmux_pane_for_session(
+                        agent.session_id, proj.path
+                    )
+                    if pane:
+                        agent.tmux_pane = pane
+                        # Re-check with the newly found pane
+                        info = pane_map.get(pane)
+                        if info and not info["is_orchestrator"]:
+                            logger.info(
+                                "Detected tmux pane %s for agent %s",
+                                pane, agent.id,
+                            )
+                            continue
+
             # Process is dead or session is stale — stop the agent
             logger.info(
-                "Syncing agent %s is stale (pane=%s) — stopping",
-                agent.id, agent.tmux_pane,
+                "CLI agent %s (%s) is dead (status=%s, pane=%s, sid=%s) — stopping",
+                agent.id, agent.name[:40], agent.status.value,
+                agent.tmux_pane, (agent.session_id or "")[:12],
             )
             agent.status = AgentStatus.STOPPED
             agent.tmux_pane = None
             self._cancel_sync_task(agent.id)
-            from websocket import emit_agent_update
             self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
 
     # ---- Streaming output ----
@@ -1737,11 +1848,12 @@ class AgentDispatcher:
                 if pane_info:
                     pane_pid = pane_info["pid"]
 
-            # Collect active session IDs to avoid stealing another agent's session
+            # Collect ALL session IDs ever assigned to any agent (including
+            # stopped ones) to avoid re-adopting a dead session that was just
+            # reaped moments ago.
             active_sids: set[str] = set()
             for a in db.query(Agent).filter(
                 Agent.session_id.is_not(None),
-                Agent.status != AgentStatus.STOPPED,
             ).all():
                 active_sids.add(a.session_id)
         finally:
@@ -1990,8 +2102,24 @@ class AgentDispatcher:
 
                 # After a few idle polls, check if Claude continued into
                 # a new session (context too long → auto-continuation).
-                # Detect by looking for a newer JSONL in the same dir.
+                # Only do this if the tmux process is still alive — if it's
+                # dead, there's no Claude that could have continued.
                 if idle_polls >= 3 and idle_polls % 3 == 0:
+                    # Verify tmux pane is still alive before checking
+                    pane_alive = False
+                    db_check = SessionLocal()
+                    try:
+                        ag = db_check.get(Agent, agent_id)
+                        if ag and ag.tmux_pane:
+                            pm = _build_tmux_claude_map()
+                            info = pm.get(ag.tmux_pane)
+                            pane_alive = bool(info and not info["is_orchestrator"])
+                    finally:
+                        db_check.close()
+
+                    if not pane_alive:
+                        continue  # tmux is dead, skip continuation check
+
                     new_sid = self._detect_successor_session(
                         session_id, project_path, agent_id,
                     )
@@ -2095,11 +2223,12 @@ class AgentDispatcher:
                     # Import new turns
                     for role, content in new_turns:
                         if role == "user":
-                            # Dedup: skip if a matching web-sent message already exists
+                            # Dedup: skip if a matching web-sent (or sourceless) message already exists
+                            from sqlalchemy import or_
                             existing_web = db.query(Message).filter(
                                 Message.agent_id == agent_id,
                                 Message.role == MessageRole.USER,
-                                Message.source == "web",
+                                or_(Message.source == "web", Message.source.is_(None)),
                                 Message.content == content,
                             ).first()
                             if existing_web:
@@ -2344,13 +2473,14 @@ class AgentDispatcher:
                             )
                             if pane:
                                 session_active = True
-                            else:
-                                # No pane — only consider active if recently written
+                            elif not agent.cli_sync:
+                                # Non-tmux agents: accept freshness as liveness
                                 try:
                                     age = _time.time() - os.path.getmtime(jsonl_path)
                                     session_active = age < 1800  # 30 min
                                 except OSError:
                                     pass
+                            # cli_sync agents without a pane → not active
 
                         if session_active:
                             agent.status = AgentStatus.SYNCING
@@ -2386,8 +2516,8 @@ class AgentDispatcher:
                     if agent.tmux_pane:
                         # Has a pane — check that specific pane
                         alive = _is_cli_session_alive(project_path, agent.tmux_pane)
-                    elif project_path and agent.session_id:
-                        # No pane — check session file freshness (30min)
+                    elif project_path and agent.session_id and not agent.cli_sync:
+                        # Non-tmux agents: accept session file freshness
                         import time as _time
                         src_dir = _session_source_dir(project_path)
                         jsonl_path = os.path.join(src_dir, f"{agent.session_id}.jsonl")
@@ -2396,6 +2526,7 @@ class AgentDispatcher:
                             alive = age < 1800
                         except OSError:
                             alive = False
+                    # cli_sync agents without a tmux pane → dead
 
                     if alive:
                         if agent.session_id:

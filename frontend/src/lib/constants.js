@@ -1,8 +1,6 @@
 export const STATUS_COLORS = {
   PENDING: "bg-gray-500",
   SYNCING: "bg-violet-500",
-  PLANNING: "bg-blue-500",
-  PLAN_REVIEW: "bg-amber-500",
   EXECUTING: "bg-cyan-500",
   COMPLETED: "bg-green-500",
   FAILED: "bg-red-500",
@@ -13,8 +11,6 @@ export const STATUS_COLORS = {
 export const STATUS_TEXT_COLORS = {
   PENDING: "text-dim",
   SYNCING: "text-violet-400",
-  PLANNING: "text-blue-400",
-  PLAN_REVIEW: "text-amber-400",
   EXECUTING: "text-cyan-400",
   COMPLETED: "text-green-400",
   FAILED: "text-red-400",
@@ -26,8 +22,6 @@ export const AGENT_STATUS_COLORS = {
   STARTING: "bg-gray-500",
   IDLE: "bg-green-500",
   EXECUTING: "bg-cyan-500",
-  PLANNING: "bg-blue-500",
-  PLAN_REVIEW: "bg-amber-500",
   SYNCING: "bg-violet-500",
   ERROR: "bg-red-500",
   STOPPED: "bg-gray-600",
@@ -37,16 +31,13 @@ export const AGENT_STATUS_TEXT_COLORS = {
   STARTING: "text-dim",
   IDLE: "text-green-400",
   EXECUTING: "text-cyan-400",
-  PLANNING: "text-blue-400",
-  PLAN_REVIEW: "text-amber-400",
   SYNCING: "text-violet-400",
   ERROR: "text-red-400",
   STOPPED: "text-faint",
 };
 
 export const MODE_COLORS = {
-  INTERVIEW: "bg-violet-500/20 text-violet-400 border border-violet-500/40",  // legacy
-  PLAN: "bg-amber-500/20 text-amber-400 border border-amber-500/40",          // legacy
+  INTERVIEW: "bg-violet-500/20 text-violet-400 border border-violet-500/40",
   AUTO: "bg-green-500/20 text-green-400 border border-green-500/40",
 };
 

@@ -183,6 +183,19 @@ def init_db():
             conn.execute(text("ALTER TABLE tasks DROP COLUMN priority"))
             conn.commit()
 
+        # Drop plan-related columns (plan mode fully removed)
+        result = conn.execute(text("PRAGMA table_info(agents)"))
+        columns = {row[1] for row in result}
+        if "plan_approved" in columns:
+            conn.execute(text("ALTER TABLE agents DROP COLUMN plan_approved"))
+            conn.commit()
+        # Re-read columns after potential drop
+        result = conn.execute(text("PRAGMA table_info(agents)"))
+        columns = {row[1] for row in result}
+        if "plan" in columns:
+            conn.execute(text("ALTER TABLE agents DROP COLUMN plan"))
+            conn.commit()
+
     # Ensure jwt_secret exists in SystemConfig
     from auth import get_jwt_secret
     db = SessionLocal()

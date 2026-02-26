@@ -93,13 +93,6 @@ async def emit_worker_update(action: str, process_name: str, project: str = ""):
     })
 
 
-async def emit_plan_ready(task_id: str, project: str):
-    await ws_manager.broadcast("plan_ready", {
-        "task_id": task_id,
-        "project": project,
-    })
-
-
 async def emit_system_alert(message: str, level: str = "warning"):
     await ws_manager.broadcast("system_alert", {
         "message": message,

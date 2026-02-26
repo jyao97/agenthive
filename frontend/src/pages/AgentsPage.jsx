@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchAgents, stopAgent } from "../lib/api";
+import { fetchAgents, stopAgent, scanAgents } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, POLL_INTERVAL, modelDisplayName } from "../lib/constants";
 import BotIcon from "../components/BotIcon";
 import PageHeader from "../components/PageHeader";
+import FilterTabs from "../components/FilterTabs";
 
 const FILTER_TABS = [
   { key: "ALL", label: "All" },
@@ -14,9 +15,9 @@ const FILTER_TABS = [
 ];
 
 function agentBotState(status) {
-  if (status === "EXECUTING" || status === "PLANNING" || status === "SYNCING") return "running";
+  if (status === "EXECUTING" || status === "SYNCING") return "running";
   if (status === "ERROR") return "error";
-  if (status === "IDLE" || status === "PLAN_REVIEW") return "completed";
+  if (status === "IDLE") return "completed";
   if (status === "STOPPED") return "idle";
   return "idle";
 }
@@ -138,6 +139,8 @@ export default function AgentsPage({ theme, onToggleTheme }) {
 
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
+  const [refreshing, setRefreshing] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const data = await fetchAgents();
@@ -149,6 +152,13 @@ export default function AgentsPage({ theme, onToggleTheme }) {
       setLoading(false);
     }
   }, []);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await scanAgents(); } catch {}
+    await load();
+    setTimeout(() => setRefreshing(false), 400);
+  }, [load]);
 
   useEffect(() => {
     load();
@@ -238,34 +248,27 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     <div className="h-full flex flex-col">
       {/* Toast */}
       {toast && (
-        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
+        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
           {toast.message}
         </div>
       )}
 
-      <PageHeader title="Agents" theme={theme} onToggleTheme={onToggleTheme}>
-        {/* Edit / Done button row */}
-        {!selecting ? (
-          <div className="flex items-center justify-between px-4 pb-2">
-            <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-              {FILTER_TABS.map((tab) => {
-                const isActive = filter === tab.key;
-                return (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setFilter(tab.key)}
-                    className={`shrink-0 min-h-[34px] px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
-                      isActive
-                        ? "bg-cyan-600 text-white"
-                        : "bg-surface text-label hover:bg-input hover:text-body"
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </div>
+      <PageHeader
+        title="Agents"
+        theme={theme}
+        onToggleTheme={onToggleTheme}
+        actions={!selecting ? (
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={handleRefresh}
+              title="Refresh"
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
+            >
+              <svg className={`w-4 h-4 text-label ${refreshing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
             {agents.length > 0 && (
               <button
                 type="button"
@@ -276,6 +279,20 @@ export default function AgentsPage({ theme, onToggleTheme }) {
               </button>
             )}
           </div>
+        ) : undefined}
+      >
+        {!selecting ? (
+          <FilterTabs
+            tabs={FILTER_TABS}
+            active={filter}
+            onChange={setFilter}
+            counts={{
+              ALL: agents.length,
+              SYNCING: agents.filter(a => a.status === "SYNCING").length,
+              ACTIVE: agents.filter(a => a.status !== "STOPPED" && a.status !== "SYNCING").length,
+              STOPPED: agents.filter(a => a.status === "STOPPED").length,
+            }}
+          />
         ) : (
           <div className="flex items-center justify-between px-4 pb-2">
             <button
@@ -372,7 +389,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
 
       {/* Bottom toolbar in selection mode */}
       {selecting && selected.size > 0 && (
-        <div className="fixed bottom-[calc(4rem+env(safe-area-inset-bottom,0px))] left-0 right-0 z-20 px-4 pb-2">
+        <div className="fixed bottom-20 left-0 right-0 z-20 px-4 pb-2">
           <div className="max-w-xl mx-auto bg-surface border border-divider rounded-xl shadow-lg p-3 flex items-center justify-center gap-3">
             <button
               type="button"

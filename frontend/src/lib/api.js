@@ -72,6 +72,8 @@ export const fetchProjects = () => request("/api/projects");
 export const createProject = (data) =>
   request("/api/projects", { method: "POST", body: JSON.stringify(data) });
 export const fetchAllFolders = () => request("/api/projects/folders");
+export const renameProject = (name, newName, displayName) =>
+  request(`/api/projects/${e(name)}/rename`, { method: "PUT", body: JSON.stringify({ new_name: newName, display_name: displayName || undefined }) });
 export const archiveProject = (name) =>
   request(`/api/projects/${e(name)}/archive`, { method: "POST" });
 export const fetchTrashFolders = () => request("/api/projects/trash");
@@ -108,6 +110,8 @@ export const renameAgent = (id, name) =>
   request(`/api/agents/${id}`, { method: "PUT", body: JSON.stringify({ name }) });
 export const launchTmuxAgent = (data) =>
   request("/api/agents/launch-tmux", { method: "POST", body: JSON.stringify(data) });
+export const scanAgents = () =>
+  request("/api/agents/scan", { method: "POST" });
 export const stopAgent = (id) =>
   request(`/api/agents/${id}`, { method: "DELETE" });
 export const resumeAgent = (id) =>
@@ -121,6 +125,13 @@ export const sendMessage = (agentId, content, { queue = false, scheduled_at = nu
   });
 export const markAgentRead = (agentId) =>
   request(`/api/agents/${agentId}/read`, { method: "PUT" });
+export const cancelMessage = (agentId, messageId) =>
+  request(`/api/agents/${agentId}/messages/${messageId}`, { method: "DELETE" });
+export const updateMessage = (agentId, messageId, data) =>
+  request(`/api/agents/${agentId}/messages/${messageId}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
 // --- Health ---
 export const fetchHealth = () => request("/api/health");
 

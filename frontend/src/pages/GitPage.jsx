@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import PageHeader from "../components/PageHeader";
+import FilterTabs from "../components/FilterTabs";
 import {
   fetchProjects as apiFetchProjects,
   fetchGitLog,
@@ -76,7 +77,6 @@ export default function GitPage({ theme, onToggleTheme }) {
   const [toasts, setToasts] = useState([]);
   const [error, setError] = useState(null);
   const toastIdRef = useRef(0);
-  const tabBarRef = useRef(null);
 
   // --- Toast helpers ---
   const addToast = useCallback((message, type) => {
@@ -203,7 +203,21 @@ export default function GitPage({ theme, onToggleTheme }) {
   // --- Render ---
   return (
     <div className="h-full flex flex-col">
-      <PageHeader title="Git" theme={theme} onToggleTheme={onToggleTheme} />
+      <PageHeader title="Git" theme={theme} onToggleTheme={onToggleTheme}>
+        {loadingProjects ? (
+          <div className="flex gap-1.5 px-4 pb-3 animate-pulse">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="h-9 w-24 bg-skel rounded-full" />
+            ))}
+          </div>
+        ) : projects.length > 0 ? (
+          <FilterTabs
+            tabs={projects.map((p) => ({ key: p.name, label: p.display_name || p.name }))}
+            active={selectedProject}
+            onChange={setSelectedProject}
+          />
+        ) : null}
+      </PageHeader>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-20 p-4 space-y-4">
 
@@ -214,38 +228,10 @@ export default function GitPage({ theme, onToggleTheme }) {
         </div>
       )}
 
-      {/* Project tabs */}
-      {loadingProjects ? (
-        <div className="flex gap-2 animate-pulse">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-9 w-24 bg-skel rounded-full" />
-          ))}
-        </div>
-      ) : projects.length === 0 ? (
+      {/* No projects message */}
+      {!loadingProjects && projects.length === 0 && (
         <div className="rounded-xl bg-surface shadow-card p-4 text-label text-sm">
           No projects registered. Add a project to view its git history.
-        </div>
-      ) : (
-        <div
-          ref={tabBarRef}
-          className="flex gap-2 overflow-x-auto pb-1 scrollbar-none -mx-4 px-4"
-        >
-          {projects.map((proj) => {
-            const isActive = selectedProject === proj.name;
-            return (
-              <button
-                key={proj.name}
-                onClick={() => setSelectedProject(proj.name)}
-                className={`shrink-0 px-4 py-2 rounded-full text-sm font-medium transition-colors whitespace-nowrap ${
-                  isActive
-                    ? "bg-cyan-600 text-white"
-                    : "bg-input text-label hover:bg-elevated hover:text-heading"
-                }`}
-              >
-                {proj.display_name || proj.name}
-              </button>
-            );
-          })}
         </div>
       )}
 
@@ -469,7 +455,7 @@ export default function GitPage({ theme, onToggleTheme }) {
 
       {/* Toast container */}
       {toasts.length > 0 && (
-        <div className="fixed top-4 right-4 left-4 sm:left-auto sm:w-80 z-50 space-y-2 pointer-events-none">
+        <div className="fixed right-4 left-4 sm:left-auto sm:w-80 z-50 space-y-2 pointer-events-none safe-area-toast">
           {toasts.map((toast) => (
             <div key={toast.id} className="pointer-events-auto">
               <Toast toast={toast} onDismiss={dismissToast} />

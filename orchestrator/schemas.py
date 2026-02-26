@@ -1,8 +1,8 @@
 """Pydantic schemas for API request/response."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from models import AgentMode, AgentStatus, MessageRole, MessageStatus
 
@@ -32,7 +32,7 @@ class AgentTaskDetail(AgentTaskBrief):
 class AgentCreate(BaseModel):
     project: str
     prompt: str
-    mode: AgentMode = AgentMode.AUTO  # Always AUTO (INTERVIEW/PLAN removed)
+    mode: AgentMode = AgentMode.AUTO
     model: str | None = None  # None = use project default
     worktree: str | None = None  # None = shared main, string = worktree name
     timeout_seconds: int = 1800
@@ -93,14 +93,28 @@ class MessageOut(BaseModel):
     source: str | None = None  # "web" | "cli" | None
     created_at: datetime
     completed_at: datetime | None = None
+    scheduled_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("scheduled_at", "created_at", "completed_at", mode="before")
+    @classmethod
+    def ensure_utc(cls, v):
+        """Ensure datetime fields carry UTC tzinfo (SQLite drops it)."""
+        if v is not None and isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
 
 class SendMessage(BaseModel):
     content: str = Field(..., min_length=1)
     queue: bool = False
     scheduled_at: str | None = None  # ISO datetime string for scheduled send
+
+
+class UpdateMessage(BaseModel):
+    content: str | None = None
+    scheduled_at: str | None = None  # ISO datetime string, or empty string to clear
 
 
 # --- Project schemas ---
@@ -132,6 +146,11 @@ class ProjectWithStats(ProjectOut):
     agent_total: int = 0
     agent_active: int = 0
     last_activity: datetime | None = None
+
+
+class ProjectRename(BaseModel):
+    new_name: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+    display_name: str | None = Field(None, max_length=200)
 
 
 # --- Session schemas (from ~/.claude/history.jsonl) ---
