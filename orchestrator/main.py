@@ -1904,7 +1904,6 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
 
     try:
         wm.ensure_project_ready(project)
-        agent.status = AgentStatus.IDLE
 
         # Clear stale session retry counter so resumed agents get
         # full retry budget for session recovery
@@ -1912,16 +1911,38 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
         if ad:
             ad._stale_session_retries.pop(agent.id, None)
 
+        # For cli_sync agents with a session, try to re-establish sync
+        resumed_sync = False
+        if agent.cli_sync and agent.session_id and ad:
+            from agent_dispatcher import _detect_tmux_pane_for_session
+            from session_cache import session_source_dir
+
+            jsonl_path = os.path.join(
+                session_source_dir(project.path),
+                f"{agent.session_id}.jsonl",
+            )
+            if os.path.exists(jsonl_path) and not ad._session_has_ended(jsonl_path):
+                pane = _detect_tmux_pane_for_session(
+                    agent.session_id, project.path
+                )
+                agent.status = AgentStatus.SYNCING
+                agent.tmux_pane = pane  # may be None; sync loop will retry
+                ad.start_session_sync(agent.id, agent.session_id, project.path)
+                resumed_sync = True
+
+        if not resumed_sync:
+            agent.status = AgentStatus.IDLE
+
         msg = Message(
             agent_id=agent.id,
             role=MessageRole.SYSTEM,
-            content="Agent resumed",
+            content="Agent resumed" + (" — syncing CLI session" if resumed_sync else ""),
             status=MessageStatus.COMPLETED,
         )
         db.add(msg)
         db.commit()
         db.refresh(agent)
-        logger.info("Agent %s resumed", agent.id)
+        logger.info("Agent %s resumed (sync=%s)", agent.id, resumed_sync)
         return agent
     except Exception as e:
         logger.exception("Failed to resume agent %s", agent.id)
