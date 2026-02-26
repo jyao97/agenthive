@@ -15,12 +15,15 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
   const [voiceLoading, setVoiceLoading] = useState(false);
   const [micError, setMicError] = useState(null);
   const [analyserNode, setAnalyserNode] = useState(null);
+  const [remainingSeconds, setRemainingSeconds] = useState(MAX_RECORDING_MS / 1000);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
   const timerRef = useRef(null);
+  const countdownRef = useRef(null);
+  const startTimeRef = useRef(null);
   const startingRef = useRef(false); // guard against double-tap
 
   // Keep stable refs for callbacks to avoid stale closures
@@ -33,6 +36,7 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
   useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
       if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
       if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
     };
@@ -115,6 +119,15 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
 
       mediaRecorder.start();
       setRecording(true);
+      startTimeRef.current = Date.now();
+      setRemainingSeconds(MAX_RECORDING_MS / 1000);
+
+      // Update countdown every second
+      countdownRef.current = setInterval(() => {
+        const elapsed = Date.now() - startTimeRef.current;
+        const remaining = Math.max(0, Math.ceil((MAX_RECORDING_MS - elapsed) / 1000));
+        setRemainingSeconds(remaining);
+      }, 1000);
 
       // Auto-stop after MAX_RECORDING_MS
       timerRef.current = setTimeout(() => {
@@ -122,6 +135,8 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
           mediaRecorderRef.current.stop();
           setRecording(false);
         }
+        if (countdownRef.current) clearInterval(countdownRef.current);
+        setRemainingSeconds(0);
       }, MAX_RECORDING_MS);
     } catch (err) {
       // Cleanup stream if MediaRecorder or AudioContext setup failed
@@ -135,10 +150,12 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
 
   const stopRecording = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
+    if (countdownRef.current) clearInterval(countdownRef.current);
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
     setRecording(false);
+    setRemainingSeconds(MAX_RECORDING_MS / 1000);
   }, []);
 
   const toggleRecording = useCallback(() => {
@@ -151,6 +168,7 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
     voiceLoading,
     micError,
     analyserNode,
+    remainingSeconds,
     startRecording,
     stopRecording,
     toggleRecording,

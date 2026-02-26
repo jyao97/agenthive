@@ -10,6 +10,7 @@ import NewPage from "./pages/NewPage";
 import MonitorPage from "./pages/MonitorPage";
 import GitPage from "./pages/GitPage";
 import LoginPage from "./pages/LoginPage";
+import ErrorBoundary from "./components/ErrorBoundary";
 import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchUnreadCount, getAuthToken } from "./lib/api";
 import { isPushSupported, setupPushNotifications } from "./lib/pushNotifications";
@@ -73,6 +74,16 @@ function AuthGuard({ children }) {
 
   // Auto-lock after 30 min of inactivity (clears token + redirects to login)
   useIdleLock(navigate);
+
+  // Listen for auth-expired events dispatched by api.js (graceful 401 handling)
+  useEffect(() => {
+    const handler = () => {
+      clearAuthToken();
+      navigate("/login", { replace: true });
+    };
+    window.addEventListener("auth-expired", handler);
+    return () => window.removeEventListener("auth-expired", handler);
+  }, [navigate]);
 
   useEffect(() => {
     const token = getAuthToken();
@@ -206,18 +217,20 @@ export default function App() {
             path="/*"
             element={
               <AuthGuard>
-                <Routes>
-                  <Route path="/" element={<Navigate to="/projects" replace />} />
-                  <Route path="/projects" element={<ProjectsPage {...themeProps} />} />
-                  <Route path="/projects/trash" element={<TrashPage {...themeProps} />} />
-                  <Route path="/projects/:name" element={<ProjectDetailPage {...themeProps} />} />
-                  <Route path="/agents" element={<AgentsPage {...themeProps} />} />
-                  <Route path="/agents/:id" element={<AgentChatPage {...themeProps} />} />
-                  <Route path="/tasks" element={<TasksPage {...themeProps} />} />
-                  <Route path="/new" element={<NewPage {...themeProps} />} />
-                  <Route path="/monitor" element={<MonitorPage {...themeProps} />} />
-                  <Route path="/git" element={<GitPage {...themeProps} />} />
-                </Routes>
+                <ErrorBoundary>
+                  <Routes>
+                    <Route path="/" element={<Navigate to="/projects" replace />} />
+                    <Route path="/projects" element={<ProjectsPage {...themeProps} />} />
+                    <Route path="/projects/trash" element={<TrashPage {...themeProps} />} />
+                    <Route path="/projects/:name" element={<ProjectDetailPage {...themeProps} />} />
+                    <Route path="/agents" element={<AgentsPage {...themeProps} />} />
+                    <Route path="/agents/:id" element={<AgentChatPage {...themeProps} />} />
+                    <Route path="/tasks" element={<TasksPage {...themeProps} />} />
+                    <Route path="/new" element={<NewPage {...themeProps} />} />
+                    <Route path="/monitor" element={<MonitorPage {...themeProps} />} />
+                    <Route path="/git" element={<GitPage {...themeProps} />} />
+                  </Routes>
+                </ErrorBoundary>
               </AuthGuard>
             }
           />

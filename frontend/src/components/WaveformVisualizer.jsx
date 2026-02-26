@@ -3,7 +3,7 @@ import { useRef, useEffect } from "react";
 /**
  * Canvas-based AnalyserNode waveform visualiser with cyan accent.
  */
-export default function WaveformVisualizer({ analyserNode, className = "" }) {
+export default function WaveformVisualizer({ analyserNode, remainingSeconds, className = "" }) {
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
 
@@ -48,12 +48,26 @@ export default function WaveformVisualizer({ analyserNode, className = "" }) {
 
   if (!analyserNode) return null;
 
+  const formatTime = (s) => {
+    if (s == null) return null;
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? `${m}:${String(sec).padStart(2, "0")}` : `${sec}s`;
+  };
+
   return (
-    <canvas
-      ref={canvasRef}
-      width={200}
-      height={40}
-      className={`rounded bg-surface ${className}`}
-    />
+    <div className="flex flex-col items-center gap-0.5">
+      <canvas
+        ref={canvasRef}
+        width={200}
+        height={40}
+        className={`rounded bg-surface ${className}`}
+      />
+      {remainingSeconds != null && (
+        <span className={`text-[11px] tabular-nums ${remainingSeconds <= 10 ? "text-red-400" : "text-dim"}`}>
+          {formatTime(remainingSeconds)} remaining
+        </span>
+      )}
+    </div>
   );
 }

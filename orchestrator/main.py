@@ -700,12 +700,9 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
     active_projects = set()
     wm = getattr(request.app.state, "worker_manager", None)
     if wm:
-        try:
-            for p in wm.list_processes():
-                if p.get("status") == "running" and p.get("project"):
-                    active_projects.add(p["project"])
-        except Exception:
-            logger.warning("Failed to list processes for active project detection")
+        for p in wm.list_processes():
+            if p.get("status") == "running" and p.get("project"):
+                active_projects.add(p["project"])
 
     results = []
     for dirname in all_dirs:
@@ -845,10 +842,7 @@ async def scan_projects(request: Request, db: Session = Depends(get_db)):
         db.add(proj)
         added.append(dirname)
 
-        try:
-            migrate_session_dirs(proj.path)
-        except Exception:
-            logger.warning("Failed to check session dir migration for %s", dirname)
+        migrate_session_dirs(proj.path)
 
     if added:
         db.commit()
@@ -894,52 +888,40 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
     # Ensure project directory exists
     wm = getattr(request.app.state, "worker_manager", None)
     if wm:
-        try:
-            if body.git_url:
-                wm.clone_project(body.name, body.git_url)
-            else:
-                wm.ensure_project_dir(body.name)
-        except Exception:
-            logger.warning("Failed to set up project directory for %s", body.name)
+        if body.git_url:
+            wm.clone_project(body.name, body.git_url)
+        else:
+            wm.ensure_project_dir(body.name)
 
         # Auto-init git repo if not already one
         if os.path.isdir(proj.path) and not os.path.isdir(os.path.join(proj.path, ".git")):
-            try:
-                import subprocess
-                subprocess.run(["git", "init"], cwd=proj.path, check=True, capture_output=True)
-                subprocess.run(["git", "add", "-A"], cwd=proj.path, check=True, capture_output=True)
-                subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=proj.path, check=True, capture_output=True)
-                logger.info("Auto-initialized git repo for %s", body.name)
-            except Exception:
-                logger.warning("Failed to auto-init git repo for %s", body.name)
+            import subprocess
+            subprocess.run(["git", "init"], cwd=proj.path, check=True, capture_output=True)
+            subprocess.run(["git", "add", "-A"], cwd=proj.path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=proj.path, check=True, capture_output=True)
+            logger.info("Auto-initialized git repo for %s", body.name)
 
     # Migrate any old session directories that match this project
     from session_cache import migrate_session_dirs
-    try:
-        migrate_session_dirs(proj.path)
-    except Exception:
-        logger.warning("Failed to check session dir migration for %s", body.name)
+    migrate_session_dirs(proj.path)
 
     # Append to registry.yaml
     registry_path = os.path.join(PROJECT_CONFIGS_PATH, "registry.yaml")
-    try:
-        if os.path.exists(registry_path):
-            with open(registry_path) as f:
-                data = yaml.safe_load(f) or {}
-        else:
-            data = {}
-        if "projects" not in data or data["projects"] is None:
-            data["projects"] = []
-        entry = {"name": body.name, "path": os.path.join(projects_dir, body.name)}
-        if body.git_url:
-            entry["git_remote"] = body.git_url
-        if body.description:
-            entry["description"] = body.description
-        data["projects"].append(entry)
-        with open(registry_path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False)
-    except Exception:
-        logger.warning("Failed to update registry.yaml for project %s", body.name)
+    if os.path.exists(registry_path):
+        with open(registry_path) as f:
+            data = yaml.safe_load(f) or {}
+    else:
+        data = {}
+    if "projects" not in data or data["projects"] is None:
+        data["projects"] = []
+    entry = {"name": body.name, "path": os.path.join(projects_dir, body.name)}
+    if body.git_url:
+        entry["git_remote"] = body.git_url
+    if body.description:
+        entry["description"] = body.description
+    data["projects"].append(entry)
+    with open(registry_path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False)
 
     logger.info("Project '%s' created", body.name)
     return proj
@@ -948,17 +930,14 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
 def _remove_from_registry(name: str):
     """Remove a project entry from registry.yaml."""
     registry_path = os.path.join(PROJECT_CONFIGS_PATH, "registry.yaml")
-    try:
-        if not os.path.exists(registry_path):
-            return
-        with open(registry_path) as f:
-            data = yaml.safe_load(f) or {}
-        projects = data.get("projects") or []
-        data["projects"] = [p for p in projects if p.get("name") != name]
-        with open(registry_path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False)
-    except Exception:
-        logger.warning("Failed to remove %s from registry.yaml", name)
+    if not os.path.exists(registry_path):
+        return
+    with open(registry_path) as f:
+        data = yaml.safe_load(f) or {}
+    projects = data.get("projects") or []
+    data["projects"] = [p for p in projects if p.get("name") != name]
+    with open(registry_path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False)
 
 
 def _check_no_active_agents(name: str, db: Session):
@@ -1030,11 +1009,8 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
     ), {"new_name": new_name, "display": new_display, "old_name": name})
     db.execute(update(Agent).where(Agent.project == name).values(project=new_name))
     db.execute(update(StarredSession).where(StarredSession.project == name).values(project=new_name))
-    try:
-        from models import Task
-        db.execute(update(Task).where(Task.project == name).values(project=new_name))
-    except Exception:
-        pass
+    from models import Task
+    db.execute(update(Task).where(Task.project == name).values(project=new_name))
 
     db.commit()
 
@@ -1042,22 +1018,19 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
 
     # --- Registry.yaml ---
     registry_path = os.path.join(PROJECT_CONFIGS_PATH, "registry.yaml")
-    try:
-        if os.path.exists(registry_path):
-            with open(registry_path) as f:
-                data = yaml.safe_load(f) or {}
-            projects_list = data.get("projects") or []
-            for entry in projects_list:
-                if entry.get("name") == name:
-                    entry["name"] = new_name
-                    # Update path in registry if it contained old name
-                    if entry.get("path", "").endswith(f"/{name}"):
-                        entry["path"] = entry["path"].rsplit("/", 1)[0] + f"/{new_name}"
-                    break
-            with open(registry_path, "w") as f:
-                yaml.dump(data, f, default_flow_style=False)
-    except Exception:
-        logger.warning("Failed to update registry.yaml during rename %s → %s", name, new_name)
+    if os.path.exists(registry_path):
+        with open(registry_path) as f:
+            data = yaml.safe_load(f) or {}
+        projects_list = data.get("projects") or []
+        for entry in projects_list:
+            if entry.get("name") == name:
+                entry["name"] = new_name
+                # Update path in registry if it contained old name
+                if entry.get("path", "").endswith(f"/{name}"):
+                    entry["path"] = entry["path"].rsplit("/", 1)[0] + f"/{new_name}"
+                break
+        with open(registry_path, "w") as f:
+            yaml.dump(data, f, default_flow_style=False)
 
     # --- Rename directory on disk ---
     new_path = old_path  # default: path unchanged
@@ -1134,7 +1107,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
                 _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=3)
                 _sp.run(["tmux", "kill-pane", "-t", agent.tmux_pane], capture_output=True, timeout=3)
             except Exception:
-                pass
+                logger.warning("Failed to kill tmux pane %s for agent %s during archive", agent.tmux_pane, agent.id, exc_info=True)
         # Cancel sync task
         if ad:
             ad._cancel_sync_task(agent.id)
@@ -1823,7 +1796,22 @@ async def get_agent(agent_id: str, db: Session = Depends(get_db)):
     agent = db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    return agent
+
+    # Compute live session file size
+    result = AgentOut.model_validate(agent)
+    if agent.session_id:
+        project = db.get(Project, agent.project)
+        if project:
+            from session_cache import session_source_dir
+            jsonl_path = os.path.join(
+                session_source_dir(project.path),
+                f"{agent.session_id}.jsonl",
+            )
+            try:
+                result.session_size_bytes = os.path.getsize(jsonl_path)
+            except OSError:
+                pass
+    return result
 
 
 @app.delete("/api/agents/{agent_id}", response_model=AgentOut)
@@ -1846,7 +1834,7 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
             _sp.run(["tmux", "kill-pane", "-t", pane], capture_output=True, timeout=3)
             logger.info("Killed tmux pane %s for agent %s", pane, agent.id)
         except Exception:
-            logger.debug("Failed to kill tmux pane %s", pane, exc_info=True)
+            logger.warning("Failed to kill tmux pane %s for agent %s", pane, agent.id, exc_info=True)
 
     agent.status = AgentStatus.STOPPED
     agent.tmux_pane = None
@@ -2052,7 +2040,10 @@ async def send_agent_message(
         logger.info("Message %s sent to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
         return msg
 
-    is_busy = agent.status in (AgentStatus.EXECUTING, AgentStatus.SYNCING)
+    # SYNCING agents WITHOUT a tmux pane are dispatched via subprocess
+    # (same as IDLE), so they should accept messages directly.
+    is_syncing_no_pane = agent.status == AgentStatus.SYNCING and not agent.tmux_pane
+    is_busy = agent.status in (AgentStatus.EXECUTING, AgentStatus.SYNCING) and not is_syncing_no_pane
     if is_busy and not body.queue:
         raise HTTPException(status_code=400, detail="Agent is busy — use send later to queue")
 

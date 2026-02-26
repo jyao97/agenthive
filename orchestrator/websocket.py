@@ -14,16 +14,28 @@ class ConnectionManager:
 
     def __init__(self):
         self.active: list[WebSocket] = []
+        # Track which agent each WS client is currently viewing
+        self._viewing: dict[WebSocket, str | None] = {}
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.active.append(ws)
+        self._viewing[ws] = None
         logger.info("WebSocket client connected (%d total)", len(self.active))
 
     def disconnect(self, ws: WebSocket):
         if ws in self.active:
             self.active.remove(ws)
+        self._viewing.pop(ws, None)
         logger.info("WebSocket client disconnected (%d total)", len(self.active))
+
+    def set_viewing(self, ws: WebSocket, agent_id: str | None):
+        """Record which agent a client is currently viewing."""
+        self._viewing[ws] = agent_id
+
+    def is_agent_viewed(self, agent_id: str) -> bool:
+        """True if any connected client is currently viewing this agent."""
+        return any(v == agent_id for v in self._viewing.values())
 
     async def broadcast(self, event_type: str, data: dict):
         """Send an event to all connected clients."""
@@ -67,10 +79,17 @@ async def websocket_endpoint(ws: WebSocket):
     await ws_manager.connect(ws)
     try:
         while True:
-            # Keep connection alive; client may send pings
+            # Keep connection alive; client may send pings or viewing updates
             data = await ws.receive_text()
             if data == "ping":
                 await ws.send_text(json.dumps({"type": "pong"}))
+            else:
+                try:
+                    msg = json.loads(data)
+                    if msg.get("type") == "viewing":
+                        ws_manager.set_viewing(ws, msg.get("agent_id"))
+                except (json.JSONDecodeError, KeyError):
+                    pass
     except Exception:
         ws_manager.disconnect(ws)
 

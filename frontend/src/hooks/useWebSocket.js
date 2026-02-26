@@ -156,5 +156,11 @@ export default function useWebSocket() {
     };
   }, [connect]);
 
-  return { lastEvent, connected };
+  const sendWsMessage = useCallback((data) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(typeof data === "string" ? data : JSON.stringify(data));
+    }
+  }, []);
+
+  return { lastEvent, connected, sendWsMessage };
 }

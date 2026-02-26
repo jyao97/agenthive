@@ -67,10 +67,7 @@ class TaskDispatcher:
 
     def _emit(self, coro):
         """Fire-and-forget an async event (WebSocket broadcast)."""
-        try:
-            asyncio.ensure_future(coro)
-        except Exception:
-            pass
+        asyncio.ensure_future(coro)
 
     def _tick(self, db: Session):
         """Single iteration of the dispatch loop."""
@@ -271,14 +268,10 @@ class TaskDispatcher:
                         fraction * 100, DISK_USAGE_THRESHOLD * 100,
                     )
                     self._paused_disk = True
-                    try:
-                        import asyncio
-                        from websocket import emit_system_alert
-                        asyncio.ensure_future(emit_system_alert(
-                            f"Disk usage {fraction*100:.0f}% — new tasks paused", "error"
-                        ))
-                    except Exception:
-                        pass
+                    from websocket import emit_system_alert
+                    asyncio.ensure_future(emit_system_alert(
+                        f"Disk usage {fraction*100:.0f}% — new tasks paused", "error"
+                    ))
             else:
                 if self._paused_disk:
                     logger.info("Disk usage back to %.1f%% — resuming", fraction * 100)
