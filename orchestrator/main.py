@@ -1851,11 +1851,12 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
     )
     db.add(msg)
 
-    # Cancel any active sync or launch tasks
+    # Cancel any active sync or launch tasks and clear retry state
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if ad:
         ad._cancel_sync_task(agent.id)
         ad._cancel_launch_task(agent.id)
+        ad._stale_session_retries.pop(agent.id, None)
 
     db.commit()
     db.refresh(agent)
@@ -1885,6 +1886,12 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
     try:
         wm.ensure_project_ready(project)
         agent.status = AgentStatus.IDLE
+
+        # Clear stale session retry counter so resumed agents get
+        # full retry budget for session recovery
+        ad = getattr(request.app.state, "agent_dispatcher", None)
+        if ad:
+            ad._stale_session_retries.pop(agent.id, None)
 
         msg = Message(
             agent_id=agent.id,

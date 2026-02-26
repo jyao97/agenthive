@@ -976,8 +976,16 @@ class AgentDispatcher:
             done_agents.append(agent_id)
 
         for agent_id in done_agents:
-            self._active_execs.pop(agent_id, None)
+            info = self._active_execs.pop(agent_id, None)
             self._cancel_stream_task(agent_id)
+            # Clean up output file to prevent /tmp accumulation
+            if info:
+                output_file = info.get("output_file", "")
+                if output_file:
+                    try:
+                        os.remove(output_file)
+                    except OSError:
+                        pass
 
     # ---- Step 2: Timeouts ----
 
@@ -1049,8 +1057,15 @@ class AgentDispatcher:
                 timed_out.append(agent_id)
 
         for agent_id in timed_out:
-            self._active_execs.pop(agent_id, None)
+            info = self._active_execs.pop(agent_id, None)
             self._cancel_stream_task(agent_id)
+            if info:
+                output_file = info.get("output_file", "")
+                if output_file:
+                    try:
+                        os.remove(output_file)
+                    except OSError:
+                        pass
 
     # ---- Step 4: Start new agents ----
 
@@ -1711,6 +1726,7 @@ class AgentDispatcher:
             agent.tmux_pane = None
             self._cancel_sync_task(agent.id)
             self._cancel_launch_task(agent.id)
+            self._stale_session_retries.pop(agent.id, None)
             self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
 
     # ---- Streaming output ----
@@ -2596,14 +2612,15 @@ class AgentDispatcher:
                             )
                             if pane:
                                 session_active = True
-                            elif not agent.cli_sync:
-                                # Non-tmux agents: accept freshness as liveness
+                            else:
+                                # No pane detected — fall back to session file
+                                # freshness (works for CLI sessions running in
+                                # non-tmux terminals or panes we can't match)
                                 try:
                                     age = _time.time() - os.path.getmtime(jsonl_path)
                                     session_active = age < 1800  # 30 min
                                 except OSError:
                                     pass
-                            # cli_sync agents without a pane → not active
 
                         if session_active:
                             agent.status = AgentStatus.SYNCING
@@ -2639,8 +2656,8 @@ class AgentDispatcher:
                     if agent.tmux_pane:
                         # Has a pane — check that specific pane
                         alive = _is_cli_session_alive(project_path, agent.tmux_pane)
-                    elif project_path and agent.session_id and not agent.cli_sync:
-                        # Non-tmux agents: accept session file freshness
+                    elif project_path and agent.session_id:
+                        # No pane — fall back to session file freshness
                         import time as _time
                         src_dir = session_source_dir(project_path)
                         jsonl_path = os.path.join(src_dir, f"{agent.session_id}.jsonl")
@@ -2649,7 +2666,6 @@ class AgentDispatcher:
                             alive = age < 1800
                         except OSError:
                             alive = False
-                    # cli_sync agents without a tmux pane → dead
 
                     if alive:
                         if agent.session_id:
