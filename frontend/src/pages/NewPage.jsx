@@ -5,6 +5,7 @@ import { MODEL_OPTIONS } from "../lib/constants";
 import ProjectSelector from "../components/ProjectSelector";
 import WorktreePicker from "../components/WorktreePicker";
 import VoiceRecorder from "../components/VoiceRecorder";
+import WaveformVisualizer from "../components/WaveformVisualizer";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import PageHeader from "../components/PageHeader";
 
@@ -181,6 +182,9 @@ function NewAgentForm({ showToast, navigate }) {
           rows={4}
           className="w-full min-h-[120px] rounded-lg bg-input border border-edge px-3 py-3 text-heading placeholder-hint resize-none focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors"
         />
+        {voice.recording && voice.analyserNode && (
+          <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} className="w-full h-8" />
+        )}
         <div className="flex items-start gap-2">
           <div className="flex-1 min-w-0">
             <WorktreePicker value={worktree} onChange={setWorktree} project={project} />

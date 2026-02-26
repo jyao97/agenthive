@@ -22,22 +22,19 @@ const AGENT_STATUS_ORDER = ["EXECUTING", "SYNCING", "IDLE", "STARTING", "ERROR",
 
 function formatResetTime(isoStr) {
   if (!isoStr) return "";
-  try {
-    const d = new Date(isoStr);
-    const now = new Date();
-    const diffMs = d - now;
-    if (diffMs <= 0) return "now";
-    const diffMin = Math.floor(diffMs / 60000);
-    if (diffMin < 60) return `in ${diffMin}m`;
-    const diffH = Math.floor(diffMin / 60);
-    const remMin = diffMin % 60;
-    if (diffH < 24) return `in ${diffH}h${remMin > 0 ? ` ${remMin}m` : ""}`;
-    const diffD = Math.floor(diffH / 24);
-    const remH = diffH % 24;
-    return `in ${diffD}d ${remH}h`;
-  } catch {
-    return "";
-  }
+  const d = new Date(isoStr);
+  if (isNaN(d)) return "";
+  const now = new Date();
+  const diffMs = d - now;
+  if (diffMs <= 0) return "now";
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 60) return `in ${diffMin}m`;
+  const diffH = Math.floor(diffMin / 60);
+  const remMin = diffMin % 60;
+  if (diffH < 24) return `in ${diffH}h${remMin > 0 ? ` ${remMin}m` : ""}`;
+  const diffD = Math.floor(diffH / 24);
+  const remH = diffH % 24;
+  return `in ${diffD}d ${remH}h`;
 }
 
 function UsageBar({ label, pct, detail }) {

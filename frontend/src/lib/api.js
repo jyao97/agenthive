@@ -39,9 +39,9 @@ async function request(url, opts = {}) {
 
   if (res.status === 401) {
     clearAuthToken();
-    // Redirect to login if not already there
+    // Dispatch event so React Router can navigate gracefully (no full reload)
     if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
+      window.dispatchEvent(new Event("auth-expired"));
     }
     throw new Error("Not authenticated");
   }
@@ -176,7 +176,7 @@ export async function transcribeVoice(audioBlob, mimeType) {
   if (res.status === 401) {
     clearAuthToken();
     if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
+      window.dispatchEvent(new Event("auth-expired"));
     }
     throw new Error("Not authenticated");
   }

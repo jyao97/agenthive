@@ -493,8 +493,21 @@ function SendLaterPicker({ onSelect, onClose }) {
 
 // --- Chat Input ---
 
-function ChatInput({ onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode }) {
-  const [text, setText] = useState("");
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode }) {
+  const draftKey = agentId ? `agenthive-draft-${agentId}` : null;
+  const [text, _setText] = useState(() => {
+    if (draftKey) {
+      try { return sessionStorage.getItem(draftKey) || ""; } catch { /* ignore */ }
+    }
+    return "";
+  });
+  const setText = (v) => {
+    const next = typeof v === "function" ? v(text) : v;
+    _setText(next);
+    if (draftKey) {
+      try { if (next) sessionStorage.setItem(draftKey, next); else sessionStorage.removeItem(draftKey); } catch { /* ignore */ }
+    }
+  };
   const [showPicker, setShowPicker] = useState(false);
   const textareaRef = useRef(null);
 
@@ -548,7 +561,7 @@ function ChatInput({ onSend, onSendLater, disabled, disabledReason, isBusy, tmux
       <div className="glass-bar-nav rounded-[28px] px-3 py-2.5 flex items-end gap-2 w-full relative" style={{ maxWidth: "24rem" }}>
         {voice.recording && voice.analyserNode ? (
           <div className="flex-1 min-h-[40px] flex items-center px-3">
-            <WaveformVisualizer analyserNode={voice.analyserNode} className="flex-1 h-8" />
+            <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} className="flex-1 h-8" />
           </div>
         ) : (
           <textarea
@@ -642,16 +655,22 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }, []);
 
-  // Load agent + messages.
+  // Load agent + messages with AbortController support.
   // On initial load, errors propagate to console so failures are visible.
   // On subsequent poll refreshes, errors are silenced (transient network issues).
   const initialLoadDone = useRef(false);
+  const abortRef = useRef(null);
   const loadData = useCallback(async () => {
+    // Abort any in-flight request from a previous call
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const [agentData, msgData] = await Promise.all([
         fetchAgent(id),
         fetchMessages(id),
       ]);
+      if (controller.signal.aborted) return;
       setAgent(agentData);
       setMessages(msgData);
       if (!initialLoadDone.current && agentData.muted != null) {
@@ -660,18 +679,22 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       }
       initialLoadDone.current = true;
     } catch (err) {
+      if (controller.signal.aborted) return;
       if (!initialLoadDone.current) {
         console.error("AgentChatPage: initial load failed", err);
       }
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [id]);
 
   // Initial load + clear notification flag for this agent
   useEffect(() => {
     clearAgentNotified(id);
+    initialLoadDone.current = false;
+    setLoading(true);
     loadData();
+    return () => abortRef.current?.abort();
   }, [loadData, id]);
 
   // Polling — faster when executing
@@ -750,7 +773,13 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   }, [messages.length, streamingContent]);
 
   // WebSocket: re-fetch on new_message events, handle streaming
-  const { lastEvent } = useWebSocket();
+  const { lastEvent, sendWsMessage } = useWebSocket();
+
+  // Notify backend which agent we're viewing (suppresses notifications)
+  useEffect(() => {
+    sendWsMessage({ type: "viewing", agent_id: id });
+    return () => sendWsMessage({ type: "viewing", agent_id: null });
+  }, [id, sendWsMessage]);
   useEffect(() => {
     if (!lastEvent) return;
     if (lastEvent.type === "agent_stream" && lastEvent.data?.agent_id === id) {
@@ -1092,6 +1121,41 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         </div>
       </div>
 
+      {/* Parent agent link */}
+      {agent.parent_id && (
+        <div className="shrink-0 bg-surface border-b border-divider px-4 py-1.5">
+          <div className="max-w-2xl mx-auto">
+            <button
+              type="button"
+              onClick={() => navigate(`/agents/${agent.parent_id}`)}
+              className="text-xs text-cyan-400 hover:underline flex items-center gap-1"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+              Continued from previous session
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Session size indicator */}
+      {agent.session_size_bytes != null && agent.session_size_bytes > 0 && (
+        <div className="shrink-0 bg-surface border-b border-divider px-4 py-1">
+          <div className="max-w-2xl mx-auto flex items-center gap-1.5">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+              agent.session_size_bytes < 512000 ? "bg-green-500" :
+              agent.session_size_bytes < 2097152 ? "bg-amber-500" : "bg-red-500"
+            }`} />
+            <span className="text-[10px] text-dim" title="Large sessions use more tokens per message. Consider using /compact in the CLI.">
+              Session: {agent.session_size_bytes < 1024 ? `${agent.session_size_bytes} B` :
+                agent.session_size_bytes < 1048576 ? `${(agent.session_size_bytes / 1024).toFixed(1)} KB` :
+                `${(agent.session_size_bytes / 1048576).toFixed(1)} MB`}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Messages */}
       <div
         ref={scrollContainerRef}
@@ -1123,6 +1187,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
 
       {/* Input bar */}
       <ChatInput
+        agentId={id}
         onSend={handleSend}
         onSendLater={handleSendLater}
         disabled={isStopped || isError}

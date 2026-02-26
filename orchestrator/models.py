@@ -106,6 +106,7 @@ class Agent(Base):
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
     skip_permissions: Mapped[bool] = mapped_column(Boolean, default=True)
     muted: Mapped[bool] = mapped_column(Boolean, default=False)
+    parent_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
 
 
 class Message(Base):
