@@ -361,6 +361,22 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
 
     # Flush any remaining assistant content
     flush_assistant()
+
+    # Deduplicate identical user turns.  Claude Code context compaction
+    # re-injects the same user prompt for every continuation session,
+    # producing many copies of "You are working in project: ..." etc.
+    # Keep only the first occurrence of each unique user message.
+    if turns:
+        seen_user: set[str] = set()
+        deduped: list[tuple[str, str]] = []
+        for role, content in turns:
+            if role == "user":
+                if content in seen_user:
+                    continue
+                seen_user.add(content)
+            deduped.append((role, content))
+        turns = deduped
+
     return turns
 
 
