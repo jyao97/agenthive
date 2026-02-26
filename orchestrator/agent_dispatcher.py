@@ -2682,13 +2682,6 @@ class AgentDispatcher:
                         if session_active:
                             agent.status = AgentStatus.SYNCING
                             agent.tmux_pane = pane
-                            msg = Message(
-                                agent_id=agent.id,
-                                role=MessageRole.SYSTEM,
-                                content="Auto-syncing active CLI session after restart",
-                                status=MessageStatus.COMPLETED,
-                            )
-                            db.add(msg)
                             agents_to_sync.append(
                                 (agent.id, agent.session_id, project_path)
                             )
