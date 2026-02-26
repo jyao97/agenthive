@@ -23,7 +23,7 @@ export default function TaskCard({ task, isExpanded, onToggle, showProject = tru
         <ModeBadge mode={task.mode} />
         <StatusBadge status={task.status} />
         <span className="ml-auto text-xs text-dim whitespace-nowrap">
-          {relativeTime(task.created_at)}
+          {relativeTime(task.completed_at || task.created_at)}
         </span>
       </div>
 

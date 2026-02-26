@@ -10,10 +10,12 @@ Core capabilities:
 1. Web UI for agent management (with voice input), mobile-friendly PWA
 2. Persistent agent conversations with session continuity (`--resume`)
 3. Unified scheduling across multiple local projects
-4. Three execution modes: INTERVIEW (read-only chat), PLAN (approve-then-execute), AUTO (immediate execution)
+4. Two execution modes: INTERVIEW (read-only chat), AUTO (immediate execution)
 5. Real-time streaming output via WebSocket
 6. Automatic session caching and recovery
 7. Hourly automatic database backups
+8. Notifications via Web Push and Telegram Bot
+9. tmux-based agent launch and CLI session sync
 
 ---
 
@@ -50,7 +52,7 @@ Host Machine
 - **Frontend**: React 19, TailwindCSS 4, Vite 7
 - **Database**: SQLite (WAL mode, SQLAlchemy 2.0)
 - **Agent Execution**: `claude` CLI spawned as host subprocesses (`subprocess.Popen`)
-- **Real-time**: WebSocket (FastAPI native) + Web Push (pywebpush/VAPID)
+- **Real-time**: WebSocket (FastAPI native) + Web Push (pywebpush/VAPID) + Telegram Bot
 - **Voice**: OpenAI Whisper API
 - **Auth**: Password-based with custom JWT (HMAC-SHA256, stdlib only)
 - **Testing**: Vitest (frontend)
@@ -74,7 +76,6 @@ cc-orchestrator/
 │   ├── agent_dispatcher.py    # Core: persistent agent scheduling loop
 │   ├── dispatcher.py          # Legacy: ephemeral task dispatcher
 │   ├── worker_manager.py      # Subprocess lifecycle (Popen, kill, logs)
-│   ├── plan_manager.py        # Plan mode: generate plan → approve → execute
 │   ├── session_cache.py       # Incremental session JSONL backup/restore/repair
 │   ├── models.py              # SQLAlchemy ORM models
 │   ├── schemas.py             # Pydantic request/response schemas
@@ -85,7 +86,7 @@ cc-orchestrator/
 │   ├── voice.py               # Whisper speech-to-text
 │   ├── backup.py              # Automatic hourly database backups
 │   ├── websocket.py           # WebSocket connection manager + event emitters
-│   ├── push.py                # Web Push notifications (VAPID)
+│   ├── push.py                # Notifications (Web Push + Telegram Bot)
 │   ├── log_config.py          # Structured logging setup
 │   └── requirements.txt       # Python dependencies
 │
@@ -108,8 +109,8 @@ cc-orchestrator/
 │   │   ├── components/
 │   │   │   ├── BotIcon.jsx           # Animated bot avatar
 │   │   │   ├── FilePreview.jsx       # Image/video/CSV preview
-│   │   │   ├── ModeBadge.jsx         # INTERVIEW/PLAN/AUTO badge
-│   │   │   ├── ModePicker.jsx        # Mode selection UI
+│   │   │   ├── FilterTabs.jsx        # Tabbed filter UI
+│   │   │   ├── ModeBadge.jsx         # INTERVIEW/AUTO badge
 │   │   │   ├── PageHeader.jsx        # Header with theme toggle
 │   │   │   ├── ProjectSelector.jsx   # Project dropdown
 │   │   │   ├── StatusBadge.jsx       # Agent/task status indicator
@@ -171,9 +172,10 @@ Key details:
 - `--resume {session_id}` used for conversation continuity
 - `--worktree {name}` for isolated git worktrees
 - `--model {model}` for per-agent model selection
+- `--dangerously-skip-permissions` controlled per-agent via `skip_permissions` flag
 - Process tracked by PID string in `_processes` dict
 - Graceful SIGTERM → wait 10s → SIGKILL on stop/timeout
-- Environment cleaned to prevent nested Claude Code detection
+- Environment cleaned to prevent nested Claude Code detection (`AGENTHIVE_MANAGED=1` set)
 
 ### Two Worker Types
 
@@ -186,11 +188,9 @@ Runs every 2 seconds:
 
 ```
 1. Harvest completed execs     → parse stream-json, create response Message
-2. Harvest completed planners  → extract plan, set PLAN_REVIEW status
-3. Check exec timeouts         → SIGTERM/SIGKILL, mark TIMEOUT
-4. Start new agents            → validate project dir, set IDLE
-5. Start planning              → spawn plan subprocess for PLAN-mode agents
-6. Dispatch pending messages   → match IDLE agents to PENDING messages, spawn exec
+2. Check exec timeouts         → SIGTERM/SIGKILL, mark TIMEOUT
+3. Start new agents            → validate project dir, set IDLE
+4. Dispatch pending messages   → match IDLE agents to PENDING messages, spawn exec
 ```
 
 Respects `MAX_CONCURRENT_WORKERS` (global) and `project.max_concurrent` (per-project).
@@ -218,19 +218,20 @@ class Agent:
     id: str               # 12-char hex
     project: str          # Project name (FK to projects)
     name: str             # Display name
-    mode: AgentMode       # INTERVIEW | PLAN | AUTO
-    status: AgentStatus   # STARTING | IDLE | EXECUTING | PLANNING | PLAN_REVIEW | ERROR | STOPPED
+    mode: AgentMode       # INTERVIEW | AUTO
+    status: AgentStatus   # STARTING | IDLE | EXECUTING | SYNCING | ERROR | STOPPED
     branch: str | None
     worktree: str | None
-    plan: str | None
-    plan_approved: bool
     session_id: str | None   # Claude session ID for --resume
+    cli_sync: bool           # Import history from CLI session and live-sync
+    tmux_pane: str | None    # tmux pane ID for tmux-launched agents
     model: str | None        # Claude model override
     last_message_preview: str | None
     last_message_at: datetime | None
     unread_count: int
     created_at: datetime
-    timeout_seconds: int     # Default 600
+    timeout_seconds: int     # Default 1800
+    skip_permissions: bool   # --dangerously-skip-permissions (default True)
 ```
 
 ### Message (agent conversation entries)
@@ -244,8 +245,10 @@ class Message:
     status: MessageStatus    # PENDING | EXECUTING | COMPLETED | FAILED | TIMEOUT
     stream_log: str | None   # Raw stream-json output
     error_message: str | None
+    source: str | None       # "web" | "cli" | None
     created_at: datetime
     completed_at: datetime | None
+    scheduled_at: datetime | None  # For scheduled message delivery
 ```
 
 ### Project
@@ -287,6 +290,7 @@ GET    /api/projects                List projects with stats
 POST   /api/projects                Create/register project
 GET    /api/projects/folders        List non-archived projects
 GET    /api/projects/trash          List archived projects
+PUT    /api/projects/{name}/rename  Rename project
 POST   /api/projects/{name}/archive Archive project
 DELETE /api/projects/{name}         Delete project
 DELETE /api/projects/trash/{name}   Permanently delete archived
@@ -301,16 +305,19 @@ DELETE /api/projects/{name}/sessions/{sid}/star    Unstar session
 ### Agents
 ```
 POST   /api/agents                  Create agent (starts persistent session)
+POST   /api/agents/launch-tmux      Launch agent in tmux pane
+POST   /api/agents/scan             Detect tmux sessions to link as agents
 GET    /api/agents                  List all agents
 GET    /api/agents/unread           Count unread across agents
 GET    /api/agents/{id}             Get agent details
+PUT    /api/agents/{id}             Update agent settings
 DELETE /api/agents/{id}             Stop agent (soft delete)
 POST   /api/agents/{id}/resume     Resume stopped agent
 GET    /api/agents/{id}/messages   Get conversation (paginated)
-POST   /api/agents/{id}/messages   Send message to agent
+POST   /api/agents/{id}/messages   Send message to agent (supports scheduling)
+PUT    /api/agents/{id}/messages/{mid}  Edit/reschedule a pending message
+DELETE /api/agents/{id}/messages/{mid}  Delete a pending message
 PUT    /api/agents/{id}/read       Mark messages as read
-PUT    /api/agents/{id}/approve    Approve plan
-PUT    /api/agents/{id}/reject     Reject plan with notes
 ```
 
 ### Tasks (legacy)
@@ -331,6 +338,7 @@ POST   /api/git/{project}/merge/{branch}  Merge branch
 ```
 GET    /api/health                  Health check (DB, Claude CLI)
 GET    /api/system/stats            System stats (disk, memory, GPU)
+POST   /api/test/notify             Test push notifications
 GET    /api/processes               Active Claude processes
 GET    /api/workers                 Worker statuses (legacy)
 GET    /api/logs                    Recent log entries
@@ -350,7 +358,7 @@ POST   /api/push/unsubscribe        Unsubscribe from push
 ws://host:8080/ws                   Real-time events (auth via ?token=jwt)
 ```
 
-Events: `agent_update`, `agent_stream`, `new_message`, `task_update`, `worker_update`, `plan_ready`, `system_alert`, `pong`
+Events: `agent_update`, `agent_stream`, `new_message`, `task_update`, `worker_update`, `system_alert`, `pong`
 
 ---
 
@@ -361,7 +369,7 @@ Environment variables (see `config.py`):
 ```python
 # Worker
 MAX_CONCURRENT_WORKERS = 5         # Global max parallel agent processes
-TASK_TIMEOUT_SECONDS = 600         # Default 10 min timeout per message
+TASK_TIMEOUT_SECONDS = 1800        # Default 30 min timeout per message
 MAX_RETRIES = 3                    # Auto-retry failed tasks (legacy)
 MAX_IDLE_AGENTS = 20               # Max idle agents kept alive
 CC_MODEL = "claude-opus-4-6"       # Default Claude model
@@ -369,9 +377,6 @@ CLAUDE_BIN = "claude"              # Path to Claude CLI binary
 
 # Projects
 PROJECTS_DIR = ""                  # Host path to projects directory
-
-# Plan mode
-AUTO_APPROVE_TIMEOUT = 0           # Auto-approve after N seconds (0 = disabled)
 
 # Auth
 AUTH_TIMEOUT_MINUTES = 30          # Frontend inactivity lock timeout
@@ -385,7 +390,7 @@ MAX_BACKUPS = 48                   # Max retained backups
 
 # Session cache
 SESSION_CACHE_INTERVAL = 30        # Seconds between session cache checks
-CLAUDE_HOME = "~/.claude"          # Claude Code home directory
+CLAUDE_HOME = "~/.claude"          # Claude Code home directory (hardcoded)
 
 # Paths
 DB_PATH = "./data/orchestrator.db"
@@ -396,6 +401,11 @@ PROJECT_CONFIGS_PATH = "./project-configs"
 # Web Push (optional)
 VAPID_PRIVATE_KEY = ""
 VAPID_PUBLIC_KEY = ""
+VAPID_SUBJECT = "mailto:agenthive@example.com"
+
+# Telegram Bot (optional)
+TELEGRAM_BOT_TOKEN = ""            # Bot token from @BotFather
+TELEGRAM_CHAT_ID = ""              # Chat ID for notifications
 ```
 
 ---

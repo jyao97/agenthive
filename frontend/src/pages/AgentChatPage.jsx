@@ -237,7 +237,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage }) {
                 {scheduledTime}
               </span>
             ) : (
-              relativeTime(message.created_at)
+              relativeTime(message.completed_at || message.created_at)
             )}
             {isPending && (
               <span className="text-cyan-300/70">queued</span>

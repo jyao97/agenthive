@@ -41,7 +41,7 @@ function MiniChatBubble({ message, project }) {
             </div>
           )}
           <div className={`text-[10px] mt-0.5 ${isUser ? "text-cyan-200" : "text-dim"}`}>
-            {relativeTime(message.created_at)}
+            {relativeTime(message.completed_at || message.created_at)}
             {message.status === "FAILED" && (
               <span className="ml-1 text-red-400">Failed</span>
             )}

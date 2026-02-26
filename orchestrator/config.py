@@ -35,8 +35,11 @@ CC_MODEL = os.getenv("CC_MODEL", "claude-opus-4-6")
 # Claude CLI binary
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
 
+# Claude home directory (single source of truth for all ~/.claude paths)
+CLAUDE_HOME = os.path.expanduser(os.getenv("CLAUDE_HOME", "~/.claude"))
+
 # Claude history file (all past conversations)
-CLAUDE_HISTORY_PATH = os.getenv("CLAUDE_HISTORY_PATH", os.path.expanduser("~/.claude/history.jsonl"))
+CLAUDE_HISTORY_PATH = os.getenv("CLAUDE_HISTORY_PATH", os.path.join(CLAUDE_HOME, "history.jsonl"))
 
 # Projects directory (host path)
 PROJECTS_DIR = os.getenv("PROJECTS_DIR", os.getenv("HOST_PROJECTS_DIR", ""))
@@ -60,7 +63,6 @@ BACKUP_DIR = _resolve(os.getenv("BACKUP_DIR", "backups"))
 
 # Session cache
 SESSION_CACHE_INTERVAL = int(os.getenv("SESSION_CACHE_INTERVAL", "30"))
-CLAUDE_HOME = os.path.expanduser("~/.claude")
 
 # Project configs
 PROJECT_CONFIGS_PATH = _resolve(os.getenv("PROJECT_CONFIGS_PATH", "project-configs"))

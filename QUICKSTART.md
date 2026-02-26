@@ -23,13 +23,8 @@ cd agenthive-main
 ## Step 1: Initialize environment
 
 ```bash
-chmod +x scripts/*.sh
-./scripts/init.sh
+cp .env.example .env
 ```
-
-This will:
-- Verify system dependencies (Node.js, Python, Claude CLI)
-- Create `.env` file from template
 
 Then edit `.env`:
 ```bash
@@ -59,28 +54,40 @@ pip install -r orchestrator/requirements.txt
 
 ## Step 3: Register your projects
 
+Create your projects directory and register projects via the web UI or API:
+
 ```bash
 mkdir -p ~/agenthive-projects
-./scripts/add-project.sh crowd-nav https://github.com/you/crowd-nav.git
-./scripts/add-project.sh vla-delivery https://github.com/you/vla-delivery.git
+# Clone or create projects in this directory
+cd ~/agenthive-projects
+git clone https://github.com/you/crowd-nav.git
+git clone https://github.com/you/vla-delivery.git
 ```
 
-Each project needs a `CLAUDE.md` in its root to give Claude context and rules.
-If missing, the script creates one from the template — you should edit it.
+Then register them via the web UI (New > Project) or API:
+```bash
+curl -X POST http://localhost:8080/api/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name": "crowd-nav"}'
+```
+
+Each project should have a `CLAUDE.md` in its root to give Claude context and rules.
 
 ---
 
 ## Step 4: Start services
 
 ```bash
-# Backend
+# Backend (terminal 1)
 ./run.sh
 
-# Frontend (separate terminal)
+# Frontend (terminal 2)
 cd frontend
 npm install
 npm run dev
 ```
+
+Both servers must be running. The backend serves the API on port 8080, the frontend dev server proxies API requests to it and serves the UI on port 3000.
 
 ---
 
@@ -90,36 +97,124 @@ Open `https://<machine-ip>:3000` in your browser.
 
 On iPhone: Safari > Share > Add to Home Screen
 
-1. Select project
-2. Enter task (text or voice)
-3. Wait for plan generation
-4. Approve plan
+1. Set a password on first visit
+2. Create a project (or it auto-loads from registry.yaml)
+3. Create an agent — pick INTERVIEW (chat only) or AUTO (executes immediately)
+4. Enter task (text or voice)
 5. Agent executes the task
-6. View results
+6. View results in the chat interface
 
 ---
 
-## Common Commands
+## Server Management
+
+### Starting
 
 ```bash
-# Start/stop services
-./run.sh                                      # Start backend
-cd frontend && npm run dev                    # Start frontend
+# Start backend (foreground — logs go to stdout)
+./run.sh
 
-# Project management
-./scripts/add-project.sh <name> <git-url>     # Register a project
+# Start backend in background
+nohup ./run.sh > logs/orchestrator.log 2>&1 &
 
-# Logs
-tail -f logs/orchestrator.log                 # View backend logs
+# Start frontend dev server
+cd frontend && npm run dev
 
-# Backups
-ls backups/                                   # List backups
-./scripts/restore-backup.sh <backup-file>     # Restore from backup
+# Start frontend in background
+cd frontend && nohup npm run dev > /dev/null 2>&1 &
+```
+
+### Stopping
+
+```bash
+# Stop backend (find and kill the uvicorn process)
+lsof -ti:8080 | xargs kill
+
+# Stop frontend dev server
+lsof -ti:3000 | xargs kill
+
+# Stop both
+lsof -ti:8080,:3000 | xargs kill
+```
+
+### Restarting
+
+```bash
+# Restart backend
+lsof -ti:8080 | xargs kill; sleep 1; nohup ./run.sh > logs/orchestrator.log 2>&1 &
+
+# Restart frontend
+lsof -ti:3000 | xargs kill; sleep 1; cd frontend && nohup npm run dev > /dev/null 2>&1 &
+```
+
+### Changing Ports
+
+Default ports: **8080** (backend) and **3000** (frontend).
+
+**Backend port** — set `PORT` in `.env`:
+```bash
+# .env
+PORT=9090
+```
+
+**Frontend port** — set `FRONTEND_PORT` in `.env` or pass `--port` directly:
+```bash
+# Option 1: .env
+FRONTEND_PORT=4000
+
+# Option 2: command line
+cd frontend && npm run dev -- --port 4000
+```
+
+**Important:** If you change the backend port, you must also update the frontend's proxy config in `frontend/vite.config.js` so API requests reach the backend:
+
+```js
+// frontend/vite.config.js — update both proxy targets
+proxy: {
+  '/api': 'http://localhost:9090',       // match your PORT
+  '/ws': { target: 'ws://localhost:9090', ws: true },
+},
+```
+
+If you change the frontend port, update your firewall rules accordingly:
+```bash
+sudo ufw allow 4000
+```
+
+### Production Build
+
+For production, build the frontend into static files and serve everything from the backend:
+
+```bash
+# Build frontend
+cd frontend && npm run build
+
+# The built files are in frontend/dist/
+# Serve with any static file server, or configure a reverse proxy (nginx, caddy)
+```
+
+---
+
+## Logs and Backups
+
+```bash
+# View backend logs (if running in foreground, logs go to stdout)
+tail -f logs/orchestrator.log
+
+# List database backups (automatic hourly backups)
+ls -lh backups/
+
+# Restore a backup
+cp backups/orchestrator-YYYYMMDD-HHMMSS.db data/orchestrator.db
+lsof -ti:8080 | xargs kill; sleep 1; ./run.sh
 ```
 
 ---
 
 ## Troubleshooting
+
+**Q: "Address already in use" when starting**
+A: Another process is using the port. Kill it first: `lsof -ti:8080 | xargs kill`
 
 **Q: Agent fails to start**
 A: Check `logs/orchestrator.log` — usually an expired OAuth token. Run `claude setup-token` again and update `.env`.
@@ -131,7 +226,7 @@ A: Claude Max has rate limits. Reduce `MAX_CONCURRENT_WORKERS` in `.env`, or use
 A: Check the project's `CLAUDE.md` for clarity, review `PROGRESS.md` for failure records.
 
 **Q: Can't access from phone**
-A: Make sure port 3000 is open (`sudo ufw allow 3000`). Accept the self-signed certificate in your browser.
+A: Make sure the frontend port is open (`sudo ufw allow 3000`). Accept the self-signed certificate in your browser.
 
 **Q: Need to restore a backup**
-A: `./scripts/restore-backup.sh <backup-filename>`
+A: Copy a backup from `backups/` over `data/orchestrator.db` and restart the backend.

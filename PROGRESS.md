@@ -46,11 +46,12 @@
 2. **Auth simplification**: Switched to `CLAUDE_CODE_OAUTH_TOKEN` env var (generated via `claude setup-token`, valid ~1 year). Simplified credential management.
 
 ### Problems encountered
-- `plan_manager.py` also imported old config vars — missed on first pass
+- `plan_manager.py` (since removed) also imported old config vars — missed on first pass
 
 ### Solutions
-- Updated plan_manager.py imports alongside worker_manager.py
+- Updated all module imports alongside worker_manager.py
 
 ### Lessons learned
 - `CLAUDE_CODE_OAUTH_TOKEN` is the officially recommended auth method — eliminates credential file management entirely
 - When removing config vars, grep the entire codebase for imports — not just the file you're working on
+- Plan mode was later removed entirely (commit ad1c2c9) — only INTERVIEW and AUTO modes remain
