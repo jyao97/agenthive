@@ -33,13 +33,13 @@ def encode_project_path(path: str) -> str:
     return path.replace("/", "-")
 
 
-def _session_source_dir(project_path: str) -> str:
+def session_source_dir(project_path: str) -> str:
     """Return the Claude projects directory for a given project path."""
     encoded = encode_project_path(project_path)
     return os.path.join(CLAUDE_HOME, "projects", encoded)
 
 
-def _session_cache_dir(project_path: str) -> str:
+def session_cache_dir(project_path: str) -> str:
     """Return the cache directory for a given project path."""
     encoded = encode_project_path(project_path)
     return os.path.join(CACHE_DIR, encoded)
@@ -94,8 +94,8 @@ def cache_session(session_id: str, project_path: str) -> bool:
 
     Returns True if anything was written, False if already up-to-date.
     """
-    source_dir = _session_source_dir(project_path)
-    cache_dir = _session_cache_dir(project_path)
+    source_dir = session_source_dir(project_path)
+    cache_dir = session_cache_dir(project_path)
 
     jsonl_src = os.path.join(source_dir, f"{session_id}.jsonl")
     subdir_src = os.path.join(source_dir, session_id)
@@ -179,7 +179,7 @@ def evict_session(session_id: str, project_path: str) -> None:
     the full conversation.  The old cached file is a strict subset and can be
     safely deleted.
     """
-    cache_dir = _session_cache_dir(project_path)
+    cache_dir = session_cache_dir(project_path)
     jsonl_path = os.path.join(cache_dir, f"{session_id}.jsonl")
     subdir_path = os.path.join(cache_dir, session_id)
 
@@ -200,8 +200,8 @@ def restore_session(session_id: str, project_path: str) -> bool:
 
     Returns True if restored successfully, False if no cache found.
     """
-    cache_dir = _session_cache_dir(project_path)
-    source_dir = _session_source_dir(project_path)
+    cache_dir = session_cache_dir(project_path)
+    source_dir = session_source_dir(project_path)
 
     jsonl_cached = os.path.join(cache_dir, f"{session_id}.jsonl")
     if not os.path.exists(jsonl_cached):
@@ -246,7 +246,7 @@ def repair_session_jsonl(session_id: str, project_path: str) -> bool:
 
     Returns True if any lines were removed, False otherwise.
     """
-    source_dir = _session_source_dir(project_path)
+    source_dir = session_source_dir(project_path)
     jsonl_path = os.path.join(source_dir, f"{session_id}.jsonl")
 
     if not os.path.exists(jsonl_path):

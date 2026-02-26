@@ -897,23 +897,27 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
     # --- Migrate Claude session directory and session cache ---
     # When the project path changes, the encoded directory name changes too.
     # Move the old session dir so existing sessions remain accessible.
-    # Uses _session_source_dir / _session_cache_dir so path encoding stays
+    # Uses session_source_dir / session_cache_dir so path encoding stays
     # in one place (session_cache.py) rather than being duplicated here.
     if new_path != old_path:
-        from session_cache import _session_source_dir, _session_cache_dir
+        from session_cache import session_source_dir, session_cache_dir
 
         for label, dir_fn in [
-            ("Claude session", _session_source_dir),
-            ("session cache", _session_cache_dir),
+            ("Claude session", session_source_dir),
+            ("session cache", session_cache_dir),
         ]:
             old_dir = dir_fn(old_path)
             new_dir = dir_fn(new_path)
-            if os.path.isdir(old_dir) and not os.path.exists(new_dir):
-                try:
-                    os.rename(old_dir, new_dir)
-                    logger.info("Migrated %s dir: %s → %s", label, old_dir, new_dir)
-                except OSError:
-                    logger.warning("Failed to migrate %s dir: %s → %s", label, old_dir, new_dir)
+            if not os.path.isdir(old_dir):
+                continue
+            if os.path.exists(new_dir):
+                logger.info("Skipped %s migration — target already exists: %s", label, new_dir)
+                continue
+            try:
+                os.rename(old_dir, new_dir)
+                logger.info("Migrated %s dir: %s → %s", label, old_dir, new_dir)
+            except OSError:
+                logger.warning("Failed to migrate %s dir: %s → %s", label, old_dir, new_dir)
 
     logger.info("Project renamed: %s → %s", name, new_name)
     return new_proj
@@ -1440,14 +1444,32 @@ async def _launch_tmux_background(
     1. Wait for Claude's TUI to start (polls for a claude process in the pane)
     2. Send the user prompt
     3. Detect the session JSONL and start the sync loop
+
+    On any failure, transitions the agent to ERROR so it doesn't stay
+    stuck in STARTING forever.
     """
+    import subprocess
+
     from agent_dispatcher import (
         _build_tmux_claude_map,
-        _session_source_dir,
         send_tmux_message,
     )
     from database import SessionLocal
+    from session_cache import session_source_dir
     from websocket import emit_agent_update
+
+    def _mark_error(reason: str):
+        """Transition agent to ERROR status on launch failure."""
+        db = SessionLocal()
+        try:
+            agent = db.get(Agent, agent_id)
+            if agent and agent.status != AgentStatus.STOPPED:
+                agent.status = AgentStatus.ERROR
+                db.commit()
+                ad._emit(emit_agent_update(agent_id, "ERROR", agent.project))
+        finally:
+            db.close()
+        logger.warning("tmux launch failed for agent %s: %s", agent_id, reason)
 
     # Step 1: Wait for Claude's TUI to fully load (up to 30s).
     # Two phases:
@@ -1461,36 +1483,35 @@ async def _launch_tmux_background(
             process_detected = True
             break
     if not process_detected:
-        logger.warning("Claude TUI did not start in pane %s within 30s", pane_id)
+        _mark_error("Claude TUI did not start in pane %s within 30s" % pane_id)
         return
 
     # Wait for the TUI input prompt to appear (up to 15s after process detected)
-    import subprocess as _sp
     tui_ready = False
     for _ in range(15):
         await asyncio.sleep(1)
         try:
-            capture = _sp.run(
+            capture = subprocess.run(
                 ["tmux", "capture-pane", "-t", pane_id, "-p"],
                 capture_output=True, text=True, timeout=5,
             )
             if capture.returncode == 0 and "\u276f" in capture.stdout:
                 tui_ready = True
                 break
-        except (_sp.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError):
             continue
     if not tui_ready:
-        logger.warning("Claude TUI input prompt did not appear in pane %s within 15s", pane_id)
+        _mark_error("Claude TUI input prompt did not appear in pane %s within 15s" % pane_id)
         return
 
     # Step 2: Send the prompt
     if not send_tmux_message(pane_id, prompt):
-        logger.warning("Failed to send prompt to tmux pane %s for agent %s", pane_id, agent_id)
+        _mark_error("Failed to send prompt to tmux pane %s" % pane_id)
         return
     logger.info("Sent initial prompt to tmux pane %s for agent %s", pane_id, agent_id)
 
     # Step 3: Wait for session JSONL to appear (up to 60s)
-    session_dir = _session_source_dir(project_path)
+    session_dir = session_source_dir(project_path)
     session_id = None
     for _ in range(60):
         await asyncio.sleep(1)
@@ -1510,7 +1531,7 @@ async def _launch_tmux_background(
             continue
 
     if not session_id:
-        logger.warning("No session JSONL appeared for agent %s", agent_id)
+        _mark_error("No session JSONL appeared for agent %s" % agent_id)
         return
 
     # Update agent with session_id and transition to SYNCING

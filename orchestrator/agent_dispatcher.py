@@ -22,7 +22,7 @@ from models import (
     Project,
 )
 from session_cache import (
-    _session_source_dir,
+    session_source_dir,
     cache_session,
     evict_session,
     repair_session_jsonl,
@@ -1161,7 +1161,7 @@ class AgentDispatcher:
             # now instead of waiting for Claude to error out (~5s wasted).
             resume_session_id = agent.session_id or None
             if resume_session_id:
-                src_dir = _session_source_dir(project_path)
+                src_dir = session_source_dir(project_path)
                 jsonl_path = os.path.join(
                     src_dir, f"{resume_session_id}.jsonl"
                 )
@@ -1369,7 +1369,7 @@ class AgentDispatcher:
 
         for proj_path, pane_entries in panes_per_project.items():
             proj = proj_by_path[proj_path]
-            session_dir = _session_source_dir(proj.path)
+            session_dir = session_source_dir(proj.path)
             if not os.path.isdir(session_dir):
                 continue
 
@@ -1609,7 +1609,7 @@ class AgentDispatcher:
                 # No pane — check if session file was recently written
                 proj = db.get(Project, agent.project)
                 if proj:
-                    src_dir = _session_source_dir(proj.path)
+                    src_dir = session_source_dir(proj.path)
                     jsonl_path = os.path.join(
                         src_dir, f"{agent.session_id}.jsonl"
                     )
@@ -1751,7 +1751,7 @@ class AgentDispatcher:
         Also sets the agent's model from the session if detected.
         """
         jsonl_path = os.path.join(
-            _session_source_dir(project_path), f"{session_id}.jsonl"
+            session_source_dir(project_path), f"{session_id}.jsonl"
         )
         turns = _parse_session_turns(jsonl_path)
         if not turns:
@@ -1830,7 +1830,7 @@ class AgentDispatcher:
         Used to detect when Claude auto-continues into a new session
         (e.g. context too long).
         """
-        session_dir = _session_source_dir(project_path)
+        session_dir = session_source_dir(project_path)
         try:
             current_mtime = os.path.getmtime(
                 os.path.join(session_dir, f"{current_sid}.jsonl")
@@ -1910,7 +1910,7 @@ class AgentDispatcher:
 
             # Parse new session for name and turns
             new_fpath = os.path.join(
-                _session_source_dir(project_path), f"{new_sid}.jsonl"
+                session_source_dir(project_path), f"{new_sid}.jsonl"
             )
             agent_name = "CLI session (continued)"
             turns = []
@@ -1988,7 +1988,7 @@ class AgentDispatcher:
         POLL_INTERVAL = 3  # seconds between checks
 
         jsonl_path = os.path.join(
-            _session_source_dir(project_path), f"{session_id}.jsonl"
+            session_source_dir(project_path), f"{session_id}.jsonl"
         )
 
         from websocket import emit_agent_stream, emit_agent_update, emit_new_message
@@ -2461,7 +2461,7 @@ class AgentDispatcher:
                             project.name
                         )
                         jsonl_path = os.path.join(
-                            _session_source_dir(project_path),
+                            session_source_dir(project_path),
                             f"{agent.session_id}.jsonl",
                         )
                         # Session is active only if: file exists, no result
@@ -2519,7 +2519,7 @@ class AgentDispatcher:
                     elif project_path and agent.session_id and not agent.cli_sync:
                         # Non-tmux agents: accept session file freshness
                         import time as _time
-                        src_dir = _session_source_dir(project_path)
+                        src_dir = session_source_dir(project_path)
                         jsonl_path = os.path.join(src_dir, f"{agent.session_id}.jsonl")
                         try:
                             age = _time.time() - os.path.getmtime(jsonl_path)

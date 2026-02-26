@@ -390,7 +390,7 @@ MAX_BACKUPS = 48                   # Max retained backups
 
 # Session cache
 SESSION_CACHE_INTERVAL = 30        # Seconds between session cache checks
-CLAUDE_HOME = "~/.claude"          # Claude Code home directory (hardcoded)
+CLAUDE_HOME = "~/.claude"          # Claude Code home directory
 
 # Paths
 DB_PATH = "./data/orchestrator.db"
