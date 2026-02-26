@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from config import MAX_CONCURRENT_WORKERS
+from config import CLAUDE_HOME, MAX_CONCURRENT_WORKERS
 from database import SessionLocal
 from log_config import save_worker_log
 from models import (
@@ -357,7 +357,7 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
 
 import subprocess as _sp
 
-_CLAUDE_DEBUG_DIR = os.path.join(os.path.expanduser("~/.claude"), "debug")
+_CLAUDE_DEBUG_DIR = os.path.join(CLAUDE_HOME, "debug")
 
 
 def _get_session_pid(session_id: str) -> int | None:

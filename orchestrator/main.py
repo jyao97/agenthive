@@ -881,6 +881,7 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
         logger.warning("Failed to update registry.yaml during rename %s → %s", name, new_name)
 
     # --- Rename directory on disk ---
+    new_path = old_path  # default: path unchanged
     if old_path.endswith(f"/{name}") and os.path.isdir(old_path):
         new_path = old_path.rsplit("/", 1)[0] + f"/{new_name}"
         if not os.path.exists(new_path):
@@ -891,6 +892,28 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
                 logger.info("Renamed project directory %s → %s", old_path, new_path)
             except OSError:
                 logger.warning("Failed to rename project directory %s → %s", old_path, new_path)
+                new_path = old_path  # rename failed, keep old path
+
+    # --- Migrate Claude session directory and session cache ---
+    # When the project path changes, the encoded directory name changes too.
+    # Move the old session dir so existing sessions remain accessible.
+    # Uses _session_source_dir / _session_cache_dir so path encoding stays
+    # in one place (session_cache.py) rather than being duplicated here.
+    if new_path != old_path:
+        from session_cache import _session_source_dir, _session_cache_dir
+
+        for label, dir_fn in [
+            ("Claude session", _session_source_dir),
+            ("session cache", _session_cache_dir),
+        ]:
+            old_dir = dir_fn(old_path)
+            new_dir = dir_fn(new_path)
+            if os.path.isdir(old_dir) and not os.path.exists(new_dir):
+                try:
+                    os.rename(old_dir, new_dir)
+                    logger.info("Migrated %s dir: %s → %s", label, old_dir, new_dir)
+                except OSError:
+                    logger.warning("Failed to migrate %s dir: %s → %s", label, old_dir, new_dir)
 
     logger.info("Project renamed: %s → %s", name, new_name)
     return new_proj
@@ -1426,21 +1449,44 @@ async def _launch_tmux_background(
     from database import SessionLocal
     from websocket import emit_agent_update
 
-    # Step 1: Wait for Claude's TUI to load (up to 30s)
+    # Step 1: Wait for Claude's TUI to fully load (up to 30s).
+    # Two phases:
+    #   a) Detect the claude process in the pane
+    #   b) Wait for the TUI input prompt (❯) to appear in the pane content
+    process_detected = False
     for _ in range(30):
         await asyncio.sleep(1)
         pane_map = _build_tmux_claude_map()
         if pane_id in pane_map and not pane_map[pane_id]["is_orchestrator"]:
+            process_detected = True
             break
-    else:
+    if not process_detected:
         logger.warning("Claude TUI did not start in pane %s within 30s", pane_id)
         return
 
-    # Extra settle time for Ink TUI to render
-    await asyncio.sleep(2)
+    # Wait for the TUI input prompt to appear (up to 15s after process detected)
+    import subprocess as _sp
+    tui_ready = False
+    for _ in range(15):
+        await asyncio.sleep(1)
+        try:
+            capture = _sp.run(
+                ["tmux", "capture-pane", "-t", pane_id, "-p"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if capture.returncode == 0 and "\u276f" in capture.stdout:
+                tui_ready = True
+                break
+        except (_sp.TimeoutExpired, OSError):
+            continue
+    if not tui_ready:
+        logger.warning("Claude TUI input prompt did not appear in pane %s within 15s", pane_id)
+        return
 
     # Step 2: Send the prompt
-    send_tmux_message(pane_id, prompt)
+    if not send_tmux_message(pane_id, prompt):
+        logger.warning("Failed to send prompt to tmux pane %s for agent %s", pane_id, agent_id)
+        return
     logger.info("Sent initial prompt to tmux pane %s for agent %s", pane_id, agent_id)
 
     # Step 3: Wait for session JSONL to appear (up to 60s)
