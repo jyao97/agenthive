@@ -29,5 +29,9 @@ if [ -d .venv ]; then
     source .venv/bin/activate
 fi
 
+# Clear Claude Code nesting-detection vars so spawned agents don't think
+# they're running inside another Claude Code session.
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT 2>/dev/null || true
+
 # Start the orchestrator
 cd orchestrator && exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8080}"

@@ -72,6 +72,8 @@ export const fetchProjects = () => request("/api/projects");
 export const createProject = (data) =>
   request("/api/projects", { method: "POST", body: JSON.stringify(data) });
 export const fetchAllFolders = () => request("/api/projects/folders");
+export const scanProjects = () =>
+  request("/api/projects/scan", { method: "POST" });
 export const renameProject = (name, newName, displayName) =>
   request(`/api/projects/${e(name)}/rename`, { method: "PUT", body: JSON.stringify({ new_name: newName, display_name: displayName || undefined }) });
 export const archiveProject = (name) =>
@@ -147,6 +149,7 @@ export const mergeGitBranch = (project, branch) =>
 
 // --- System ---
 export const fetchSystemStats = () => request("/api/system/stats");
+export const fetchTokenUsage = () => request("/api/system/token-usage");
 export const fetchProcesses = () => request("/api/processes");
 
 // --- Voice ---

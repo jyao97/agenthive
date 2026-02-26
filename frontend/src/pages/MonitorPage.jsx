@@ -7,6 +7,7 @@ import {
   fetchAgents as apiFetchAgents,
   fetchProcesses as apiFetchProcesses,
   fetchSystemStats,
+  fetchTokenUsage,
 } from "../lib/api";
 
 const HEALTH_COLORS = {
@@ -18,6 +19,26 @@ const HEALTH_COLORS = {
 };
 
 const AGENT_STATUS_ORDER = ["EXECUTING", "SYNCING", "IDLE", "STARTING", "ERROR", "STOPPED"];
+
+function formatResetTime(isoStr) {
+  if (!isoStr) return "";
+  try {
+    const d = new Date(isoStr);
+    const now = new Date();
+    const diffMs = d - now;
+    if (diffMs <= 0) return "now";
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 60) return `in ${diffMin}m`;
+    const diffH = Math.floor(diffMin / 60);
+    const remMin = diffMin % 60;
+    if (diffH < 24) return `in ${diffH}h${remMin > 0 ? ` ${remMin}m` : ""}`;
+    const diffD = Math.floor(diffH / 24);
+    const remH = diffH % 24;
+    return `in ${diffD}d ${remH}h`;
+  } catch {
+    return "";
+  }
+}
 
 function UsageBar({ label, pct, detail }) {
   const barColor =
@@ -59,6 +80,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
   const [agentCounts, setAgentCounts] = useState({});
   const [processes, setProcesses] = useState([]);
   const [sysStats, setSysStats] = useState(null);
+  const [tokenUsage, setTokenUsage] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchHealth = useCallback(async () => {
@@ -93,23 +115,36 @@ export default function MonitorPage({ theme, onToggleTheme }) {
     } catch { /* retry next poll */ }
   }, []);
 
+  const fetchUsage = useCallback(async () => {
+    try {
+      setTokenUsage(await fetchTokenUsage());
+    } catch { /* credentials not configured or API error — ignore */ }
+  }, []);
+
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([fetchHealth(), fetchAgents(), fetchProcesses(), fetchSysStats()]);
+    await Promise.all([fetchHealth(), fetchAgents(), fetchProcesses(), fetchSysStats(), fetchUsage()]);
     setTimeout(() => setRefreshing(false), 400);
-  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats]);
+  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats, fetchUsage]);
 
   useEffect(() => {
     fetchHealth();
     fetchAgents();
     fetchProcesses();
     fetchSysStats();
-  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats]);
+    fetchUsage();
+  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats, fetchUsage]);
 
   useEffect(() => {
     const interval = setInterval(() => { fetchAgents(); fetchProcesses(); fetchSysStats(); }, 3000);
     return () => clearInterval(interval);
   }, [fetchAgents, fetchProcesses, fetchSysStats]);
+
+  // Token usage polls less frequently (every 30s) since it hits an external API
+  useEffect(() => {
+    const interval = setInterval(fetchUsage, 30000);
+    return () => clearInterval(interval);
+  }, [fetchUsage]);
 
   useEffect(() => {
     const interval = setInterval(fetchHealth, 10000);
@@ -202,6 +237,29 @@ export default function MonitorPage({ theme, onToggleTheme }) {
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* Token Usage */}
+        {tokenUsage && (
+          <section>
+            <h2 className="text-xs font-semibold text-dim uppercase tracking-wider mb-2">Token Usage</h2>
+            <div className="rounded-xl bg-surface shadow-card p-4 space-y-3">
+              {tokenUsage.session && (
+                <UsageBar
+                  label="Session (5h)"
+                  pct={tokenUsage.session.utilization ?? 0}
+                  detail={`${tokenUsage.session.utilization ?? 0}% — resets ${formatResetTime(tokenUsage.session.resets_at)}`}
+                />
+              )}
+              {tokenUsage.weekly && (
+                <UsageBar
+                  label="Weekly (7d)"
+                  pct={tokenUsage.weekly.utilization ?? 0}
+                  detail={`${tokenUsage.weekly.utilization ?? 0}% — resets ${formatResetTime(tokenUsage.weekly.resets_at)}`}
+                />
               )}
             </div>
           </section>

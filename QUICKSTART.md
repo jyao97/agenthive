@@ -54,22 +54,50 @@ pip install -r orchestrator/requirements.txt
 
 ## Step 3: Register your projects
 
-Create your projects directory and register projects via the web UI or API:
+Create your projects directory and place project folders inside it:
 
 ```bash
 mkdir -p ~/agenthive-projects
-# Clone or create projects in this directory
 cd ~/agenthive-projects
 git clone https://github.com/you/crowd-nav.git
 git clone https://github.com/you/vla-delivery.git
 ```
 
-Then register them via the web UI (New > Project) or API:
+### Option A: Scan (recommended)
+
+Click the **Scan** button on the Projects page to detect and register all folders in your projects directory at once.
+
+Or via API:
+```bash
+curl -X POST http://localhost:8080/api/projects/scan \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+### Option B: Register individually
+
+Via the web UI: **New > Project** — enter the folder name.
+
+Or via API:
 ```bash
 curl -X POST http://localhost:8080/api/projects \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{"name": "crowd-nav"}'
 ```
+
+### Option C: Activate from the folder list
+
+The Projects page shows all folders in your projects directory. Inactive folders have an **Activate** button — click it to register.
+
+### Projects outside PROJECTS_DIR
+
+To register a project at a custom path (e.g., this orchestrator itself):
+```bash
+# Add an entry to project-configs/registry.yaml
+echo '- name: my-project
+  path: /absolute/path/to/project' >> project-configs/registry.yaml
+```
+Then restart the backend, or add it via the API with a custom path.
 
 Each project should have a `CLAUDE.md` in its root to give Claude context and rules.
 

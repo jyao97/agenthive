@@ -65,7 +65,7 @@ class WorkerManager:
 
     def ensure_project_ready(self, project: Project) -> str:
         """Validate project directory exists. Returns the project path."""
-        project_path = self._get_project_path(project.name)
+        project_path = project.path
         if not os.path.isdir(project_path):
             raise FileNotFoundError(f"Project directory not found: {project_path}")
         logger.debug("Project %s ready at %s", project.name, project_path)
@@ -101,10 +101,9 @@ class WorkerManager:
 
     def _build_prompt(self, task: Task, project: Project) -> str:
         """Wrap the user prompt with worker instructions."""
-        project_path = self._get_project_path(project.name)
         return (
             f"You are working in project: {project.display_name}\n"
-            f"Project path: {project_path}\n"
+            f"Project path: {project.path}\n"
             f"\n"
             f"First read the project's CLAUDE.md to understand project conventions.\n"
             f"\n"
@@ -121,7 +120,7 @@ class WorkerManager:
     def start_worker(self, task: Task, project: Project) -> str:
         """Start an ephemeral worker subprocess for a task. Returns PID string."""
         prompt = self._build_prompt(task, project)
-        project_path = self._get_project_path(project.name)
+        project_path = project.path
         output_file = f"/tmp/claude-output-{uuid.uuid4().hex[:8]}.log"
 
         cmd = [

@@ -7,6 +7,11 @@ import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+# Clear Claude Code nesting-detection vars from the orchestrator process
+# so spawned agents (subprocess and tmux) don't refuse to start.
+os.environ.pop("CLAUDECODE", None)
+os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -496,6 +501,66 @@ async def system_stats():
     return stats
 
 
+@app.get("/api/system/token-usage")
+async def token_usage():
+    """Query Claude API token usage via OAuth credentials."""
+    import json as _json
+    import urllib.request
+    import urllib.error
+    from config import CLAUDE_CREDENTIALS_PATH
+
+    if not CLAUDE_CREDENTIALS_PATH or not os.path.exists(CLAUDE_CREDENTIALS_PATH):
+        raise HTTPException(
+            status_code=404,
+            detail="Claude credentials file not found. Set CLAUDE_CREDENTIALS_PATH in .env",
+        )
+
+    try:
+        with open(CLAUDE_CREDENTIALS_PATH, "r") as f:
+            creds = _json.load(f)
+    except (OSError, _json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read credentials: {exc}")
+
+    access_token = None
+    oauth = creds.get("claudeAiOauth") or {}
+    access_token = oauth.get("accessToken")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="No OAuth access token found in credentials file")
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/api/oauth/usage",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "anthropic-beta": "oauth-2025-04-20",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:200]
+        raise HTTPException(status_code=exc.code, detail=f"Anthropic API error: {body}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to reach Anthropic API: {exc}")
+
+    # Return only the fields the frontend needs
+    result = {}
+    five_hour = data.get("five_hour")
+    if five_hour:
+        result["session"] = {
+            "utilization": five_hour.get("utilization"),
+            "resets_at": five_hour.get("resets_at"),
+        }
+    seven_day = data.get("seven_day")
+    if seven_day:
+        result["weekly"] = {
+            "utilization": seven_day.get("utilization"),
+            "resets_at": seven_day.get("resets_at"),
+        }
+
+    return result
+
+
 # ---- Projects ----
 
 @app.get("/api/projects", response_model=list[ProjectWithStats])
@@ -686,6 +751,59 @@ async def restore_trash_folder(name: str):
     return {"status": "restored", "name": name}
 
 
+@app.post("/api/projects/scan")
+async def scan_projects(request: Request, db: Session = Depends(get_db)):
+    """Scan PROJECTS_DIR and bulk-register all new folders as projects."""
+    from config import PROJECTS_DIR
+    projects_dir = PROJECTS_DIR or "/projects"
+
+    if not os.path.isdir(projects_dir):
+        raise HTTPException(status_code=400, detail=f"PROJECTS_DIR not found: {projects_dir}")
+
+    try:
+        all_dirs = sorted([
+            d for d in os.listdir(projects_dir)
+            if os.path.isdir(os.path.join(projects_dir, d))
+            and not d.startswith(".")
+        ])
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to scan: {e}")
+
+    from session_cache import migrate_session_dirs
+
+    db_projects = {p.name: p for p in db.query(Project).all()}
+    added = []
+
+    skipped_archived = []
+    for dirname in all_dirs:
+        if dirname in db_projects:
+            proj = db_projects[dirname]
+            if proj.archived:
+                skipped_archived.append(dirname)
+            continue
+
+        proj = Project(
+            name=dirname,
+            display_name=dirname,
+            path=os.path.join(projects_dir, dirname),
+        )
+        db.add(proj)
+        added.append(dirname)
+
+        try:
+            migrate_session_dirs(proj.path)
+        except Exception:
+            logger.warning("Failed to check session dir migration for %s", dirname)
+
+    if added:
+        db.commit()
+        logger.info("Scan registered %d new project(s): %s", len(added), ", ".join(added))
+    if skipped_archived:
+        logger.info("Scan skipped %d archived project(s): %s", len(skipped_archived), ", ".join(skipped_archived))
+
+    return {"scanned": len(all_dirs), "added": added, "skipped_archived": skipped_archived}
+
+
 @app.post("/api/projects", response_model=ProjectOut, status_code=201)
 async def create_project(body: ProjectCreate, request: Request, db: Session = Depends(get_db)):
     """Create or re-activate a project. Un-archives if previously archived."""
@@ -730,13 +848,12 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
             logger.warning("Failed to set up project directory for %s", body.name)
 
         # Auto-init git repo if not already one
-        project_path = wm._get_project_path(body.name)
-        if os.path.isdir(project_path) and not os.path.isdir(os.path.join(project_path, ".git")):
+        if os.path.isdir(proj.path) and not os.path.isdir(os.path.join(proj.path, ".git")):
             try:
                 import subprocess
-                subprocess.run(["git", "init"], cwd=project_path, check=True, capture_output=True)
-                subprocess.run(["git", "add", "-A"], cwd=project_path, check=True, capture_output=True)
-                subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=project_path, check=True, capture_output=True)
+                subprocess.run(["git", "init"], cwd=proj.path, check=True, capture_output=True)
+                subprocess.run(["git", "add", "-A"], cwd=proj.path, check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=proj.path, check=True, capture_output=True)
                 logger.info("Auto-initialized git repo for %s", body.name)
             except Exception:
                 logger.warning("Failed to auto-init git repo for %s", body.name)
@@ -1322,9 +1439,8 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
         # Import history and start live sync in background
         ad = getattr(request.app.state, "agent_dispatcher", None)
         if ad:
-            project_path = ad.worker_mgr._get_project_path(project.name)
             imported = ad.import_session_history(
-                agent.id, body.resume_session_id, project_path
+                agent.id, body.resume_session_id, project.path
             )
             logger.info(
                 "Agent %s: imported %d messages from CLI session %s",
@@ -1407,6 +1523,14 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
         ["tmux", "display-message", "-t", tmux_session, "-p", "#{pane_id}"],
         capture_output=True, text=True,
     ).stdout.strip()
+
+    # Clear CLAUDECODE vars in the tmux session so Claude doesn't think
+    # it's running inside another Claude Code session (nesting detection).
+    subprocess.run(
+        ["tmux", "send-keys", "-t", pane_id,
+         "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT", "Enter"],
+        check=True,
+    )
 
     # Start Claude interactively (full TUI — user can attach and interact)
     subprocess.run(

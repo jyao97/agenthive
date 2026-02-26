@@ -41,6 +41,11 @@ CLAUDE_HOME = os.path.expanduser(os.getenv("CLAUDE_HOME", "~/.claude"))
 # Claude history file (all past conversations)
 CLAUDE_HISTORY_PATH = os.getenv("CLAUDE_HISTORY_PATH", os.path.join(CLAUDE_HOME, "history.jsonl"))
 
+# Claude credentials file (for OAuth token usage queries)
+CLAUDE_CREDENTIALS_PATH = os.path.expanduser(
+    os.getenv("CLAUDE_CREDENTIALS_PATH", os.path.join(CLAUDE_HOME, ".credentials.json"))
+)
+
 # Projects directory (host path)
 PROJECTS_DIR = os.getenv("PROJECTS_DIR", os.getenv("HOST_PROJECTS_DIR", ""))
 

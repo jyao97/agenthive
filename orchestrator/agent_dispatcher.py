@@ -339,6 +339,14 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
                     if summary:
                         assistant_parts.append(("tool", summary))
 
+        elif entry_type == "queue-operation":
+            # User messages sent while assistant is working (queued prompts)
+            if entry.get("operation") == "enqueue":
+                queued_content = entry.get("content", "")
+                if isinstance(queued_content, str) and queued_content.strip():
+                    flush_assistant()
+                    turns.append(("user", queued_content.strip()))
+
         elif entry_type == "system":
             flush_assistant()
             # Use structured fields from JSONL (subtype, content)
@@ -697,8 +705,7 @@ class AgentDispatcher:
                 project = db.get(Project, agent.project)
                 if not project:
                     continue
-                project_path = self.worker_mgr._get_project_path(project.name)
-                results.append((agent.session_id, project_path))
+                results.append((agent.session_id, project.path))
             return results
         finally:
             db.close()
@@ -846,11 +853,10 @@ class AgentDispatcher:
                 # file contains the full conversation — the old is redundant.
                 project = db.get(Project, agent.project)
                 if project:
-                    project_path = self.worker_mgr._get_project_path(project.name)
                     try:
-                        cache_session(sid, project_path)
+                        cache_session(sid, project.path)
                         if previous_session_id and previous_session_id != sid:
-                            evict_session(previous_session_id, project_path)
+                            evict_session(previous_session_id, project.path)
                     except Exception:
                         logger.debug("Failed to cache session %s", sid)
 
@@ -884,9 +890,7 @@ class AgentDispatcher:
                     # Fall through to normal error handling below
                 else:
                     project = db.get(Project, agent.project)
-                    project_path = self.worker_mgr._get_project_path(
-                        project.name
-                    ) if project else None
+                    project_path = project.path if project else None
 
                     restored = False
                     if project_path:
@@ -1275,15 +1279,13 @@ class AgentDispatcher:
         When include_history=True, injects recent conversation history so context
         is preserved even when the Claude Code session can't be resumed.
         """
-        project_path = self.worker_mgr._get_project_path(project.name)
-
         history_block = ""
         if include_history and db:
             history_block = self._format_conversation_history(agent, db)
 
         return (
             f"You are working in project: {project.display_name}\n"
-            f"Project path: {project_path}\n"
+            f"Project path: {project.path}\n"
             f"\n"
             f"First read the project's CLAUDE.md to understand project conventions.\n"
             f"{history_block}\n"
@@ -1985,6 +1987,19 @@ class AgentDispatcher:
         (written by Claude Code when the session ends) or a new session file
         supersedes this one. Only then transitions to IDLE.
         """
+        try:
+            await self._sync_session_loop_inner(agent_id, session_id, project_path)
+        except asyncio.CancelledError:
+            logger.info("Sync loop cancelled for agent %s", agent_id)
+        except Exception:
+            logger.exception("Sync loop crashed for agent %s", agent_id)
+        finally:
+            self._sync_tasks.pop(agent_id, None)
+
+    async def _sync_session_loop_inner(
+        self, agent_id: str, session_id: str, project_path: str
+    ):
+        """Inner sync loop — see _sync_session_loop for docs."""
         POLL_INTERVAL = 3  # seconds between checks
 
         jsonl_path = os.path.join(
@@ -2022,45 +2037,98 @@ class AgentDispatcher:
         if initial_turns:
             last_tail_hash = str(len(initial_turns[-1][1]))
 
-        # Reconcile: update the last agent message if its content grew
-        # since it was first imported (e.g. assistant was mid-response).
-        # Only update the single last AGENT message by matching content
-        # prefix, to avoid positional misalignment bugs.
+        # Reconcile: full-scan comparison between JSONL turns and DB
+        # messages.  Queue-operation user messages can appear anywhere
+        # in the conversation (interspersed between assistant turns), so
+        # we check every turn against the DB and insert any that are
+        # missing, regardless of position.
         db = SessionLocal()
         try:
-            last_agent_msg = db.query(Message).filter(
-                Message.agent_id == agent_id,
-                Message.role == MessageRole.AGENT,
-            ).order_by(Message.created_at.desc()).first()
+            conv_turns = [
+                (r, c) for r, c in initial_turns
+                if r in ("user", "assistant")
+            ]
 
-            if last_agent_msg and initial_turns:
-                # Find the last assistant turn in JSONL
-                last_assistant_turn = None
-                for role, content in reversed(initial_turns):
-                    if role == "assistant":
-                        last_assistant_turn = content
-                        break
-                # Only update if the JSONL version is a superset (starts
-                # with the same text but has more content appended).
-                if (
-                    last_assistant_turn
-                    and len(last_agent_msg.content) < len(last_assistant_turn)
-                    and last_assistant_turn.startswith(
-                        last_agent_msg.content[:200]
-                    )
-                ):
-                    last_agent_msg.content = last_assistant_turn
-                    last_agent_msg.completed_at = _utcnow()
+            if conv_turns:
+                agent = db.get(Agent, agent_id)
+
+                # Get ALL user/agent DB messages for signature matching
+                all_db = db.query(Message).filter(
+                    Message.agent_id == agent_id,
+                    Message.role.in_([MessageRole.USER, MessageRole.AGENT]),
+                ).all()
+                # Build a multiset of (role_char, content_prefix) — use
+                # a dict with counts so duplicate content is handled
+                db_sig_counts: dict[tuple[str, str], int] = {}
+                for m in all_db:
+                    role_char = "u" if m.role == MessageRole.USER else "a"
+                    sig = (role_char, m.content[:200])
+                    db_sig_counts[sig] = db_sig_counts.get(sig, 0) + 1
+
+                # Walk through JSONL turns and collect missing ones
+                missing: list[tuple[str, str]] = []
+                for r, c in conv_turns:
+                    role_char = "u" if r == "user" else "a"
+                    sig = (role_char, c[:200])
+                    if db_sig_counts.get(sig, 0) > 0:
+                        db_sig_counts[sig] -= 1  # consume the match
+                    else:
+                        missing.append((r, c))
+
+                if missing and agent:
+                    for role, content in missing:
+                        if role == "user":
+                            db.add(Message(
+                                agent_id=agent_id,
+                                role=MessageRole.USER,
+                                content=content,
+                                status=MessageStatus.COMPLETED,
+                                source="cli",
+                                completed_at=_utcnow(),
+                            ))
+                        elif role == "assistant":
+                            db.add(Message(
+                                agent_id=agent_id,
+                                role=MessageRole.AGENT,
+                                content=content,
+                                status=MessageStatus.COMPLETED,
+                                source="cli",
+                                completed_at=_utcnow(),
+                            ))
+                    agent.last_message_preview = (conv_turns[-1][1] or "")[:200]
+                    agent.last_message_at = _utcnow()
                     db.commit()
                     self._emit(emit_new_message(
                         agent_id, "sync", _sync_agent_name, _sync_project,
                     ))
                     logger.info(
-                        "Reconciled last agent message for agent %s "
-                        "(%d -> %d chars)",
-                        agent_id, len(last_agent_msg.content),
-                        len(last_assistant_turn),
+                        "Reconciled %d missing turns for agent %s",
+                        len(missing), agent_id,
                     )
+                elif agent:
+                    # No missing turns — but update last agent msg if it grew
+                    last_agent_msg = db.query(Message).filter(
+                        Message.agent_id == agent_id,
+                        Message.role == MessageRole.AGENT,
+                    ).order_by(Message.created_at.desc()).first()
+                    last_assistant = None
+                    for role, content in reversed(conv_turns):
+                        if role == "assistant":
+                            last_assistant = content
+                            break
+                    if (
+                        last_agent_msg and last_assistant
+                        and len(last_agent_msg.content) < len(last_assistant)
+                        and last_assistant.startswith(
+                            last_agent_msg.content[:200]
+                        )
+                    ):
+                        last_agent_msg.content = last_assistant
+                        last_agent_msg.completed_at = _utcnow()
+                        db.commit()
+                        self._emit(emit_new_message(
+                            agent_id, "sync", _sync_agent_name, _sync_project,
+                        ))
         finally:
             db.close()
 
@@ -2166,9 +2234,11 @@ class AgentDispatcher:
             )
 
             if not new_turns and not last_turn_updated:
+                # Stream partial content when the assistant is generating
+                # (file size unchanged but we know it's active)
                 if not is_generating:
                     is_generating = True
-                    self._emit(emit_agent_stream(agent_id, ""))
+                self._emit(emit_agent_stream(agent_id, ""))
                 continue
 
             db = SessionLocal()
@@ -2189,12 +2259,16 @@ class AgentDispatcher:
                         agent.last_message_preview = (turns[-1][1] or "")[:200]
                         agent.last_message_at = _utcnow()
                         db.commit()
+                        # Stream the updated content to connected clients
+                        self._emit(emit_agent_stream(
+                            agent_id, turns[-1][1],
+                        ))
                         self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
                         last_tail_hash = tail_hash
                         is_generating = False
-                        logger.info(
-                            "Updated last turn content for agent %s",
-                            agent_id,
+                        logger.debug(
+                            "Updated last turn content for agent %s (%s chars)",
+                            agent_id, len(turns[-1][1]),
                         )
                 else:
                     # Before importing new turns, check if the turn just
@@ -2280,20 +2354,22 @@ class AgentDispatcher:
                     ))
                     self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
 
-                    from push import send_push_notification
-                    # Use the last assistant turn as preview, fall back to last turn
+                    # Only notify for agent/system turns (not user messages)
                     _push_body = ""
                     for _r, _c in reversed(new_turns):
                         if _r == "assistant":
                             _push_body = _c[:120]
                             break
-                    if not _push_body:
-                        _push_body = (new_turns[-1][1] or "")[:120]
-                    send_push_notification(
-                        title=_sync_agent_name or f"Agent {agent_id[:8]}",
-                        body=_push_body,
-                        url=f"/agents/{agent_id}",
-                    )
+                        if _r == "system":
+                            _push_body = _c[:120]
+                            break
+                    if _push_body:
+                        from push import send_push_notification
+                        send_push_notification(
+                            title=_sync_agent_name or f"Agent {agent_id[:8]}",
+                            body=_push_body,
+                            url=f"/agents/{agent_id}",
+                        )
 
                     logger.info(
                         "Synced %d new turns for agent %s",
@@ -2398,9 +2474,6 @@ class AgentDispatcher:
                     db.close()
                 break
 
-        # Clean up
-        self._sync_tasks.pop(agent_id, None)
-
     @staticmethod
     def _session_has_ended(jsonl_path: str) -> bool:
         """Check if a session JSONL contains a 'result' event (session ended)."""
@@ -2457,9 +2530,7 @@ class AgentDispatcher:
                     project = db.get(Project, agent.project)
                     if project:
                         import time as _time
-                        project_path = self.worker_mgr._get_project_path(
-                            project.name
-                        )
+                        project_path = project.path
                         jsonl_path = os.path.join(
                             session_source_dir(project_path),
                             f"{agent.session_id}.jsonl",
@@ -2504,7 +2575,7 @@ class AgentDispatcher:
                 if agent.status == AgentStatus.SYNCING:
                     # Check if this agent's own CLI process is still alive
                     project = db.get(Project, agent.project)
-                    project_path = self.worker_mgr._get_project_path(project.name) if project else ""
+                    project_path = project.path if project else ""
 
                     # Try to find this agent's tmux pane
                     if project_path and agent.session_id and not agent.tmux_pane:
@@ -2556,11 +2627,8 @@ class AgentDispatcher:
                     if agent.session_id:
                         project = db.get(Project, agent.project)
                         if project:
-                            project_path = self.worker_mgr._get_project_path(
-                                project.name
-                            )
                             repaired = repair_session_jsonl(
-                                agent.session_id, project_path
+                                agent.session_id, project.path
                             )
                             if repaired:
                                 logger.info(
