@@ -157,27 +157,48 @@ export default function App() {
     return () => clearInterval(id);
   }, [location.pathname]);
 
-  // Safari iOS: when returning to the webapp, the browser toolbar
-  // appears and shifts the visual viewport, but fixed-position hit-test
-  // areas are stale until a scroll event forces a reflow.
+  // Safari iOS: after keyboard dismiss the visual viewport desyncs from
+  // the layout viewport.  The ONLY thing that fixes it is an actual
+  // scroll event.  body::after adds 1px so scrollBy has room to move.
   useEffect(() => {
-    const forceReflow = () => {
-      if (document.visibilityState === "visible") {
-        requestAnimationFrame(() => {
-          window.scrollTo(0, window.scrollY);
-        });
+    const timers = [];
+    const microScroll = () => {
+      timers.forEach(clearTimeout);
+      timers.length = 0;
+      // Fire immediately, then once more after a short delay as a safety net
+      const doIt = () => {
+        window.scrollTo({ top: 1, behavior: "instant" });
+        window.scrollTo({ top: 0, behavior: "instant" });
+      };
+      doIt();
+      timers.push(setTimeout(doIt, 50));
+    };
+
+    // Keyboard dismiss: input/textarea loses focus
+    const onFocusOut = (e) => {
+      if (e.target?.tagName === "TEXTAREA" || e.target?.tagName === "INPUT") {
+        microScroll();
       }
     };
-    document.addEventListener("visibilitychange", forceReflow);
-    window.addEventListener("resize", forceReflow);
+
+    // Tab resume
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") microScroll();
+    };
+
+    document.addEventListener("focusout", onFocusOut);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("resize", microScroll);
     return () => {
-      document.removeEventListener("visibilitychange", forceReflow);
-      window.removeEventListener("resize", forceReflow);
+      timers.forEach(clearTimeout);
+      document.removeEventListener("focusout", onFocusOut);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("resize", microScroll);
     };
   }, []);
 
   return (
-    <div className="flex flex-col h-dvh bg-page text-heading min-w-[320px] overflow-x-hidden">
+    <div className="flex flex-col h-screen bg-page text-heading min-w-[320px] overflow-x-hidden">
       {/* Main content area */}
       <main className="flex-1 min-h-0 overflow-hidden">
         <Routes>
@@ -204,17 +225,17 @@ export default function App() {
         </Routes>
       </main>
 
-      {/* Bottom tab bar */}
+      {/* Bottom tab bar — floating glass pill */}
       {!hideNav && (
-        <nav className="fixed bottom-0 left-0 right-0 bg-surface border-t border-divider safe-area-pb-tight z-40">
-          <div className="grid grid-cols-5 items-center max-w-lg mx-auto">
+        <nav className="fixed bottom-2 left-0 right-0 z-40 safe-area-pb-tight flex justify-center px-4">
+          <div className="glass-bar-nav rounded-[28px] grid grid-cols-5 items-center w-full" style={{ maxWidth: "24rem" }}>
             {tabs.map((tab) =>
               tab.isCenter ? (
                 <NavLink
                   key={tab.to}
                   to={tab.to}
                   className={({ isActive }) =>
-                    `flex items-center justify-center mx-auto -mt-5 w-14 h-14 rounded-full transition-colors shadow-lg shadow-cyan-500/20 ${
+                    `flex items-center justify-center mx-auto -mt-4 w-13 h-13 rounded-full transition-colors shadow-lg shadow-cyan-500/20 ${
                       isActive
                         ? "bg-cyan-500 text-white"
                         : "bg-cyan-600 text-white hover:bg-cyan-500"
@@ -228,7 +249,7 @@ export default function App() {
                   key={tab.to}
                   to={tab.to}
                   className={({ isActive }) =>
-                    `relative flex flex-col items-center justify-center min-h-[48px] py-2 transition-colors ${
+                    `relative flex flex-col items-center justify-center min-h-[58px] py-2.5 transition-colors ${
                       isActive
                         ? "text-cyan-400"
                         : "text-dim hover:text-body"
@@ -236,7 +257,7 @@ export default function App() {
                   }
                 >
                   {tab.icon}
-                  <span className="text-xs mt-1">{tab.label}</span>
+                  <span className="text-[10px] mt-0.5">{tab.label}</span>
                   {tab.key === "agents" && unread > 0 && (
                     isNotificationsEnabled() ? (
                       <span className="absolute top-1.5 left-[calc(50%+6px)] inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold leading-none">

@@ -11,6 +11,8 @@ import {
   fetchProjectSessions,
   starSession,
   unstarSession,
+  cancelMessage,
+  updateMessage,
 } from "../lib/api";
 import { relativeTime, renderMarkdown, extractFileAttachments } from "../lib/formatters";
 import FileAttachments from "../components/FilePreview";
@@ -60,27 +62,159 @@ function SystemBubble({ message }) {
   );
 }
 
-function ChatBubble({ message, project }) {
+function ChatBubble({ message, project, onCancelMessage, onUpdateMessage }) {
   if (message.role === "SYSTEM") {
     return <SystemBubble message={message} />;
   }
 
   const isUser = message.role === "USER";
+  const isScheduled = isUser && message.scheduled_at && message.status === "PENDING";
+  const isPending = isUser && message.status === "PENDING" && !message.scheduled_at;
+
+  const [showActions, setShowActions] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editContent, setEditContent] = useState(message.content);
+  const [editSchedule, setEditSchedule] = useState("");
+  const longPressTimer = useRef(null);
+  const editTextareaRef = useRef(null);
+
+  // Initialize editSchedule from message when entering edit mode
+  useEffect(() => {
+    if (editing && message.scheduled_at) {
+      const d = new Date(message.scheduled_at);
+      const local = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      setEditSchedule(local);
+    }
+  }, [editing, message.scheduled_at]);
+
+  // Auto-focus textarea when editing starts
+  useEffect(() => {
+    if (editing) {
+      setTimeout(() => editTextareaRef.current?.focus(), 0);
+    }
+  }, [editing]);
+
+  const canModify = isScheduled || isPending;
+
+  const handleLongPressStart = () => {
+    if (!canModify) return;
+    longPressTimer.current = setTimeout(() => {
+      setShowActions(true);
+    }, 500);
+  };
+  const handleLongPressEnd = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+  const handleDoubleClick = () => {
+    if (!canModify) return;
+    setShowActions(true);
+  };
+
+  const handleCancel = () => {
+    setShowActions(false);
+    onCancelMessage?.(message.id);
+  };
+  const handleEdit = () => {
+    setShowActions(false);
+    setEditContent(message.content);
+    setEditing(true);
+  };
+  const handleEditSave = () => {
+    const data = {};
+    const trimmed = editContent.trim();
+    if (trimmed && trimmed !== message.content) {
+      data.content = trimmed;
+    }
+    if (editSchedule) {
+      const d = new Date(editSchedule);
+      if (!isNaN(d.getTime())) {
+        data.scheduled_at = d.toISOString();
+      }
+    } else if (isScheduled) {
+      // User cleared the schedule — remove it
+      data.scheduled_at = "";
+    }
+    if (Object.keys(data).length > 0) {
+      onUpdateMessage?.(message.id, data);
+    }
+    setEditing(false);
+  };
+  const handleEditCancel = () => {
+    setEditing(false);
+    setEditContent(message.content);
+  };
 
   const attachments = useMemo(
     () => (!isUser ? extractFileAttachments(message.content, project) : []),
     [isUser, message.content, project],
   );
 
+  const scheduledTime = isScheduled
+    ? new Date(message.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : null;
+
+  // Editing UI for scheduled/pending messages
+  if (editing) {
+    return (
+      <div className="flex justify-end my-2">
+        <div className="max-w-[85%] w-full">
+          <div className="rounded-2xl px-4 py-2.5 bg-amber-600/60 text-white rounded-br-md space-y-2">
+            <textarea
+              ref={editTextareaRef}
+              value={editContent}
+              onChange={(e) => setEditContent(e.target.value)}
+              rows={2}
+              className="w-full rounded-lg bg-black/20 border border-amber-400/40 px-2 py-1.5 text-sm text-white placeholder-amber-200/50 resize-none focus:border-amber-300 focus:outline-none"
+            />
+            <input
+              type="datetime-local"
+              value={editSchedule}
+              onChange={(e) => setEditSchedule(e.target.value)}
+              min={(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })()}
+              className="w-full rounded-lg bg-black/20 border border-amber-400/40 px-2 py-1.5 text-sm text-white focus:border-amber-300 focus:outline-none"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleEditSave}
+                className="flex-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-xs py-1.5 font-medium transition-colors"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={handleEditCancel}
+                className="flex-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs py-1.5 font-medium transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-2`}>
-      <div className="max-w-[85%]">
+      <div className="max-w-[85%] relative">
         <div
           className={`rounded-2xl px-4 py-2.5 ${
             isUser
-              ? "bg-cyan-600 text-white rounded-br-md"
+              ? isScheduled
+                ? "bg-amber-600/80 text-white rounded-br-md"
+                : isPending
+                  ? "bg-cyan-600/60 text-white/80 rounded-br-md"
+                  : "bg-cyan-600 text-white rounded-br-md"
               : "bg-surface shadow-card text-body rounded-bl-md"
-          }`}
+          } ${canModify ? "select-none" : ""}`}
+          onDoubleClick={handleDoubleClick}
+          onTouchStart={handleLongPressStart}
+          onTouchEnd={handleLongPressEnd}
+          onTouchCancel={handleLongPressEnd}
         >
           {isUser ? (
             <p className="text-sm whitespace-pre-wrap">{message.content}</p>
@@ -89,8 +223,25 @@ function ChatBubble({ message, project }) {
               {renderMarkdown(message.content, project)}
             </div>
           )}
-          <div className={`text-xs mt-1 flex items-center gap-1.5 ${isUser ? "text-cyan-200" : "text-dim"}`}>
-            {relativeTime(message.created_at)}
+          <div className={`text-xs mt-1 flex items-center gap-1.5 ${
+            isUser
+              ? isScheduled ? "text-amber-200" : "text-cyan-200"
+              : "text-dim"
+          }`}>
+            {isScheduled ? (
+              <span className="inline-flex items-center gap-1">
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="10" />
+                  <path strokeLinecap="round" d="M12 6v6l4 2" />
+                </svg>
+                {scheduledTime}
+              </span>
+            ) : (
+              relativeTime(message.created_at)
+            )}
+            {isPending && (
+              <span className="text-cyan-300/70">queued</span>
+            )}
             {message.source && (
               <span className={`px-1 py-0.5 rounded text-[10px] font-medium leading-none ${
                 message.source === "web"
@@ -109,6 +260,43 @@ function ChatBubble({ message, project }) {
           </div>
         </div>
         {attachments.length > 0 && <FileAttachments attachments={attachments} />}
+
+        {/* Action popover for scheduled/pending messages */}
+        {showActions && (
+          <div className="absolute top-0 right-0 -translate-y-full mb-1 z-50">
+            <div className="bg-surface border border-divider rounded-xl shadow-lg overflow-hidden flex">
+              <button
+                type="button"
+                onClick={handleEdit}
+                className="px-3 py-2 text-xs font-medium text-heading hover:bg-input transition-colors flex items-center gap-1.5"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={handleCancel}
+                className="px-3 py-2 text-xs font-medium text-red-400 hover:bg-red-600/10 transition-colors flex items-center gap-1.5"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowActions(false)}
+                className="px-2 py-2 text-xs text-dim hover:bg-input transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -124,6 +312,21 @@ function TypingIndicator() {
         <span className="typing-dot" style={{ animationDelay: "200ms" }} />
         <span className="typing-dot" style={{ animationDelay: "400ms" }} />
       </div>
+    </div>
+  );
+}
+
+// --- Initializing Indicator (shown when agent is starting with no messages) ---
+
+function InitializingIndicator() {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 gap-4">
+      <div className="flex items-center gap-[5px]">
+        <span className="typing-dot" style={{ animationDelay: "0ms" }} />
+        <span className="typing-dot" style={{ animationDelay: "200ms" }} />
+        <span className="typing-dot" style={{ animationDelay: "400ms" }} />
+      </div>
+      <span className="text-sm text-dim">Starting agent...</span>
     </div>
   );
 }
@@ -151,9 +354,9 @@ function StreamingBubble({ content, project }) {
 // --- Send Later Time Picker ---
 
 function SendLaterPicker({ onSelect, onClose }) {
-  const [showCustom, setShowCustom] = useState(false);
   const [customValue, setCustomValue] = useState("");
   const pickerRef = useRef(null);
+  const inputRef = useRef(null);
 
   // Close on outside click
   useEffect(() => {
@@ -192,12 +395,28 @@ function SendLaterPicker({ onSelect, onClose }) {
     onSelect(tomorrowMorning().toISOString());
   };
 
-  const handleCustom = () => {
-    if (!customValue) return;
-    const d = new Date(customValue);
-    if (isNaN(d.getTime()) || d <= new Date()) return;
-    onSelect(d.toISOString());
+  const openNativePicker = () => {
+    if (inputRef.current) {
+      inputRef.current.showPicker?.();
+      inputRef.current.focus();
+    }
   };
+
+  const handleDateChange = (e) => {
+    const val = e.target.value;
+    if (!val) return;
+    setCustomValue(val);
+    const d = new Date(val);
+    if (!isNaN(d.getTime()) && d > new Date()) {
+      onSelect(d.toISOString());
+    }
+  };
+
+  const localMin = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })();
+
+  const displayTime = customValue
+    ? new Date(customValue).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
 
   return (
     <div
@@ -232,37 +451,27 @@ function SendLaterPicker({ onSelect, onClose }) {
           Tomorrow 9 AM
         </button>
       </div>
-      <div className="border-t border-divider px-3 py-2 space-y-2">
-        {showCustom ? (
-          <>
-            <input
-              type="datetime-local"
-              value={customValue}
-              onChange={(e) => setCustomValue(e.target.value)}
-              min={new Date().toISOString().slice(0, 16)}
-              className="w-full rounded-lg bg-input border border-edge px-2 py-1.5 text-sm text-heading focus:border-cyan-500 focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={handleCustom}
-              disabled={!customValue}
-              className="w-full rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-sm py-1.5 font-medium transition-colors disabled:opacity-50"
-            >
-              Schedule
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setShowCustom(true)}
-            className="w-full text-left text-sm text-cyan-400 hover:text-cyan-300 transition-colors flex items-center gap-2"
-          >
-            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-            Pick a time...
-          </button>
-        )}
+      <div className="border-t border-divider px-3 py-2">
+        {/* Hidden native picker — triggered by the button below */}
+        <input
+          ref={inputRef}
+          type="datetime-local"
+          value={customValue}
+          onChange={handleDateChange}
+          min={localMin}
+          className="sr-only"
+          tabIndex={-1}
+        />
+        <button
+          type="button"
+          onClick={openNativePicker}
+          className="w-full rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-sm py-1.5 font-medium transition-colors flex items-center justify-center gap-2"
+        >
+          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+          {displayTime || "Pick a time"}
+        </button>
       </div>
     </div>
   );
@@ -322,18 +531,22 @@ function ChatInput({ onSend, onSendLater, disabled, disabledReason, isBusy, tmux
 
   const canType = !disabled || isBusy;
 
+  // No-op: keyboard dismiss handled by App-level focusout micro-scroll
+  const handleBlur = useCallback(() => {}, []);
+
   return (
-    <div className="border-t border-input bg-surface px-3 py-2 pb-[max(12px,env(safe-area-inset-bottom,12px))]">
-      <div className="flex items-end gap-2 max-w-2xl mx-auto relative">
+    <div className="pb-2 safe-area-pb-tight flex justify-center px-4">
+      <div className="glass-bar-nav rounded-[28px] px-3 py-2.5 flex items-end gap-2 w-full relative" style={{ maxWidth: "24rem" }}>
         <textarea
           ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
+          onBlur={handleBlur}
           placeholder={tmuxMode ? "Send via tmux..." : isBusy ? "Queue a message..." : disabled ? disabledReason : "Type a message..."}
           disabled={!canType}
           rows={1}
-          className="flex-1 min-h-[40px] max-h-[160px] rounded-xl bg-input border border-edge px-3 py-2.5 text-sm text-heading placeholder-hint resize-none focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors disabled:opacity-50"
+          className="flex-1 min-h-[40px] max-h-[160px] rounded-xl bg-transparent px-3 py-2.5 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors disabled:opacity-50"
         />
         <VoiceRecorder
           recording={voice.recording}
@@ -614,6 +827,28 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     }
   };
 
+  // Cancel a scheduled/pending message
+  const handleCancelMessage = async (messageId) => {
+    try {
+      await cancelMessage(id, messageId);
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      showToast("Message cancelled");
+    } catch (err) {
+      showToast("Failed: " + err.message, "error");
+    }
+  };
+
+  // Update a scheduled/pending message
+  const handleUpdateMessage = async (messageId, data) => {
+    try {
+      const updated = await updateMessage(id, messageId, data);
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? updated : m)));
+      showToast("Message updated");
+    } catch (err) {
+      showToast("Failed: " + err.message, "error");
+    }
+  };
+
   // Stop agent
   const handleStop = async () => {
     setStopping(true);
@@ -689,7 +924,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     <div className="flex flex-col h-full">
       {/* Toast */}
       {toast && (
-        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
+        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
           {toast.message}
         </div>
       )}
@@ -856,19 +1091,26 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 max-w-2xl mx-auto w-full"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 max-w-2xl mx-auto w-full flex flex-col"
       >
-        {messages.map((msg) => (
-          <ChatBubble key={msg.id} message={msg} project={agent.project} />
-        ))}
+        <div className="mt-auto" />
+        {messages.length === 0 && agent.status === "STARTING" ? (
+          <InitializingIndicator />
+        ) : (
+          <>
+            {messages.map((msg) => (
+              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} />
+            ))}
 
-        {/* Streaming output or typing indicator while executing/syncing */}
-        {(isExecuting || isSyncing) && (
-          streamingContent !== null
-            ? (streamingContent ? <StreamingBubble content={streamingContent} project={agent.project} /> : <TypingIndicator />)
-            : isExecuting ? <TypingIndicator />
-            : isSyncing && messages.length > 0 && messages[messages.length - 1].role === "USER" ? <TypingIndicator />
-            : null
+            {/* Streaming output or typing indicator while executing/syncing */}
+            {(isExecuting || isSyncing) && (
+              streamingContent !== null
+                ? (streamingContent ? <StreamingBubble content={streamingContent} project={agent.project} /> : <TypingIndicator />)
+                : isExecuting ? <TypingIndicator />
+                : isSyncing && messages.length > 0 && messages[messages.length - 1].role === "USER" && !(messages[messages.length - 1].status === "PENDING" && messages[messages.length - 1].scheduled_at) ? <TypingIndicator />
+                : null
+            )}
+          </>
         )}
 
         <div ref={messagesEndRef} />
