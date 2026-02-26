@@ -2251,6 +2251,21 @@ class AgentDispatcher:
                         if not agent or agent.status != AgentStatus.SYNCING:
                             logger.info("Sync loop exiting for agent %s (status changed)", agent_id)
                             break
+                        # Try to (re-)detect tmux pane if missing
+                        if not agent.tmux_pane:
+                            pane = _detect_tmux_pane_for_session(
+                                session_id, project_path
+                            )
+                            if pane:
+                                agent.tmux_pane = pane
+                                db.commit()
+                                self._emit(emit_agent_update(
+                                    agent_id, "SYNCING", agent.project,
+                                ))
+                                logger.info(
+                                    "Re-detected tmux pane %s for agent %s",
+                                    pane, agent_id,
+                                )
                     finally:
                         db.close()
 
