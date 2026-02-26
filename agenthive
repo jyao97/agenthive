@@ -1,0 +1,163 @@
+#!/bin/bash
+# AgentHive management CLI
+# Usage: agenthive {start|stop|restart|status|logs}
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+BACKEND_PORT="${PORT:-8080}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+BACKEND_LOG="/tmp/agenthive-backend.log"
+FRONTEND_LOG="/tmp/agenthive-frontend.log"
+
+# --- helpers ---
+
+_backend_pid() {
+    lsof -ti:"$BACKEND_PORT" 2>/dev/null | head -1 || true
+}
+
+_frontend_pid() {
+    pgrep -f "node.*vite.*--port ${FRONTEND_PORT}" 2>/dev/null | head -1 || true
+}
+
+_stop_backend() {
+    local pid
+    pid=$(_backend_pid)
+    if [ -n "$pid" ]; then
+        kill "$pid" 2>/dev/null || true
+        # Wait up to 5s for graceful shutdown
+        for _ in $(seq 1 10); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        # Force kill if still alive
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+        echo "Backend stopped (pid $pid)"
+    else
+        echo "Backend not running"
+    fi
+}
+
+_stop_frontend() {
+    local pid
+    pid=$(_frontend_pid)
+    if [ -n "$pid" ]; then
+        kill "$pid" 2>/dev/null || true
+        sleep 1
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+        echo "Frontend stopped (pid $pid)"
+    else
+        echo "Frontend not running"
+    fi
+}
+
+_start_backend() {
+    local pid
+    pid=$(_backend_pid)
+    if [ -n "$pid" ]; then
+        echo "Backend already running (pid $pid)"
+        return
+    fi
+    (cd "$SCRIPT_DIR" && nohup bash run.sh > "$BACKEND_LOG" 2>&1 &)
+    sleep 2
+    pid=$(_backend_pid)
+    if [ -n "$pid" ]; then
+        echo "Backend started (pid $pid) on port $BACKEND_PORT"
+    else
+        echo "Backend failed to start — check $BACKEND_LOG"
+        tail -5 "$BACKEND_LOG"
+        return 1
+    fi
+}
+
+_start_frontend() {
+    local pid
+    pid=$(_frontend_pid)
+    if [ -n "$pid" ]; then
+        echo "Frontend already running (pid $pid)"
+        return
+    fi
+    (cd "$SCRIPT_DIR/frontend" && nohup npx vite --host 0.0.0.0 --port "$FRONTEND_PORT" > "$FRONTEND_LOG" 2>&1 &)
+    sleep 2
+    pid=$(_frontend_pid)
+    if [ -n "$pid" ]; then
+        echo "Frontend started (pid $pid) on port $FRONTEND_PORT"
+    else
+        echo "Frontend failed to start — check $FRONTEND_LOG"
+        tail -5 "$FRONTEND_LOG"
+        return 1
+    fi
+}
+
+# --- commands ---
+
+cmd_start() {
+    echo "Starting AgentHive..."
+    _start_backend
+    _start_frontend
+}
+
+cmd_stop() {
+    echo "Stopping AgentHive..."
+    _stop_backend
+    _stop_frontend
+}
+
+cmd_restart() {
+    echo "Restarting AgentHive..."
+    _stop_backend
+    _stop_frontend
+    sleep 1
+    _start_backend
+    _start_frontend
+}
+
+cmd_status() {
+    local bpid fpid
+    bpid=$(_backend_pid)
+    fpid=$(_frontend_pid)
+    if [ -n "$bpid" ]; then
+        echo "Backend:  running (pid $bpid) on port $BACKEND_PORT"
+    else
+        echo "Backend:  stopped"
+    fi
+    if [ -n "$fpid" ]; then
+        echo "Frontend: running (pid $fpid) on port $FRONTEND_PORT"
+    else
+        echo "Frontend: stopped"
+    fi
+}
+
+cmd_logs() {
+    local target="${1:-backend}"
+    case "$target" in
+        backend|b)  tail -f "$BACKEND_LOG" ;;
+        frontend|f) tail -f "$FRONTEND_LOG" ;;
+        *)          echo "Usage: agenthive logs {backend|frontend}" ;;
+    esac
+}
+
+# --- main ---
+
+case "${1:-}" in
+    start)   cmd_start ;;
+    stop)    cmd_stop ;;
+    restart) cmd_restart ;;
+    status)  cmd_status ;;
+    logs)    cmd_logs "${2:-}" ;;
+    *)
+        echo "Usage: agenthive {start|stop|restart|status|logs}"
+        echo ""
+        echo "Commands:"
+        echo "  start    Start backend and frontend"
+        echo "  stop     Stop backend and frontend"
+        echo "  restart  Restart both servers"
+        echo "  status   Show running state"
+        echo "  logs     Tail logs (backend|frontend)"
+        exit 1
+        ;;
+esac

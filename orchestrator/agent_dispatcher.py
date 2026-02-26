@@ -348,10 +348,13 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
                     turns.append(("user", queued_content.strip()))
 
         elif entry_type == "system":
-            flush_assistant()
             # Use structured fields from JSONL (subtype, content)
-            content = entry.get("content", "")
             subtype = entry.get("subtype", "")
+            # Skip internal CLI metrics
+            if subtype in ("turn_duration",):
+                continue
+            flush_assistant()
+            content = entry.get("content", "")
             if subtype or content:
                 label = content or subtype.replace("_", " ")
                 turns.append(("system", label))
