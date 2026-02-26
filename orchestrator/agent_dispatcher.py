@@ -1610,6 +1610,28 @@ class AgentDispatcher:
                 continue
 
             # --- CLI-synced agents (cli_sync=True) ---
+
+            # IDLE and EXECUTING cli_sync agents that are being driven by
+            # the orchestrator (no tmux pane) should follow orchestrator
+            # rules: IDLE is fine (waiting for messages), EXECUTING checks
+            # _active_execs.  This prevents killing agents that were
+            # originally tmux-launched but are now operating via subprocess
+            # (e.g. after resume), where session file staleness is normal.
+            if not agent.tmux_pane and agent.status in (
+                AgentStatus.IDLE, AgentStatus.EXECUTING,
+            ):
+                if agent.status == AgentStatus.EXECUTING:
+                    if agent.id in self._active_execs:
+                        continue
+                    logger.info(
+                        "CLI agent %s EXECUTING but not tracked — stopping",
+                        agent.id,
+                    )
+                    agent.status = AgentStatus.STOPPED
+                    self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
+                # IDLE cli_sync agents without a pane are just waiting
+                continue
+
             # Determine if this agent's underlying process is alive.
             # Priority: tmux pane check > session file freshness.
             alive = False
