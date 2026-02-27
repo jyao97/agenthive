@@ -90,8 +90,10 @@ function QuestionBubble({ item, agentId, onAnswered }) {
   const [chosenIdx, setChosenIdx] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const isAnswered = item.answer != null || item.selected_index != null || chosenIdx != null;
   const questions = item.questions || [];
+  // Detect dismissed/escaped answers (not a real selection)
+  const isDismissed = item.answer != null && typeof item.answer === "string" &&
+    (item.answer.startsWith("The user doesn't want to proceed") || item.answer.startsWith("User declined"));
 
   const handleSubmit = async (idx) => {
     setChosenIdx(idx);
@@ -111,25 +113,39 @@ function QuestionBubble({ item, agentId, onAnswered }) {
     }
   };
 
+  // Resolve which option index was selected (per-question, but shared for single-Q items)
+  const resolveIdx = (q) => {
+    // 1. Best: backend stored the numeric index directly
+    if (item.selected_index != null) return item.selected_index;
+    // 2. Parse the answer string for ="label" pattern
+    if (item.answer != null && typeof item.answer === "string" && !isDismissed) {
+      const allMatches = [...item.answer.matchAll(/="([^"]+)"/g)];
+      for (let i = allMatches.length - 1; i >= 0; i--) {
+        const idx = (q.options || []).findIndex((o) => o.label === allMatches[i][1]);
+        if (idx !== -1) return idx;
+      }
+    }
+    // 3. Local optimistic choice
+    if (chosenIdx != null) return chosenIdx;
+    return null;
+  };
+
   return (
     <div className="mt-3 space-y-3">
       {questions.map((q, qi) => {
-        // Determine which option is the answer — prefer stored index > label match > local
-        let answeredIdx = null;
-        // 1. Best: backend stored the numeric index directly
-        if (item.selected_index != null) {
-          answeredIdx = item.selected_index;
+        const answeredIdx = resolveIdx(q);
+        const isAnswered = answeredIdx != null || isDismissed;
+
+        // Badge text & style
+        let badgeText = null;
+        let badgeClass = "";
+        if (isDismissed) {
+          badgeText = "Dismissed";
+          badgeClass = "bg-red-500/20 text-red-300";
+        } else if (answeredIdx != null) {
+          badgeText = "Choice Sent";
+          badgeClass = "bg-cyan-500/20 text-cyan-300";
         }
-        // 2. Parse the answer string for ="label" pattern
-        if (answeredIdx == null && item.answer != null && typeof item.answer === "string") {
-          const allMatches = [...item.answer.matchAll(/="([^"]+)"/g)];
-          for (let i = allMatches.length - 1; i >= 0; i--) {
-            const idx = (q.options || []).findIndex((o) => o.label === allMatches[i][1]);
-            if (idx !== -1) { answeredIdx = idx; break; }
-          }
-        }
-        // 3. Local optimistic choice
-        if (answeredIdx == null && chosenIdx != null) answeredIdx = chosenIdx;
 
         return (
           <div key={qi} className="rounded-xl bg-indigo-500/10 border border-indigo-500/20 p-3">
@@ -139,9 +155,9 @@ function QuestionBubble({ item, agentId, onAnswered }) {
                   {q.header}
                 </span>
               )}
-              {isAnswered && (
-                <span className="ml-auto px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-semibold uppercase tracking-wider">
-                  Choice Sent
+              {badgeText && (
+                <span className={`ml-auto px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${badgeClass}`}>
+                  {badgeText}
                 </span>
               )}
             </div>
@@ -161,7 +177,7 @@ function QuestionBubble({ item, agentId, onAnswered }) {
                     }}
                     className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-all border ${
                       isChosen
-                        ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-200"
+                        ? "bg-cyan-500/20 border-cyan-500/40 text-heading"
                         : dimmed
                           ? "bg-surface/30 border-divider/30 text-dim/50"
                           : "bg-surface/50 border-divider hover:bg-hover hover:border-heading/20 text-body"
@@ -213,6 +229,8 @@ const PLAN_OPTIONS = [
 
 function _detectPlanIdx(answer) {
   if (answer == null || typeof answer !== "string") return null;
+  // Dismissed / escaped answers
+  if (answer.startsWith("The user doesn't want to proceed") || answer.startsWith("User declined")) return null;
   const a = answer.toLowerCase().trim();
   if (/clear context/.test(a)) return 0;
   if (/bypass/.test(a) && !/clear/.test(a) && !/manual/.test(a)) return 1;
@@ -223,14 +241,20 @@ function _detectPlanIdx(answer) {
   return 0; // default to first option
 }
 
+function _isPlanDismissed(item) {
+  if (!item.answer || typeof item.answer !== "string") return false;
+  return item.answer.startsWith("The user doesn't want to proceed") || item.answer.startsWith("User declined");
+}
+
 function PlanBubble({ item, agentId, onAnswered }) {
   const [chosenIdx, setChosenIdx] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const isDismissed = _isPlanDismissed(item);
   // Determine the effective selected index: stored index > answer parse > local choice
   const serverIdx = item.selected_index ?? (item.answer != null ? _detectPlanIdx(item.answer) : null);
   const effectiveIdx = serverIdx ?? chosenIdx;
-  const isAnswered = effectiveIdx != null;
+  const isAnswered = effectiveIdx != null || isDismissed;
 
   const handleSelect = async (idx) => {
     setChosenIdx(idx);
@@ -251,10 +275,25 @@ function PlanBubble({ item, agentId, onAnswered }) {
   };
 
   const colorMap = {
-    emerald: { active: "bg-emerald-500/20 border-emerald-500/40 text-emerald-200", dot: "border-emerald-400 bg-emerald-400" },
-    amber: { active: "bg-amber-500/20 border-amber-500/40 text-amber-200", dot: "border-amber-400 bg-amber-400" },
-    indigo: { active: "bg-indigo-500/20 border-indigo-500/40 text-indigo-200", dot: "border-indigo-400 bg-indigo-400" },
+    emerald: { active: "bg-emerald-500/20 border-emerald-500/40 text-heading", dot: "border-emerald-400 bg-emerald-400" },
+    amber: { active: "bg-amber-500/20 border-amber-500/40 text-heading", dot: "border-amber-400 bg-amber-400" },
+    indigo: { active: "bg-indigo-500/20 border-indigo-500/40 text-heading", dot: "border-indigo-400 bg-indigo-400" },
   };
+
+  // Badge
+  let badgeText = null;
+  let badgeClass = "";
+  if (isDismissed) {
+    badgeText = "Dismissed";
+    badgeClass = "bg-red-500/20 text-red-300";
+  } else if (effectiveIdx != null) {
+    badgeText = "Choice Sent";
+    badgeClass = effectiveIdx <= 1
+      ? "bg-emerald-500/20 text-emerald-300"
+      : effectiveIdx === 3
+        ? "bg-indigo-500/20 text-indigo-300"
+        : "bg-amber-500/20 text-amber-300";
+  }
 
   return (
     <div className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/20 p-3">
@@ -263,15 +302,9 @@ function PlanBubble({ item, agentId, onAnswered }) {
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
         <span className="text-sm font-medium text-amber-300">Plan Approval</span>
-        {isAnswered && (
-          <span className={`ml-auto px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
-            effectiveIdx <= 1
-              ? "bg-emerald-500/20 text-emerald-300"
-              : effectiveIdx === 3
-                ? "bg-indigo-500/20 text-indigo-300"
-                : "bg-amber-500/20 text-amber-300"
-          }`}>
-            Choice Sent
+        {badgeText && (
+          <span className={`ml-auto px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${badgeClass}`}>
+            {badgeText}
           </span>
         )}
       </div>
@@ -677,7 +710,7 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent }) {
   const draftKey = agentId ? `agenthive-draft-${agentId}` : null;
   const [text, _setText] = useState(() => {
     if (draftKey) {
@@ -789,7 +822,9 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
             className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
               escCooldown
                 ? "bg-elevated text-dim cursor-not-allowed"
-                : "bg-red-500/80 hover:bg-red-500 text-white"
+                : escapeUrgent
+                  ? "bg-red-500/80 hover:bg-red-500 text-white"
+                  : "bg-elevated hover:bg-hover text-dim hover:text-body"
             }`}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
@@ -1166,6 +1201,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       const meta = msg.metadata;
       if (!meta?.interactive) continue;
       for (const item of meta.interactive) {
+        // No answer at all and no local selection → still pending
         if (item.answer == null && item.selected_index == null) return true;
       }
     }
@@ -1478,6 +1514,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         isBusy={isExecuting || (isSyncing && !hasTmux)}
         tmuxMode={hasTmux}
         onEscape={hasTmux ? async () => { await escapeAgent(id); loadData(); } : null}
+        escapeUrgent={isExecuting || isSyncing || hasPendingInteractive}
       />
 
       {/* Stop confirmation modal */}
