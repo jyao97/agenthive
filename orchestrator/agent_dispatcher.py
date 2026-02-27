@@ -79,14 +79,21 @@ def _format_tool_summary(name: str, input_data: dict) -> str | None:
     return f"> `{name}`"
 
 
-def _parse_stream_parts(logs: str) -> tuple[list[tuple[str, str]], dict | None]:
+def _parse_stream_parts(
+    logs: str,
+) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
     """Parse stream-json logs into an ordered list of (kind, content) parts.
 
-    Returns (parts, result_event) where parts is a list of
-    ("text", text_string) or ("tool", summary_string) tuples.
+    Returns ``(parts, result_event, interactive_items)`` where *parts* is a
+    list of ``("text", text_string)`` or ``("tool", summary_string)`` tuples
+    and *interactive_items* captures any ``AskUserQuestion`` /
+    ``ExitPlanMode`` tool calls together with their answers (if present).
     """
-    parts = []
+    parts: list[tuple[str, str]] = []
     result_event = None
+    interactive_items: list[dict] = []
+    interactive_by_id: dict[str, dict] = {}
+
     for line in logs.strip().splitlines():
         line = line.strip()
         if not line:
@@ -95,6 +102,7 @@ def _parse_stream_parts(logs: str) -> tuple[list[tuple[str, str]], dict | None]:
             event = json.loads(line)
             if event.get("type") == "result":
                 result_event = event
+
             if event.get("type") == "assistant" and "message" in event:
                 # Skip subagent messages (Task agents)
                 if event.get("parent_tool_use_id"):
@@ -107,15 +115,55 @@ def _parse_stream_parts(logs: str) -> tuple[list[tuple[str, str]], dict | None]:
                         if block.get("type") == "text":
                             parts.append(("text", block["text"]))
                         elif block.get("type") == "tool_use":
+                            tool_name = block.get("name", "")
+                            tool_input = block.get("input", {})
+                            tool_use_id = block.get("id", "")
+
+                            # Capture interactive tool calls
+                            if tool_name == "AskUserQuestion":
+                                entry = {
+                                    "type": "ask_user_question",
+                                    "tool_use_id": tool_use_id,
+                                    "questions": tool_input.get("questions", []),
+                                    "answer": None,
+                                }
+                                interactive_items.append(entry)
+                                interactive_by_id[tool_use_id] = entry
+                            elif tool_name == "ExitPlanMode":
+                                entry = {
+                                    "type": "exit_plan_mode",
+                                    "tool_use_id": tool_use_id,
+                                    "allowedPrompts": tool_input.get("allowedPrompts", []),
+                                    "answer": None,
+                                }
+                                interactive_items.append(entry)
+                                interactive_by_id[tool_use_id] = entry
+
                             summary = _format_tool_summary(
-                                block.get("name", ""),
-                                block.get("input", {}),
+                                tool_name, tool_input,
                             )
                             if summary:
                                 parts.append(("tool", summary))
+
+            # Check user entries for tool_result answers to interactive calls
+            if event.get("type") == "user":
+                user_content = event.get("message", {}).get("content", "")
+                if isinstance(user_content, list):
+                    for block in user_content:
+                        if isinstance(block, dict) and block.get("type") == "tool_result":
+                            tid = block.get("tool_use_id", "")
+                            if tid in interactive_by_id:
+                                rc = block.get("content", "")
+                                if isinstance(rc, list):
+                                    rc = " ".join(
+                                        b.get("text", "") if isinstance(b, dict) else str(b)
+                                        for b in rc
+                                    ).strip()
+                                interactive_by_id[tid]["answer"] = rc
+
         except (json.JSONDecodeError, KeyError, TypeError):
             continue
-    return parts, result_event
+    return parts, result_event, interactive_items
 
 
 def _format_parts(parts: list[tuple[str, str]]) -> str:
@@ -142,24 +190,39 @@ def _format_parts(parts: list[tuple[str, str]]) -> str:
     return text
 
 
-def _extract_result(logs: str) -> str:
-    """Extract agent response text and tool call summaries from stream-json."""
-    parts, result_event = _parse_stream_parts(logs)
+def _extract_result(logs: str) -> tuple[str, str | None]:
+    """Extract agent response text and tool call summaries from stream-json.
+
+    Returns ``(text, meta_json)`` where *meta_json* is a JSON string
+    containing interactive tool call data (``AskUserQuestion``,
+    ``ExitPlanMode``) if any were found, or ``None``.
+    """
+    parts, result_event, interactive_items = _parse_stream_parts(logs)
+
+    meta_json = None
+    if interactive_items:
+        meta_json = json.dumps({"interactive": interactive_items})
 
     # Friendly error messages for known error patterns
     if result_event and result_event.get("is_error"):
         errors = result_event.get("errors", [])
         for err in errors:
             if isinstance(err, str) and "No conversation found with session ID" in err:
-                return "This session's conversation data is no longer available. It may have been cleaned up or created on a different machine. Please start a new conversation instead."
+                return (
+                    "This session's conversation data is no longer available. "
+                    "It may have been cleaned up or created on a different machine. "
+                    "Please start a new conversation instead.",
+                    meta_json,
+                )
 
     text = _format_parts(parts)
     if text:
-        return text
+        return text, meta_json
 
     # Fallback: return last chunk of raw output
     lines = logs.strip().splitlines()
-    return "\n".join(lines[-20:]) if lines else "(no output)"
+    fallback = "\n".join(lines[-20:]) if lines else "(no output)"
+    return fallback, meta_json
 
 
 def _is_result_error(logs: str) -> bool:
@@ -280,31 +343,68 @@ def _strip_agent_preamble(content: str) -> str:
     return text.strip() if text != content else content
 
 
-def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
+def _resolve_session_jsonl(
+    session_id: str,
+    project_path: str,
+    worktree: str | None = None,
+) -> str:
+    """Resolve the path to a session JSONL, checking worktree dirs too.
+
+    Worktree agents store session files in a separate Claude projects
+    directory based on the worktree CWD, not the project root.
+    """
+    jsonl_path = os.path.join(
+        session_source_dir(project_path), f"{session_id}.jsonl"
+    )
+    if os.path.isfile(jsonl_path):
+        return jsonl_path
+    if worktree:
+        wt_path = os.path.join(project_path, ".claude", "worktrees", worktree)
+        wt_jsonl = os.path.join(
+            session_source_dir(wt_path), f"{session_id}.jsonl"
+        )
+        if os.path.isfile(wt_jsonl):
+            return wt_jsonl
+    return jsonl_path  # return original path even if not found
+
+
+def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
     """Parse a Claude Code session JSONL into conversation turns.
 
-    Returns a list of (role, content) tuples where role is "user" or "assistant".
+    Returns a list of (role, content, metadata) tuples where role is
+    "user", "assistant", or "system".  metadata is a dict with an
+    "interactive" key when the turn contains AskUserQuestion or
+    ExitPlanMode tool calls, or None otherwise.
+
     Skips tool_result entries (intermediate tool calls) and queue-operations.
     Groups consecutive assistant entries into a single turn using _format_parts style.
     """
-    turns: list[tuple[str, str]] = []
+    turns: list[tuple[str, str, dict | None]] = []
 
     try:
         with open(jsonl_path, "r", errors="replace") as f:
             lines = f.readlines()
     except OSError as e:
-        logger.debug("_parse_session_turns: failed to read %s: %s", jsonl_path, e)
+        logger.warning("_parse_session_turns: failed to read %s: %s", jsonl_path, e)
         return turns
 
     # Accumulate assistant blocks between user messages
     assistant_parts: list[tuple[str, str]] = []
+    # Track interactive tool calls (AskUserQuestion / ExitPlanMode) in current turn
+    pending_interactive: list[dict] = []
+    # Map tool_use_id → interactive entry for matching tool_result answers
+    interactive_by_id: dict[str, dict] = {}
 
     def flush_assistant():
         if assistant_parts:
             text = _format_parts(assistant_parts)
             if text.strip():
-                turns.append(("assistant", text))
+                meta = None
+                if pending_interactive:
+                    meta = {"interactive": list(pending_interactive)}
+                turns.append(("assistant", text, meta))
             assistant_parts.clear()
+            pending_interactive.clear()
 
     for line in lines:
         line = line.strip()
@@ -320,6 +420,24 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
         if entry_type == "user":
             msg = entry.get("message", {})
             content = msg.get("content", "")
+            # Check for tool_result in list-type content
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        tool_use_id = block.get("tool_use_id", "")
+                        if tool_use_id in interactive_by_id:
+                            result_content = block.get("content", "")
+                            # Ensure answer is always a string (content
+                            # can be a list of content blocks in the API)
+                            if isinstance(result_content, list):
+                                result_content = " ".join(
+                                    b.get("text", "") if isinstance(b, dict) else str(b)
+                                    for b in result_content
+                                ).strip() or ""
+                            interactive_by_id[tool_use_id]["answer"] = result_content
+                continue
             # Real user message = string content (not tool_result list)
             if isinstance(content, str) and content.strip():
                 stripped = content.strip()
@@ -336,12 +454,11 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
                     "This session is being continued from a previous conversation"
                 ):
                     flush_assistant()
-                    turns.append(("system", content))
+                    turns.append(("system", content, None))
                     continue
                 flush_assistant()
                 clean = _strip_agent_preamble(stripped)
-                turns.append(("user", clean))
-            # list content = tool_result, skip (belongs to assistant turn)
+                turns.append(("user", clean, None))
 
         elif entry_type == "assistant":
             msg = entry.get("message", {})
@@ -354,10 +471,31 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
                 if block.get("type") == "text" and block.get("text", "").strip():
                     assistant_parts.append(("text", block["text"]))
                 elif block.get("type") == "tool_use":
-                    summary = _format_tool_summary(
-                        block.get("name", ""),
-                        block.get("input", {}),
-                    )
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
+                    tool_use_id = block.get("id", "")
+
+                    # Capture interactive tool calls
+                    if tool_name == "AskUserQuestion":
+                        entry_data = {
+                            "type": "ask_user_question",
+                            "tool_use_id": tool_use_id,
+                            "questions": tool_input.get("questions", []),
+                            "answer": None,
+                        }
+                        pending_interactive.append(entry_data)
+                        interactive_by_id[tool_use_id] = entry_data
+                    elif tool_name == "ExitPlanMode":
+                        entry_data = {
+                            "type": "exit_plan_mode",
+                            "tool_use_id": tool_use_id,
+                            "allowedPrompts": tool_input.get("allowedPrompts", []),
+                            "answer": None,
+                        }
+                        pending_interactive.append(entry_data)
+                        interactive_by_id[tool_use_id] = entry_data
+
+                    summary = _format_tool_summary(tool_name, tool_input)
                     if summary:
                         assistant_parts.append(("tool", summary))
 
@@ -368,7 +506,7 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
                 if isinstance(queued_content, str) and queued_content.strip():
                     flush_assistant()
                     clean_q = _strip_agent_preamble(queued_content.strip())
-                    turns.append(("user", clean_q))
+                    turns.append(("user", clean_q, None))
 
         elif entry_type == "system":
             # Use structured fields from JSONL (subtype, content)
@@ -380,7 +518,7 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
             content = entry.get("content", "")
             if subtype or content:
                 label = content or subtype.replace("_", " ")
-                turns.append(("system", label))
+                turns.append(("system", label, None))
 
     # Flush any remaining assistant content
     flush_assistant()
@@ -391,16 +529,72 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
     # Keep only the first occurrence of each unique user message.
     if turns:
         seen_user: set[str] = set()
-        deduped: list[tuple[str, str]] = []
-        for role, content in turns:
+        deduped: list[tuple[str, str, dict | None]] = []
+        for role, content, meta in turns:
             if role == "user":
                 if content in seen_user:
                     continue
                 seen_user.add(content)
-            deduped.append((role, content))
+            deduped.append((role, content, meta))
         turns = deduped
 
     return turns
+
+
+def _update_stale_interactive_metadata(
+    db: "Session", agent_id: str, turns: list[tuple[str, str, dict | None]]
+) -> bool:
+    """Update DB messages whose interactive metadata has stale (null) answers.
+
+    When a user answers an AskUserQuestion in the terminal, the tool_result
+    appears in a subsequent user entry.  _parse_session_turns() links the
+    answer back to the original assistant turn's metadata via interactive_by_id.
+    But the sync loop may have already stored the assistant message with
+    answer=null.  This function re-checks and patches those stale entries.
+
+    Returns True if any DB messages were updated.
+    """
+    # 1. Collect all interactive items with non-null answers, keyed by tool_use_id
+    answered: dict[str, str] = {}
+    for _role, _content, meta in turns:
+        if not meta or "interactive" not in meta:
+            continue
+        for item in meta["interactive"]:
+            if item.get("answer") is not None:
+                answered[item["tool_use_id"]] = item["answer"]
+
+    if not answered:
+        return False
+
+    # 2. Query DB messages with metadata for this agent
+    db_msgs = db.query(Message).filter(
+        Message.agent_id == agent_id,
+        Message.meta_json.is_not(None),
+    ).all()
+
+    updated = False
+    for msg in db_msgs:
+        try:
+            meta = json.loads(msg.meta_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        items = meta.get("interactive")
+        if not items:
+            continue
+        msg_changed = False
+        for item in items:
+            tid = item.get("tool_use_id", "")
+            if item.get("answer") is None and tid in answered:
+                item["answer"] = answered[tid]
+                msg_changed = True
+        if msg_changed:
+            msg.meta_json = json.dumps(meta)
+            updated = True
+
+    if updated:
+        db.commit()
+
+    return updated
 
 
 # ---- tmux helpers ----
@@ -578,15 +772,18 @@ def _detect_tmux_pane_for_session(session_id: str, project_path: str) -> str | N
                                     return pp[1]
                 except (OSError, ValueError):
                     continue
-    except (_sp.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+    except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.debug("Tier 1 pane detection failed for session %s: %s", session_id, e)
 
     # ---- Tier 2: pane-first process tree walk ----
     pane_map = _build_tmux_claude_map()
+    def _cwd_matches(cwd: str, proj: str) -> bool:
+        return cwd == proj or cwd.startswith(proj + "/")
+
     user_candidates = [
         (pane_id, info)
         for pane_id, info in pane_map.items()
-        if not info["is_orchestrator"] and info["cwd"] == real_project
+        if not info["is_orchestrator"] and _cwd_matches(info["cwd"], real_project)
         and not _get_pane_owner(pane_id)  # skip panes already owned
     ]
 
@@ -622,14 +819,17 @@ def _is_cli_session_alive(project_path: str, tmux_pane: str | None = None) -> bo
     real_project = os.path.realpath(project_path)
     pane_map = _build_tmux_claude_map()
 
+    def _cwd_matches_project(cwd: str, proj: str) -> bool:
+        return cwd == proj or cwd.startswith(proj + "/")
+
     # If we have a specific pane, ONLY check that one — don't match others
     if tmux_pane:
         info = pane_map.get(tmux_pane)
-        return bool(info and not info["is_orchestrator"] and info["cwd"] == real_project)
+        return bool(info and not info["is_orchestrator"] and _cwd_matches_project(info["cwd"], real_project))
 
     # No specific pane — broad scan (used for initial detection only)
     for pane_id, info in pane_map.items():
-        if not info["is_orchestrator"] and info["cwd"] == real_project:
+        if not info["is_orchestrator"] and _cwd_matches_project(info["cwd"], real_project):
             return True
 
     # Check non-tmux claude processes
@@ -644,12 +844,12 @@ def _is_cli_session_alive(project_path: str, tmux_pane: str | None = None) -> bo
                     if _is_orchestrator_process(pid):
                         continue
                     cwd = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
-                    if cwd == real_project:
+                    if _cwd_matches_project(cwd, real_project):
                         return True
                 except (OSError, ValueError):
                     continue
-    except (_sp.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+    except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.debug("Non-tmux alive check failed for project %s: %s", project_path, e)
 
     return False
 
@@ -714,6 +914,30 @@ def send_tmux_message(pane_id: str, text: str) -> bool:
         return True
     except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning("tmux send failed: %s", e)
+        return False
+
+
+def send_tmux_keys(pane_id: str, keys: list[str]) -> bool:
+    """Send raw key names to a tmux pane (e.g., 'Down', 'Enter').
+
+    Each key is sent individually with a short delay between them
+    to allow the TUI to process each keystroke.
+    """
+    import time
+
+    try:
+        for key in keys:
+            r = _sp.run(
+                ["tmux", "send-keys", "-t", pane_id, key],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                logger.warning("tmux send-keys %s failed: %s", key, r.stderr)
+                return False
+            time.sleep(0.05)
+        return True
+    except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning("tmux send_tmux_keys failed: %s", e)
         return False
 
 
@@ -945,7 +1169,7 @@ class AgentDispatcher:
             logs = self.worker_mgr.read_exec_output(
                 info["pid_str"], info["output_file"]
             )
-            result_text = _extract_result(logs)
+            result_text, result_meta_json = _extract_result(logs)
 
             # Check process exit code
             proc_info = self.worker_mgr._processes.get(info["pid_str"])
@@ -971,7 +1195,7 @@ class AgentDispatcher:
                         cache_session(sid, project.path)
                         if previous_session_id and previous_session_id != sid:
                             evict_session(previous_session_id, project.path)
-                    except Exception:
+                    except OSError:
                         logger.warning("Failed to cache session %s", sid, exc_info=True)
 
             # Update the message that triggered this exec
@@ -1045,6 +1269,7 @@ class AgentDispatcher:
                     status=MessageStatus.FAILED,
                     stream_log=_truncate(logs, 50000),
                     error_message=result_text[:200] if result_text else "Unknown error",
+                    meta_json=result_meta_json,
                 )
                 db.add(resp)
                 agent.status = post_exec_status
@@ -1055,6 +1280,7 @@ class AgentDispatcher:
                     content=result_text,
                     status=MessageStatus.COMPLETED,
                     stream_log=_truncate(logs, 50000),
+                    meta_json=result_meta_json,
                 )
                 db.add(resp)
                 agent.status = post_exec_status
@@ -1318,7 +1544,7 @@ class AgentDispatcher:
                 m.status = MessageStatus.FAILED
                 m.error_message = "Agent tmux session no longer exists"
             db.commit()
-            self._emit(emit_agent_update(agent.id))
+            self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
             logger.info(
                 "Stopped dead SYNCING agent %s — tmux pane gone", agent.id,
             )
@@ -1388,7 +1614,7 @@ class AgentDispatcher:
                     )
                     db.add(msg)
                     db.commit()
-                    self._emit(emit_agent_update(agent.id))
+                    self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
                 continue
 
             # Use --resume with session_id if available.
@@ -1396,9 +1622,8 @@ class AgentDispatcher:
             # now instead of waiting for Claude to error out (~5s wasted).
             resume_session_id = agent.session_id or None
             if resume_session_id:
-                src_dir = session_source_dir(project_path)
-                jsonl_path = os.path.join(
-                    src_dir, f"{resume_session_id}.jsonl"
+                jsonl_path = _resolve_session_jsonl(
+                    resume_session_id, project_path, agent.worktree,
                 )
                 if not os.path.exists(jsonl_path):
                     restored = restore_session(resume_session_id, project_path)
@@ -1625,36 +1850,65 @@ class AgentDispatcher:
             if info["is_orchestrator"] or pane_id in active_tmux_panes:
                 continue
             cwd = info["cwd"]
+            # Exact match first, then check if CWD is a subdirectory of a
+            # project (handles worktree agents whose CWD is inside
+            # .claude/worktrees/<name> under the project root).
+            matched_proj_path = None
             if cwd in proj_by_path:
-                panes_per_project.setdefault(cwd, []).append(
+                matched_proj_path = cwd
+            else:
+                for pp in proj_by_path:
+                    if cwd.startswith(pp + "/"):
+                        matched_proj_path = pp
+                        break
+            if matched_proj_path:
+                panes_per_project.setdefault(matched_proj_path, []).append(
                     (pane_id, info["pid"], info.get("session_name", ""))
                 )
 
         for proj_path, pane_entries in panes_per_project.items():
             proj = proj_by_path[proj_path]
             session_dir = session_source_dir(proj.path)
-            if not os.path.isdir(session_dir):
+
+            # Collect session dirs to scan: project root + any worktree dirs
+            # (worktree agents store sessions in separate Claude project dirs)
+            session_dirs_to_scan = []
+            if os.path.isdir(session_dir):
+                session_dirs_to_scan.append(session_dir)
+            # Also scan worktree session dirs for panes with worktree CWDs
+            for _pane_id, _pane_pid, _tmux_sname in pane_entries:
+                pinfo = pane_map.get(_pane_id)
+                if pinfo:
+                    pcwd = pinfo["cwd"]
+                    if pcwd != proj_path and pcwd.startswith(proj_path + "/"):
+                        wt_sdir = session_source_dir(pcwd)
+                        if os.path.isdir(wt_sdir) and wt_sdir not in session_dirs_to_scan:
+                            session_dirs_to_scan.append(wt_sdir)
+            if not session_dirs_to_scan:
                 continue
 
             # Collect available session JSONLs sorted by mtime descending
             candidates: list[tuple[str, str, float]] = []  # (sid, fpath, mtime)
-            try:
-                for fname in os.listdir(session_dir):
-                    if not fname.endswith(".jsonl"):
-                        continue
-                    fpath = os.path.join(session_dir, fname)
-                    if not os.path.isfile(fpath):
-                        continue
-                    sid = fname.replace(".jsonl", "")
-                    if sid in active_session_ids:
-                        continue
-                    candidates.append((sid, fpath, os.path.getmtime(fpath)))
-            except OSError as e:
-                logger.warning(
-                    "_auto_detect_cli_sessions: failed to scan session dir %s: %s",
-                    session_dir, e,
-                )
-                continue
+            seen_sids: set[str] = set()
+            for sdir in session_dirs_to_scan:
+                try:
+                    for fname in os.listdir(sdir):
+                        if not fname.endswith(".jsonl"):
+                            continue
+                        fpath = os.path.join(sdir, fname)
+                        if not os.path.isfile(fpath):
+                            continue
+                        sid = fname.replace(".jsonl", "")
+                        if sid in active_session_ids or sid in seen_sids:
+                            continue
+                        seen_sids.add(sid)
+                        candidates.append((sid, fpath, os.path.getmtime(fpath)))
+                except OSError as e:
+                    logger.warning(
+                        "_auto_detect_cli_sessions: failed to scan session dir %s: %s",
+                        sdir, e,
+                    )
+                    continue
             candidates.sort(key=lambda x: x[2], reverse=True)
 
             # Build PID→session map from debug logs for deterministic matching.
@@ -1670,6 +1924,49 @@ class AgentDispatcher:
 
             # Assign sessions to panes: PID match first, then mtime fallback
             for pane_id, pane_pid, tmux_session_name in pane_entries:
+                # --- Tier 0: tmux session name → agent ID match ---
+                # If the tmux session is named `ah-{agent_id[:8]}`, we can
+                # definitively identify the owning agent and revive it.
+                if tmux_session_name.startswith("ah-"):
+                    agent_prefix = tmux_session_name[3:]  # e.g. "1dcbf617"
+                    named_agent = db.query(Agent).filter(
+                        Agent.id.like(f"{agent_prefix}%"),
+                        Agent.status == AgentStatus.STOPPED,
+                        Agent.cli_sync == True,
+                    ).first()
+                    if named_agent:
+                        # Find this agent's session JSONL — check project root
+                        # first, then worktree session dir if the agent has one.
+                        agent_sid = named_agent.session_id
+                        if agent_sid:
+                            jsonl_path = os.path.join(
+                                session_dir, f"{agent_sid}.jsonl"
+                            )
+                            if not os.path.isfile(jsonl_path) and named_agent.worktree:
+                                wt_path = os.path.join(
+                                    proj.path, ".claude", "worktrees", named_agent.worktree
+                                )
+                                wt_jsonl = os.path.join(
+                                    session_source_dir(wt_path), f"{agent_sid}.jsonl"
+                                )
+                                if os.path.isfile(wt_jsonl):
+                                    jsonl_path = wt_jsonl
+                            if os.path.isfile(jsonl_path):
+                                named_agent.status = AgentStatus.SYNCING
+                                named_agent.tmux_pane = pane_id
+                                named_agent.last_message_at = _utcnow()
+                                db.flush()
+                                active_session_ids.add(agent_sid)
+                                all_agent_session_ids.add(agent_sid)
+                                active_tmux_panes.add(pane_id)
+                                logger.info(
+                                    "Revived agent %s by tmux session name %s (tmux=%s)",
+                                    named_agent.id, tmux_session_name, pane_id,
+                                )
+                                agents_to_sync.append((named_agent.id, agent_sid, proj.path))
+                                self._emit(emit_agent_update(named_agent.id, "SYNCING", proj.name))
+                                continue
+
                 best_sid, best_fpath = None, None
 
                 # Try exact PID match via debug log
@@ -1775,6 +2072,7 @@ class AgentDispatcher:
                         db.commit()  # commit pending changes before spawn
                         self._spawn_successor_agent(
                             existing_pane_agent.id, best_sid, proj.path,
+                            worktree=existing_pane_agent.worktree,
                         )
                         continue
                     else:
@@ -1800,7 +2098,7 @@ class AgentDispatcher:
                 turns = []
                 if best_fpath:
                     turns = _parse_session_turns(best_fpath)
-                    for role, content in turns:
+                    for role, content, *_rest in turns:
                         if role == "user" and content:
                             agent_name = (content or "")[:80]
                             break
@@ -1843,7 +2141,9 @@ class AgentDispatcher:
                     pass
 
                 # Import existing turns as messages
-                for role, content in turns:
+                for role, content, *rest in turns:
+                    meta = rest[0] if rest else None
+                    meta_json = json.dumps(meta) if meta else None
                     if role == "user":
                         msg = Message(
                             agent_id=agent.id,
@@ -1860,6 +2160,7 @@ class AgentDispatcher:
                             content=content,
                             status=MessageStatus.COMPLETED,
                             source="cli",
+                            meta_json=meta_json,
                             completed_at=_utcnow(),
                         )
                     else:
@@ -1973,9 +2274,8 @@ class AgentDispatcher:
                 # No pane — check if session file was recently written
                 proj = db.get(Project, agent.project)
                 if proj:
-                    src_dir = session_source_dir(proj.path)
-                    jsonl_path = os.path.join(
-                        src_dir, f"{agent.session_id}.jsonl"
+                    jsonl_path = _resolve_session_jsonl(
+                        agent.session_id, proj.path, agent.worktree,
                     )
                     try:
                         mtime = os.path.getmtime(jsonl_path)
@@ -2084,7 +2384,7 @@ class AgentDispatcher:
             except (FileNotFoundError, OSError):
                 continue
 
-            parts, _ = _parse_stream_parts(full_logs)
+            parts, _, _ = _parse_stream_parts(full_logs)
             content = _format_parts(parts)
 
             if content and content != last_content:
@@ -2117,9 +2417,14 @@ class AgentDispatcher:
         Returns the number of messages imported.
         Also sets the agent's model from the session if detected.
         """
-        jsonl_path = os.path.join(
-            session_source_dir(project_path), f"{session_id}.jsonl"
-        )
+        # Look up agent worktree for correct session path
+        db_tmp = SessionLocal()
+        try:
+            _ag = db_tmp.get(Agent, agent_id)
+            worktree = _ag.worktree if _ag else None
+        finally:
+            db_tmp.close()
+        jsonl_path = _resolve_session_jsonl(session_id, project_path, worktree)
         turns = _parse_session_turns(jsonl_path)
         if not turns:
             return 0
@@ -2130,7 +2435,9 @@ class AgentDispatcher:
         db = SessionLocal()
         try:
             imported = 0
-            for role, content in turns:
+            for role, content, *rest in turns:
+                meta = rest[0] if rest else None
+                meta_json = json.dumps(meta) if meta else None
                 if role == "user":
                     msg = Message(
                         agent_id=agent_id,
@@ -2145,6 +2452,7 @@ class AgentDispatcher:
                         role=MessageRole.AGENT,
                         content=content,
                         status=MessageStatus.COMPLETED,
+                        meta_json=meta_json,
                         completed_at=_utcnow(),
                     )
                 elif role == "system":
@@ -2201,6 +2509,7 @@ class AgentDispatcher:
 
     def _detect_successor_session(
         self, current_sid: str, project_path: str, agent_id: str,
+        worktree: str | None = None,
     ) -> str | None:
         """Check if a newer session JSONL supersedes the current one.
 
@@ -2208,11 +2517,11 @@ class AgentDispatcher:
         Used to detect when Claude auto-continues into a new session
         (e.g. context too long).
         """
-        session_dir = session_source_dir(project_path)
+        # Use _resolve_session_jsonl to find the current session file
+        # (may be in a worktree session dir).
+        current_jsonl = _resolve_session_jsonl(current_sid, project_path, worktree)
         try:
-            current_mtime = os.path.getmtime(
-                os.path.join(session_dir, f"{current_sid}.jsonl")
-            )
+            current_mtime = os.path.getmtime(current_jsonl)
         except OSError:
             return None
 
@@ -2237,37 +2546,47 @@ class AgentDispatcher:
         finally:
             db.close()
 
+        # Collect session dirs to scan: project root + worktree dir if set
+        session_dirs = [session_source_dir(project_path)]
+        if worktree:
+            wt_path = os.path.join(project_path, ".claude", "worktrees", worktree)
+            wt_sdir = session_source_dir(wt_path)
+            if wt_sdir not in session_dirs and os.path.isdir(wt_sdir):
+                session_dirs.append(wt_sdir)
+
         # Look for a JSONL newer than the current one
         best_sid, best_mtime = None, current_mtime
-        try:
-            for fname in os.listdir(session_dir):
-                if not fname.endswith(".jsonl"):
-                    continue
-                sid = fname.replace(".jsonl", "")
-                if sid == current_sid or sid in active_sids:
-                    continue
-                fpath = os.path.join(session_dir, fname)
-                mtime = os.path.getmtime(fpath)
-                if mtime > best_mtime:
-                    # Verify it belongs to the same tmux pane via PID
-                    session_pid = _get_session_pid(sid)
-                    if session_pid is not None:
-                        if pane_pid is not None and session_pid != pane_pid:
-                            continue  # belongs to a different pane
-                    else:
-                        # No debug log yet — only accept if notably newer
-                        if mtime - current_mtime < 5:
-                            continue
-                    best_sid, best_mtime = sid, mtime
-        except OSError as e:
-            logger.warning(
-                "_detect_successor_session: failed to scan session dir %s for agent %s: %s",
-                session_dir, agent_id, e,
-            )
+        for session_dir in session_dirs:
+            try:
+                for fname in os.listdir(session_dir):
+                    if not fname.endswith(".jsonl"):
+                        continue
+                    sid = fname.replace(".jsonl", "")
+                    if sid == current_sid or sid in active_sids:
+                        continue
+                    fpath = os.path.join(session_dir, fname)
+                    mtime = os.path.getmtime(fpath)
+                    if mtime > best_mtime:
+                        # Verify it belongs to the same tmux pane via PID
+                        session_pid = _get_session_pid(sid)
+                        if session_pid is not None:
+                            if pane_pid is not None and session_pid != pane_pid:
+                                continue  # belongs to a different pane
+                        else:
+                            # No debug log yet — only accept if notably newer
+                            if mtime - current_mtime < 5:
+                                continue
+                        best_sid, best_mtime = sid, mtime
+            except OSError as e:
+                logger.warning(
+                    "_detect_successor_session: failed to scan session dir %s for agent %s: %s",
+                    session_dir, agent_id, e,
+                )
         return best_sid
 
     def _spawn_successor_agent(
         self, old_agent_id: str, new_sid: str, project_path: str,
+        worktree: str | None = None,
     ):
         """Stop the old agent and create a new SYNCING agent for the continued session."""
         from websocket import emit_agent_update
@@ -2281,6 +2600,7 @@ class AgentDispatcher:
             project_name = old_agent.project
             tmux_pane = old_agent.tmux_pane
             model = old_agent.model
+            wt = worktree or old_agent.worktree
 
             # Stop old agent
             self._cancel_sync_task(old_agent_id)
@@ -2292,13 +2612,11 @@ class AgentDispatcher:
             self._emit(emit_agent_update(old_agent_id, "STOPPED", project_name))
 
             # Parse new session for name and turns
-            new_fpath = os.path.join(
-                session_source_dir(project_path), f"{new_sid}.jsonl"
-            )
+            new_fpath = _resolve_session_jsonl(new_sid, project_path, wt)
             agent_name = "CLI session (continued)"
             turns = _parse_session_turns(new_fpath)
             detected_model = _detect_session_model(new_fpath) or model
-            for role, content in turns:
+            for role, content, *_rest in turns:
                 if role == "user" and content:
                     agent_name = (content or "")[:80]
                     break
@@ -2322,7 +2640,9 @@ class AgentDispatcher:
             db.flush()
 
             # Import existing turns
-            for role, content in turns:
+            for role, content, *rest in turns:
+                meta = rest[0] if rest else None
+                meta_json = json.dumps(meta) if meta else None
                 if role == "user":
                     msg = Message(
                         agent_id=new_agent.id,
@@ -2339,6 +2659,7 @@ class AgentDispatcher:
                         content=content,
                         status=MessageStatus.COMPLETED,
                         source="cli",
+                        meta_json=meta_json,
                         completed_at=_utcnow(),
                     )
                 else:
@@ -2390,6 +2711,29 @@ class AgentDispatcher:
             logger.info("Sync loop cancelled for agent %s", agent_id)
         except Exception:
             logger.exception("Sync loop crashed for agent %s", agent_id)
+            # Transition agent out of phantom SYNCING state so the UI
+            # reflects reality instead of showing a stuck spinner.
+            from websocket import emit_agent_update
+            db = SessionLocal()
+            try:
+                agent = db.get(Agent, agent_id)
+                if agent and agent.status == AgentStatus.SYNCING:
+                    agent.status = AgentStatus.ERROR
+                    db.add(Message(
+                        agent_id=agent_id,
+                        role=MessageRole.SYSTEM,
+                        content="Sync loop crashed — check server logs for details",
+                        status=MessageStatus.COMPLETED,
+                    ))
+                    db.commit()
+                    self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
+                    logger.warning(
+                        "Agent %s moved to ERROR after sync loop crash", agent_id
+                    )
+            except Exception:
+                logger.exception("Failed to mark agent %s as ERROR after sync crash", agent_id)
+            finally:
+                db.close()
         finally:
             self._sync_tasks.pop(agent_id, None)
 
@@ -2399,23 +2743,28 @@ class AgentDispatcher:
         """Inner sync loop — see _sync_session_loop for docs."""
         POLL_INTERVAL = 3  # seconds between checks
 
-        jsonl_path = os.path.join(
-            session_source_dir(project_path), f"{session_id}.jsonl"
-        )
-
         from websocket import emit_agent_stream, emit_agent_update, emit_new_message
 
         # Cache agent name/project for notification payloads
         _sync_agent_name = ""
         _sync_project = ""
+        _worktree = None
         db = SessionLocal()
         try:
             _ag = db.get(Agent, agent_id)
             if _ag:
                 _sync_agent_name = _ag.name
                 _sync_project = _ag.project
+                _worktree = _ag.worktree
         finally:
             db.close()
+
+        jsonl_path = _resolve_session_jsonl(session_id, project_path, _worktree)
+        if _worktree and ".claude/worktrees" in jsonl_path:
+            logger.info(
+                "Agent %s using worktree session path: %s",
+                agent_id, jsonl_path,
+            )
 
         last_size = 0
         last_turn_count = 0
@@ -2431,13 +2780,18 @@ class AgentDispatcher:
         try:
             with open(jsonl_path, "r", errors="replace") as f:
                 last_size = f.seek(0, 2)  # seek to end
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning(
+                "Sync loop for agent %s: cannot read session JSONL %s: %s",
+                agent_id, jsonl_path, e,
+            )
 
         initial_turns = _parse_session_turns(jsonl_path)
         last_turn_count = len(initial_turns)
         if initial_turns:
-            last_tail_hash = _content_hash(initial_turns[-1][1])
+            _init_tail = initial_turns[-1]
+            _init_meta_sig = str(_init_tail[2]) if len(_init_tail) > 2 and _init_tail[2] else ""
+            last_tail_hash = f"{_content_hash(_init_tail[1])}:{_init_meta_sig}"
 
         # Reconcile: full-scan comparison between JSONL turns and DB
         # messages.  Queue-operation user messages can appear anywhere
@@ -2447,7 +2801,7 @@ class AgentDispatcher:
         db = SessionLocal()
         try:
             conv_turns = [
-                (r, c) for r, c in initial_turns
+                (r, c, m) for r, c, m in initial_turns
                 if r in ("user", "assistant")
             ]
 
@@ -2468,17 +2822,18 @@ class AgentDispatcher:
                     db_sig_counts[sig] = db_sig_counts.get(sig, 0) + 1
 
                 # Walk through JSONL turns and collect missing ones
-                missing: list[tuple[str, str]] = []
-                for r, c in conv_turns:
+                missing: list[tuple[str, str, dict | None]] = []
+                for r, c, mt in conv_turns:
                     role_char = "u" if r == "user" else "a"
                     sig = (role_char, c[:200])
                     if db_sig_counts.get(sig, 0) > 0:
                         db_sig_counts[sig] -= 1  # consume the match
                     else:
-                        missing.append((r, c))
+                        missing.append((r, c, mt))
 
                 if missing and agent:
-                    for role, content in missing:
+                    for role, content, meta in missing:
+                        meta_json = json.dumps(meta) if meta else None
                         if role == "user":
                             db.add(Message(
                                 agent_id=agent_id,
@@ -2495,6 +2850,7 @@ class AgentDispatcher:
                                 content=content,
                                 status=MessageStatus.COMPLETED,
                                 source="cli",
+                                meta_json=meta_json,
                                 completed_at=_utcnow(),
                             ))
                     agent.last_message_preview = (conv_turns[-1][1] or "")[:200]
@@ -2514,9 +2870,11 @@ class AgentDispatcher:
                         Message.role == MessageRole.AGENT,
                     ).order_by(Message.created_at.desc()).first()
                     last_assistant = None
-                    for role, content in reversed(conv_turns):
+                    last_assistant_meta = None
+                    for role, content, meta in reversed(conv_turns):
                         if role == "assistant":
                             last_assistant = content
+                            last_assistant_meta = meta
                             break
                     if (
                         last_agent_msg and last_assistant
@@ -2527,10 +2885,23 @@ class AgentDispatcher:
                     ):
                         last_agent_msg.content = last_assistant
                         last_agent_msg.completed_at = _utcnow()
+                        if last_assistant_meta is not None:
+                            last_agent_msg.meta_json = json.dumps(last_assistant_meta)
                         db.commit()
                         self._emit(emit_new_message(
                             agent_id, "sync", _sync_agent_name, _sync_project,
                         ))
+
+                # Update stale interactive metadata (answers that arrived
+                # after the assistant message was initially stored)
+                if _update_stale_interactive_metadata(db, agent_id, initial_turns):
+                    self._emit(emit_new_message(
+                        agent_id, "sync", _sync_agent_name, _sync_project,
+                    ))
+                    logger.debug(
+                        "Updated stale interactive metadata for agent %s "
+                        "(initial reconciliation)", agent_id,
+                    )
         finally:
             db.close()
 
@@ -2543,7 +2914,7 @@ class AgentDispatcher:
                 current_size = os.path.getsize(jsonl_path)
             except OSError as e:
                 if not _getsize_error_logged:
-                    logger.debug(
+                    logger.warning(
                         "Sync loop: getsize failed for %s (agent %s): %s",
                         jsonl_path, agent_id, e,
                     )
@@ -2559,7 +2930,9 @@ class AgentDispatcher:
                 )
                 turns = _parse_session_turns(jsonl_path)
                 last_turn_count = len(turns)
-                last_tail_hash = _content_hash(turns[-1][1]) if turns else ""
+                _t = turns[-1] if turns else ("", "", None)
+                _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
+                last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
                 last_size = current_size
                 idle_polls = 0
                 continue
@@ -2645,6 +3018,7 @@ class AgentDispatcher:
 
                     new_sid = self._detect_successor_session(
                         session_id, project_path, agent_id,
+                        worktree=_worktree,
                     )
                     if new_sid:
                         logger.info(
@@ -2654,6 +3028,7 @@ class AgentDispatcher:
                         )
                         self._spawn_successor_agent(
                             agent_id, new_sid, project_path,
+                            worktree=_worktree,
                         )
                         return
                 continue
@@ -2672,14 +3047,19 @@ class AgentDispatcher:
                     agent_id, last_turn_count, len(turns),
                 )
                 last_turn_count = len(turns)
-                last_tail_hash = _content_hash(turns[-1][1]) if turns else ""
+                _t = turns[-1] if turns else ("", "", None)
+                _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
+                last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
                 continue
 
             new_turns = turns[last_turn_count:]
 
             # Check if the last existing turn's content grew (same turn count
             # but the assistant accumulated more tool calls / text blocks)
-            tail_hash = _content_hash(turns[-1][1]) if turns else ""
+            # Include metadata in the hash so answer updates are detected
+            _tail_turn = turns[-1] if turns else ("", "", None)
+            _tail_meta_sig = str(_tail_turn[2]) if len(_tail_turn) > 2 and _tail_turn[2] else ""
+            tail_hash = f"{_content_hash(_tail_turn[1])}:{_tail_meta_sig}" if turns else ""
             last_turn_updated = (
                 not new_turns
                 and len(turns) == last_turn_count
@@ -2713,28 +3093,33 @@ class AgentDispatcher:
                         Message.role == MessageRole.AGENT,
                     ).order_by(Message.created_at.desc()).first()
                     if last_msg:
-                        last_msg.content = turns[-1][1]
+                        _last_role, _last_content, *_last_rest = turns[-1]
+                        _last_meta = _last_rest[0] if _last_rest else None
+                        last_msg.content = _last_content
                         last_msg.completed_at = _utcnow()
-                        agent.last_message_preview = (turns[-1][1] or "")[:200]
+                        if _last_meta is not None:
+                            last_msg.meta_json = json.dumps(_last_meta)
+                        agent.last_message_preview = (_last_content or "")[:200]
                         agent.last_message_at = _utcnow()
                         db.commit()
                         # Stream the updated content to connected clients
                         self._emit(emit_agent_stream(
-                            agent_id, turns[-1][1],
+                            agent_id, _last_content,
                         ))
                         self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
                         last_tail_hash = tail_hash
                         is_generating = False
                         logger.info(
                             "Updated last turn content for agent %s (%s chars)",
-                            agent_id, len(turns[-1][1]),
+                            agent_id, len(_last_content),
                         )
                 else:
                     # Before importing new turns, check if the turn just
                     # before the new ones grew (assistant was mid-response
                     # last time, now finished and user sent a new message).
                     if last_turn_count > 0 and new_turns:
-                        prev_role, prev_content = turns[last_turn_count - 1]
+                        prev_role, prev_content, *prev_rest = turns[last_turn_count - 1]
+                        prev_meta = prev_rest[0] if prev_rest else None
                         if prev_role == "assistant":
                             last_agent_msg = db.query(Message).filter(
                                 Message.agent_id == agent_id,
@@ -2747,6 +3132,8 @@ class AgentDispatcher:
                                 old_len = len(last_agent_msg.content)
                                 last_agent_msg.content = prev_content
                                 last_agent_msg.completed_at = _utcnow()
+                                if prev_meta is not None:
+                                    last_agent_msg.meta_json = json.dumps(prev_meta)
                                 logger.info(
                                     "Updated previous turn content for agent %s "
                                     "(%d -> %d chars)",
@@ -2754,7 +3141,9 @@ class AgentDispatcher:
                                 )
 
                     # Import new turns
-                    for role, content in new_turns:
+                    for role, content, *rest in new_turns:
+                        meta = rest[0] if rest else None
+                        meta_json = json.dumps(meta) if meta else None
                         if role == "user":
                             # Dedup: skip if a matching web-sent (or sourceless) message already exists
                             from sqlalchemy import or_
@@ -2785,6 +3174,7 @@ class AgentDispatcher:
                                 content=content,
                                 status=MessageStatus.COMPLETED,
                                 source="cli",
+                                meta_json=meta_json,
                                 completed_at=_utcnow(),
                             )
                         elif role == "system":
@@ -2824,7 +3214,7 @@ class AgentDispatcher:
                         )
                     if not agent.muted and not _in_use:
                         _push_body = ""
-                        for _r, _c in reversed(new_turns):
+                        for _r, _c, *_rest in reversed(new_turns):
                             if _r == "assistant":
                                 _push_body = _c[:120]
                                 break
@@ -2843,6 +3233,17 @@ class AgentDispatcher:
                         "Synced %d new turns for agent %s",
                         len(new_turns), agent_id,
                     )
+
+                # Update stale interactive metadata on EARLIER messages
+                # (e.g. user answered an AskUserQuestion in terminal)
+                if _update_stale_interactive_metadata(db, agent_id, turns):
+                    self._emit(emit_new_message(
+                        agent_id, "sync", _sync_agent_name, _sync_project,
+                    ))
+                    logger.debug(
+                        "Updated stale interactive metadata for agent %s",
+                        agent_id,
+                    )
             finally:
                 db.close()
 
@@ -2855,7 +3256,9 @@ class AgentDispatcher:
                     final_new = turns[last_turn_count:]
                     agent = db.get(Agent, agent_id)
                     if agent and final_new:
-                        for role, content in final_new:
+                        for role, content, *rest in final_new:
+                            meta = rest[0] if rest else None
+                            meta_json = json.dumps(meta) if meta else None
                             if role == "user":
                                 msg = Message(
                                     agent_id=agent_id,
@@ -2870,6 +3273,7 @@ class AgentDispatcher:
                                     role=MessageRole.AGENT,
                                     content=content,
                                     status=MessageStatus.COMPLETED,
+                                    meta_json=meta_json,
                                     completed_at=_utcnow(),
                                 )
                             elif role == "system":
@@ -2997,8 +3401,8 @@ class AgentDispatcher:
                 p = db.get(Project, a.project)
                 if not p:
                     return 0.0
-                fpath = os.path.join(
-                    session_source_dir(p.path), f"{a.session_id}.jsonl"
+                fpath = _resolve_session_jsonl(
+                    a.session_id, p.path, a.worktree,
                 )
                 try:
                     return os.path.getmtime(fpath)
@@ -3078,6 +3482,17 @@ class AgentDispatcher:
             # scheduled after DB commit since start_session_sync is async).
             agents_to_sync: list[tuple[str, str, str]] = []  # (id, session_id, project_path)
 
+            # Build pane map ONCE for definitive tmux session name matching.
+            # Each agent launched via tmux has session name `ah-{id[:8]}`,
+            # so we can resolve pane→agent without fragile CWD heuristics.
+            pane_map = _build_tmux_claude_map()
+            # session_name → pane_id for quick lookup
+            session_name_to_pane: dict[str, str] = {
+                info["session_name"]: pane_id
+                for pane_id, info in pane_map.items()
+                if not info["is_orchestrator"]
+            }
+
             for agent in agents:
                 if agent.status == AgentStatus.STARTING:
                     continue
@@ -3091,17 +3506,21 @@ class AgentDispatcher:
                     if project:
                         import time as _time
                         project_path = project.path
-                        jsonl_path = os.path.join(
-                            session_source_dir(project_path),
-                            f"{agent.session_id}.jsonl",
+                        jsonl_path = _resolve_session_jsonl(
+                            agent.session_id, project_path, agent.worktree
                         )
                         # Session is active only if: file exists, no result
                         # event, AND either has a tmux pane or was recently written
                         session_active = False
                         if os.path.exists(jsonl_path) and not self._session_has_ended(jsonl_path):
-                            pane = _detect_tmux_pane_for_session(
-                                agent.session_id, project_path
-                            )
+                            # Resolve pane definitively via tmux session name
+                            expected_name = f"ah-{agent.id[:8]}"
+                            pane = session_name_to_pane.get(expected_name)
+                            if not pane:
+                                # Fallback: try generic detection
+                                pane = _detect_tmux_pane_for_session(
+                                    agent.session_id, project_path
+                                )
                             if pane:
                                 session_active = True
                             elif agent.cli_sync and agent.tmux_pane:
@@ -3147,9 +3566,13 @@ class AgentDispatcher:
                     project = db.get(Project, agent.project)
                     project_path = project.path if project else ""
 
-                    # Try to find this agent's tmux pane
-                    if project_path and agent.session_id and not agent.tmux_pane:
-                        pane = _detect_tmux_pane_for_session(agent.session_id, project_path)
+                    # Try to find this agent's tmux pane — use session name
+                    # for definitive matching first.
+                    if not agent.tmux_pane:
+                        expected_name = f"ah-{agent.id[:8]}"
+                        pane = session_name_to_pane.get(expected_name)
+                        if not pane and project_path and agent.session_id:
+                            pane = _detect_tmux_pane_for_session(agent.session_id, project_path)
                         if pane:
                             agent.tmux_pane = pane
 
@@ -3166,8 +3589,9 @@ class AgentDispatcher:
                         # Non-cli_sync SYNCING agent without pane — fall back
                         # to session file freshness
                         import time as _time
-                        src_dir = session_source_dir(project_path)
-                        jsonl_path = os.path.join(src_dir, f"{agent.session_id}.jsonl")
+                        jsonl_path = _resolve_session_jsonl(
+                            agent.session_id, project_path, agent.worktree,
+                        )
                         try:
                             age = _time.time() - os.path.getmtime(jsonl_path)
                             alive = age < 1800
@@ -3236,13 +3660,14 @@ class AgentDispatcher:
                             with open(partial_file, "r", errors="replace") as f:
                                 partial_logs = f.read()
                             if partial_logs.strip():
-                                partial_text = _extract_result(partial_logs)
+                                partial_text, partial_meta = _extract_result(partial_logs)
                                 if partial_text and partial_text != "(no output)":
                                     partial_msg = Message(
                                         agent_id=agent.id,
                                         role=MessageRole.AGENT,
                                         content=f"*(partial — interrupted by restart)*\n\n{partial_text}",
                                         status=MessageStatus.COMPLETED,
+                                        meta_json=partial_meta,
                                     )
                                     db.add(partial_msg)
                                     logger.info(

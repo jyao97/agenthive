@@ -203,6 +203,79 @@ Respects `MAX_CONCURRENT_WORKERS` (global) and `project.max_concurrent` (per-pro
 - Disables Claude Code auto-cleanup (`cleanupPeriodDays: 36500`)
 - Evicts old cache when Claude assigns a new session_id (new file is a superset)
 
+### Worktree Session Directories (CRITICAL)
+
+Claude Code stores session JSONL files in a directory derived from the **CWD** where it was launched:
+
+```
+~/.claude/projects/{encoded-project-path}/{session_id}.jsonl
+```
+
+When an agent uses `--worktree {name}`, Claude CLI runs in a subdirectory:
+```
+{project_path}/.claude/worktrees/{name}/
+```
+
+This means its sessions are stored in a **different** encoded directory:
+```
+~/.claude/projects/-home-user-projects-myproject--claude-worktrees-test/
+```
+NOT in:
+```
+~/.claude/projects/-home-user-projects-myproject/
+```
+
+**Key rule**: Any code that looks up a session JSONL must use `_resolve_session_jsonl(session_id, project_path, worktree)` which checks both directories. Using `session_source_dir(project_path)` alone will **miss all worktree sessions**.
+
+Functions that must be worktree-aware (all fixed as of 2026-02-26):
+- `_dispatch_pending_messages()` — resume pre-check
+- `_sync_session_loop_inner()` — session parsing
+- `import_session_history()` — history import
+- `_reap_dead_agents()` — liveness freshness check
+- `_detect_successor_session()` — must scan both session dirs
+- `_spawn_successor_agent()` — new session parsing
+- `_dedup_pane_agents()` — mtime comparison
+- `_recover_agents()` — recovery JSONL path + liveness
+- `_auto_detect_cli_sessions()` — must scan worktree session dirs too
+
+### tmux Session Naming
+
+Each agent launched via tmux gets session name `ah-{agent_id[:8]}`. This enables **definitive** pane-to-agent matching:
+
+```python
+# Build once at startup/recovery
+pane_map = _build_tmux_claude_map()
+session_name_to_pane = {
+    info["session_name"]: pane_id
+    for pane_id, info in pane_map.items()
+    if not info["is_orchestrator"]
+}
+
+# Match agent to its pane definitively
+expected_name = f"ah-{agent.id[:8]}"
+pane = session_name_to_pane.get(expected_name)
+```
+
+This is more reliable than PID/session-file matching, which can mis-assign panes during recovery.
+
+### CWD Matching for Worktree Agents
+
+When matching a tmux pane's CWD to a project, use **subdirectory matching** (not exact match):
+
+```python
+def _cwd_matches(cwd: str, project_path: str) -> bool:
+    return cwd == project_path or cwd.startswith(project_path + "/")
+```
+
+Worktree agents have CWDs like `{project}/.claude/worktrees/{name}`, which fail exact `==` checks.
+
+### Auto-detect Tiered Matching (`_auto_detect_cli_sessions`)
+
+Detection of orphaned tmux Claude sessions uses tiered matching:
+- **Tier 0**: tmux session name `ah-{id}` → direct agent lookup (most reliable)
+- **Tier 1**: Session JSONL matching (finds session file in project or worktree dir)
+- **Tier 2**: PID/CWD-based matching (least reliable)
+
 ### Streaming Output
 
 During execution, an asyncio task tails the output file every 0.5s, parses stream-json events, and broadcasts incremental content via WebSocket (`agent_stream` event) for live display in the chat UI.

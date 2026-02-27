@@ -139,6 +139,13 @@ export const updateMessage = (agentId, messageId, data) =>
     method: "PUT",
     body: JSON.stringify(data),
   });
+// --- Interactive Answer (AskUserQuestion / ExitPlanMode) ---
+export const answerAgent = (agentId, payload) =>
+  request(`/api/agents/${agentId}/answer`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
 // --- Message search ---
 export const searchMessages = (query, { project, role, limit } = {}) => {
   const params = new URLSearchParams({ q: query });

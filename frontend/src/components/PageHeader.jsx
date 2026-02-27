@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import useHealthStatus from "../hooks/useHealthStatus";
-import { restartServer } from "../lib/api";
+import { restartServer, fetchHealth } from "../lib/api";
 
 const SunIcon = (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -52,7 +52,26 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, child
             setRestarting(true);
             try {
               await restartServer();
-            } catch {}
+              // Poll until the new server is up, then reload the page
+              let attempts = 0;
+              const poll = setInterval(async () => {
+                attempts++;
+                try {
+                  await fetchHealth();
+                  clearInterval(poll);
+                  window.location.reload();
+                } catch {
+                  if (attempts > 30) {
+                    clearInterval(poll);
+                    setRestarting(false);
+                    alert("Server did not come back after 30s. Check logs.");
+                  }
+                }
+              }, 1000);
+            } catch (e) {
+              setRestarting(false);
+              alert(e.message || "Restart failed");
+            }
           }}
           className={`shrink-0 w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${restarting ? "text-amber-400 animate-pulse" : "text-dim hover:text-heading hover:bg-input"}`}
         >

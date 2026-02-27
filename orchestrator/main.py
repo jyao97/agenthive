@@ -14,6 +14,7 @@ os.environ.pop("CLAUDECODE", None)
 os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
 import yaml
+from pydantic import BaseModel
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -570,17 +571,49 @@ async def system_stats():
 async def system_restart():
     """Restart the AgentHive server.
 
-    Spawns a new instance via run.sh, then exits the current process.
-    Returns a 200 before exiting so the frontend gets confirmation.
+    Pre-checks that the code can import successfully (catches syntax
+    errors, reserved names, missing deps) before killing the current
+    process.  If the check fails, returns 400 instead of restarting
+    into a broken state.
+
+    Then spawns a new instance via run.sh and exits.
     """
     import signal
     import subprocess as _sp
-
-    logger.warning("Restart requested via API — spawning new instance and exiting")
+    import sys
 
     # Resolve project root (one level up from orchestrator/)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     run_script = os.path.join(project_root, "run.sh")
+    orchestrator_dir = os.path.join(project_root, "orchestrator")
+
+    # --- Pre-flight import check ---
+    # Spawn a fresh Python process to import main.py.  If it fails
+    # (syntax error, SQLAlchemy reserved name, missing module, etc.)
+    # we refuse to restart so the current server stays alive.
+    try:
+        check = _sp.run(
+            [sys.executable, "-c", "import main"],
+            cwd=orchestrator_dir,
+            capture_output=True, text=True, timeout=15,
+            env={**os.environ, "AGENTHIVE_IMPORT_CHECK": "1"},
+        )
+        if check.returncode != 0:
+            # Extract the last meaningful error line
+            err_lines = [l for l in check.stderr.strip().splitlines() if l.strip()]
+            err_summary = err_lines[-1] if err_lines else "Unknown import error"
+            logger.error("Restart pre-check failed: %s", err_summary)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Restart aborted — code has errors: {err_summary}",
+            )
+    except _sp.TimeoutExpired:
+        raise HTTPException(
+            status_code=400,
+            detail="Restart aborted — import check timed out",
+        )
+
+    logger.warning("Restart requested via API — spawning new instance and exiting")
 
     async def _delayed_restart():
         await asyncio.sleep(0.5)
@@ -715,7 +748,7 @@ async def list_projects(db: Session = Depends(get_db)):
                 func.count(
                     case((Agent.status.in_([
                         AgentStatus.IDLE, AgentStatus.EXECUTING,
-                        AgentStatus.STARTING,
+                        AgentStatus.STARTING, AgentStatus.SYNCING,
                     ]), 1))
                 ).label("active"),
             )
@@ -802,7 +835,7 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
                     Agent.project == dirname,
                     Agent.status.in_([
                         AgentStatus.IDLE, AgentStatus.EXECUTING,
-                        AgentStatus.STARTING,
+                        AgentStatus.STARTING, AgentStatus.SYNCING,
                     ]),
                 )
                 .scalar()
@@ -1602,7 +1635,7 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
             )
             # Start live sync to tail ongoing CLI activity
             ad.start_session_sync(
-                agent.id, body.resume_session_id, project_path
+                agent.id, body.resume_session_id, project.path
             )
     else:
         # Normal mode: create the initial user message
@@ -2247,8 +2280,8 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
     body = {}
     try:
         body = await request.json()
-    except Exception:
-        pass
+    except (ValueError, UnicodeDecodeError):
+        pass  # Empty body or no content-type — use defaults
     resume_mode = body.get("mode")  # "tmux" | "normal" | None
 
     try:
@@ -2575,6 +2608,69 @@ async def update_message(
     db.refresh(msg)
     logger.info("Message %s updated for agent %s", message_id, agent_id)
     return msg
+
+
+# ---- Interactive Answer (AskUserQuestion / ExitPlanMode via tmux) ----
+
+class AnswerPayload(BaseModel):
+    tool_use_id: str
+    type: str  # "ask_user_question" or "exit_plan_mode"
+    selected_index: int | None = None  # 0-based option index (AskUserQuestion)
+    approved: bool | None = None  # (ExitPlanMode only)
+
+@app.post("/api/agents/{agent_id}/answer")
+async def answer_agent_interactive(
+    agent_id: str,
+    body: AnswerPayload,
+    db: Session = Depends(get_db),
+):
+    """Answer an AskUserQuestion or approve/reject ExitPlanMode via tmux keys."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.tmux_pane:
+        raise HTTPException(status_code=400, detail="Agent has no tmux pane")
+    if agent.status not in ("SYNCING", "EXECUTING", "IDLE"):
+        raise HTTPException(status_code=400, detail=f"Agent is {agent.status}, not in interactive state")
+
+    from agent_dispatcher import send_tmux_keys, verify_tmux_pane
+    if not verify_tmux_pane(agent.tmux_pane):
+        raise HTTPException(status_code=400, detail="Tmux pane no longer exists")
+
+    pane_id = agent.tmux_pane
+    MAX_INDEX = 20  # safety cap to prevent excessive keystrokes
+
+    if body.type == "ask_user_question":
+        if body.selected_index is None or body.selected_index < 0:
+            raise HTTPException(status_code=400, detail="selected_index required for ask_user_question")
+        if body.selected_index > MAX_INDEX:
+            raise HTTPException(status_code=400, detail=f"selected_index too large (max {MAX_INDEX})")
+        # Send Down keys to navigate to selected option, then Enter
+        keys = ["Down"] * body.selected_index + ["Enter"]
+        if not send_tmux_keys(pane_id, keys):
+            raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
+        return {"detail": "ok", "keys_sent": len(keys)}
+
+    elif body.type == "exit_plan_mode":
+        # Claude Code shows 4 plan options navigated with arrow keys:
+        # 0: "Yes" (approve), 1: "Yes, but make changes", 2: "No" (reject),
+        # 3: "Give feedback on the plan"
+        if body.selected_index is not None and body.selected_index >= 0:
+            if body.selected_index > MAX_INDEX:
+                raise HTTPException(status_code=400, detail=f"selected_index too large (max {MAX_INDEX})")
+            keys = ["Down"] * body.selected_index + ["Enter"]
+        elif body.approved is True:
+            keys = ["Enter"]  # legacy: approve = first option
+        elif body.approved is False:
+            keys = ["Down", "Down", "Enter"]  # legacy: reject = 3rd option
+        else:
+            raise HTTPException(status_code=400, detail="selected_index or approved required for exit_plan_mode")
+        if not send_tmux_keys(pane_id, keys):
+            raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
+        return {"detail": "ok", "keys_sent": len(keys)}
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown type: {body.type}")
 
 
 # ---- Processes ----

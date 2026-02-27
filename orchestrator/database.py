@@ -168,6 +168,15 @@ def init_db():
             ))
             conn.commit()
 
+        # Add metadata column to messages if missing
+        result = conn.execute(text("PRAGMA table_info(messages)"))
+        columns = {row[1] for row in result}
+        if "metadata" not in columns:
+            conn.execute(text(
+                "ALTER TABLE messages ADD COLUMN metadata TEXT"
+            ))
+            conn.commit()
+
         # Add skip_permissions column to agents if missing
         result = conn.execute(text("PRAGMA table_info(agents)"))
         columns = {row[1] for row in result}

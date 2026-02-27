@@ -1,5 +1,6 @@
 """Pydantic schemas for API request/response."""
 
+import json as _json
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field, field_validator
@@ -50,6 +51,7 @@ class AgentOut(BaseModel):
     status: AgentStatus
     branch: str | None = None
     worktree: str | None = None
+    session_id: str | None = None
     cli_sync: bool = False
     tmux_pane: str | None = None
     model: str | None = None
@@ -77,6 +79,7 @@ class AgentBrief(BaseModel):
     status: AgentStatus
     branch: str | None = None
     worktree: str | None = None
+    session_id: str | None = None
     tmux_pane: str | None = None
     model: str | None = None
     effort: str | None = None
@@ -100,11 +103,23 @@ class MessageOut(BaseModel):
     stream_log: str | None = None
     error_message: str | None = None
     source: str | None = None  # "web" | "cli" | None
+    metadata: dict | None = Field(None, validation_alias="meta_json")
     created_at: datetime
     completed_at: datetime | None = None
     scheduled_at: datetime | None = None
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def parse_metadata_json(cls, v):
+        """Parse JSON string from DB into a dict."""
+        if isinstance(v, str):
+            try:
+                return _json.loads(v)
+            except (_json.JSONDecodeError, ValueError):
+                return None
+        return v
 
     @field_validator("scheduled_at", "created_at", "completed_at", mode="before")
     @classmethod
