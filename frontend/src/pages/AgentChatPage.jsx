@@ -710,7 +710,7 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false }) {
   const draftKey = agentId ? `agenthive-draft-${agentId}` : null;
   const [text, _setText] = useState(() => {
     if (draftKey) {
@@ -812,15 +812,15 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
             micError={voice.micError || voiceError}
             onToggle={voice.toggleRecording}
           />
-          {/* Escape button — sends Esc to tmux (visible for all cli_sync agents) */}
+          {/* Escape button — sends Esc to tmux (always visible for cli_sync agents, disabled when stopped/error) */}
           {onEscape && (
             <button
               type="button"
               onClick={handleEscape}
-              disabled={!escapeAvailable || !escapeUrgent || escCooldown}
-              title={!escapeAvailable ? "No tmux pane attached" : "Send Escape to agent (dismiss prompt)"}
+              disabled={escapeDisabled || !escapeAvailable || !escapeUrgent || escCooldown}
+              title={escapeDisabled ? "Agent is stopped" : !escapeAvailable ? "No tmux pane attached" : "Send Escape to agent (dismiss prompt)"}
               className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                !escapeAvailable
+                escapeDisabled || !escapeAvailable
                   ? "bg-elevated text-dim/30 cursor-not-allowed"
                   : escapeUrgent && !escCooldown
                     ? "bg-red-500/80 hover:bg-red-500 text-white cursor-pointer"
@@ -1055,17 +1055,23 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
 
     if (lastEvent.type === "agent_stream_end" && lastEvent.data?.agent_id === id) {
       // Deterministic signal from backend that generation finished.
-      // Lock streaming to reject any late agent_stream events.
+      // Lock streaming briefly, then auto-unlock for next message.
       streamLockedRef.current = true;
       clearTimeout(streamTimeoutRef.current);
-      streamTimeoutRef.current = setTimeout(() => setStreamingContent(null), 300);
+      streamTimeoutRef.current = setTimeout(() => {
+        setStreamingContent(null);
+        streamLockedRef.current = false;
+      }, 300);
       return;
     }
 
     if (lastEvent.type === "new_message" && lastEvent.data?.agent_id === id) {
-      // New message arrived — clear streaming, lock to reject late agent_stream.
+      // New message arrived — clear streaming, briefly lock to reject late agent_stream.
+      // Auto-unlock after 1.5s so the NEXT message's streams can come through
+      // (SYNCING agents don't emit agent_update between messages to unlock).
       streamLockedRef.current = true;
       clearTimeout(streamTimeoutRef.current);
+      streamTimeoutRef.current = setTimeout(() => { streamLockedRef.current = false; }, 1500);
       setStreamingContent(null);
       loadData();
       return;
@@ -1402,7 +1408,8 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
             </div>
 
             <div className="shrink-0 flex items-center gap-1.5">
-              {(isStopped || isError) && agent?.successor_id ? (
+              {/* "Continued" link — only when a successor exists */}
+              {(isStopped || isError) && agent?.successor_id && (
                 <button
                   type="button"
                   onClick={() => navigate(`/agents/${agent.successor_id}`)}
@@ -1413,30 +1420,31 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                   </svg>
                 </button>
-              ) : (isStopped || isError) ? (
-                <button
-                  type="button"
-                  onClick={() => handleResume()}
-                  disabled={resuming}
-                  className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white transition-colors disabled:opacity-50"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
-                  </svg>
-                  {resuming ? "..." : "Resume"}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setShowStopConfirm(true)}
-                  className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium text-red-400 hover:bg-red-600/20 transition-colors"
-                >
-                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                    <rect x="6" y="6" width="12" height="12" rx="2" />
-                  </svg>
-                  Stop
-                </button>
               )}
+              {/* Resume — always visible, disabled when not stopped */}
+              <button
+                type="button"
+                onClick={() => handleResume()}
+                disabled={!(isStopped || isError) || resuming}
+                className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium bg-cyan-600 text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-cyan-500"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
+                </svg>
+                {resuming ? "..." : "Resume"}
+              </button>
+              {/* Stop — always visible, disabled when already stopped */}
+              <button
+                type="button"
+                onClick={() => setShowStopConfirm(true)}
+                disabled={isStopped || isError}
+                className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium text-red-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-red-600/20"
+              >
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                  <rect x="6" y="6" width="12" height="12" rx="2" />
+                </svg>
+                Stop
+              </button>
 
               <button
                 type="button"
@@ -1534,9 +1542,10 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         disabledReason={disabledReason}
         isBusy={isExecuting || (isSyncing && !hasTmux)}
         tmuxMode={hasTmux}
-        onEscape={(agent.cli_sync || hasTmuxPane) && !isStopped && !isError ? async () => {
+        onEscape={(agent.cli_sync || hasTmuxPane) ? async () => {
           try { await escapeAgent(id); loadData(); } catch (e) { showToast(e.message || "Escape failed", "error"); }
         } : null}
+        escapeDisabled={isStopped || isError}
         escapeUrgent={isExecuting || hasPendingInteractive || (hasTmux && (streamingContent || (messages.length > 0 && messages[messages.length - 1].role === "USER")))}
         escapeAvailable={hasTmuxPane}
       />

@@ -3154,6 +3154,7 @@ class AgentDispatcher:
                                 status=MessageStatus.COMPLETED,
                             ))
                             db.commit()
+                            self._emit(emit_agent_update(agent_id, "STOPPED", agent.project))
                     finally:
                         db.close()
                     break
@@ -3173,6 +3174,22 @@ class AgentDispatcher:
                 last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
                 last_size = current_size
                 idle_polls = 0
+                # Notify UI about the compact
+                db_compact = SessionLocal()
+                try:
+                    compact_msg = Message(
+                        agent_id=agent_id,
+                        role=MessageRole.SYSTEM,
+                        content="Context compacted — conversation history refreshed",
+                        status=MessageStatus.COMPLETED,
+                    )
+                    db_compact.add(compact_msg)
+                    db_compact.commit()
+                    self._emit(emit_new_message(
+                        agent_id, compact_msg.id, _sync_agent_name, _sync_project,
+                    ))
+                finally:
+                    db_compact.close()
                 continue
 
             if current_size <= last_size:
@@ -3325,6 +3342,22 @@ class AgentDispatcher:
                 _t = turns[-1] if turns else ("", "", None)
                 _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
                 last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
+                # Notify UI about the compact
+                db_compact = SessionLocal()
+                try:
+                    compact_msg = Message(
+                        agent_id=agent_id,
+                        role=MessageRole.SYSTEM,
+                        content="Context compacted — conversation history refreshed",
+                        status=MessageStatus.COMPLETED,
+                    )
+                    db_compact.add(compact_msg)
+                    db_compact.commit()
+                    self._emit(emit_new_message(
+                        agent_id, compact_msg.id, _sync_agent_name, _sync_project,
+                    ))
+                finally:
+                    db_compact.close()
                 continue
 
             new_turns = turns[last_turn_count:]
@@ -3960,6 +3993,28 @@ class AgentDispatcher:
                     m.status = MessageStatus.PENDING
                     m.completed_at = None
                     m.error_message = None
+
+            # Re-link STOPPED cli_sync agents whose tmux session is still alive.
+            # These were skipped by the alive_statuses query above.
+            stopped_cli = db.query(Agent).filter(
+                Agent.status == AgentStatus.STOPPED,
+                Agent.cli_sync == True,
+            ).all()
+            for agent in stopped_cli:
+                expected_name = f"ah-{agent.id[:8]}"
+                pane = session_name_to_pane.get(expected_name)
+                if pane and agent.session_id:
+                    project = db.get(Project, agent.project)
+                    if project:
+                        agent.status = AgentStatus.SYNCING
+                        agent.tmux_pane = pane
+                        agents_to_sync.append(
+                            (agent.id, agent.session_id, project.path)
+                        )
+                        logger.info(
+                            "Recovered STOPPED agent %s — tmux session %s still alive (pane=%s)",
+                            agent.id, expected_name, pane,
+                        )
 
             # Deduplicate pane ownership
             stopped_ids = self._dedup_pane_agents(db)

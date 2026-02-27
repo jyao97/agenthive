@@ -60,6 +60,12 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
               let consecutiveOk = 0;
               const poll = setInterval(async () => {
                 attempts++;
+                if (attempts > 60) {
+                  clearInterval(poll);
+                  setRestarting(false);
+                  alert("Server did not restart after 60s. Check logs.");
+                  return;
+                }
                 try {
                   const h = await fetchHealth();
                   if (!sawDown) {
@@ -75,11 +81,6 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
                 } catch {
                   sawDown = true;
                   consecutiveOk = 0;
-                  if (attempts > 60) {
-                    clearInterval(poll);
-                    setRestarting(false);
-                    alert("Server did not come back after 60s. Check logs.");
-                  }
                 }
               }, 1000);
             } catch (e) {
