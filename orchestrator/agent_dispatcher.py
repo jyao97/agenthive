@@ -1842,6 +1842,7 @@ class AgentDispatcher:
                             role=MessageRole.USER,
                             content=content,
                             status=MessageStatus.COMPLETED,
+                            source="cli",
                             completed_at=_utcnow(),
                         )
                     elif role == "assistant":
@@ -1850,6 +1851,7 @@ class AgentDispatcher:
                             role=MessageRole.AGENT,
                             content=content,
                             status=MessageStatus.COMPLETED,
+                            source="cli",
                             completed_at=_utcnow(),
                         )
                     else:
@@ -2409,6 +2411,11 @@ class AgentDispatcher:
         last_tail_hash = ""  # Hash of last turn content to detect updates
         is_generating = False
 
+        def _content_hash(content: str) -> str:
+            """Fast hash of content for change detection."""
+            import hashlib
+            return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:16]
+
         # Get the current file size and turn count so we only import new turns
         try:
             with open(jsonl_path, "r", errors="replace") as f:
@@ -2419,7 +2426,7 @@ class AgentDispatcher:
         initial_turns = _parse_session_turns(jsonl_path)
         last_turn_count = len(initial_turns)
         if initial_turns:
-            last_tail_hash = str(len(initial_turns[-1][1]))
+            last_tail_hash = _content_hash(initial_turns[-1][1])
 
         # Reconcile: full-scan comparison between JSONL turns and DB
         # messages.  Queue-operation user messages can appear anywhere
@@ -2534,7 +2541,7 @@ class AgentDispatcher:
                 )
                 turns = _parse_session_turns(jsonl_path)
                 last_turn_count = len(turns)
-                last_tail_hash = str(len(turns[-1][1])) if turns else ""
+                last_tail_hash = _content_hash(turns[-1][1]) if turns else ""
                 last_size = current_size
                 idle_polls = 0
                 continue
@@ -2647,14 +2654,14 @@ class AgentDispatcher:
                     agent_id, last_turn_count, len(turns),
                 )
                 last_turn_count = len(turns)
-                last_tail_hash = str(len(turns[-1][1])) if turns else ""
+                last_tail_hash = _content_hash(turns[-1][1]) if turns else ""
                 continue
 
             new_turns = turns[last_turn_count:]
 
             # Check if the last existing turn's content grew (same turn count
             # but the assistant accumulated more tool calls / text blocks)
-            tail_hash = str(len(turns[-1][1])) if turns else ""
+            tail_hash = _content_hash(turns[-1][1]) if turns else ""
             last_turn_updated = (
                 not new_turns
                 and len(turns) == last_turn_count
@@ -2664,11 +2671,15 @@ class AgentDispatcher:
             )
 
             if not new_turns and not last_turn_updated:
-                # Stream partial content when the assistant is generating
-                # (file size unchanged but we know it's active)
+                # File grew but turns didn't change — Claude is mid-generation.
+                # Stream the current assistant content so the frontend can
+                # show a live preview instead of just typing dots.
                 if not is_generating:
                     is_generating = True
-                self._emit(emit_agent_stream(agent_id, ""))
+                partial = ""
+                if turns and turns[-1][0] == "assistant":
+                    partial = turns[-1][1]
+                self._emit(emit_agent_stream(agent_id, partial))
                 continue
 
             db = SessionLocal()
@@ -2696,7 +2707,7 @@ class AgentDispatcher:
                         self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
                         last_tail_hash = tail_hash
                         is_generating = False
-                        logger.debug(
+                        logger.info(
                             "Updated last turn content for agent %s (%s chars)",
                             agent_id, len(turns[-1][1]),
                         )
@@ -2989,6 +3000,40 @@ class AgentDispatcher:
                 db.add(Message(
                     agent_id=stale.id, role=MessageRole.SYSTEM,
                     content="CLI session ended — another agent owns this tmux pane",
+                    status=MessageStatus.COMPLETED,
+                ))
+                stopped_ids.add(stale.id)
+                self._emit(emit_agent_update(stale.id, "STOPPED", stale.project))
+
+        # Also detect agents sharing the same session_id (different panes)
+        session_agents: dict[str, list[Agent]] = {}
+        for agent in syncing:
+            if agent.session_id and agent.id not in stopped_ids:
+                session_agents.setdefault(agent.session_id, []).append(agent)
+
+        for sid, dupes in session_agents.items():
+            if len(dupes) <= 1:
+                continue
+
+            def _agent_freshness(a: Agent) -> float:
+                if a.last_message_at:
+                    return a.last_message_at.timestamp()
+                return a.created_at.timestamp() if a.created_at else 0.0
+
+            dupes.sort(key=_agent_freshness, reverse=True)
+            keeper = dupes[0]
+            for stale in dupes[1:]:
+                logger.warning(
+                    "Session %s claimed by multiple agents — "
+                    "keeping %s, stopping %s",
+                    sid[:12], keeper.id, stale.id,
+                )
+                self._cancel_sync_task(stale.id)
+                stale.status = AgentStatus.STOPPED
+                stale.tmux_pane = None
+                db.add(Message(
+                    agent_id=stale.id, role=MessageRole.SYSTEM,
+                    content="Stopped — another agent already syncs this session",
                     status=MessageStatus.COMPLETED,
                 ))
                 stopped_ids.add(stale.id)

@@ -10,9 +10,11 @@ Prevents session loss on orchestrator restart by:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from typing import Callable
@@ -27,10 +29,21 @@ CACHE_DIR = os.path.join(BACKUP_DIR, "session-cache")
 def encode_project_path(path: str) -> str:
     """Convert a project path to Claude's encoded directory name.
 
+    Claude Code replaces *all* non-alphanumeric characters with ``-``,
+    not just ``/``.  If the result exceeds 200 chars it is truncated and
+    a hash suffix is appended.
+
     e.g. /home/jyao073/agenthive-projects/splitvla
       -> -home-jyao073-agenthive-projects-splitvla
+    e.g. /home/user/project/.claude/worktrees/name
+      -> -home-user-project--claude-worktrees-name   (dot -> -)
     """
-    return path.replace("/", "-")
+    encoded = re.sub(r"[^a-zA-Z0-9]", "-", path)
+    if len(encoded) <= 200:
+        return encoded
+    # Match Claude Code's truncation: first 200 chars + hash suffix
+    h = hashlib.md5(path.encode()).hexdigest()[:8]
+    return f"{encoded[:200]}-{h}"
 
 
 def session_source_dir(project_path: str) -> str:

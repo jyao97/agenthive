@@ -24,6 +24,7 @@ import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, MODEL_OPTIONS, modelDisplayName } from "../lib/constants";
 import FilterTabs from "../components/FilterTabs";
+import useWebSocket from "../hooks/useWebSocket";
 
 const AGENT_TABS = [
   { key: "starred", label: "Starred" },
@@ -47,7 +48,7 @@ function agentBotState(status) {
   return "idle";
 }
 
-function AgentRow({ agent, onClick, starred, onToggleStar, project }) {
+function AgentRow({ agent, onClick, starred, onToggleStar, project, isStreaming }) {
   const statusDot = AGENT_STATUS_COLORS[agent.status] || "bg-gray-500";
   const statusText = AGENT_STATUS_TEXT_COLORS[agent.status] || "text-dim";
   const [copied, setCopied] = useState(false);
@@ -105,8 +106,8 @@ function AgentRow({ agent, onClick, starred, onToggleStar, project }) {
           {agent.last_message_preview || "No messages yet"}
         </p>
         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-          <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusDot}`} />
-          <span className={`text-xs lowercase ${statusText}`}>{agent.status.toLowerCase().replace("_", " ")}</span>
+          <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusDot}${isStreaming ? " animate-pulse" : ""}`} />
+          <span className={`text-xs lowercase ${statusText}`}>{isStreaming ? "streaming" : agent.status.toLowerCase().replace("_", " ")}</span>
           {agent.model && (
             <span className="text-[10px] text-faint font-medium px-1.5 py-0.5 rounded bg-elevated">
               {modelDisplayName(agent.model)}
@@ -368,6 +369,50 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const textareaRef = useRef(null);
 
   const [refreshing, setRefreshing] = useState(false);
+
+  // Track which agents are actively streaming via WebSocket
+  const { lastEvent } = useWebSocket();
+  const [streamingAgents, setStreamingAgents] = useState(new Set());
+  const streamTimers = useRef({});
+
+  useEffect(() => {
+    if (!lastEvent) return;
+    if (lastEvent.type === "agent_stream" && lastEvent.data?.agent_id) {
+      const aid = lastEvent.data.agent_id;
+      setStreamingAgents((prev) => {
+        if (prev.has(aid)) return prev;
+        const next = new Set(prev);
+        next.add(aid);
+        return next;
+      });
+      clearTimeout(streamTimers.current[aid]);
+      streamTimers.current[aid] = setTimeout(() => {
+        setStreamingAgents((prev) => {
+          if (!prev.has(aid)) return prev;
+          const next = new Set(prev);
+          next.delete(aid);
+          return next;
+        });
+      }, 4000);
+    }
+    if (lastEvent.type === "agent_update" && lastEvent.data?.agent_id) {
+      const aid = lastEvent.data.agent_id;
+      const s = lastEvent.data.status;
+      if (s !== "EXECUTING" && s !== "SYNCING") {
+        clearTimeout(streamTimers.current[aid]);
+        setStreamingAgents((prev) => {
+          if (!prev.has(aid)) return prev;
+          const next = new Set(prev);
+          next.delete(aid);
+          return next;
+        });
+      }
+    }
+  }, [lastEvent]);
+
+  useEffect(() => {
+    return () => Object.values(streamTimers.current).forEach(clearTimeout);
+  }, []);
 
   // Rename
   const [editingName, setEditingName] = useState(false);
@@ -928,6 +973,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                 agent={agent}
                 project={name}
                 starred={starredIds.has(agent.session_id || agent.id)}
+                isStreaming={streamingAgents.has(agent.id)}
                 onClick={() => navigate(`/agents/${agent.id}`)}
                 onToggleStar={(sid, newStarred) => {
                   setStarredIds((prev) => {

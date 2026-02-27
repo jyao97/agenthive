@@ -6,6 +6,7 @@ import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, POLL_INTERVAL, modelDisp
 import BotIcon from "../components/BotIcon";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
+import useWebSocket from "../hooks/useWebSocket";
 
 const FILTER_TABS = [
   { key: "ALL", label: "All" },
@@ -22,7 +23,7 @@ function agentBotState(status) {
   return "idle";
 }
 
-function AgentRow({ agent, onClick, selecting, selected, onToggle }) {
+function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }) {
   const state = agentBotState(agent.status);
   const statusDotColor = AGENT_STATUS_COLORS[agent.status] || "bg-gray-500";
   const statusTextColor = AGENT_STATUS_TEXT_COLORS[agent.status] || "text-dim";
@@ -101,8 +102,10 @@ function AgentRow({ agent, onClick, selecting, selected, onToggle }) {
           )}
         </div>
         <div className="flex items-center gap-1.5 mt-1.5">
-          <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusDotColor}`} />
-          <span className={`text-xs lowercase ${statusTextColor}`}>{agent.status.toLowerCase().replace("_", " ")}</span>
+          <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusDotColor}${isStreaming ? " animate-pulse" : ""}`} />
+          <span className={`text-xs lowercase ${statusTextColor}`}>
+            {isStreaming ? "streaming" : agent.status.toLowerCase().replace("_", " ")}
+          </span>
           {agent.model && (
             <span className="text-[10px] text-faint font-medium px-1.5 py-0.5 rounded bg-elevated ml-auto">
               {modelDisplayName(agent.model)}
@@ -123,6 +126,52 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   const [filter, setFilter] = useState("ALL");
   const [search, setSearch] = useState("");
   const pollRef = useRef(null);
+
+  // Track which agents are actively streaming via WebSocket
+  const { lastEvent } = useWebSocket();
+  const [streamingAgents, setStreamingAgents] = useState(new Set());
+  const streamTimers = useRef({});
+
+  useEffect(() => {
+    if (!lastEvent) return;
+    if (lastEvent.type === "agent_stream" && lastEvent.data?.agent_id) {
+      const aid = lastEvent.data.agent_id;
+      setStreamingAgents((prev) => {
+        if (prev.has(aid)) return prev;
+        const next = new Set(prev);
+        next.add(aid);
+        return next;
+      });
+      // Clear after 4s of no stream events for this agent
+      clearTimeout(streamTimers.current[aid]);
+      streamTimers.current[aid] = setTimeout(() => {
+        setStreamingAgents((prev) => {
+          if (!prev.has(aid)) return prev;
+          const next = new Set(prev);
+          next.delete(aid);
+          return next;
+        });
+      }, 4000);
+    }
+    // Clear streaming on status change away from active states
+    if (lastEvent.type === "agent_update" && lastEvent.data?.agent_id) {
+      const aid = lastEvent.data.agent_id;
+      const s = lastEvent.data.status;
+      if (s !== "EXECUTING" && s !== "SYNCING") {
+        clearTimeout(streamTimers.current[aid]);
+        setStreamingAgents((prev) => {
+          if (!prev.has(aid)) return prev;
+          const next = new Set(prev);
+          next.delete(aid);
+          return next;
+        });
+      }
+    }
+  }, [lastEvent]);
+
+  useEffect(() => {
+    return () => Object.values(streamTimers.current).forEach(clearTimeout);
+  }, []);
 
   // Multi-select state
   const [selecting, setSelecting] = useState(false);
@@ -469,6 +518,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
             selecting={selecting}
             selected={selected.has(agent.id)}
             onToggle={toggleOne}
+            isStreaming={streamingAgents.has(agent.id)}
           />
         ))}
 
