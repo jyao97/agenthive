@@ -51,6 +51,42 @@ def _short_path(path: str) -> str:
     return "/".join(parts[-2:])
 
 
+def _derive_selected_index(item: dict) -> None:
+    """Derive selected_index from an interactive item's answer text.
+
+    For ask_user_question, matches the ="label" pattern against options.
+    For exit_plan_mode, uses keyword matching on the answer.
+    """
+    answer = item.get("answer")
+    if not answer or not isinstance(answer, str):
+        return
+    if item.get("selected_index") is not None:
+        return  # Already set
+    if item.get("type") == "ask_user_question":
+        questions = item.get("questions", [])
+        if questions:
+            options = questions[0].get("options", [])
+            # Find all ="label" patterns, try last match first (most likely the answer)
+            matches = re.findall(r'="([^"]+)"', answer)
+            for label in reversed(matches):
+                for oi, opt in enumerate(options):
+                    if opt.get("label") == label:
+                        item["selected_index"] = oi
+                        return
+    elif item.get("type") == "exit_plan_mode":
+        a = answer.lower().strip()
+        if "clear context" in a:
+            item["selected_index"] = 0
+        elif "bypass" in a and "clear" not in a and "manual" not in a:
+            item["selected_index"] = 1
+        elif "manual" in a:
+            item["selected_index"] = 2
+        elif "feedback" in a or "type here" in a:
+            item["selected_index"] = 3
+        else:
+            item["selected_index"] = 0
+
+
 def _format_tool_summary(name: str, input_data: dict) -> str | None:
     """Format a tool call as a brief one-line markdown summary."""
     if name == "Bash":
@@ -160,8 +196,12 @@ def _parse_stream_parts(
                                         for b in rc
                                     ).strip()
                                 interactive_by_id[tid]["answer"] = rc
+                                _derive_selected_index(interactive_by_id[tid])
 
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except json.JSONDecodeError:
+            continue  # expected: partial/truncated lines during streaming
+        except (KeyError, TypeError):
+            logger.warning("_parse_stream_parts: unexpected error parsing line: %s", line[:200], exc_info=True)
             continue
     return parts, result_event, interactive_items
 
@@ -239,7 +279,10 @@ def _is_result_error(logs: str) -> bool:
             if event.get("type") == "result":
                 found_result = True
                 return event.get("is_error", False)
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except json.JSONDecodeError:
+            continue
+        except (KeyError, TypeError):
+            logger.warning("_is_result_error: unexpected error parsing line: %s", line[:200], exc_info=True)
             continue
     # No result event at all — CLI likely crashed before producing output
     return not found_result and len(logs.strip()) > 0
@@ -255,7 +298,7 @@ def _extract_session_id(logs: str) -> str | None:
             event = json.loads(line)
             if event.get("type") == "result" and event.get("session_id"):
                 return event["session_id"]
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except json.JSONDecodeError:
             continue
     return None
 
@@ -278,7 +321,7 @@ def _extract_session_id_from_output(output_file: str) -> str | None:
                     sid = event.get("session_id")
                     if sid:
                         return sid
-                except (json.JSONDecodeError, KeyError, TypeError):
+                except json.JSONDecodeError:
                     continue
     except OSError as e:
         logger.debug("_extract_session_id_from_output: failed to read %s: %s", output_file, e)
@@ -299,7 +342,7 @@ def _parse_session_model(jsonl_path: str) -> str | None:
                         model = entry.get("message", {}).get("model")
                         if model:
                             return model
-                except (json.JSONDecodeError, KeyError, TypeError):
+                except json.JSONDecodeError:
                     continue
     except OSError as e:
         logger.debug("_parse_session_model: failed to read %s: %s", jsonl_path, e)
@@ -396,15 +439,16 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
     interactive_by_id: dict[str, dict] = {}
 
     def flush_assistant():
-        if assistant_parts:
-            text = _format_parts(assistant_parts)
-            if text.strip():
-                meta = None
-                if pending_interactive:
-                    meta = {"interactive": list(pending_interactive)}
-                turns.append(("assistant", text, meta))
-            assistant_parts.clear()
-            pending_interactive.clear()
+        if not assistant_parts and not pending_interactive:
+            return
+        text = _format_parts(assistant_parts) if assistant_parts else ""
+        meta = None
+        if pending_interactive:
+            meta = {"interactive": list(pending_interactive)}
+        if text.strip() or meta:
+            turns.append(("assistant", text.strip() if text else "", meta))
+        assistant_parts.clear()
+        pending_interactive.clear()
 
     for line in lines:
         line = line.strip()
@@ -437,6 +481,11 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
                                     for b in result_content
                                 ).strip() or ""
                             interactive_by_id[tool_use_id]["answer"] = result_content
+                            # Derive selected_index from the answer text
+                            _derive_selected_index(interactive_by_id[tool_use_id])
+                            # Flush so each interactive Q&A becomes its
+                            # own message bubble instead of one giant block.
+                            flush_assistant()
                 continue
             # Real user message = string content (not tool_result list)
             if isinstance(content, str) and content.strip():
@@ -475,23 +524,25 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
                     tool_input = block.get("input", {})
                     tool_use_id = block.get("id", "")
 
-                    # Capture interactive tool calls
-                    if tool_name == "AskUserQuestion":
-                        entry_data = {
-                            "type": "ask_user_question",
-                            "tool_use_id": tool_use_id,
-                            "questions": tool_input.get("questions", []),
-                            "answer": None,
-                        }
-                        pending_interactive.append(entry_data)
-                        interactive_by_id[tool_use_id] = entry_data
-                    elif tool_name == "ExitPlanMode":
-                        entry_data = {
-                            "type": "exit_plan_mode",
-                            "tool_use_id": tool_use_id,
-                            "allowedPrompts": tool_input.get("allowedPrompts", []),
-                            "answer": None,
-                        }
+                    # Capture interactive tool calls — flush accumulated
+                    # text/tool parts first so the card gets its own bubble.
+                    if tool_name in ("AskUserQuestion", "ExitPlanMode"):
+                        # Flush preceding content into its own message
+                        flush_assistant()
+                        if tool_name == "AskUserQuestion":
+                            entry_data = {
+                                "type": "ask_user_question",
+                                "tool_use_id": tool_use_id,
+                                "questions": tool_input.get("questions", []),
+                                "answer": None,
+                            }
+                        else:
+                            entry_data = {
+                                "type": "exit_plan_mode",
+                                "tool_use_id": tool_use_id,
+                                "allowedPrompts": tool_input.get("allowedPrompts", []),
+                                "answer": None,
+                            }
                         pending_interactive.append(entry_data)
                         interactive_by_id[tool_use_id] = entry_data
 
@@ -576,7 +627,8 @@ def _update_stale_interactive_metadata(
     for msg in db_msgs:
         try:
             meta = json.loads(msg.meta_json)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning("_update_stale_interactive_metadata: bad meta_json for msg %s: %s", msg.id, e)
             continue
         items = meta.get("interactive")
         if not items:
@@ -586,6 +638,7 @@ def _update_stale_interactive_metadata(
             tid = item.get("tool_use_id", "")
             if item.get("answer") is None and tid in answered:
                 item["answer"] = answered[tid]
+                _derive_selected_index(item)
                 msg_changed = True
         if msg_changed:
             msg.meta_json = json.dumps(meta)
@@ -593,6 +646,37 @@ def _update_stale_interactive_metadata(
 
     if updated:
         db.commit()
+
+    # 3. Also backfill interactive metadata onto AGENT messages that were
+    #    created before the parser produced metadata.  Match by content prefix.
+    turns_with_meta = [
+        (content, meta)
+        for _role, content, meta in turns
+        if _role == "assistant" and meta and meta.get("interactive")
+    ]
+    if turns_with_meta:
+        agent_msgs = db.query(Message).filter(
+            Message.agent_id == agent_id,
+            Message.role == MessageRole.AGENT,
+            Message.meta_json.is_(None),
+        ).all()
+        for msg in agent_msgs:
+            for turn_content, turn_meta in turns_with_meta:
+                # Match by content prefix (DB msg may be truncated/shorter)
+                if (
+                    msg.content
+                    and turn_content
+                    and (
+                        msg.content[:100] == turn_content[:100]
+                        or turn_content.startswith(msg.content[:100])
+                        or msg.content.startswith(turn_content[:100])
+                    )
+                ):
+                    msg.meta_json = json.dumps(turn_meta)
+                    updated = True
+                    break
+        if updated:
+            db.commit()
 
     return updated
 
@@ -1060,6 +1144,7 @@ class AgentDispatcher:
     async def run(self):
         """Start the agent dispatcher loop."""
         self.running = True
+        _consecutive_failures = 0
         logger.info("Agent dispatcher started")
 
         self._recover_agents()
@@ -1075,8 +1160,19 @@ class AgentDispatcher:
                     self._tick(db)
                 finally:
                     db.close()
+                _consecutive_failures = 0
             except Exception:
-                logger.exception("Agent dispatcher tick failed")
+                _consecutive_failures += 1
+                logger.exception(
+                    "Agent dispatcher tick failed (%d consecutive failures)",
+                    _consecutive_failures,
+                )
+                if _consecutive_failures >= 10:
+                    logger.critical(
+                        "Agent dispatcher: %d consecutive failures — stopping to avoid silent corruption",
+                        _consecutive_failures,
+                    )
+                    break
             await asyncio.sleep(2)
 
         logger.info("Agent dispatcher stopped")

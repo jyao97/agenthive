@@ -272,6 +272,10 @@ _AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/api/files/
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Reject unauthenticated requests to protected endpoints."""
+    # Allow DISABLE_AUTH=1 for development/testing
+    if os.environ.get("DISABLE_AUTH", "").strip() in ("1", "true", "yes"):
+        return await call_next(request)
+
     path = request.url.path
 
     # Skip auth for exempt paths and non-API static assets
@@ -316,6 +320,8 @@ app.websocket("/ws/status")(websocket_endpoint)
 @app.post("/api/auth/check")
 async def auth_check(request: Request, db: Session = Depends(get_db)):
     """Check auth state — returns whether password is set and if token is valid."""
+    if os.environ.get("DISABLE_AUTH", "").strip() in ("1", "true", "yes"):
+        return {"authenticated": True, "needs_setup": False}
     pw_hash = get_password_hash(db)
     if pw_hash is None:
         return {"authenticated": False, "needs_setup": True}
@@ -2618,6 +2624,62 @@ class AnswerPayload(BaseModel):
     selected_index: int | None = None  # 0-based option index (AskUserQuestion)
     approved: bool | None = None  # (ExitPlanMode only)
 
+
+_PLAN_LABELS = [
+    "Yes, clear context & bypass",
+    "Yes, bypass permissions",
+    "Yes, manual approval",
+    "Give feedback",
+]
+
+
+def _patch_interactive_answer(
+    db: Session, agent_id: str, tool_use_id: str,
+    selected_index: int, answer_type: str,
+):
+    """Immediately mark an interactive item as answered in the DB.
+
+    Builds an answer string from the selected option so the frontend can
+    render the selection without waiting for the sync loop to pick up the
+    tool_result from the session JSONL.
+    """
+    msgs = db.query(Message).filter(
+        Message.agent_id == agent_id,
+        Message.meta_json.is_not(None),
+    ).order_by(Message.created_at.desc()).limit(10).all()
+
+    for msg in msgs:
+        try:
+            meta = json.loads(msg.meta_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        items = meta.get("interactive")
+        if not items:
+            continue
+        for item in items:
+            if item.get("tool_use_id") != tool_use_id:
+                continue
+            if item.get("answer") is not None:
+                return  # Already answered
+            # Store the numeric index for reliable frontend matching
+            item["selected_index"] = selected_index
+            # Build an answer string that matches what the sync loop produces
+            if answer_type == "ask_user_question":
+                questions = item.get("questions", [])
+                if questions:
+                    q = questions[0]
+                    options = q.get("options", [])
+                    label = options[selected_index]["label"] if selected_index < len(options) else str(selected_index)
+                    item["answer"] = f'"{q.get("question", "")}"="{label}"'
+                else:
+                    item["answer"] = str(selected_index)
+            elif answer_type == "exit_plan_mode":
+                item["answer"] = _PLAN_LABELS[selected_index] if selected_index < len(_PLAN_LABELS) else str(selected_index)
+            msg.meta_json = json.dumps(meta)
+            db.commit()
+            return
+
+
 @app.post("/api/agents/{agent_id}/answer")
 async def answer_agent_interactive(
     agent_id: str,
@@ -2649,24 +2711,33 @@ async def answer_agent_interactive(
         keys = ["Down"] * body.selected_index + ["Enter"]
         if not send_tmux_keys(pane_id, keys):
             raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
+        # Immediately mark the answer in the DB so the UI updates without
+        # waiting for the next sync loop cycle.
+        _patch_interactive_answer(db, agent_id, body.tool_use_id, body.selected_index, body.type)
         return {"detail": "ok", "keys_sent": len(keys)}
 
     elif body.type == "exit_plan_mode":
-        # Claude Code shows 4 plan options navigated with arrow keys:
-        # 0: "Yes" (approve), 1: "Yes, but make changes", 2: "No" (reject),
-        # 3: "Give feedback on the plan"
+        # Claude Code TUI plan approval options (arrow-navigated):
+        # 0: "Yes, clear context and bypass permissions"
+        # 1: "Yes, and bypass permissions"
+        # 2: "Yes, manually approve edits"
+        # 3: "Type here to tell Claude what to change"
         if body.selected_index is not None and body.selected_index >= 0:
             if body.selected_index > MAX_INDEX:
                 raise HTTPException(status_code=400, detail=f"selected_index too large (max {MAX_INDEX})")
             keys = ["Down"] * body.selected_index + ["Enter"]
         elif body.approved is True:
-            keys = ["Enter"]  # legacy: approve = first option
+            keys = ["Enter"]  # legacy: approve = first option (clear context + bypass)
         elif body.approved is False:
-            keys = ["Down", "Down", "Enter"]  # legacy: reject = 3rd option
+            keys = ["Down", "Down", "Enter"]  # legacy: reject → manual approval (safest)
         else:
             raise HTTPException(status_code=400, detail="selected_index or approved required for exit_plan_mode")
         if not send_tmux_keys(pane_id, keys):
             raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
+        effective_index = body.selected_index
+        if effective_index is None:
+            effective_index = 0 if body.approved else 2
+        _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
         return {"detail": "ok", "keys_sent": len(keys)}
 
     else:

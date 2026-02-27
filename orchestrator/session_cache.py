@@ -278,8 +278,8 @@ def cache_session(session_id: str, project_path: str) -> bool:
                 tmp_path = jsonl_dst + ".tmp"
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
-            except OSError:
-                pass
+            except OSError as _cleanup_err:
+                logger.debug("Cleanup failed: %s", _cleanup_err)
 
     # Copy subdirectory once (subagents, tool-results)
     if subdir_needed:
@@ -298,8 +298,8 @@ def cache_session(session_id: str, project_path: str) -> bool:
             )
             try:
                 shutil.rmtree(tmp_subdir)
-            except OSError:
-                pass
+            except OSError as _cleanup_err:
+                logger.debug("Cleanup failed: %s", _cleanup_err)
 
     return cached
 

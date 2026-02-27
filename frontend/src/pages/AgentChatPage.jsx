@@ -84,13 +84,16 @@ function SystemBubble({ message }) {
 // --- Interactive: AskUserQuestion ---
 
 function QuestionBubble({ item, agentId, onAnswered }) {
-  const [selected, setSelected] = useState(null);
+  // Track locally chosen index so the selection sticks immediately
+  // (before the DB roundtrip updates item.answer).
+  const [chosenIdx, setChosenIdx] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const isAnswered = item.answer != null;
+  const isAnswered = item.answer != null || item.selected_index != null || chosenIdx != null;
   const questions = item.questions || [];
 
   const handleSubmit = async (idx) => {
+    setChosenIdx(idx);
     setSubmitting(true);
     try {
       await answerAgent(agentId, {
@@ -101,6 +104,7 @@ function QuestionBubble({ item, agentId, onAnswered }) {
       onAnswered?.();
     } catch (e) {
       console.error("Failed to answer:", e);
+      setChosenIdx(null); // revert on failure
     } finally {
       setSubmitting(false);
     }
@@ -109,33 +113,42 @@ function QuestionBubble({ item, agentId, onAnswered }) {
   return (
     <div className="mt-3 space-y-3">
       {questions.map((q, qi) => {
-        // Parse answered value to find selected option
-        let answeredLabel = null;
-        if (isAnswered && typeof item.answer === "string") {
-          // Format: "\"question?\"=\"Option A\"" or plain "Option A"
-          const match = item.answer.match(/="([^"]+)"$/);
-          if (match) {
-            answeredLabel = match[1];
-          } else {
-            // Fallback: try to match the answer directly against option labels
-            const trimmed = item.answer.trim().replace(/^"|"$/g, "");
-            if (trimmed) answeredLabel = trimmed;
+        // Determine which option is the answer — prefer stored index > label match > local
+        let answeredIdx = null;
+        // 1. Best: backend stored the numeric index directly
+        if (item.selected_index != null) {
+          answeredIdx = item.selected_index;
+        }
+        // 2. Parse the answer string for ="label" pattern
+        if (answeredIdx == null && item.answer != null && typeof item.answer === "string") {
+          const allMatches = [...item.answer.matchAll(/="([^"]+)"/g)];
+          for (let i = allMatches.length - 1; i >= 0; i--) {
+            const idx = (q.options || []).findIndex((o) => o.label === allMatches[i][1]);
+            if (idx !== -1) { answeredIdx = idx; break; }
           }
         }
+        // 3. Local optimistic choice
+        if (answeredIdx == null && chosenIdx != null) answeredIdx = chosenIdx;
 
         return (
           <div key={qi} className="rounded-xl bg-indigo-500/10 border border-indigo-500/20 p-3">
-            {q.header && (
-              <span className="inline-block px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 text-[10px] font-semibold uppercase tracking-wider mb-1.5">
-                {q.header}
-              </span>
-            )}
+            <div className="flex items-center gap-2 mb-1.5">
+              {q.header && (
+                <span className="inline-block px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 text-[10px] font-semibold uppercase tracking-wider">
+                  {q.header}
+                </span>
+              )}
+              {isAnswered && (
+                <span className="ml-auto px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-semibold uppercase tracking-wider">
+                  Choice Sent
+                </span>
+              )}
+            </div>
             <p className="text-sm text-heading font-medium mb-2">{q.question}</p>
             <div className="space-y-1.5">
               {(q.options || []).map((opt, oi) => {
-                const isSelected = selected === oi;
-                const isAnsweredOption = answeredLabel === opt.label;
-                const dimmed = isAnswered && !isAnsweredOption;
+                const isChosen = answeredIdx === oi;
+                const dimmed = isAnswered && !isChosen;
 
                 return (
                   <button
@@ -143,26 +156,21 @@ function QuestionBubble({ item, agentId, onAnswered }) {
                     type="button"
                     disabled={isAnswered || submitting}
                     onClick={() => {
-                      if (!isAnswered) {
-                        setSelected(oi);
-                        handleSubmit(oi);
-                      }
+                      if (!isAnswered) handleSubmit(oi);
                     }}
                     className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-all border ${
-                      isAnsweredOption
+                      isChosen
                         ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-200"
-                        : isSelected
-                          ? "bg-indigo-500/20 border-indigo-500/40 text-heading"
-                          : dimmed
-                            ? "bg-surface/30 border-divider/30 text-dim/50"
-                            : "bg-surface/50 border-divider hover:bg-hover hover:border-heading/20 text-body"
+                        : dimmed
+                          ? "bg-surface/30 border-divider/30 text-dim/50"
+                          : "bg-surface/50 border-divider hover:bg-hover hover:border-heading/20 text-body"
                     } ${isAnswered ? "cursor-default" : "cursor-pointer"}`}
                   >
                     <div className="flex items-start gap-2">
                       <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
-                        isAnsweredOption ? "border-cyan-400 bg-cyan-400" : isSelected ? "border-indigo-400 bg-indigo-400" : "border-dim/40"
+                        isChosen ? "border-cyan-400 bg-cyan-400" : "border-dim/40"
                       }`}>
-                        {(isAnsweredOption || isSelected) && (
+                        {isChosen && (
                           <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
                             <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                           </svg>
@@ -194,33 +202,37 @@ function QuestionBubble({ item, agentId, onAnswered }) {
 
 // --- Interactive: ExitPlanMode ---
 
+// Must match the exact order Claude CLI shows in the ExitPlanMode TUI
 const PLAN_OPTIONS = [
-  { label: "Yes", description: "Approve and start implementing", color: "emerald" },
-  { label: "Yes, but make changes", description: "Approve with edits to the plan", color: "amber" },
-  { label: "No", description: "Reject the plan", color: "red" },
-  { label: "Give feedback", description: "Provide text input on the plan", color: "indigo" },
+  { label: "Yes, clear context & bypass", description: "Approve, compact context, and skip permission prompts", color: "emerald" },
+  { label: "Yes, bypass permissions", description: "Approve and skip permission prompts", color: "emerald" },
+  { label: "Yes, manual approval", description: "Approve but require manual approval for each edit", color: "amber" },
+  { label: "Give feedback", description: "Type feedback for Claude to revise the plan", color: "indigo" },
 ];
 
+function _detectPlanIdx(answer) {
+  if (answer == null || typeof answer !== "string") return null;
+  const a = answer.toLowerCase().trim();
+  if (/clear context/.test(a)) return 0;
+  if (/bypass/.test(a) && !/clear/.test(a) && !/manual/.test(a)) return 1;
+  if (/manual/.test(a)) return 2;
+  if (/feedback|type here|tell claude/.test(a)) return 3;
+  if (/^yes\b/.test(a) || a === "approve" || a === "approved") return 0;
+  if (/^no\b/.test(a) || a === "reject") return 2;
+  return 0; // default to first option
+}
+
 function PlanBubble({ item, agentId, onAnswered }) {
+  const [chosenIdx, setChosenIdx] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const [selectedIdx, setSelectedIdx] = useState(null);
 
-  const isAnswered = item.answer != null;
-
-  // Detect which option was selected from the answer text
-  let answeredIdx = null;
-  if (isAnswered && typeof item.answer === "string") {
-    const a = item.answer.toLowerCase().trim();
-    // Try exact/prefix match first against known labels
-    if (/^(yes,?\s+but|make changes)/.test(a)) answeredIdx = 1;
-    else if (/^(give feedback|feedback)/.test(a)) answeredIdx = 3;
-    else if (/^no\b/.test(a) || a === "reject") answeredIdx = 2;
-    else if (/^yes\b/.test(a) || a === "approve" || a === "approved") answeredIdx = 0;
-    else answeredIdx = 0; // default to approved
-  }
+  // Determine the effective selected index: stored index > answer parse > local choice
+  const serverIdx = item.selected_index ?? (item.answer != null ? _detectPlanIdx(item.answer) : null);
+  const effectiveIdx = serverIdx ?? chosenIdx;
+  const isAnswered = effectiveIdx != null;
 
   const handleSelect = async (idx) => {
-    setSelectedIdx(idx);
+    setChosenIdx(idx);
     setSubmitting(true);
     try {
       await answerAgent(agentId, {
@@ -231,9 +243,16 @@ function PlanBubble({ item, agentId, onAnswered }) {
       onAnswered?.();
     } catch (e) {
       console.error("Failed to answer plan:", e);
+      setChosenIdx(null); // revert on failure
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const colorMap = {
+    emerald: { active: "bg-emerald-500/20 border-emerald-500/40 text-emerald-200", dot: "border-emerald-400 bg-emerald-400" },
+    amber: { active: "bg-amber-500/20 border-amber-500/40 text-amber-200", dot: "border-amber-400 bg-amber-400" },
+    indigo: { active: "bg-indigo-500/20 border-indigo-500/40 text-indigo-200", dot: "border-indigo-400 bg-indigo-400" },
   };
 
   return (
@@ -243,30 +262,22 @@ function PlanBubble({ item, agentId, onAnswered }) {
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
         <span className="text-sm font-medium text-amber-300">Plan Approval</span>
-        {isAnswered && answeredIdx != null && (
+        {isAnswered && (
           <span className={`ml-auto px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
-            answeredIdx === 0
+            effectiveIdx <= 1
               ? "bg-emerald-500/20 text-emerald-300"
-              : answeredIdx === 2
-                ? "bg-red-500/20 text-red-300"
+              : effectiveIdx === 3
+                ? "bg-indigo-500/20 text-indigo-300"
                 : "bg-amber-500/20 text-amber-300"
           }`}>
-            {PLAN_OPTIONS[answeredIdx].label}
+            Choice Sent
           </span>
         )}
       </div>
       <div className="space-y-1.5">
         {PLAN_OPTIONS.map((opt, oi) => {
-          const isSelected = selectedIdx === oi;
-          const isAnsweredOption = answeredIdx === oi;
-          const dimmed = isAnswered && !isAnsweredOption;
-
-          const colorMap = {
-            emerald: { active: "bg-emerald-500/20 border-emerald-500/40 text-emerald-200", dot: "border-emerald-400 bg-emerald-400" },
-            amber: { active: "bg-amber-500/20 border-amber-500/40 text-amber-200", dot: "border-amber-400 bg-amber-400" },
-            red: { active: "bg-red-500/20 border-red-500/40 text-red-200", dot: "border-red-400 bg-red-400" },
-            indigo: { active: "bg-indigo-500/20 border-indigo-500/40 text-indigo-200", dot: "border-indigo-400 bg-indigo-400" },
-          };
+          const isChosen = effectiveIdx === oi;
+          const dimmed = isAnswered && !isChosen;
           const colors = colorMap[opt.color] || colorMap.indigo;
 
           return (
@@ -276,20 +287,18 @@ function PlanBubble({ item, agentId, onAnswered }) {
               disabled={isAnswered || submitting}
               onClick={() => !isAnswered && handleSelect(oi)}
               className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-all border ${
-                isAnsweredOption
+                isChosen
                   ? colors.active
-                  : isSelected
-                    ? colors.active
-                    : dimmed
-                      ? "bg-surface/30 border-divider/30 text-dim/50"
-                      : "bg-surface/50 border-divider hover:bg-hover hover:border-heading/20 text-body"
+                  : dimmed
+                    ? "bg-surface/30 border-divider/30 text-dim/50"
+                    : "bg-surface/50 border-divider hover:bg-hover hover:border-heading/20 text-body"
               } ${isAnswered ? "cursor-default" : "cursor-pointer"}`}
             >
               <div className="flex items-start gap-2">
                 <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
-                  isAnsweredOption ? colors.dot : isSelected ? colors.dot : "border-dim/40"
+                  isChosen ? colors.dot : "border-dim/40"
                 }`}>
-                  {(isAnsweredOption || isSelected) && (
+                  {isChosen && (
                     <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
                       <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                     </svg>
@@ -318,12 +327,12 @@ function PlanBubble({ item, agentId, onAnswered }) {
 
 function InteractiveBubbles({ metadata, agentId, onAnswered }) {
   if (!metadata?.interactive?.length) return null;
-  return metadata.interactive.map((item, i) => {
+  return metadata.interactive.map((item) => {
     if (item.type === "ask_user_question") {
-      return <QuestionBubble key={i} item={item} agentId={agentId} onAnswered={onAnswered} />;
+      return <QuestionBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} />;
     }
     if (item.type === "exit_plan_mode") {
-      return <PlanBubble key={i} item={item} agentId={agentId} onAnswered={onAnswered} />;
+      return <PlanBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} />;
     }
     return null;
   });

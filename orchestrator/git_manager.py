@@ -35,7 +35,7 @@ class GitManager:
                 if stderr:
                     logger.warning("Git command failed for %s: %s", project_name, stderr)
                     return f"ERROR: {stderr}"
-            return result.stdout.strip()
+            return result.stdout.rstrip()
         except FileNotFoundError:
             msg = f"Project directory not found: {cwd}"
             logger.warning(msg)
