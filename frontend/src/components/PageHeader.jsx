@@ -15,7 +15,7 @@ const MoonIcon = (
   </svg>
 );
 
-export default function PageHeader({ title, theme, onToggleTheme, actions, children }) {
+export default function PageHeader({ title, theme, onToggleTheme, actions, selectAction, children }) {
   const navigate = useNavigate();
   const health = useHealthStatus();
   const [restarting, setRestarting] = useState(false);
@@ -52,19 +52,33 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, child
             setRestarting(true);
             try {
               await restartServer();
-              // Poll until the new server is up, then reload the page
+              // Wait for old server to die before polling.
+              // _delayed_restart sleeps 0.5s then kills processes,
+              // so the old server can respond for ~1-2s after we get the response.
               let attempts = 0;
+              let sawDown = false;
+              let consecutiveOk = 0;
               const poll = setInterval(async () => {
                 attempts++;
                 try {
-                  await fetchHealth();
-                  clearInterval(poll);
-                  window.location.reload();
+                  const h = await fetchHealth();
+                  if (!sawDown) {
+                    // Still hitting old server — ignore until we see it go down
+                    return;
+                  }
+                  // Server is back — require 2 consecutive OKs to be sure
+                  consecutiveOk++;
+                  if (consecutiveOk >= 2 && h?.status === "ok") {
+                    clearInterval(poll);
+                    window.location.reload();
+                  }
                 } catch {
-                  if (attempts > 30) {
+                  sawDown = true;
+                  consecutiveOk = 0;
+                  if (attempts > 60) {
                     clearInterval(poll);
                     setRestarting(false);
-                    alert("Server did not come back after 30s. Check logs.");
+                    alert("Server did not come back after 60s. Check logs.");
                   }
                 }
               }, 1000);
@@ -79,6 +93,7 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, child
             <path strokeLinecap="round" strokeLinejoin="round" d="M5.636 5.636a9 9 0 1012.728 0M12 3v9" />
           </svg>
         </button>
+        {selectAction}
         {onToggleTheme && (
           <button
             type="button"

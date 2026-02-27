@@ -395,6 +395,7 @@ def _resolve_session_jsonl(
 
     Worktree agents store session files in a separate Claude projects
     directory based on the worktree CWD, not the project root.
+    When *worktree* is None, scans all worktree directories as a fallback.
     """
     jsonl_path = os.path.join(
         session_source_dir(project_path), f"{session_id}.jsonl"
@@ -408,7 +409,45 @@ def _resolve_session_jsonl(
         )
         if os.path.isfile(wt_jsonl):
             return wt_jsonl
+    else:
+        # No worktree specified — scan all worktree directories as fallback
+        wt_base = os.path.join(project_path, ".claude", "worktrees")
+        if os.path.isdir(wt_base):
+            try:
+                for name in os.listdir(wt_base):
+                    wt_path = os.path.join(wt_base, name)
+                    if os.path.isdir(wt_path):
+                        wt_jsonl = os.path.join(
+                            session_source_dir(wt_path), f"{session_id}.jsonl"
+                        )
+                        if os.path.isfile(wt_jsonl):
+                            return wt_jsonl
+            except OSError:
+                pass
     return jsonl_path  # return original path even if not found
+
+
+def _infer_worktree_from_session(
+    session_id: str,
+    project_path: str,
+) -> str | None:
+    """Try to determine which worktree a session belongs to by scanning
+    worktree session directories.  Returns the worktree name or None."""
+    wt_base = os.path.join(project_path, ".claude", "worktrees")
+    if not os.path.isdir(wt_base):
+        return None
+    try:
+        for name in os.listdir(wt_base):
+            wt_path = os.path.join(wt_base, name)
+            if os.path.isdir(wt_path):
+                wt_jsonl = os.path.join(
+                    session_source_dir(wt_path), f"{session_id}.jsonl"
+                )
+                if os.path.isfile(wt_jsonl):
+                    return name
+    except OSError:
+        pass
+    return None
 
 
 def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
@@ -691,22 +730,37 @@ _CLAUDE_DEBUG_DIR = os.path.join(CLAUDE_HOME, "debug")
 def _get_session_pid(session_id: str) -> int | None:
     """Extract the PID that owns a session from its debug log.
 
-    Claude Code writes ``~/.claude/debug/{session_id}.txt`` and the first
-    line matching ``Acquired PID lock for ... (PID \\d+)`` tells us which
-    OS process owns the session.
+    Claude Code writes ``~/.claude/debug/{session_id}.txt``.  We check
+    (in priority order):
+
+    1. ``Acquired PID lock for ... (PID \\d+)`` — only present when
+       the process successfully acquires the version lock (first launch).
+    2. ``Writing to temp file: .../.claude.json.tmp.{PID}.{timestamp}``
+       — always present regardless of lock acquisition.
+
+    Fallback (2) is needed because concurrent claude processes report
+    "Cannot acquire lock" instead of "Acquired PID lock".
     """
     debug_file = os.path.join(_CLAUDE_DEBUG_DIR, f"{session_id}.txt")
     try:
+        fallback_pid = None
         with open(debug_file, "r") as f:
             for line in f:
                 if "Acquired PID lock" in line:
                     m = re.search(r"\(PID (\d+)\)", line)
                     if m:
                         pid = int(m.group(1))
-                        # Verify process is still alive
                         if os.path.exists(f"/proc/{pid}"):
                             return pid
                         return None
+                elif fallback_pid is None and ".claude.json.tmp." in line:
+                    # Pattern: .claude.json.tmp.{PID}.{timestamp}
+                    m = re.search(r"\.claude\.json\.tmp\.(\d+)\.", line)
+                    if m:
+                        fallback_pid = int(m.group(1))
+        # Use fallback PID if primary wasn't found
+        if fallback_pid is not None and os.path.exists(f"/proc/{fallback_pid}"):
+            return fallback_pid
     except OSError as e:
         logger.debug("_get_session_pid: failed to read debug file for session %s: %s", session_id, e)
     return None
@@ -749,9 +803,13 @@ def _build_tmux_claude_map() -> dict[str, dict]:
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
+            logger.warning(
+                "_build_tmux_claude_map: tmux list-panes returned %d: %s",
+                result.returncode, result.stderr.strip(),
+            )
             return {}
     except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
-        logger.debug("_build_tmux_claude_map: tmux list-panes failed: %s", e)
+        logger.warning("_build_tmux_claude_map: tmux list-panes failed: %s", e)
         return {}
 
     pane_map = {}
@@ -854,10 +912,13 @@ def _detect_tmux_pane_for_session(session_id: str, project_path: str) -> str | N
                                 pp = pline.split(None, 1)
                                 if len(pp) == 2 and pp[0] == tty:
                                     return pp[1]
-                except (OSError, ValueError):
+                except (OSError, ValueError) as e:
+                    logger.debug("Tier 1 pane detect: PID %d inspect failed: %s", pid, e)
                     continue
-    except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
-        logger.debug("Tier 1 pane detection failed for session %s: %s", session_id, e)
+    except _sp.TimeoutExpired as e:
+        logger.debug("Tier 1 pane detection timed out for session %s: %s", session_id, e)
+    except (FileNotFoundError, OSError) as e:
+        logger.warning("Tier 1 pane detection failed for session %s: %s", session_id, e)
 
     # ---- Tier 2: pane-first process tree walk ----
     pane_map = _build_tmux_claude_map()
@@ -1033,7 +1094,8 @@ def verify_tmux_pane(pane_id: str) -> bool:
             capture_output=True, text=True, timeout=5,
         )
         return result.returncode == 0 and result.stdout.strip() == pane_id
-    except (_sp.TimeoutExpired, FileNotFoundError, OSError):
+    except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning("verify_tmux_pane(%s) failed: %s", pane_id, e)
         return False
 
 
@@ -1074,6 +1136,20 @@ class AgentDispatcher:
         # Cache: tmux pane_id -> True if a human client is attached
         self._pane_attached: dict[str, bool] = {}
 
+        # Per-tick cache of _build_tmux_claude_map() to avoid spawning
+        # N+1 subprocesses multiple times per tick.
+        self._tmux_map_cache: dict[str, dict] | None = None
+
+    def _get_tmux_map(self) -> dict[str, dict]:
+        """Get the per-tick cached tmux pane→claude map.
+
+        Builds the map on first call per tick, then returns the cached copy.
+        Call self._tmux_map_cache = None at tick start to invalidate.
+        """
+        if self._tmux_map_cache is None:
+            self._tmux_map_cache = _build_tmux_claude_map()
+        return self._tmux_map_cache
+
     def _refresh_pane_attached(self):
         """Check which tmux panes have a human client attached."""
         import subprocess as sp
@@ -1092,7 +1168,8 @@ class AgentDispatcher:
                 if len(parts) == 2:
                     attached[parts[0]] = parts[1] != "0"
             self._pane_attached = attached
-        except (sp.TimeoutExpired, FileNotFoundError, OSError):
+        except (sp.TimeoutExpired, FileNotFoundError, OSError) as e:
+            logger.warning("_refresh_pane_attached: tmux list-panes failed: %s", e)
             self._pane_attached = {}
 
     def _is_agent_in_use(self, agent_id: str, tmux_pane: str | None = None) -> bool:
@@ -1187,6 +1264,9 @@ class AgentDispatcher:
             logger.warning("Failed to schedule WebSocket emit", exc_info=True)
 
     def _tick(self, db: Session):
+        # Invalidate per-tick tmux map cache
+        self._tmux_map_cache = None
+
         # Refresh tmux pane-attached cache for notification suppression
         self._refresh_pane_attached()
 
@@ -1209,11 +1289,12 @@ class AgentDispatcher:
         # 4b. Dispatch due scheduled messages to SYNCING agents via tmux
         self._dispatch_tmux_pending(db)
 
-        # 5. Auto-detect running CLI sessions + pane dedup (every ~30s)
+        # 5. Pane dedup + reap dead agents (every ~30s)
+        # Auto-detect disabled — agents are only created via UI or manual scan.
         self._cli_detect_counter += 1
         if self._cli_detect_counter >= self._cli_detect_interval:
             self._cli_detect_counter = 0
-            self._auto_detect_cli_sessions(db)
+            # self._auto_detect_cli_sessions(db)
             self._dedup_pane_agents(db)
             self._reap_dead_agents(db)
 
@@ -1353,6 +1434,20 @@ class AgentDispatcher:
                     done_agents.append(agent_id)
                     continue
 
+            # Guard: re-read agent status to check if it was stopped by
+            # the API while we were processing.  If so, don't overwrite.
+            # Save dirty attributes BEFORE refresh — db.refresh() with
+            # autoflush=False overwrites in-memory changes (like session_id
+            # set at line 1316) with stale DB values.
+            saved_session_id = agent.session_id
+            db.refresh(agent)
+            if agent.status == AgentStatus.STOPPED:
+                done_agents.append(agent_id)
+                continue
+            # Restore session_id that was extracted from the exec output.
+            # The refresh may have reverted it to the old DB value.
+            agent.session_id = saved_session_id
+
             # cli_sync agents return to SYNCING so the sync loop can
             # resume watching the session JSONL; others go to IDLE.
             post_exec_status = AgentStatus.SYNCING if agent.cli_sync else AgentStatus.IDLE
@@ -1487,7 +1582,10 @@ class AgentDispatcher:
                 )
                 db.add(sys_msg)
 
-                agent.status = AgentStatus.SYNCING if agent.cli_sync else AgentStatus.IDLE
+                # Guard: check agent wasn't stopped by API during timeout handling
+                db.refresh(agent)
+                if agent.status != AgentStatus.STOPPED:
+                    agent.status = AgentStatus.SYNCING if agent.cli_sync else AgentStatus.IDLE
                 agent.last_message_preview = f"Timed out after {int(idle_seconds)}s of inactivity"
                 agent.last_message_at = now
                 agent.unread_count += 1
@@ -1639,7 +1737,12 @@ class AgentDispatcher:
             for m in pending:
                 m.status = MessageStatus.FAILED
                 m.error_message = "Agent tmux session no longer exists"
-            db.commit()
+            # NOTE: removed db.commit() here — it was flushing ALL dirty
+            # objects in the session (including harvest changes from step 1),
+            # making re-queued messages visible to the dispatch query below
+            # and causing same-tick double-dispatch (Bug: duplicate AGENT
+            # responses).  The final db.commit() in _tick() handles
+            # everything atomically.
             self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
             logger.info(
                 "Stopped dead SYNCING agent %s — tmux pane gone", agent.id,
@@ -1685,6 +1788,20 @@ class AgentDispatcher:
             if not pending_msg:
                 continue
 
+            # Defense-in-depth: skip if this message is already being
+            # executed by another active exec (prevents double-dispatch
+            # if harvest re-queued a message in the same tick).
+            already_dispatched = any(
+                info["message_id"] == pending_msg.id
+                for info in self._active_execs.values()
+            )
+            if already_dispatched:
+                logger.warning(
+                    "Skipping message %s — already in active_execs (double-dispatch guard)",
+                    pending_msg.id,
+                )
+                continue
+
             # Ensure project directory exists
             try:
                 project_path = self.worker_mgr.ensure_project_ready(project)
@@ -1709,7 +1826,9 @@ class AgentDispatcher:
                         status=MessageStatus.COMPLETED,
                     )
                     db.add(msg)
-                    db.commit()
+                    # NOTE: removed db.commit() — same-tick flush of ALL
+                    # dirty objects caused double-dispatch.  Let _tick()
+                    # commit atomically at the end.
                     self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
                 continue
 
@@ -1936,8 +2055,8 @@ class AgentDispatcher:
                 if a.tmux_pane:
                     active_tmux_panes.add(a.tmux_pane)
 
-        # Build map of tmux panes → interactive claude processes
-        pane_map = _build_tmux_claude_map()
+        # Build map of tmux panes → interactive claude processes (cached per tick)
+        pane_map = self._get_tmux_map()
         agents_to_sync: list[tuple[str, str, str]] = []
 
         # Group untracked panes by project path, keyed by PID for matching
@@ -1995,7 +2114,7 @@ class AgentDispatcher:
                         if not os.path.isfile(fpath):
                             continue
                         sid = fname.replace(".jsonl", "")
-                        if sid in active_session_ids or sid in seen_sids:
+                        if sid in all_agent_session_ids or sid in seen_sids:
                             continue
                         seen_sids.add(sid)
                         candidates.append((sid, fpath, os.path.getmtime(fpath)))
@@ -2008,17 +2127,18 @@ class AgentDispatcher:
             candidates.sort(key=lambda x: x[2], reverse=True)
 
             # Build PID→session map from debug logs for deterministic matching.
-            # Fall back to mtime-based assignment for sessions without debug info.
+            # ONLY PID-verified sessions are used — no mtime fallback.
+            # This prevents stale session files from being incorrectly
+            # matched to unrelated tmux panes (e.g. after tmux kill-server).
             pid_to_session: dict[int, tuple[str, str]] = {}  # pid -> (sid, fpath)
-            unmatched: list[tuple[str, str, float]] = []
             for sid, fpath, mtime in candidates:
                 session_pid = _get_session_pid(sid)
-                if session_pid:
+                if session_pid and session_pid not in pid_to_session:
+                    # Keep the first (newest) session for each PID since
+                    # candidates are sorted newest-first.
                     pid_to_session[session_pid] = (sid, fpath)
-                else:
-                    unmatched.append((sid, fpath, mtime))
 
-            # Assign sessions to panes: PID match first, then mtime fallback
+            # Assign sessions to panes: Tier 0 (session name) + Tier 1 (PID match) only
             for pane_id, pane_pid, tmux_session_name in pane_entries:
                 # --- Tier 0: tmux session name → agent ID match ---
                 # If the tmux session is named `ah-{agent_id[:8]}`, we can
@@ -2065,15 +2185,11 @@ class AgentDispatcher:
 
                 best_sid, best_fpath = None, None
 
-                # Try exact PID match via debug log
+                # Tier 1: exact PID match via debug log — only reliable method
                 if pane_pid in pid_to_session:
                     best_sid, best_fpath = pid_to_session.pop(pane_pid)
-                elif unmatched:
-                    best_sid, best_fpath, _ = unmatched.pop(0)
-                else:
-                    # Try leftover PID-matched sessions (PID may have changed)
-                    if pid_to_session:
-                        _, (best_sid, best_fpath) = pid_to_session.popitem()
+                # No mtime fallback — if PID doesn't match, skip this pane.
+                # This prevents stale sessions from being assigned to wrong panes.
 
                 if not best_sid:
                     continue
@@ -2105,51 +2221,11 @@ class AgentDispatcher:
                     self._emit(emit_agent_update(stopped_agent.id, "SYNCING", proj.name))
                     continue
 
-                # --- Try to revive a recently-stopped cli_sync agent in same project ---
-                now = _utcnow()
-                recently_stopped = [
-                    a for a in stopped_session_agents.values()
-                    if a.project == proj.name
-                    and a.cli_sync
-                    and a.last_message_at
-                    and (now - a.last_message_at.replace(tzinfo=timezone.utc)).total_seconds() < 3600
-                ]
-                if recently_stopped:
-                    candidate = max(recently_stopped, key=lambda a: a.last_message_at)
-                    # Guard: skip if another active agent already owns this pane
-                    pane_owner = _get_pane_owner(pane_id, exclude_agent_id=candidate.id)
-                    if pane_owner:
-                        logger.warning(
-                            "Skipping revive of %s — pane %s already owned by %s",
-                            candidate.id, pane_id, pane_owner.id,
-                        )
-                        continue
-                    # Guard: don't assign best_sid if another agent already
-                    # owns it (prevents shared session_ids → message leaks).
-                    if best_sid in all_agent_session_ids:
-                        existing_owner = db.query(Agent).filter(
-                            Agent.session_id == best_sid,
-                            Agent.id != candidate.id,
-                        ).first()
-                        if existing_owner:
-                            logger.warning(
-                                "Skipping session %s for agent %s — "
-                                "already owned by agent %s",
-                                best_sid[:12], candidate.id, existing_owner.id,
-                            )
-                            continue
-                    candidate.session_id = best_sid
-                    candidate.status = AgentStatus.SYNCING
-                    candidate.tmux_pane = pane_id
-                    candidate.last_message_at = _utcnow()
-                    db.flush()
-                    logger.info(
-                        "Revived stopped agent %s with new session %s (tmux=%s)",
-                        candidate.id, best_sid[:12], pane_id,
-                    )
-                    agents_to_sync.append((candidate.id, best_sid, proj.path))
-                    self._emit(emit_agent_update(candidate.id, "SYNCING", proj.name))
-                    continue
+                # NOTE: Removed "recently stopped" revive that used to assign
+                # a NEW session to an unrelated old agent.  This caused
+                # cross-contamination: an old stopped agent would get a
+                # completely different session's messages.  Instead, just
+                # fall through to create a new agent for the new session.
 
                 # --- Session change on existing SYNCING pane → spawn successor ---
                 # Only treat as a successor if the tmux session name matches
@@ -2200,9 +2276,21 @@ class AgentDispatcher:
                             break
                     detected_model = _detect_session_model(best_fpath)
 
+                # Detect worktree name from pane CWD if applicable.
+                # Pattern: {project}/.claude/worktrees/{name}[/...]
+                detected_worktree = None
+                pane_info = pane_map.get(pane_id)
+                if pane_info:
+                    pcwd = pane_info["cwd"]
+                    wt_prefix = os.path.join(proj_path, ".claude", "worktrees") + "/"
+                    if pcwd.startswith(wt_prefix):
+                        # Extract the worktree name (first path component after prefix)
+                        remainder = pcwd[len(wt_prefix):]
+                        detected_worktree = remainder.split("/")[0] or None
+
                 logger.info(
-                    "Auto-detected tmux CLI session %s in project %s (pane %s)",
-                    best_sid[:12], proj.name, pane_id,
+                    "Auto-detected tmux CLI session %s in project %s (pane %s, worktree=%s)",
+                    best_sid[:12], proj.name, pane_id, detected_worktree,
                 )
 
                 agent = Agent(
@@ -2214,6 +2302,7 @@ class AgentDispatcher:
                     session_id=best_sid,
                     cli_sync=True,
                     tmux_pane=pane_id,
+                    worktree=detected_worktree,
                     last_message_preview=agent_name,
                     last_message_at=_utcnow(),
                 )
@@ -2228,13 +2317,20 @@ class AgentDispatcher:
                         capture_output=True, text=True, timeout=5,
                     )
                     if res.returncode == 0 and res.stdout.strip():
-                        _sp.run(
+                        rename_res = _sp.run(
                             ["tmux", "rename-session", "-t",
                              res.stdout.strip(), f"ah-{agent.id[:8]}"],
-                            timeout=5,
+                            capture_output=True, text=True, timeout=5,
                         )
-                except (_sp.TimeoutExpired, OSError):
-                    pass
+                        if rename_res.returncode != 0:
+                            logger.warning(
+                                "Failed to rename tmux session for agent %s: %s",
+                                agent.id, rename_res.stderr.strip(),
+                            )
+                except (_sp.TimeoutExpired, OSError) as e:
+                    logger.warning(
+                        "tmux rename failed for agent %s: %s", agent.id, e,
+                    )
 
                 # Import existing turns as messages
                 for role, content, *rest in turns:
@@ -2295,8 +2391,8 @@ class AgentDispatcher:
             ]),
         ).all()
 
-        # Build the tmux pane map once (expensive), reuse for all agents
-        pane_map = _build_tmux_claude_map()
+        # Build the tmux pane map once (expensive), reuse for all agents (cached per tick)
+        pane_map = self._get_tmux_map()
 
         for agent in candidates:
             # --- Orchestrator-spawned agents (cli_sync=False) ---
@@ -2449,43 +2545,48 @@ class AgentDispatcher:
 
         file_pos = 0
         last_content = ""
-        while True:
-            await asyncio.sleep(0.5)
+        try:
+            while True:
+                await asyncio.sleep(0.5)
 
-            # Check if the exec is still tracked (may have been harvested)
-            if agent_id not in self._active_execs:
-                break
+                # Check if the exec is still tracked (may have been harvested)
+                if agent_id not in self._active_execs:
+                    break
 
-            try:
-                with open(output_file, "r", errors="replace") as f:
-                    f.seek(file_pos)
-                    new_data = f.read()
-                    file_pos = f.tell()
-            except (FileNotFoundError, OSError):
-                continue
+                try:
+                    with open(output_file, "r", errors="replace") as f:
+                        f.seek(file_pos)
+                        new_data = f.read()
+                        file_pos = f.tell()
+                except FileNotFoundError:
+                    continue  # file not created yet — normal during startup
 
-            if not new_data:
-                continue
+                if not new_data:
+                    continue
 
-            # New output arrived — refresh inactivity timeout
-            info = self._active_execs.get(agent_id)
-            if info:
-                info["last_activity"] = _utcnow()
+                # New output arrived — refresh inactivity timeout
+                info = self._active_execs.get(agent_id)
+                if info:
+                    info["last_activity"] = _utcnow()
 
-            # Re-read entire file to parse from scratch (stream-json
-            # events can span multiple reads and we need the full picture)
-            try:
+                # Re-read entire file to parse from scratch (stream-json
+                # events can span multiple reads and we need the full picture)
                 with open(output_file, "r", errors="replace") as f:
                     full_logs = f.read()
-            except (FileNotFoundError, OSError):
-                continue
 
-            parts, _, _ = _parse_stream_parts(full_logs)
-            content = _format_parts(parts)
+                parts, _, _ = _parse_stream_parts(full_logs)
+                content = _format_parts(parts)
 
-            if content and content != last_content:
-                last_content = content
-                self._emit(emit_agent_stream(agent_id, content))
+                if content and content != last_content:
+                    last_content = content
+                    self._emit(emit_agent_stream(agent_id, content))
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(
+                "Stream output loop crashed for agent %s (file: %s)",
+                agent_id, output_file,
+            )
 
     def _start_stream_task(self, agent_id: str, output_file: str):
         """Start a streaming output task for an agent exec."""
@@ -2650,7 +2751,10 @@ class AgentDispatcher:
             if wt_sdir not in session_dirs and os.path.isdir(wt_sdir):
                 session_dirs.append(wt_sdir)
 
-        # Look for a JSONL newer than the current one
+        # Look for a JSONL newer than the current one.
+        # STRICT MATCHING: only accept candidates whose PID matches the
+        # agent's tmux pane PID.  This prevents sub-agent sessions and
+        # unrelated sessions from being misidentified as continuations.
         best_sid, best_mtime = None, current_mtime
         for session_dir in session_dirs:
             try:
@@ -2663,14 +2767,15 @@ class AgentDispatcher:
                     fpath = os.path.join(session_dir, fname)
                     mtime = os.path.getmtime(fpath)
                     if mtime > best_mtime:
-                        # Verify it belongs to the same tmux pane via PID
                         session_pid = _get_session_pid(sid)
-                        if session_pid is not None:
-                            if pane_pid is not None and session_pid != pane_pid:
-                                continue  # belongs to a different pane
+                        if pane_pid is not None:
+                            # We know the pane PID — require exact match
+                            if session_pid != pane_pid:
+                                continue
                         else:
-                            # No debug log yet — only accept if notably newer
-                            if mtime - current_mtime < 5:
+                            # No pane PID known — require session PID exists
+                            # and is alive (don't accept unverifiable sessions)
+                            if session_pid is None:
                                 continue
                         best_sid, best_mtime = sid, mtime
             except OSError as e:
@@ -2717,9 +2822,11 @@ class AgentDispatcher:
                     agent_name = (content or "")[:80]
                     break
 
-            # Create new agent — no parent_id linkage since a new session
-            # on the same tmux pane is typically an unrelated conversation,
-            # not a continuation of the old one.
+            # Create new agent linked to the old one.  By the time we
+            # reach here, the caller has already confirmed this is a
+            # genuine continuation (tmux session name matches or session
+            # has a 'result' event + PID match), not an unrelated
+            # conversation.
             new_agent = Agent(
                 project=project_name,
                 name=agent_name,
@@ -2729,6 +2836,9 @@ class AgentDispatcher:
                 session_id=new_sid,
                 cli_sync=True,
                 tmux_pane=tmux_pane,
+                parent_id=old_agent_id,
+                worktree=wt,
+                muted=old_agent.muted,
                 last_message_preview=agent_name,
                 last_message_at=_utcnow(),
             )
@@ -2777,13 +2887,21 @@ class AgentDispatcher:
                         capture_output=True, text=True, timeout=5,
                     )
                     if res.returncode == 0 and res.stdout.strip():
-                        _sp.run(
+                        rename_res = _sp.run(
                             ["tmux", "rename-session", "-t",
                              res.stdout.strip(), f"ah-{new_agent.id[:8]}"],
-                            timeout=5,
+                            capture_output=True, text=True, timeout=5,
                         )
-                except (_sp.TimeoutExpired, OSError):
-                    pass
+                        if rename_res.returncode != 0:
+                            logger.warning(
+                                "Failed to rename tmux session for successor %s: %s",
+                                new_agent.id, rename_res.stderr.strip(),
+                            )
+                except (_sp.TimeoutExpired, OSError) as e:
+                    logger.warning(
+                        "tmux rename failed for successor %s: %s",
+                        new_agent.id, e,
+                    )
 
             logger.info(
                 "Spawned successor agent %s for session %s (old: %s)",
@@ -3002,19 +3120,43 @@ class AgentDispatcher:
             db.close()
 
         idle_polls = 0
-        _getsize_error_logged = False
+        _getsize_error_count = 0
+        _GETSIZE_ERROR_LIMIT = 20  # ~60s at 3s poll interval
         while True:
             await asyncio.sleep(POLL_INTERVAL)
 
             try:
                 current_size = os.path.getsize(jsonl_path)
+                _getsize_error_count = 0  # reset on success
             except OSError as e:
-                if not _getsize_error_logged:
+                _getsize_error_count += 1
+                if _getsize_error_count == 1:
                     logger.warning(
                         "Sync loop: getsize failed for %s (agent %s): %s",
                         jsonl_path, agent_id, e,
                     )
-                    _getsize_error_logged = True
+                if _getsize_error_count >= _GETSIZE_ERROR_LIMIT:
+                    logger.warning(
+                        "Sync loop: session file missing for %d polls, "
+                        "stopping agent %s",
+                        _getsize_error_count, agent_id,
+                    )
+                    db = SessionLocal()
+                    try:
+                        agent = db.get(Agent, agent_id)
+                        if agent and agent.status == AgentStatus.SYNCING:
+                            agent.status = AgentStatus.STOPPED
+                            agent.tmux_pane = None
+                            db.add(Message(
+                                agent_id=agent_id,
+                                role=MessageRole.SYSTEM,
+                                content="Session file not found — sync stopped",
+                                status=MessageStatus.COMPLETED,
+                            ))
+                            db.commit()
+                    finally:
+                        db.close()
+                    break
                 continue
 
             # Detect JSONL rewrite (e.g. /compact shrinks the file)
@@ -3112,20 +3254,57 @@ class AgentDispatcher:
                             return
                         continue  # tmux is dead, skip continuation check
 
-                    new_sid = self._detect_successor_session(
-                        session_id, project_path, agent_id,
-                        worktree=_worktree,
-                    )
-                    if new_sid:
-                        logger.info(
-                            "Session continuation detected for agent %s: "
-                            "%s → %s — stopping old, creating new",
-                            agent_id, session_id[:12], new_sid[:12],
-                        )
-                        self._spawn_successor_agent(
-                            agent_id, new_sid, project_path,
+                    # Only look for successors if the current session has
+                    # actually ended (has a 'result' event).  This prevents
+                    # sub-agent sessions (from Claude's Task tool) from being
+                    # misidentified as continuations.
+                    if self._session_has_ended(jsonl_path):
+                        new_sid = self._detect_successor_session(
+                            session_id, project_path, agent_id,
                             worktree=_worktree,
                         )
+                        if new_sid:
+                            logger.info(
+                                "Session continuation detected for agent %s: "
+                                "%s → %s — stopping old, creating new",
+                                agent_id, session_id[:12], new_sid[:12],
+                            )
+                            self._spawn_successor_agent(
+                                agent_id, new_sid, project_path,
+                                worktree=_worktree,
+                            )
+                            return
+
+                    # If pane is alive but session hasn't grown for a very
+                    # long time (600 polls ≈ 30 min), the pane is likely
+                    # running a different session — stop this agent.
+                    if idle_polls >= 600:
+                        logger.warning(
+                            "Sync loop stopping for agent %s — "
+                            "session file idle for %d polls despite pane alive "
+                            "(pane likely running a different session)",
+                            agent_id, idle_polls,
+                        )
+                        db_stop = SessionLocal()
+                        try:
+                            ag_stop = db_stop.get(Agent, agent_id)
+                            if ag_stop and ag_stop.status == AgentStatus.SYNCING:
+                                ag_stop.status = AgentStatus.STOPPED
+                                ag_stop.tmux_pane = None
+                                sys_msg = Message(
+                                    agent_id=agent_id,
+                                    role=MessageRole.SYSTEM,
+                                    content="Session file inactive too long — agent stopped",
+                                    status=MessageStatus.COMPLETED,
+                                )
+                                db_stop.add(sys_msg)
+                                ag_stop.last_message_at = _utcnow()
+                                db_stop.commit()
+                                self._emit(emit_agent_update(
+                                    agent_id, "STOPPED", ag_stop.project,
+                                ))
+                        finally:
+                            db_stop.close()
                         return
                 continue
             idle_polls = 0
@@ -3300,6 +3479,9 @@ class AgentDispatcher:
                     self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
 
                     # Only notify for agent/system turns (not user messages)
+                    # Refresh pane attached state — the dispatcher tick cache
+                    # may be stale since the sync loop runs independently.
+                    self._refresh_pane_attached()
                     _in_use = self._is_agent_in_use(agent_id, agent.tmux_pane)
                     if not _in_use:
                         logger.info(

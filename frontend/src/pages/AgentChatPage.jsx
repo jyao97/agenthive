@@ -162,7 +162,7 @@ function QuestionBubble({ item, agentId, onAnswered }) {
               )}
             </div>
             <p className="text-sm text-heading font-medium mb-2">{q.question}</p>
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 max-h-80 overflow-y-auto">
               {(q.options || []).map((opt, oi) => {
                 const isChosen = answeredIdx === oi;
                 const dimmed = isAnswered && !isChosen;
@@ -710,7 +710,7 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true }) {
   const draftKey = agentId ? `agenthive-draft-${agentId}` : null;
   const [text, _setText] = useState(() => {
     if (draftKey) {
@@ -787,90 +787,91 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const handleBlur = useCallback(() => {}, []);
 
   return (
-    <div className="pb-2 safe-area-pb-tight flex justify-center px-4">
-      <div className="glass-bar-nav rounded-[28px] px-3 py-2.5 flex items-end gap-2 w-full relative" style={{ maxWidth: "24rem" }}>
-        {voice.recording && voice.analyserNode ? (
-          <div className="flex-1 min-h-[40px] flex items-center px-3">
-            <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} onTap={voice.toggleRecording} className="flex-1 h-8" />
-          </div>
-        ) : (
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onBlur={handleBlur}
-            placeholder={tmuxMode ? "Send via tmux..." : isBusy ? "Send (queued until ready)..." : disabled ? disabledReason : "Type a message..."}
-            disabled={!canType}
-            rows={1}
-            className="flex-1 min-h-[40px] max-h-[160px] rounded-xl bg-transparent px-3 py-2.5 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors disabled:opacity-50"
-          />
-        )}
-        <VoiceRecorder
-          recording={voice.recording}
-          voiceLoading={voice.voiceLoading}
-          micError={voice.micError || voiceError}
-          onToggle={voice.toggleRecording}
+    <div className="absolute bottom-0 left-0 right-0 pb-2 safe-area-pb-tight flex justify-center px-4 z-20 pointer-events-none">
+      <div className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto" style={{ maxWidth: "24rem" }}>
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onBlur={handleBlur}
+          placeholder={tmuxMode ? "Send via tmux..." : isBusy ? "Send (queued until ready)..." : disabled ? disabledReason : "Type a message..."}
+          disabled={!canType}
+          rows={2}
+          className="w-full min-h-[48px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors disabled:opacity-50"
         />
-        {/* Escape button — sends Esc to tmux (visible for tmux agents) */}
-        {onEscape && (
+        <div className="flex items-center gap-1.5 px-1">
+          <div className="flex-1 min-w-0">
+            {voice.recording && voice.analyserNode && (
+              <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} onTap={voice.toggleRecording} className="h-8" />
+            )}
+          </div>
+          <VoiceRecorder
+            recording={voice.recording}
+            voiceLoading={voice.voiceLoading}
+            micError={voice.micError || voiceError}
+            onToggle={voice.toggleRecording}
+          />
+          {/* Escape button — sends Esc to tmux (visible for all cli_sync agents) */}
+          {onEscape && (
+            <button
+              type="button"
+              onClick={handleEscape}
+              disabled={!escapeAvailable || !escapeUrgent || escCooldown}
+              title={!escapeAvailable ? "No tmux pane attached" : "Send Escape to agent (dismiss prompt)"}
+              className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                !escapeAvailable
+                  ? "bg-elevated text-dim/30 cursor-not-allowed"
+                  : escapeUrgent && !escCooldown
+                    ? "bg-red-500/80 hover:bg-red-500 text-white cursor-pointer"
+                    : "bg-elevated text-dim cursor-not-allowed"
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+          {/* Send later (clock) button */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => text.trim() && setShowPicker(!showPicker)}
+              disabled={!text.trim()}
+              title="Schedule message for later"
+              className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                !text.trim()
+                  ? "bg-elevated text-dim cursor-not-allowed"
+                  : "bg-amber-500 hover:bg-amber-400 text-white"
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+              </svg>
+            </button>
+            {showPicker && (
+              <SendLaterPicker
+                onSelect={handleSchedule}
+                onClose={() => setShowPicker(false)}
+              />
+            )}
+          </div>
+          {/* Send button */}
           <button
             type="button"
-            onClick={handleEscape}
-            disabled={escCooldown}
-            title="Send Escape to agent (dismiss prompt)"
+            onClick={handleSend}
+            disabled={disabled || !text.trim()}
             className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-              escCooldown
-                ? "bg-elevated text-dim/30 cursor-not-allowed opacity-50"
-                : escapeUrgent
-                  ? "bg-red-500/80 hover:bg-red-500 text-white"
-                  : "bg-surface border border-divider hover:bg-hover text-body cursor-pointer"
-            }`}
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        )}
-        {/* Send later (clock) button — always visible between mic and send */}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => text.trim() && setShowPicker(!showPicker)}
-            disabled={!text.trim()}
-            title="Schedule message for later"
-            className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-              !text.trim()
+              disabled || !text.trim()
                 ? "bg-elevated text-dim cursor-not-allowed"
-                : "bg-amber-500 hover:bg-amber-400 text-white"
+                : "bg-cyan-500 hover:bg-cyan-400 text-white"
             }`}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
             </svg>
           </button>
-          {showPicker && (
-            <SendLaterPicker
-              onSelect={handleSchedule}
-              onClose={() => setShowPicker(false)}
-            />
-          )}
         </div>
-        {/* Send button */}
-        <button
-          type="button"
-          onClick={handleSend}
-          disabled={disabled || !text.trim()}
-          className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-            disabled || !text.trim()
-              ? "bg-elevated text-dim cursor-not-allowed"
-              : "bg-cyan-500 hover:bg-cyan-400 text-white"
-          }`}
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-          </svg>
-        </button>
       </div>
     </div>
   );
@@ -894,6 +895,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const [muted, setMuted] = useState(() => isAgentMuted(id));
   const [streamingContent, setStreamingContent] = useState(null);
   const streamTimeoutRef = useRef(null);
+  const streamLockedRef = useRef(false); // prevents late agent_stream after new_message
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const nameInputRef = useRef(null);
@@ -1036,25 +1038,47 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   useEffect(() => {
     if (!lastEvent) return;
     const syncing = agent?.status === "SYNCING";
+
     if (lastEvent.type === "agent_stream" && lastEvent.data?.agent_id === id) {
+      // Reject late agent_stream that arrives after new_message already cleared streaming
+      if (streamLockedRef.current) return;
       setStreamingContent(lastEvent.data.content);
-      // For syncing agents, auto-clear after 5s of no stream events
-      if (syncing) {
-        clearTimeout(streamTimeoutRef.current);
-        streamTimeoutRef.current = setTimeout(() => setStreamingContent(null), 5000);
-      }
+      // Safety fallback: auto-clear after inactivity in case agent_stream_end
+      // is never received (e.g., WS disconnect).  Generous timeout since the
+      // deterministic agent_stream_end is the primary signal.
+      clearTimeout(streamTimeoutRef.current);
+      streamTimeoutRef.current = setTimeout(() => {
+        setStreamingContent(null);
+      }, syncing ? 8000 : 6000);
       return;
     }
+
+    if (lastEvent.type === "agent_stream_end" && lastEvent.data?.agent_id === id) {
+      // Deterministic signal from backend that generation finished.
+      // Lock streaming to reject any late agent_stream events.
+      streamLockedRef.current = true;
+      clearTimeout(streamTimeoutRef.current);
+      streamTimeoutRef.current = setTimeout(() => setStreamingContent(null), 300);
+      return;
+    }
+
     if (lastEvent.type === "new_message" && lastEvent.data?.agent_id === id) {
-      // For syncing agents, don't clear streaming — the sync loop may still
-      // be detecting growth.  Let the stream timeout or status change clear it.
-      if (!syncing) setStreamingContent(null);
+      // New message arrived — clear streaming, lock to reject late agent_stream.
+      streamLockedRef.current = true;
+      clearTimeout(streamTimeoutRef.current);
+      setStreamingContent(null);
       loadData();
       return;
     }
+
     if (lastEvent.type === "agent_update" && lastEvent.data?.agent_id === id) {
-      // Clear streaming when agent is no longer executing/syncing
-      if (lastEvent.data.status !== "EXECUTING" && lastEvent.data.status !== "SYNCING") {
+      const status = lastEvent.data.status;
+      if (status === "EXECUTING" || status === "SYNCING") {
+        // New execution starting — unlock streaming for fresh events
+        streamLockedRef.current = false;
+      } else {
+        // Agent no longer executing — lock and clear streaming
+        streamLockedRef.current = true;
         clearTimeout(streamTimeoutRef.current);
         setStreamingContent(null);
       }
@@ -1251,7 +1275,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   else if (hasPendingInteractive) disabledReason = "Answer the question above first";
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full relative">
       {/* Toast */}
       {toast && (
         <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
@@ -1474,7 +1498,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 max-w-2xl mx-auto w-full flex flex-col"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 pb-36 max-w-2xl mx-auto w-full flex flex-col"
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
@@ -1486,13 +1510,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
             ))}
 
             {/* Streaming output or typing indicator while executing/syncing */}
-            {isExecuting
-              ? (streamingContent !== null
-                ? (streamingContent ? <StreamingBubble content={streamingContent} project={agent.project} /> : <TypingIndicator />)
-                : <TypingIndicator />)
-              : (isSyncing && streamingContent !== null && (
-                streamingContent ? <StreamingBubble content={streamingContent} project={agent.project} /> : <TypingIndicator />
-              ))
+            {streamingContent
+              ? <StreamingBubble content={streamingContent} project={agent.project} />
+              : (isExecuting && <TypingIndicator />)
             }
 
             {/* Pending/scheduled messages always at the bottom */}
@@ -1514,8 +1534,11 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         disabledReason={disabledReason}
         isBusy={isExecuting || (isSyncing && !hasTmux)}
         tmuxMode={hasTmux}
-        onEscape={hasTmuxPane && !isStopped && !isError ? async () => { await escapeAgent(id); loadData(); } : null}
-        escapeUrgent={isExecuting || isSyncing || hasPendingInteractive}
+        onEscape={(agent.cli_sync || hasTmuxPane) && !isStopped && !isError ? async () => {
+          try { await escapeAgent(id); loadData(); } catch (e) { showToast(e.message || "Escape failed", "error"); }
+        } : null}
+        escapeUrgent={isExecuting || hasPendingInteractive || (hasTmux && (streamingContent || (messages.length > 0 && messages[messages.length - 1].role === "USER")))}
+        escapeAvailable={hasTmuxPane}
       />
 
       {/* Stop confirmation modal */}

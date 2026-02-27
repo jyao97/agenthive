@@ -25,8 +25,8 @@
   --color-shadow:     rgba(0,0,0,0.06);
   --color-skel:       #e5e7eb;
   --color-glass:      rgba(230,233,238,0.68);
-  --color-glass-nav:  rgba(240,242,245,0.5);
-  --color-glass-edge: rgba(255,255,255,0.7);
+  --color-glass-nav:  rgba(240,242,245,0.3);
+  --color-glass-edge: rgba(255,255,255,0.5);
 }
 
 .dark {

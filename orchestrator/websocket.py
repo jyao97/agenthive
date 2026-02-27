@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketDisconnect
 
 logger = logging.getLogger("orchestrator.ws")
 
@@ -37,21 +38,24 @@ class ConnectionManager:
         """True if any connected client is currently viewing this agent."""
         return any(v == agent_id for v in self._viewing.values())
 
-    async def broadcast(self, event_type: str, data: dict):
-        """Send an event to all connected clients."""
+    async def broadcast(self, event_type: str, data: dict) -> int:
+        """Send an event to all connected clients. Returns count of successful sends."""
         message = json.dumps({
             "type": event_type,
             "data": data,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         disconnected = []
+        sent = 0
         for ws in self.active:
             try:
                 await ws.send_text(message)
+                sent += 1
             except Exception:
                 disconnected.append(ws)
         for ws in disconnected:
             self.disconnect(ws)
+        return sent
 
 
 # Singleton manager
@@ -88,9 +92,12 @@ async def websocket_endpoint(ws: WebSocket):
                     msg = json.loads(data)
                     if msg.get("type") == "viewing":
                         ws_manager.set_viewing(ws, msg.get("agent_id"))
-                except (json.JSONDecodeError, KeyError):
-                    pass
+                except json.JSONDecodeError:
+                    logger.debug("WS received invalid JSON: %s", data[:100])
+    except WebSocketDisconnect:
+        ws_manager.disconnect(ws)
     except Exception:
+        logger.warning("WebSocket handler error", exc_info=True)
         ws_manager.disconnect(ws)
 
 

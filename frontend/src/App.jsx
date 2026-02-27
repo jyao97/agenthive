@@ -71,6 +71,7 @@ function AuthGuard({ children }) {
   const [checked, setChecked] = useState(false);
   const [authed, setAuthed] = useState(false);
   const [serverDown, setServerDown] = useState(false);
+  const [retrying, setRetrying] = useState(false);
 
   // Auto-lock after 30 min of inactivity (clears token + redirects to login)
   useIdleLock(navigate);
@@ -85,30 +86,19 @@ function AuthGuard({ children }) {
     return () => window.removeEventListener("auth-expired", handler);
   }, [navigate]);
 
-  useEffect(() => {
-    const token = getAuthToken();
-    if (!token) {
-      // No token — redirect to login (whether needs_setup or not)
-      authCheck()
-        .then(() => {
-          navigate("/login", { replace: true });
-        })
-        .catch(() => {
-          // Server unreachable — do NOT grant access
-          setServerDown(true);
-        })
-        .finally(() => setChecked(true));
-    } else {
-      // Has token — verify it's still valid
+  // Attempt auth check with auto-retry for transient server-down (e.g. restart)
+  const attemptAuth = (token) => {
+    const doCheck = () =>
       authCheck()
         .then((r) => {
-          if (r.authenticated) {
+          if (!token) {
+            navigate("/login", { replace: true });
+          } else if (r.authenticated) {
             setAuthed(true);
-            // Request notification permission for browser notifications
+            setServerDown(false);
             if (typeof Notification !== "undefined" && Notification.permission === "default") {
               Notification.requestPermission().catch(() => {});
             }
-            // Refresh push subscription on every load (handles Safari expiry)
             if (isPushSupported()) {
               setupPushNotifications().catch(() => {});
             }
@@ -116,14 +106,41 @@ function AuthGuard({ children }) {
             clearAuthToken();
             navigate("/login", { replace: true });
           }
+          setChecked(true);
         })
         .catch(() => {
-          // Server unreachable — do NOT grant access
           setServerDown(true);
-        })
-        .finally(() => setChecked(true));
-    }
+          setChecked(true);
+        });
+    doCheck();
+  };
+
+  useEffect(() => {
+    attemptAuth(getAuthToken());
   }, [navigate]);
+
+  // Auto-retry when server is down (polls every 2s for up to 60s)
+  useEffect(() => {
+    if (!serverDown) return;
+    setRetrying(true);
+    let attempts = 0;
+    const interval = setInterval(async () => {
+      attempts++;
+      try {
+        await authCheck();
+        // Server is back — do a full reload so all hooks reinitialize cleanly
+        clearInterval(interval);
+        window.location.reload();
+      } catch {
+        if (attempts >= 30) {
+          // 60s elapsed — stop auto-retry, keep manual button
+          clearInterval(interval);
+          setRetrying(false);
+        }
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [serverDown]);
 
   if (!checked) {
     return (
@@ -136,7 +153,11 @@ function AuthGuard({ children }) {
   if (serverDown) {
     return (
       <div className="flex flex-col items-center justify-center h-dvh bg-page gap-4">
-        <p className="text-label text-sm">Unable to reach server</p>
+        {retrying ? (
+          <p className="text-label text-sm animate-pulse">Reconnecting to server...</p>
+        ) : (
+          <p className="text-label text-sm">Unable to reach server</p>
+        )}
         <button
           type="button"
           onClick={() => window.location.reload()}

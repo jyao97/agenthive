@@ -1410,7 +1410,7 @@ async def list_project_sessions(name: str, db: Session = Depends(get_db)):
     # Sort by most recent first
     results.sort(key=lambda s: s.last_activity_at, reverse=True)
 
-    # Mark starred sessions
+    # Mark starred sessions, migrating stale agent.id stars to session_id
     starred_ids = set(
         row[0] for row in db.query(StarredSession.session_id)
         .filter(StarredSession.project == name)
@@ -1418,6 +1418,16 @@ async def list_project_sessions(name: str, db: Session = Depends(get_db)):
     )
     for s in results:
         s.starred = s.session_id in starred_ids
+        # Migrate: if starred under old agent.id but session now uses session_id
+        if not s.starred and s.linked_agent_id and s.session_id != s.linked_agent_id:
+            if s.linked_agent_id in starred_ids:
+                # Re-key the star from agent.id → session_id
+                old_star = db.get(StarredSession, s.linked_agent_id)
+                if old_star:
+                    db.delete(old_star)
+                    db.add(StarredSession(session_id=s.session_id, project=name))
+                    s.starred = True
+    db.commit()
 
     return results
 
@@ -1604,6 +1614,15 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
     wt = body.worktree
     if wt == "auto":
         wt = _generate_worktree_name_local(body.prompt)
+
+    # Infer worktree from session JSONL location when resuming/syncing
+    # without an explicit worktree (e.g. Sessions tab resume)
+    if not wt and body.resume_session_id:
+        from agent_dispatcher import _infer_worktree_from_session
+        _inferred = _infer_worktree_from_session(body.resume_session_id, project.path)
+        if _inferred:
+            wt = _inferred
+            logger.info("Inferred worktree=%s from session JSONL path", wt)
 
     agent = Agent(
         id=agent_id,
@@ -1939,8 +1958,10 @@ async def _launch_tmux_background(
             )
             return
 
-        # Phase B: directory exists — poll for JSONL file (up to 50s)
-        # Use PID matching and exclude sessions owned by other agents.
+        # Phase B: directory exists — poll for JSONL file.
+        # Use PID matching exclusively (no mtime fallback — too error-prone).
+        # Polls while the tmux pane/claude process is still alive, up to a
+        # hard cap of 120s so we don't wait forever.
         session_id = None
         dir_error_logged = False
         pane_pid = None
@@ -1948,7 +1969,8 @@ async def _launch_tmux_background(
         if pane_id in pane_map:
             pane_pid = pane_map[pane_id].get("pid")
 
-        for i in range(50):
+        _MAX_JSONL_WAIT = 120  # hard cap seconds
+        for i in range(_MAX_JSONL_WAIT):
             await asyncio.sleep(1)
 
             # Refresh pane PID each iteration (process may not exist yet)
@@ -1956,6 +1978,9 @@ async def _launch_tmux_background(
                 pane_map = _build_tmux_claude_map()
                 if pane_id in pane_map:
                     pane_pid = pane_map[pane_id].get("pid")
+                elif i > 10:
+                    # Claude process disappeared from pane after 10s — give up
+                    break
 
             # Collect session IDs already owned by other agents
             db_check = SessionLocal()
@@ -1970,9 +1995,8 @@ async def _launch_tmux_background(
                 db_check.close()
 
             try:
-                candidates = []
                 # Scan both worktree and base project session dirs
-                seen_sids = set()
+                seen_sids: set[str] = set()
                 for sdir in dict.fromkeys([session_dir, base_session_dir]):
                     if not os.path.isdir(sdir):
                         continue
@@ -1983,23 +2007,15 @@ async def _launch_tmux_background(
                         if sid in owned_sids or sid in seen_sids:
                             continue
                         seen_sids.add(sid)
-                        fpath = os.path.join(sdir, fname)
-                        candidates.append((sid, os.path.getmtime(fpath)))
-                if not candidates:
-                    continue
 
-                # Prefer PID-matched session (deterministic)
-                if pane_pid:
-                    for sid, _mtime in candidates:
-                        session_pid = _get_session_pid(sid)
-                        if session_pid == pane_pid:
-                            session_id = sid
-                            break
-
-                # Fallback: most recently modified unowned session
-                if not session_id:
-                    candidates.sort(key=lambda x: x[1], reverse=True)
-                    session_id = candidates[0][0]
+                        # PID-matched session only — deterministic and safe
+                        if pane_pid:
+                            session_pid = _get_session_pid(sid)
+                            if session_pid == pane_pid:
+                                session_id = sid
+                                break
+                    if session_id:
+                        break
 
                 if session_id:
                     break
@@ -2016,8 +2032,8 @@ async def _launch_tmux_background(
         if not session_id:
             _mark_error(
                 "No session JSONL appeared for agent %s in %s "
-                "(project_path: %s)"
-                % (agent_id, session_dir, project_path)
+                "(project_path: %s, waited %ds)"
+                % (agent_id, session_dir, project_path, _MAX_JSONL_WAIT)
             )
             return
 
@@ -2082,7 +2098,7 @@ async def scan_agents(request: Request, db: Session = Depends(get_db)):
 async def list_agents(
     project: str | None = None,
     status: AgentStatus | None = None,
-    limit: int = 50,
+    limit: int = 500,
     db: Session = Depends(get_db),
 ):
     """List agents with optional filters."""
@@ -2100,8 +2116,14 @@ async def list_agents(
 
 @app.get("/api/agents/unread")
 async def agents_unread_count(db: Session = Depends(get_db)):
-    """Total unread message count across all agents."""
-    total = db.query(func.sum(Agent.unread_count)).scalar() or 0
+    """Total unread message count across the top 50 agents (matching list limit)."""
+    top = (
+        db.query(Agent.unread_count)
+        .order_by(Agent.last_message_at.desc().nulls_last(), Agent.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    total = sum(r[0] for r in top if r[0])
     return {"unread": int(total)}
 
 
@@ -2179,10 +2201,9 @@ async def get_agent(agent_id: str, db: Session = Depends(get_db)):
     if agent.session_id:
         project = db.get(Project, agent.project)
         if project:
-            from session_cache import session_source_dir
-            jsonl_path = os.path.join(
-                session_source_dir(project.path),
-                f"{agent.session_id}.jsonl",
+            from agent_dispatcher import _resolve_session_jsonl
+            jsonl_path = _resolve_session_jsonl(
+                agent.session_id, project.path, agent.worktree,
             )
             try:
                 result.session_size_bytes = os.path.getsize(jsonl_path)
@@ -2246,6 +2267,59 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
     db.refresh(agent)
     logger.info("Agent %s stopped", agent.id)
     return agent
+
+
+@app.delete("/api/agents/{agent_id}/permanent")
+async def permanently_delete_agent(agent_id: str, db: Session = Depends(get_db)):
+    """Permanently delete an agent, its messages, session JSONL, and output logs."""
+    import glob as _glob
+    from config import CLAUDE_HOME
+    from session_cache import session_source_dir
+
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
+        raise HTTPException(status_code=400, detail="Agent must be stopped before deleting")
+
+    cleaned_files = []
+
+    # 1. Delete session JSONL file(s)
+    if agent.session_id:
+        project = db.query(Project).filter(Project.name == agent.project).first()
+        if project:
+            # Check both project root and worktree session dirs
+            dirs_to_check = [session_source_dir(project.path)]
+            if agent.worktree:
+                wt_path = os.path.join(project.path, ".claude", "worktrees", agent.worktree)
+                dirs_to_check.append(session_source_dir(wt_path))
+            for sdir in dirs_to_check:
+                jsonl = os.path.join(sdir, f"{agent.session_id}.jsonl")
+                if os.path.isfile(jsonl):
+                    try:
+                        os.remove(jsonl)
+                        cleaned_files.append(jsonl)
+                    except OSError:
+                        pass
+
+    # 2. Delete output log files for all messages
+    msg_ids = [m.id for m in db.query(Message.id).filter(Message.agent_id == agent_id).all()]
+    for mid in msg_ids:
+        log_path = f"/tmp/claude-output-{mid}.log"
+        if os.path.isfile(log_path):
+            try:
+                os.remove(log_path)
+                cleaned_files.append(log_path)
+            except OSError:
+                pass
+
+    # 3. Delete DB records
+    deleted_msgs = db.query(Message).filter(Message.agent_id == agent_id).delete()
+    db.delete(agent)
+    db.commit()
+    logger.info("Permanently deleted agent %s (%d messages, %d files cleaned)",
+                agent_id, deleted_msgs, len(cleaned_files))
+    return {"detail": "ok", "deleted_messages": deleted_msgs, "cleaned_files": len(cleaned_files)}
 
 
 @app.post("/api/agents/{agent_id}/resume", response_model=AgentOut)
@@ -2350,7 +2424,7 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
             resumed_sync = True
         elif agent.cli_sync and ad:
             # Default: try to re-establish sync with existing tmux pane
-            from agent_dispatcher import _detect_tmux_pane_for_session
+            from agent_dispatcher import _detect_tmux_pane_for_session, _resolve_session_jsonl
             from session_cache import session_source_dir
 
             sid = agent.session_id
@@ -2358,10 +2432,18 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
             # If session_id was never assigned (e.g. tmux launch failed
             # before detecting the JSONL), discover it from the project's
             # session directory by picking the most recently modified file.
+            # Check both project root and worktree session dirs.
             if not sid:
-                sdir = session_source_dir(project.path)
-                if os.path.isdir(sdir):
-                    best, best_mtime = None, 0.0
+                sdirs = [session_source_dir(project.path)]
+                if agent.worktree:
+                    wt_path = os.path.join(project.path, ".claude", "worktrees", agent.worktree)
+                    wt_sdir = session_source_dir(wt_path)
+                    if os.path.isdir(wt_sdir) and wt_sdir not in sdirs:
+                        sdirs.append(wt_sdir)
+                best, best_mtime = None, 0.0
+                for sdir in sdirs:
+                    if not os.path.isdir(sdir):
+                        continue
                     try:
                         for fname in os.listdir(sdir):
                             if not fname.endswith(".jsonl"):
@@ -2375,19 +2457,16 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
                             "resume_agent: failed to scan session dir %s for agent %s: %s",
                             sdir, agent.id, e,
                         )
-                    if best:
-                        sid = best
-                        agent.session_id = sid
-                        logger.info(
-                            "Discovered session %s for agent %s on resume",
-                            sid, agent.id,
-                        )
+                if best:
+                    sid = best
+                    agent.session_id = sid
+                    logger.info(
+                        "Discovered session %s for agent %s on resume",
+                        sid, agent.id,
+                    )
 
             if sid:
-                jsonl_path = os.path.join(
-                    session_source_dir(project.path),
-                    f"{sid}.jsonl",
-                )
+                jsonl_path = _resolve_session_jsonl(sid, project.path, agent.worktree)
                 if os.path.exists(jsonl_path) and not ad._session_has_ended(jsonl_path):
                     pane = _detect_tmux_pane_for_session(sid, project.path)
                     agent.status = AgentStatus.SYNCING
@@ -2414,6 +2493,14 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
     except Exception as e:
         logger.exception("Failed to resume agent %s", agent.id)
         raise HTTPException(status_code=500, detail=f"Failed to verify project directory: {e}")
+
+
+@app.put("/api/agents/read-all")
+async def mark_all_agents_read(db: Session = Depends(get_db)):
+    """Mark all agents as read (reset unread count for every agent)."""
+    count = db.query(Agent).filter(Agent.unread_count > 0).update({"unread_count": 0})
+    db.commit()
+    return {"detail": "ok", "updated": count}
 
 
 @app.put("/api/agents/{agent_id}", response_model=AgentOut)
@@ -2692,7 +2779,7 @@ async def answer_agent_interactive(
         raise HTTPException(status_code=404, detail="Agent not found")
     if not agent.tmux_pane:
         raise HTTPException(status_code=400, detail="Agent has no tmux pane")
-    if agent.status not in ("SYNCING", "EXECUTING", "IDLE"):
+    if agent.status not in (AgentStatus.SYNCING, AgentStatus.EXECUTING, AgentStatus.IDLE):
         raise HTTPException(status_code=400, detail=f"Agent is {agent.status}, not in interactive state")
 
     from agent_dispatcher import send_tmux_keys, verify_tmux_pane

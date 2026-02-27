@@ -33,9 +33,9 @@ fi
 # they're running inside another Claude Code session.
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT 2>/dev/null || true
 
-# Kill any stale processes on the port before starting
+# Kill stale processes LISTENING on the port (not proxy clients like Vite)
 PORT="${PORT:-8080}"
-for pid in $(lsof -ti :"$PORT" 2>/dev/null); do
+for pid in $(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null); do
     if [ "$pid" != "$$" ]; then
         echo "Killing stale process $pid on port $PORT"
         kill "$pid" 2>/dev/null
@@ -43,11 +43,11 @@ for pid in $(lsof -ti :"$PORT" 2>/dev/null); do
 done
 # Wait for port to be free
 for i in $(seq 1 30); do
-    lsof -ti :"$PORT" >/dev/null 2>&1 || break
+    lsof -ti :"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || break
     sleep 0.3
 done
-# Force-kill anything still clinging
-for pid in $(lsof -ti :"$PORT" 2>/dev/null); do
+# Force-kill any listener still clinging
+for pid in $(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null); do
     echo "Force-killing process $pid on port $PORT"
     kill -9 "$pid" 2>/dev/null
 done

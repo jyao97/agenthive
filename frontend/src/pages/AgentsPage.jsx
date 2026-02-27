@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchAgents, stopAgent, scanAgents, searchMessages } from "../lib/api";
+import { fetchAgents, stopAgent, deleteAgent, scanAgents, searchMessages, markAgentRead } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, POLL_INTERVAL, modelDisplayName } from "../lib/constants";
 import BotIcon from "../components/BotIcon";
@@ -298,6 +298,36 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     (a) => selected.has(a.id) && a.status !== "STOPPED"
   );
 
+  const unreadSelected = filtered.filter(
+    (a) => selected.has(a.id) && a.unread_count > 0
+  );
+
+  const [bulkMarking, setBulkMarking] = useState(false);
+
+  const handleBulkMarkRead = async () => {
+    if (unreadSelected.length === 0) return;
+    setBulkMarking(true);
+    let marked = 0;
+    let failed = 0;
+    for (const agent of unreadSelected) {
+      try {
+        await markAgentRead(agent.id);
+        marked++;
+      } catch {
+        failed++;
+      }
+    }
+    setBulkMarking(false);
+    if (failed > 0) {
+      showToast(`Marked ${marked} read, failed ${failed}`, "error");
+    } else {
+      showToast(`Marked ${marked} agent${marked !== 1 ? "s" : ""} as read`);
+    }
+    setSelected(new Set());
+    setSelecting(false);
+    load();
+  };
+
   const handleBulkStop = async () => {
     if (stoppableSelected.length === 0) return;
     setBulkStopping(true);
@@ -316,6 +346,37 @@ export default function AgentsPage({ theme, onToggleTheme }) {
       showToast(`Stopped ${stopped}, failed ${failed}`, "error");
     } else {
       showToast(`Stopped ${stopped} agent${stopped !== 1 ? "s" : ""}`);
+    }
+    setSelected(new Set());
+    setSelecting(false);
+    load();
+  };
+
+  const deletableSelected = filtered.filter(
+    (a) => selected.has(a.id) && (a.status === "STOPPED" || a.status === "ERROR")
+  );
+
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  const handleBulkDelete = async () => {
+    if (deletableSelected.length === 0) return;
+    if (!confirm(`Permanently delete ${deletableSelected.length} agent${deletableSelected.length !== 1 ? "s" : ""} and all their messages? This cannot be undone.`)) return;
+    setBulkDeleting(true);
+    let deleted = 0;
+    let failed = 0;
+    for (const agent of deletableSelected) {
+      try {
+        await deleteAgent(agent.id);
+        deleted++;
+      } catch {
+        failed++;
+      }
+    }
+    setBulkDeleting(false);
+    if (failed > 0) {
+      showToast(`Deleted ${deleted}, failed ${failed}`, "error");
+    } else {
+      showToast(`Deleted ${deleted} agent${deleted !== 1 ? "s" : ""}`);
     }
     setSelected(new Set());
     setSelecting(false);
@@ -347,16 +408,19 @@ export default function AgentsPage({ theme, onToggleTheme }) {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
             </button>
-            {agents.length > 0 && (
-              <button
-                type="button"
-                onClick={enterSelectMode}
-                className="text-sm font-medium text-cyan-400 hover:text-cyan-300 transition-colors px-2 py-1"
-              >
-                Edit
-              </button>
-            )}
           </div>
+        ) : undefined}
+        selectAction={!selecting && agents.length > 0 ? (
+          <button
+            type="button"
+            onClick={enterSelectMode}
+            title="Select agents"
+            className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-dim hover:text-heading hover:bg-input transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+            </svg>
+          </button>
         ) : undefined}
       >
         {!selecting ? (
@@ -532,6 +596,22 @@ export default function AgentsPage({ theme, onToggleTheme }) {
           <div className="max-w-xl mx-auto bg-surface border border-divider rounded-xl shadow-lg p-3 flex items-center justify-center gap-3">
             <button
               type="button"
+              onClick={handleBulkMarkRead}
+              disabled={bulkMarking || unreadSelected.length === 0}
+              className="flex items-center gap-2 px-5 min-h-[40px] rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 18h10a2 2 0 002-2V8H3v8a2 2 0 002 2zM17 8h2a2 2 0 010 4h-2M8 2v3M12 2v3" />
+              </svg>
+              {bulkMarking
+                ? "Marking..."
+                : unreadSelected.length === 0
+                  ? "Read"
+                  : `Read ${unreadSelected.length}`
+              }
+            </button>
+            <button
+              type="button"
               onClick={handleBulkStop}
               disabled={bulkStopping || stoppableSelected.length === 0}
               className="flex items-center gap-2 px-5 min-h-[40px] rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -543,7 +623,23 @@ export default function AgentsPage({ theme, onToggleTheme }) {
                 ? "Stopping..."
                 : stoppableSelected.length === 0
                   ? "Stop"
-                  : `Stop ${stoppableSelected.length} Agent${stoppableSelected.length !== 1 ? "s" : ""}`
+                  : `Stop ${stoppableSelected.length}`
+              }
+            </button>
+            <button
+              type="button"
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting || deletableSelected.length === 0}
+              className="flex items-center gap-2 px-5 min-h-[40px] rounded-lg bg-red-900 hover:bg-red-800 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              {bulkDeleting
+                ? "Deleting..."
+                : deletableSelected.length === 0
+                  ? "Delete"
+                  : `Delete ${deletableSelected.length}`
               }
             </button>
           </div>
