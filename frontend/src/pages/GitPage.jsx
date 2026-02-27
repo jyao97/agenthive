@@ -268,6 +268,7 @@ export default function GitPage({ theme, onToggleTheme }) {
         ) : null}
       </PageHeader>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      <div className="max-w-2xl mx-auto w-full">
       <div className="pb-20 p-4 space-y-4">
 
       {/* Error state */}
@@ -603,6 +604,7 @@ export default function GitPage({ theme, onToggleTheme }) {
         }
         .animate-slide-in { animation: slide-in 0.2s ease-out; }
       `}</style>
+      </div>
       </div>
       </div>
     </div>

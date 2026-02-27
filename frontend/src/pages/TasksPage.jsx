@@ -64,6 +64,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
       </PageHeader>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      <div className="max-w-2xl mx-auto w-full">
       {/* Task list */}
       <div className="pb-20 px-4 py-3 space-y-3">
         {loading && tasks.length === 0 && (
@@ -112,6 +113,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
         })}
 
         <div className="h-4" />
+      </div>
       </div>
       </div>
     </div>
