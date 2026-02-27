@@ -15,6 +15,7 @@ import {
   updateMessage,
   updateAgent,
   answerAgent,
+  escapeAgent,
 } from "../lib/api";
 import { relativeTime, renderMarkdown, extractFileAttachments } from "../lib/formatters";
 
@@ -676,7 +677,7 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape }) {
   const draftKey = agentId ? `agenthive-draft-${agentId}` : null;
   const [text, _setText] = useState(() => {
     if (draftKey) {
@@ -692,6 +693,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
     }
   };
   const [showPicker, setShowPicker] = useState(false);
+  const [escCooldown, setEscCooldown] = useState(false);
   const textareaRef = useRef(null);
 
   const voice = useVoiceRecorder({
@@ -734,6 +736,18 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
     }
   };
 
+  const handleEscape = async () => {
+    if (!onEscape || escCooldown) return;
+    setEscCooldown(true);
+    try {
+      await onEscape();
+    } catch (e) {
+      console.error("Escape failed:", e);
+    }
+    // 2.5s cooldown on the frontend to match backend rate limit
+    setTimeout(() => setEscCooldown(false), 2500);
+  };
+
   const canType = !disabled || isBusy;
 
   // No-op: keyboard dismiss handled by App-level focusout micro-scroll
@@ -765,6 +779,24 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
           micError={voice.micError || voiceError}
           onToggle={voice.toggleRecording}
         />
+        {/* Escape button — sends Esc to tmux (visible for tmux agents) */}
+        {onEscape && (
+          <button
+            type="button"
+            onClick={handleEscape}
+            disabled={escCooldown}
+            title="Send Escape to agent (dismiss prompt)"
+            className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+              escCooldown
+                ? "bg-elevated text-dim cursor-not-allowed"
+                : "bg-red-500/80 hover:bg-red-500 text-white"
+            }`}
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
         {/* Send later (clock) button — always visible between mic and send */}
         <div className="relative">
           <button
@@ -1127,6 +1159,19 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     }
   };
 
+  // Check if any interactive cards are waiting for an answer
+  // (must be before early returns to maintain hooks ordering)
+  const hasPendingInteractive = useMemo(() => {
+    for (const msg of messages) {
+      const meta = msg.metadata;
+      if (!meta?.interactive) continue;
+      for (const item of meta.interactive) {
+        if (item.answer == null && item.selected_index == null) return true;
+      }
+    }
+    return false;
+  }, [messages]);
+
   if (loading) {
     return (
       <div className="flex justify-center py-20">
@@ -1166,6 +1211,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   let disabledReason = "";
   if (isStopped) disabledReason = "Agent is stopped — click Resume to restart";
   else if (isError) disabledReason = "Agent errored — click Resume to restart";
+  else if (hasPendingInteractive) disabledReason = "Answer the question above first";
 
   return (
     <div className="flex flex-col h-full">
@@ -1427,10 +1473,11 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         agentId={id}
         onSend={handleSend}
         onSendLater={handleSendLater}
-        disabled={isStopped || isError}
+        disabled={isStopped || isError || hasPendingInteractive}
         disabledReason={disabledReason}
         isBusy={isExecuting || (isSyncing && !hasTmux)}
         tmuxMode={hasTmux}
+        onEscape={hasTmux ? async () => { await escapeAgent(id); loadData(); } : null}
       />
 
       {/* Stop confirmation modal */}

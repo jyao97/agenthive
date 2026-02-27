@@ -2744,6 +2744,39 @@ async def answer_agent_interactive(
         raise HTTPException(status_code=400, detail=f"Unknown type: {body.type}")
 
 
+# ---- Escape (send Escape key to tmux) ----
+
+_last_escape: dict[str, float] = {}  # agent_id → timestamp
+
+@app.post("/api/agents/{agent_id}/escape")
+async def send_escape_to_agent(agent_id: str, db: Session = Depends(get_db)):
+    """Send Escape key to the agent's tmux pane to dismiss interactive prompts."""
+    import time
+
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.tmux_pane:
+        raise HTTPException(status_code=400, detail="Agent has no tmux pane")
+
+    # Rate limit: max 1 Escape per 2 seconds per agent
+    now = time.time()
+    last = _last_escape.get(agent_id, 0)
+    if now - last < 2.0:
+        raise HTTPException(status_code=429, detail="Escape rate limited (max 1 per 2s)")
+    _last_escape[agent_id] = now
+
+    from agent_dispatcher import send_tmux_keys, verify_tmux_pane
+    if not verify_tmux_pane(agent.tmux_pane):
+        raise HTTPException(status_code=400, detail="Tmux pane no longer exists")
+
+    if not send_tmux_keys(agent.tmux_pane, ["Escape"]):
+        raise HTTPException(status_code=500, detail="Failed to send Escape to tmux")
+
+    logger.info("Sent Escape to agent %s pane %s", agent_id, agent.tmux_pane)
+    return {"detail": "ok"}
+
+
 # ---- Processes ----
 
 @app.get("/api/processes")

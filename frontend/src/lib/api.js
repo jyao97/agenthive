@@ -145,6 +145,8 @@ export const answerAgent = (agentId, payload) =>
     method: "POST",
     body: JSON.stringify(payload),
   });
+export const escapeAgent = (agentId) =>
+  request(`/api/agents/${agentId}/escape`, { method: "POST" });
 
 // --- Message search ---
 export const searchMessages = (query, { project, role, limit } = {}) => {
