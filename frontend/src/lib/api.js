@@ -158,6 +158,8 @@ export const fetchGitBranches = (project) =>
   request(`/api/git/${e(project)}/branches`);
 export const fetchGitStatus = (project) =>
   request(`/api/git/${e(project)}/status`);
+export const fetchGitWorktrees = (project) =>
+  request(`/api/git/${e(project)}/worktrees`);
 export const mergeGitBranch = (project, branch) =>
   request(`/api/git/${e(project)}/merge/${e(branch)}`, { method: "POST" });
 
