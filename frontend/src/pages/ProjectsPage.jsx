@@ -106,7 +106,6 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(null); // folder name currently being toggled
   const [refreshing, setRefreshing] = useState(false);
-  const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
   const [filter, setFilter] = useState("ALL");
   const [trashCount, setTrashCount] = useState(0);
@@ -175,50 +174,33 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await load();
-    setTimeout(() => setRefreshing(false), 400);
-  }, [load]);
-
-  const handleScan = useCallback(async () => {
-    setScanning(true);
     setScanResult(null);
     try {
       const result = await scanProjects();
       await load();
-      setScanResult(result);
-      setTimeout(() => setScanResult(null), 4000);
+      if (result.added?.length > 0) {
+        setScanResult(result);
+        setTimeout(() => setScanResult(null), 4000);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
-      setScanning(false);
+      setTimeout(() => setRefreshing(false), 400);
     }
   }, [load]);
 
   const headerButtons = (
-    <div className="flex items-center gap-1">
-      <button
-        type="button"
-        onClick={handleScan}
-        disabled={scanning}
-        title="Scan projects folder"
-        className="h-8 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-medium text-label hover:bg-input transition-colors disabled:opacity-50"
-      >
-        <svg className={`w-4 h-4 ${scanning ? "animate-pulse" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-        </svg>
-        Scan
-      </button>
-      <button
-        type="button"
-        onClick={handleRefresh}
-        title="Refresh"
-        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
-      >
-        <svg className={`w-4 h-4 text-label ${refreshing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-      </button>
-    </div>
+    <button
+      type="button"
+      onClick={handleRefresh}
+      disabled={refreshing}
+      title="Refresh & scan"
+      className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors disabled:opacity-50"
+    >
+      <svg className={`w-4 h-4 text-label ${refreshing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+      </svg>
+    </button>
   );
 
   return (

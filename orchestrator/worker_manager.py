@@ -226,7 +226,10 @@ class WorkerManager:
         try:
             with open(output_file, "r", errors="replace") as f:
                 return f.read()
-        except (FileNotFoundError, OSError):
+        except FileNotFoundError:
+            return ""  # file not created yet — normal
+        except OSError as e:
+            logger.warning("read_exec_output failed for %s (%s): %s", pid_str, output_file, e)
             return ""
 
     # =====================================================================
@@ -258,7 +261,10 @@ class WorkerManager:
                 lines = content.splitlines()
                 return "\n".join(lines[-tail:])
             return content
-        except (FileNotFoundError, OSError):
+        except FileNotFoundError:
+            return ""
+        except OSError as e:
+            logger.warning("get_logs failed for %s: %s", pid_str, e)
             return ""
 
     def stop_worker(self, pid_str: str):
@@ -273,23 +279,26 @@ class WorkerManager:
             # Try graceful termination first
             try:
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
+            except (ProcessLookupError, PermissionError, OSError) as e:
+                logger.warning("killpg SIGTERM failed for %s: %s", pid_str, e)
                 try:
                     process.terminate()
-                except (ProcessLookupError, OSError):
-                    pass
+                except (ProcessLookupError, OSError) as e2:
+                    logger.warning("process.terminate() also failed for %s: %s", pid_str, e2)
 
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 # Force kill
+                logger.warning("Process %s did not exit after SIGTERM, sending SIGKILL", pid_str)
                 try:
                     os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
+                except (ProcessLookupError, PermissionError, OSError) as e:
+                    logger.warning("killpg SIGKILL failed for %s: %s", pid_str, e)
                     try:
                         process.kill()
-                    except (ProcessLookupError, OSError):
-                        pass
+                    except (ProcessLookupError, OSError) as e2:
+                        logger.error("All kill attempts failed for %s: %s", pid_str, e2)
 
             logger.info("Stopped process %s", pid_str)
         else:
@@ -345,5 +354,6 @@ class WorkerManager:
                 env=self._clean_env(),
             )
             return result.returncode == 0
-        except Exception:
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("Claude CLI ping failed: %s", e)
             return False

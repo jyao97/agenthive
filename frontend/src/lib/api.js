@@ -118,6 +118,8 @@ export const scanAgents = () =>
   request("/api/agents/scan", { method: "POST" });
 export const stopAgent = (id) =>
   request(`/api/agents/${id}`, { method: "DELETE" });
+export const deleteAgent = (id) =>
+  request(`/api/agents/${id}/permanent`, { method: "DELETE" });
 export const resumeAgent = (id, body = null) =>
   request(`/api/agents/${id}/resume`, {
     method: "POST",
@@ -132,6 +134,8 @@ export const sendMessage = (agentId, content, { queue = false, scheduled_at = nu
   });
 export const markAgentRead = (agentId) =>
   request(`/api/agents/${agentId}/read`, { method: "PUT" });
+export const markAllAgentsRead = () =>
+  request("/api/agents/read-all", { method: "PUT" });
 export const cancelMessage = (agentId, messageId) =>
   request(`/api/agents/${agentId}/messages/${messageId}`, { method: "DELETE" });
 export const updateMessage = (agentId, messageId, data) =>
