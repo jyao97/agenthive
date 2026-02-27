@@ -1846,26 +1846,41 @@ async def _launch_tmux_background(
         logger.info("Sent initial prompt to tmux pane %s for agent %s", pane_id, agent_id)
 
         # Step 3: Wait for session JSONL to appear.
-        # Two-phase approach to fail fast on path encoding mismatches:
-        #   Phase A (5s): Wait for session directory to exist
-        #   Retry  (5s): Invalidate cache, re-resolve, try again
-        #   Phase B (50s): Directory exists — poll for JSONL files
+        # IMPORTANT: When the agent uses --worktree, Claude runs in the
+        # worktree directory, so the session JSONL is stored under the
+        # worktree path, not the base project path.  Use the tmux pane's
+        # actual cwd to determine the correct session directory.
         from session_cache import invalidate_path_cache
+        from agent_dispatcher import _get_session_pid
 
-        session_dir = session_source_dir(project_path)
+        actual_cwd = project_path
+        try:
+            cwd_result = subprocess.run(
+                ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_current_path}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if cwd_result.returncode == 0 and cwd_result.stdout.strip():
+                actual_cwd = os.path.realpath(cwd_result.stdout.strip())
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        session_dir = session_source_dir(actual_cwd)
+        base_session_dir = session_source_dir(project_path)
         dir_found = False
 
         # Phase A: wait for session directory (5s)
         for i in range(5):
             await asyncio.sleep(1)
-            if os.path.isdir(session_dir):
+            if os.path.isdir(session_dir) or os.path.isdir(base_session_dir):
                 dir_found = True
                 break
 
         # Retry: invalidate cache and re-resolve path
         if not dir_found:
+            invalidate_path_cache(actual_cwd)
             invalidate_path_cache(project_path)
-            session_dir = session_source_dir(project_path)
+            session_dir = session_source_dir(actual_cwd)
+            base_session_dir = session_source_dir(project_path)
             logger.info(
                 "tmux launch agent %s: session dir not found at first attempt, "
                 "retrying with re-resolved path: %s",
@@ -1873,7 +1888,7 @@ async def _launch_tmux_background(
             )
             for i in range(5):
                 await asyncio.sleep(1)
-                if os.path.isdir(session_dir):
+                if os.path.isdir(session_dir) or os.path.isdir(base_session_dir):
                     dir_found = True
                     break
 
@@ -1886,21 +1901,68 @@ async def _launch_tmux_background(
             return
 
         # Phase B: directory exists — poll for JSONL file (up to 50s)
+        # Use PID matching and exclude sessions owned by other agents.
         session_id = None
         dir_error_logged = False
+        pane_pid = None
+        pane_map = _build_tmux_claude_map()
+        if pane_id in pane_map:
+            pane_pid = pane_map[pane_id].get("pid")
+
         for i in range(50):
             await asyncio.sleep(1)
+
+            # Refresh pane PID each iteration (process may not exist yet)
+            if not pane_pid:
+                pane_map = _build_tmux_claude_map()
+                if pane_id in pane_map:
+                    pane_pid = pane_map[pane_id].get("pid")
+
+            # Collect session IDs already owned by other agents
+            db_check = SessionLocal()
+            try:
+                owned_sids = set()
+                for a in db_check.query(Agent).filter(
+                    Agent.session_id.is_not(None),
+                    Agent.id != agent_id,
+                ).all():
+                    owned_sids.add(a.session_id)
+            finally:
+                db_check.close()
+
             try:
                 candidates = []
-                for fname in os.listdir(session_dir):
-                    if not fname.endswith(".jsonl"):
+                # Scan both worktree and base project session dirs
+                seen_sids = set()
+                for sdir in dict.fromkeys([session_dir, base_session_dir]):
+                    if not os.path.isdir(sdir):
                         continue
-                    fpath = os.path.join(session_dir, fname)
-                    candidates.append((fname.replace(".jsonl", ""), os.path.getmtime(fpath)))
-                if candidates:
-                    # Pick the most recently modified
+                    for fname in os.listdir(sdir):
+                        if not fname.endswith(".jsonl"):
+                            continue
+                        sid = fname.replace(".jsonl", "")
+                        if sid in owned_sids or sid in seen_sids:
+                            continue
+                        seen_sids.add(sid)
+                        fpath = os.path.join(sdir, fname)
+                        candidates.append((sid, os.path.getmtime(fpath)))
+                if not candidates:
+                    continue
+
+                # Prefer PID-matched session (deterministic)
+                if pane_pid:
+                    for sid, _mtime in candidates:
+                        session_pid = _get_session_pid(sid)
+                        if session_pid == pane_pid:
+                            session_id = sid
+                            break
+
+                # Fallback: most recently modified unowned session
+                if not session_id:
                     candidates.sort(key=lambda x: x[1], reverse=True)
                     session_id = candidates[0][0]
+
+                if session_id:
                     break
             except OSError as e:
                 if not dir_error_logged:
@@ -1926,6 +1988,22 @@ async def _launch_tmux_background(
             agent = db.get(Agent, agent_id)
             if not agent or agent.status == AgentStatus.STOPPED:
                 return
+            # Final guard: verify no other agent grabbed this session
+            # in the meantime (race protection)
+            existing = db.query(Agent).filter(
+                Agent.session_id == session_id,
+                Agent.id != agent_id,
+            ).first()
+            if existing:
+                logger.warning(
+                    "Session %s already owned by agent %s — "
+                    "cannot assign to agent %s",
+                    session_id[:12], existing.id, agent_id,
+                )
+                _mark_error(
+                    "Session %s already owned by another agent" % session_id[:12]
+                )
+                return
             agent.session_id = session_id
             agent.status = AgentStatus.SYNCING
             db.commit()
@@ -1934,8 +2012,9 @@ async def _launch_tmux_background(
         finally:
             db.close()
 
-        # Start the session sync loop
-        ad.start_session_sync(agent_id, session_id, project_path)
+        # Start the session sync loop — use actual_cwd so worktree agents
+        # watch the correct session directory
+        ad.start_session_sync(agent_id, session_id, actual_cwd)
         logger.info(
             "Started sync for launched tmux agent %s (session %s)",
             agent_id, session_id[:12],

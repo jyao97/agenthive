@@ -10,6 +10,7 @@ Prevents session loss on orchestrator restart by:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -32,11 +33,17 @@ _encoded_name_cache: dict[str, str] = {}
 def encode_project_path(path: str) -> str:
     """Predict Claude CLI's encoded directory name for a project path.
 
-    Best-effort: replaces all non-alphanumeric characters with hyphens.
-    Use _resolve_session_dir_name() for actual lookups — it verifies against
-    the filesystem and handles encoding differences across CLI versions.
+    Best-effort: replaces all non-alphanumeric characters with hyphens,
+    matching Claude Code's actual encoding (``/[^a-zA-Z0-9]/g`` → ``-``).
+    If the result exceeds 200 chars it is truncated and a hash suffix is
+    appended.  Use _resolve_session_dir_name() for actual lookups — it
+    verifies against the filesystem and handles encoding differences.
     """
-    return re.sub(r'[^a-zA-Z0-9]', '-', path)
+    encoded = re.sub(r'[^a-zA-Z0-9]', '-', path)
+    if len(encoded) <= 200:
+        return encoded
+    h = hashlib.md5(path.encode()).hexdigest()[:8]
+    return f"{encoded[:200]}-{h}"
 
 
 def _resolve_session_dir_name(project_path: str) -> str:

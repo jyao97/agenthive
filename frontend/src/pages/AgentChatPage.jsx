@@ -565,6 +565,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const [starLoading, setStarLoading] = useState(false);
   const [muted, setMuted] = useState(() => isAgentMuted(id));
   const [streamingContent, setStreamingContent] = useState(null);
+  const streamTimeoutRef = useRef(null);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const nameInputRef = useRef(null);
@@ -706,27 +707,39 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   }, [id, sendWsMessage]);
   useEffect(() => {
     if (!lastEvent) return;
+    const syncing = agent?.status === "SYNCING";
     if (lastEvent.type === "agent_stream" && lastEvent.data?.agent_id === id) {
       setStreamingContent(lastEvent.data.content);
+      // For syncing agents, auto-clear after 5s of no stream events
+      if (syncing) {
+        clearTimeout(streamTimeoutRef.current);
+        streamTimeoutRef.current = setTimeout(() => setStreamingContent(null), 5000);
+      }
       return;
     }
     if (lastEvent.type === "new_message" && lastEvent.data?.agent_id === id) {
-      setStreamingContent(null);
+      // For syncing agents, don't clear streaming — the sync loop may still
+      // be detecting growth.  Let the stream timeout or status change clear it.
+      if (!syncing) setStreamingContent(null);
       loadData();
       return;
     }
     if (lastEvent.type === "agent_update" && lastEvent.data?.agent_id === id) {
       // Clear streaming when agent is no longer executing/syncing
       if (lastEvent.data.status !== "EXECUTING" && lastEvent.data.status !== "SYNCING") {
+        clearTimeout(streamTimeoutRef.current);
         setStreamingContent(null);
       }
       loadData();
     }
-  }, [lastEvent, id, loadData]);
+  }, [lastEvent, id, loadData, agent?.status]);
 
   // Cleanup
   useEffect(() => {
-    return () => { if (toastTimer.current) clearTimeout(toastTimer.current); };
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      clearTimeout(streamTimeoutRef.current);
+    };
   }, []);
 
   // Rename agent
@@ -1128,12 +1141,15 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
               <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} />
             ))}
 
-            {/* Streaming output or typing indicator while executing */}
-            {isExecuting && (
-              streamingContent !== null
+            {/* Streaming output or typing indicator while executing/syncing */}
+            {isExecuting
+              ? (streamingContent !== null
                 ? (streamingContent ? <StreamingBubble content={streamingContent} project={agent.project} /> : <TypingIndicator />)
-                : <TypingIndicator />
-            )}
+                : <TypingIndicator />)
+              : (isSyncing && streamingContent !== null && (
+                streamingContent ? <StreamingBubble content={streamingContent} project={agent.project} /> : <TypingIndicator />
+              ))
+            }
 
             {/* Pending/scheduled messages always at the bottom */}
             {messages.filter((m) => m.role === "USER" && m.status === "PENDING").map((msg) => (
