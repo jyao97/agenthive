@@ -217,8 +217,8 @@ def _extract_session_id_from_output(output_file: str) -> str | None:
                         return sid
                 except (json.JSONDecodeError, KeyError, TypeError):
                     continue
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_extract_session_id_from_output: failed to read %s: %s", output_file, e)
     return None
 
 
@@ -238,8 +238,8 @@ def _parse_session_model(jsonl_path: str) -> str | None:
                             return model
                 except (json.JSONDecodeError, KeyError, TypeError):
                     continue
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_parse_session_model: failed to read %s: %s", jsonl_path, e)
     return None
 
 
@@ -255,8 +255,8 @@ def _detect_session_model(jsonl_path: str) -> str | None:
                 model = entry.get("message", {}).get("model")
                 if model:
                     return model
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_detect_session_model: failed to read %s: %s", jsonl_path, e)
     return None
 
 
@@ -292,7 +292,8 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str]]:
     try:
         with open(jsonl_path, "r", errors="replace") as f:
             lines = f.readlines()
-    except OSError:
+    except OSError as e:
+        logger.debug("_parse_session_turns: failed to read %s: %s", jsonl_path, e)
         return turns
 
     # Accumulate assistant blocks between user messages
@@ -428,8 +429,8 @@ def _get_session_pid(session_id: str) -> int | None:
                         if os.path.exists(f"/proc/{pid}"):
                             return pid
                         return None
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_get_session_pid: failed to read debug file for session %s: %s", session_id, e)
     return None
 
 
@@ -471,7 +472,8 @@ def _build_tmux_claude_map() -> dict[str, dict]:
         )
         if result.returncode != 0:
             return {}
-    except (_sp.TimeoutExpired, FileNotFoundError, OSError):
+    except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.debug("_build_tmux_claude_map: tmux list-panes failed: %s", e)
         return {}
 
     pane_map = {}
@@ -494,7 +496,8 @@ def _build_tmux_claude_map() -> dict[str, dict]:
                     cpid = int(cparts[0])
                     try:
                         cwd = os.path.realpath(os.readlink(f"/proc/{cpid}/cwd"))
-                    except OSError:
+                    except OSError as e:
+                        logger.debug("_build_tmux_claude_map: readlink cwd for PID %d failed: %s", cpid, e)
                         cwd = ""
                     pane_map[pane_id] = {
                         "pid": cpid,
@@ -503,7 +506,8 @@ def _build_tmux_claude_map() -> dict[str, dict]:
                         "session_name": session_name,
                     }
                     break
-        except (_sp.TimeoutExpired, OSError, ValueError):
+        except (_sp.TimeoutExpired, OSError, ValueError) as e:
+            logger.debug("_build_tmux_claude_map: inspecting pane %s failed: %s", pane_id, e)
             continue
 
     return pane_map
@@ -1645,7 +1649,11 @@ class AgentDispatcher:
                     if sid in active_session_ids:
                         continue
                     candidates.append((sid, fpath, os.path.getmtime(fpath)))
-            except OSError:
+            except OSError as e:
+                logger.warning(
+                    "_auto_detect_cli_sessions: failed to scan session dir %s: %s",
+                    session_dir, e,
+                )
                 continue
             candidates.sort(key=lambda x: x[2], reverse=True)
 
@@ -2249,8 +2257,11 @@ class AgentDispatcher:
                         if mtime - current_mtime < 5:
                             continue
                     best_sid, best_mtime = sid, mtime
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning(
+                "_detect_successor_session: failed to scan session dir %s for agent %s: %s",
+                session_dir, agent_id, e,
+            )
         return best_sid
 
     def _spawn_successor_agent(
@@ -2517,12 +2528,19 @@ class AgentDispatcher:
             db.close()
 
         idle_polls = 0
+        _getsize_error_logged = False
         while True:
             await asyncio.sleep(POLL_INTERVAL)
 
             try:
                 current_size = os.path.getsize(jsonl_path)
-            except OSError:
+            except OSError as e:
+                if not _getsize_error_logged:
+                    logger.debug(
+                        "Sync loop: getsize failed for %s (agent %s): %s",
+                        jsonl_path, agent_id, e,
+                    )
+                    _getsize_error_logged = True
                 continue
 
             # Detect JSONL rewrite (e.g. /compact shrinks the file)

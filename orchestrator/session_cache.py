@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from typing import Callable
@@ -23,26 +24,81 @@ logger = logging.getLogger("orchestrator.session_cache")
 
 CACHE_DIR = os.path.join(BACKUP_DIR, "session-cache")
 
+# Process-level cache: project_path -> resolved encoded dir name.
+# Only populated when a matching directory is confirmed on disk.
+_encoded_name_cache: dict[str, str] = {}
+
 
 def encode_project_path(path: str) -> str:
-    """Convert a project path to Claude's encoded directory name.
+    """Predict Claude CLI's encoded directory name for a project path.
 
-    e.g. /home/jyao073/agenthive-projects/splitvla
-      -> -home-jyao073-agenthive-projects-splitvla
+    Best-effort: replaces all non-alphanumeric characters with hyphens.
+    Use _resolve_session_dir_name() for actual lookups — it verifies against
+    the filesystem and handles encoding differences across CLI versions.
     """
-    return path.replace("/", "-")
+    return re.sub(r'[^a-zA-Z0-9]', '-', path)
+
+
+def _resolve_session_dir_name(project_path: str) -> str:
+    """Resolve the actual encoded directory name for a project path.
+
+    1. Check process-level cache
+    2. Try predicted encoding (fast path)
+    3. Scan ~/.claude/projects/ for a directory whose alphanumeric content
+       matches the project path (handles unknown/changed encodings)
+    4. Fall back to predicted encoding for new projects without a dir yet
+
+    Negative results (no dir found) are NOT cached so subsequent calls
+    can discover newly created directories.
+    """
+    if project_path in _encoded_name_cache:
+        return _encoded_name_cache[project_path]
+
+    predicted = encode_project_path(project_path)
+    projects_root = os.path.join(CLAUDE_HOME, "projects")
+
+    # Fast path: predicted directory exists
+    if os.path.isdir(os.path.join(projects_root, predicted)):
+        _encoded_name_cache[project_path] = predicted
+        return predicted
+
+    # Scan for matching directory by stripping all non-alphanumeric chars
+    path_norm = re.sub(r'[^a-zA-Z0-9]', '', project_path).lower()
+    try:
+        for entry in os.listdir(projects_root):
+            if re.sub(r'[^a-zA-Z0-9]', '', entry).lower() == path_norm:
+                if os.path.isdir(os.path.join(projects_root, entry)):
+                    logger.info(
+                        "Discovered session dir for %s: %s (predicted: %s)",
+                        project_path, entry, predicted,
+                    )
+                    _encoded_name_cache[project_path] = entry
+                    return entry
+    except OSError:
+        logger.warning(
+            "Failed to scan projects root %s for project path %s",
+            projects_root, project_path,
+        )
+
+    # No existing directory — return predicted, don't cache
+    return predicted
+
+
+def invalidate_path_cache(project_path: str) -> None:
+    """Clear the cached directory name for a project path."""
+    _encoded_name_cache.pop(project_path, None)
 
 
 def session_source_dir(project_path: str) -> str:
     """Return the Claude projects directory for a given project path."""
-    encoded = encode_project_path(project_path)
-    return os.path.join(CLAUDE_HOME, "projects", encoded)
+    name = _resolve_session_dir_name(project_path)
+    return os.path.join(CLAUDE_HOME, "projects", name)
 
 
 def session_cache_dir(project_path: str) -> str:
     """Return the cache directory for a given project path."""
-    encoded = encode_project_path(project_path)
-    return os.path.join(CACHE_DIR, encoded)
+    name = _resolve_session_dir_name(project_path)
+    return os.path.join(CACHE_DIR, name)
 
 
 def migrate_session_dirs(project_path: str) -> bool:
@@ -54,7 +110,9 @@ def migrate_session_dirs(project_path: str) -> bool:
 
     This scans for any existing session dir whose name ends with the same
     project folder name (e.g. '-mast3r') and migrates it to match the
-    current project path encoding.
+    current project path encoding.  Matching is done with normalized
+    (alphanumeric-only) comparison so it works regardless of the separator
+    characters used by different CLI versions.
 
     Returns True if a migration was performed.
     """
@@ -68,14 +126,18 @@ def migrate_session_dirs(project_path: str) -> bool:
 
     # Also migrate session cache if source is found
     target_cache = session_cache_dir(project_path)
-    suffix = "-" + project_basename
+    # Normalize suffix for matching: e.g. "google_map_fusion" -> "-google-map-fusion"
+    suffix_normalized = "-" + re.sub(r'[^a-zA-Z0-9]', '-', project_basename)
     projects_root = os.path.join(CLAUDE_HOME, "projects")
+    target_name = encode_project_path(project_path)
 
     if not os.path.isdir(projects_root):
         return False
 
     for entry in os.listdir(projects_root):
-        if not entry.endswith(suffix):
+        # Normalize the entry the same way before comparing suffix
+        entry_normalized = re.sub(r'[^a-zA-Z0-9]', '-', entry)
+        if not entry_normalized.endswith(suffix_normalized):
             continue
         candidate = os.path.join(projects_root, entry)
         if not os.path.isdir(candidate) or candidate == target_dir:
@@ -86,7 +148,7 @@ def migrate_session_dirs(project_path: str) -> bool:
             os.rename(candidate, target_dir)
             logger.info(
                 "Migrated session dir for %s: %s → %s",
-                project_basename, entry, encode_project_path(project_path),
+                project_basename, entry, target_name,
             )
         except OSError:
             logger.warning("Failed to migrate session dir %s → %s", entry, target_dir)
@@ -97,10 +159,12 @@ def migrate_session_dirs(project_path: str) -> bool:
         if os.path.isdir(old_cache) and not os.path.exists(target_cache):
             try:
                 os.rename(old_cache, target_cache)
-                logger.info("Migrated session cache: %s → %s", entry, encode_project_path(project_path))
+                logger.info("Migrated session cache: %s → %s", entry, target_name)
             except OSError:
                 logger.warning("Failed to migrate session cache %s", entry)
 
+        # Invalidate cache so next lookup picks up the new name
+        invalidate_path_cache(project_path)
         return True
 
     return False

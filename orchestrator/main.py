@@ -159,6 +159,7 @@ async def lifespan(app: FastAPI):
 
     port = int(os.environ.get("PORT", 8080))
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("0.0.0.0", port))
         except OSError:
@@ -167,8 +168,8 @@ async def lifespan(app: FastAPI):
                 "Exiting to avoid conflicts.",
                 port,
             )
-            yield
-            return
+            import sys
+            sys.exit(1)
 
     logger.info("AgentHive starting up...")
     init_db()
@@ -583,13 +584,31 @@ async def system_restart():
 
     async def _delayed_restart():
         await asyncio.sleep(0.5)
-        # Spawn a wrapper that waits for us to die, then starts run.sh
         my_pid = os.getpid()
+        port = int(os.environ.get("PORT", 8080))
         log_path = os.path.join(project_root, "logs", "server.log")
+        # Kill ALL uvicorn processes listening on our port (stale + current),
+        # then wait for the port to be free before starting run.sh.
         _sp.Popen(
             [
                 "bash", "-c",
-                f'while kill -0 {my_pid} 2>/dev/null; do sleep 0.2; done; '
+                # 1. Kill every process listening on the port
+                f'for pid in $(lsof -ti :{port} 2>/dev/null); do '
+                f'  kill "$pid" 2>/dev/null; '
+                f'done; '
+                # 2. Also kill ourselves if still alive
+                f'kill {my_pid} 2>/dev/null; '
+                # 3. Wait for all to die and port to be free
+                f'for i in $(seq 1 30); do '
+                f'  lsof -ti :{port} >/dev/null 2>&1 || break; '
+                f'  sleep 0.3; '
+                f'done; '
+                # 4. Force-kill anything still clinging to the port
+                f'for pid in $(lsof -ti :{port} 2>/dev/null); do '
+                f'  kill -9 "$pid" 2>/dev/null; '
+                f'done; '
+                f'sleep 0.5; '
+                # 5. Start the new server
                 f'exec bash "{run_script}" >> "{log_path}" 2>&1',
             ],
             cwd=project_root,
@@ -1100,7 +1119,7 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
     # Uses session_source_dir / session_cache_dir so path encoding stays
     # in one place (session_cache.py) rather than being duplicated here.
     if new_path != old_path:
-        from session_cache import session_source_dir, session_cache_dir
+        from session_cache import session_source_dir, session_cache_dir, invalidate_path_cache
 
         for label, dir_fn in [
             ("Claude session", session_source_dir),
@@ -1118,6 +1137,10 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
                 logger.info("Migrated %s dir: %s → %s", label, old_dir, new_dir)
             except OSError:
                 logger.warning("Failed to migrate %s dir: %s → %s", label, old_dir, new_dir)
+
+        # Invalidate cached lookups for both old and new paths
+        invalidate_path_cache(old_path)
+        invalidate_path_cache(new_path)
 
         # Fallback: scan for any old session dirs matching the project basename
         from session_cache import migrate_session_dirs
@@ -1782,7 +1805,10 @@ async def _launch_tmux_background(
                 process_detected = True
                 break
         if not process_detected:
-            _mark_error("Claude TUI did not start in pane %s within 30s" % pane_id)
+            _mark_error(
+                "Claude TUI did not start in pane %s within 30s "
+                "(project_path: %s)" % (pane_id, project_path)
+            )
             return
 
         # Wait for the TUI input prompt to appear (up to 15s after process detected)
@@ -1800,7 +1826,10 @@ async def _launch_tmux_background(
             except (subprocess.TimeoutExpired, OSError):
                 continue
         if not tui_ready:
-            _mark_error("Claude TUI input prompt did not appear in pane %s within 15s" % pane_id)
+            _mark_error(
+                "Claude TUI input prompt did not appear in pane %s within 15s "
+                "(project_path: %s)" % (pane_id, project_path)
+            )
             return
 
         # Extra settle time — Ink's input handler may not be wired up
@@ -1809,14 +1838,57 @@ async def _launch_tmux_background(
 
         # Step 2: Send the prompt
         if not send_tmux_message(pane_id, prompt):
-            _mark_error("Failed to send prompt to tmux pane %s" % pane_id)
+            _mark_error(
+                "Failed to send prompt to tmux pane %s "
+                "(project_path: %s)" % (pane_id, project_path)
+            )
             return
         logger.info("Sent initial prompt to tmux pane %s for agent %s", pane_id, agent_id)
 
-        # Step 3: Wait for session JSONL to appear (up to 60s)
+        # Step 3: Wait for session JSONL to appear.
+        # Two-phase approach to fail fast on path encoding mismatches:
+        #   Phase A (5s): Wait for session directory to exist
+        #   Retry  (5s): Invalidate cache, re-resolve, try again
+        #   Phase B (50s): Directory exists — poll for JSONL files
+        from session_cache import invalidate_path_cache
+
         session_dir = session_source_dir(project_path)
+        dir_found = False
+
+        # Phase A: wait for session directory (5s)
+        for i in range(5):
+            await asyncio.sleep(1)
+            if os.path.isdir(session_dir):
+                dir_found = True
+                break
+
+        # Retry: invalidate cache and re-resolve path
+        if not dir_found:
+            invalidate_path_cache(project_path)
+            session_dir = session_source_dir(project_path)
+            logger.info(
+                "tmux launch agent %s: session dir not found at first attempt, "
+                "retrying with re-resolved path: %s",
+                agent_id, session_dir,
+            )
+            for i in range(5):
+                await asyncio.sleep(1)
+                if os.path.isdir(session_dir):
+                    dir_found = True
+                    break
+
+        if not dir_found:
+            _mark_error(
+                "Session directory never appeared for agent %s "
+                "(expected: %s, project_path: %s)"
+                % (agent_id, session_dir, project_path)
+            )
+            return
+
+        # Phase B: directory exists — poll for JSONL file (up to 50s)
         session_id = None
-        for _ in range(60):
+        dir_error_logged = False
+        for i in range(50):
             await asyncio.sleep(1)
             try:
                 candidates = []
@@ -1830,11 +1902,22 @@ async def _launch_tmux_background(
                     candidates.sort(key=lambda x: x[1], reverse=True)
                     session_id = candidates[0][0]
                     break
-            except OSError:
+            except OSError as e:
+                if not dir_error_logged:
+                    logger.warning(
+                        "tmux launch agent %s: OSError scanning session dir %s "
+                        "(iteration %d): %s",
+                        agent_id, session_dir, i, e,
+                    )
+                    dir_error_logged = True
                 continue
 
         if not session_id:
-            _mark_error("No session JSONL appeared for agent %s" % agent_id)
+            _mark_error(
+                "No session JSONL appeared for agent %s in %s "
+                "(project_path: %s)"
+                % (agent_id, session_dir, project_path)
+            )
             return
 
         # Update agent with session_id and transition to SYNCING
@@ -2147,23 +2230,52 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
             if agent.session_id and ad:
                 ad.start_session_sync(agent.id, agent.session_id, project.path)
             resumed_sync = True
-        elif agent.cli_sync and agent.session_id and ad:
+        elif agent.cli_sync and ad:
             # Default: try to re-establish sync with existing tmux pane
             from agent_dispatcher import _detect_tmux_pane_for_session
             from session_cache import session_source_dir
 
-            jsonl_path = os.path.join(
-                session_source_dir(project.path),
-                f"{agent.session_id}.jsonl",
-            )
-            if os.path.exists(jsonl_path) and not ad._session_has_ended(jsonl_path):
-                pane = _detect_tmux_pane_for_session(
-                    agent.session_id, project.path
+            sid = agent.session_id
+
+            # If session_id was never assigned (e.g. tmux launch failed
+            # before detecting the JSONL), discover it from the project's
+            # session directory by picking the most recently modified file.
+            if not sid:
+                sdir = session_source_dir(project.path)
+                if os.path.isdir(sdir):
+                    best, best_mtime = None, 0.0
+                    try:
+                        for fname in os.listdir(sdir):
+                            if not fname.endswith(".jsonl"):
+                                continue
+                            fpath = os.path.join(sdir, fname)
+                            mt = os.path.getmtime(fpath)
+                            if mt > best_mtime:
+                                best, best_mtime = fname.replace(".jsonl", ""), mt
+                    except OSError as e:
+                        logger.warning(
+                            "resume_agent: failed to scan session dir %s for agent %s: %s",
+                            sdir, agent.id, e,
+                        )
+                    if best:
+                        sid = best
+                        agent.session_id = sid
+                        logger.info(
+                            "Discovered session %s for agent %s on resume",
+                            sid, agent.id,
+                        )
+
+            if sid:
+                jsonl_path = os.path.join(
+                    session_source_dir(project.path),
+                    f"{sid}.jsonl",
                 )
-                agent.status = AgentStatus.SYNCING
-                agent.tmux_pane = pane  # may be None; sync loop will retry
-                ad.start_session_sync(agent.id, agent.session_id, project.path)
-                resumed_sync = True
+                if os.path.exists(jsonl_path) and not ad._session_has_ended(jsonl_path):
+                    pane = _detect_tmux_pane_for_session(sid, project.path)
+                    agent.status = AgentStatus.SYNCING
+                    agent.tmux_pane = pane  # may be None; sync loop will retry
+                    ad.start_session_sync(agent.id, sid, project.path)
+                    resumed_sync = True
 
         if not resumed_sync and agent.status not in (AgentStatus.IDLE, AgentStatus.SYNCING):
             agent.status = AgentStatus.IDLE

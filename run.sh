@@ -33,5 +33,24 @@ fi
 # they're running inside another Claude Code session.
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT 2>/dev/null || true
 
+# Kill any stale processes on the port before starting
+PORT="${PORT:-8080}"
+for pid in $(lsof -ti :"$PORT" 2>/dev/null); do
+    if [ "$pid" != "$$" ]; then
+        echo "Killing stale process $pid on port $PORT"
+        kill "$pid" 2>/dev/null
+    fi
+done
+# Wait for port to be free
+for i in $(seq 1 30); do
+    lsof -ti :"$PORT" >/dev/null 2>&1 || break
+    sleep 0.3
+done
+# Force-kill anything still clinging
+for pid in $(lsof -ti :"$PORT" 2>/dev/null); do
+    echo "Force-killing process $pid on port $PORT"
+    kill -9 "$pid" 2>/dev/null
+done
+
 # Start the orchestrator
-cd orchestrator && exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8080}"
+cd orchestrator && exec uvicorn main:app --host 0.0.0.0 --port "$PORT"
