@@ -122,6 +122,32 @@ class GitManager:
             "untracked": untracked,
         }
 
+    def get_worktrees(self, project_name: str) -> list[dict]:
+        """List git worktrees for a project."""
+        raw = self._run_git(project_name, ["worktree", "list", "--porcelain"])
+        if raw.startswith("ERROR:"):
+            return []
+
+        worktrees = []
+        current: dict = {}
+        for line in raw.splitlines():
+            if line.startswith("worktree "):
+                if current:
+                    worktrees.append(current)
+                current = {"path": line[len("worktree "):]}
+            elif line.startswith("HEAD "):
+                current["commit"] = line[len("HEAD "):][:7]
+            elif line.startswith("branch "):
+                ref = line[len("branch "):]
+                current["branch"] = ref.replace("refs/heads/", "")
+            elif line == "bare":
+                current["bare"] = True
+            elif line == "detached":
+                current["detached"] = True
+        if current:
+            worktrees.append(current)
+        return worktrees
+
     def get_diff(self, project_name: str, ref: str = "HEAD") -> str:
         """Get diff for a ref."""
         return self._run_git(project_name, ["diff", ref])

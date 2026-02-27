@@ -2457,6 +2457,18 @@ async def git_branches(project: str, request: Request, db: Session = Depends(get
     return gm.get_branches(project)
 
 
+@app.get("/api/git/{project}/worktrees")
+async def git_worktrees(project: str, request: Request, db: Session = Depends(get_db)):
+    """List git worktrees for a project."""
+    proj = db.get(Project, project)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project '{project}' not found")
+    gm = getattr(request.app.state, "git_manager", None)
+    if not gm:
+        raise HTTPException(status_code=503, detail="Git manager not available")
+    return gm.get_worktrees(project)
+
+
 @app.post("/api/git/{project}/merge/{branch}")
 async def git_merge(project: str, branch: str, request: Request, db: Session = Depends(get_db)):
     """Merge a branch into the current branch for a project."""

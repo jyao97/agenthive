@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import {
@@ -6,7 +7,9 @@ import {
   fetchGitLog,
   fetchGitBranches,
   fetchGitStatus,
+  fetchGitWorktrees,
   mergeGitBranch,
+  createAgent,
 } from "../lib/api";
 
 /** Format a date string into a human-readable relative time. */
@@ -63,17 +66,22 @@ function Toast({ toast, onDismiss }) {
 }
 
 export default function GitPage({ theme, onToggleTheme }) {
+  const navigate = useNavigate();
+
   // --- State ---
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
   const [commits, setCommits] = useState([]);
   const [branches, setBranches] = useState([]);
   const [status, setStatus] = useState(null);
+  const [worktrees, setWorktrees] = useState([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [loadingCommits, setLoadingCommits] = useState(false);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState(false);
+  const [loadingWorktrees, setLoadingWorktrees] = useState(false);
   const [mergingBranch, setMergingBranch] = useState(null);
+  const [mergingAll, setMergingAll] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [error, setError] = useState(null);
   const toastIdRef = useRef(0);
@@ -121,24 +129,29 @@ export default function GitPage({ theme, onToggleTheme }) {
       setLoadingCommits(true);
       setLoadingBranches(true);
       setLoadingStatus(true);
+      setLoadingWorktrees(true);
       setCommits([]);
       setBranches([]);
       setStatus(null);
+      setWorktrees([]);
 
       // Fetch all in parallel
-      const [commitRes, branchRes, statusRes] = await Promise.allSettled([
+      const [commitRes, branchRes, statusRes, wtRes] = await Promise.allSettled([
         fetchGitLog(selectedProject).catch(() => []),
         fetchGitBranches(selectedProject).catch(() => []),
         fetchGitStatus(selectedProject).catch(() => null),
+        fetchGitWorktrees(selectedProject).catch(() => []),
       ]);
 
       if (!cancelled) {
         setCommits(commitRes.status === "fulfilled" ? commitRes.value : []);
         setBranches(branchRes.status === "fulfilled" ? branchRes.value : []);
         setStatus(statusRes.status === "fulfilled" ? statusRes.value : null);
+        setWorktrees(wtRes.status === "fulfilled" ? wtRes.value : []);
         setLoadingCommits(false);
         setLoadingBranches(false);
         setLoadingStatus(false);
+        setLoadingWorktrees(false);
       }
     }
 
@@ -155,14 +168,16 @@ export default function GitPage({ theme, onToggleTheme }) {
         const data = await mergeGitBranch(selectedProject, branchName);
         addToast(`Merged "${branchName}" successfully.`, "success");
         // Refresh commits, branches, and status
-        const [newCommits, newBranches, newStatus] = await Promise.all([
+        const [newCommits, newBranches, newStatus, newWt] = await Promise.all([
           fetchGitLog(selectedProject).catch(() => []),
           fetchGitBranches(selectedProject).catch(() => []),
           fetchGitStatus(selectedProject).catch(() => null),
+          fetchGitWorktrees(selectedProject).catch(() => []),
         ]);
         setCommits(newCommits);
         setBranches(newBranches);
         setStatus(newStatus);
+        setWorktrees(newWt);
       } catch (err) {
         addToast(`Merge error: ${err.message}`, "error");
       } finally {
@@ -171,6 +186,40 @@ export default function GitPage({ theme, onToggleTheme }) {
     },
     [selectedProject, mergingBranch, addToast]
   );
+
+  // --- Merge All worktrees handler ---
+  const handleMergeAll = useCallback(async () => {
+    if (!selectedProject || mergingAll) return;
+    const nonMainWt = worktrees.filter((_, i) => i !== 0);
+    if (nonMainWt.length === 0) return;
+
+    const branchList = nonMainWt
+      .map((wt) => wt.branch)
+      .filter(Boolean)
+      .join(", ");
+
+    setMergingAll(true);
+    try {
+      const agent = await createAgent({
+        project: selectedProject,
+        name: `merge-worktrees`,
+        mode: "AUTO",
+        skip_permissions: true,
+        initial_message:
+          `Merge all worktree branches into main and clean up. ` +
+          `The branches to merge are: ${branchList}. ` +
+          `For each branch: 1) checkout main, 2) git merge <branch>, ` +
+          `3) git worktree remove <path> (use --force if needed), ` +
+          `4) git branch -d <branch>. ` +
+          `List worktrees first with 'git worktree list' to get exact paths.`,
+      });
+      navigate(`/agents/${agent.id}`);
+    } catch (err) {
+      addToast(`Merge All error: ${err.message}`, "error");
+    } finally {
+      setMergingAll(false);
+    }
+  }, [selectedProject, mergingAll, worktrees, addToast, navigate]);
 
   // --- Loading skeleton for commits ---
   function CommitSkeleton() {
@@ -232,6 +281,82 @@ export default function GitPage({ theme, onToggleTheme }) {
       {!loadingProjects && projects.length === 0 && (
         <div className="rounded-xl bg-surface shadow-card p-4 text-label text-sm">
           No projects registered. Add a project to view its git history.
+        </div>
+      )}
+
+      {/* Worktrees section */}
+      {selectedProject && (
+        <div className="rounded-xl bg-surface shadow-card p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-body uppercase tracking-wide">
+              Worktrees
+            </h2>
+            {!loadingWorktrees && worktrees.length > 1 && (
+              <button
+                onClick={handleMergeAll}
+                disabled={mergingAll}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                  mergingAll
+                    ? "bg-purple-700/50 text-purple-300 cursor-wait"
+                    : "bg-purple-600/30 text-purple-300 hover:bg-purple-600/60 hover:text-white"
+                }`}
+              >
+                {mergingAll ? (
+                  <span className="flex items-center gap-1">
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Creating...
+                  </span>
+                ) : (
+                  "Merge All"
+                )}
+              </button>
+            )}
+          </div>
+          {loadingWorktrees ? (
+            <div className="flex flex-wrap gap-2">
+              {Array.from({ length: 2 }).map((_, i) => (
+                <div key={i} className="h-8 w-32 bg-skel rounded-full animate-pulse" />
+              ))}
+            </div>
+          ) : worktrees.length <= 1 ? (
+            <p className="text-sm text-dim">No additional worktrees.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {worktrees.map((wt, idx) => {
+                const isMain = idx === 0;
+                const name = wt.path ? wt.path.split("/").pop() : "unknown";
+                return (
+                  <div
+                    key={wt.path || idx}
+                    className={`flex items-center gap-2 rounded-lg text-sm px-3 py-2 border transition-colors ${
+                      isMain
+                        ? "bg-cyan-600/20 border-cyan-500/50 text-cyan-300"
+                        : "bg-purple-500/10 border-purple-500/30 text-purple-300"
+                    }`}
+                  >
+                    <svg className="w-3.5 h-3.5 shrink-0 opacity-60" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
+                    </svg>
+                    <span className="font-mono text-xs truncate">{name}</span>
+                    {wt.branch && (
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${isMain ? "bg-cyan-600/30 text-cyan-200" : "bg-purple-500/20 text-purple-200"}`}>
+                        {wt.branch}
+                      </span>
+                    )}
+                    {wt.detached && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">detached</span>
+                    )}
+                    {wt.commit && (
+                      <span className="font-mono text-xs text-dim ml-auto">{wt.commit}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
