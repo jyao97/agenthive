@@ -854,24 +854,22 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                   <span className="shrink-0 px-2 py-0.5 text-[10px] font-bold uppercase rounded-full bg-zinc-500/15 text-zinc-400 tracking-wide">Inactive</span>
                 )}
                 {["CLAUDE.md", "PROGRESS.md"].map((fn) => {
-                  const label = fn === "CLAUDE.md" ? "C" : "P";
+                  const letter = fn === "CLAUDE.md" ? "C" : "P";
                   const exists = fileExists[fn];
+                  const color = exists === false ? "text-zinc-500 hover:text-zinc-400" : "text-cyan-400 hover:text-cyan-300";
                   return (
                     <button
                       key={fn}
                       type="button"
                       onClick={() => setFileModal(fn)}
                       title={fn}
-                      className={`relative shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-[11px] font-bold transition-colors ${
-                        exists === false
-                          ? "bg-zinc-500/10 text-zinc-500 hover:bg-zinc-500/20"
-                          : "bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25"
-                      }`}
+                      className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-md hover:bg-white/5 transition-colors ${color}`}
                     >
-                      {label}
-                      {exists === false && (
-                        <span className="absolute -top-1 -right-1 w-3 h-3 flex items-center justify-center rounded-full bg-zinc-600 text-[8px] text-zinc-300 leading-none">+</span>
-                      )}
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14 2v6h6" />
+                        <text x="12" y="17" textAnchor="middle" fill="currentColor" stroke="none" fontSize="7" fontWeight="700" fontFamily="system-ui">{letter}</text>
+                      </svg>
                     </button>
                   );
                 })}
@@ -879,10 +877,10 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                   type="button"
                   onClick={() => setShowBrowser(true)}
                   title="Browse files"
-                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md bg-zinc-500/10 text-zinc-400 hover:bg-zinc-500/20 hover:text-heading transition-colors"
+                  className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-300 hover:bg-white/5 transition-colors"
                 >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v1M2 6v10a2 2 0 002 2h12a2 2 0 002-2V9" />
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                   </svg>
                 </button>
                 <button
