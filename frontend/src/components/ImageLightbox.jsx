@@ -1,22 +1,25 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
 /**
- * Fullscreen image viewer with gesture support:
- * - Pinch-to-zoom and pan
- * - Double-tap to toggle fit / 100% zoom
+ * Fullscreen media viewer with gesture support:
+ * - Pinch-to-zoom, pan, double-tap toggle (images and videos)
+ * - Videos: inline playback with play/pause overlay
+ * - Swipe/arrow-key navigation across all media
  * - Swipe down to dismiss
- * - Left/right swipe to navigate multiple images
  */
-export default function ImageLightbox({ images, initialIndex = 0, onClose }) {
+export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [scale, setScale] = useState(1);
   const [translate, setTranslate] = useState({ x: 0, y: 0 });
   const [animating, setAnimating] = useState(false);
   const [dismissY, setDismissY] = useState(0);
   const [dismissOpacity, setDismissOpacity] = useState(1);
+  const [dragging, setDragging] = useState(false);
+  const [playing, setPlaying] = useState(false);
 
   const containerRef = useRef(null);
   const imgRef = useRef(null);
+  const videoRef = useRef(null);
 
   // Gesture tracking refs — mutable state that doesn't trigger re-renders
   const touchState = useRef({
@@ -38,19 +41,19 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }) {
   // Keep current values in refs for event handlers (avoids stale closures)
   const scaleRef = useRef(scale);
   const translateRef = useRef(translate);
-  const isZoomedRef = useRef(scale > 1.05);
+  const isZoomedRef = useRef(scale > 1.01);
   const currentIndexRef = useRef(currentIndex);
   const dismissYRef = useRef(dismissY);
-
   scaleRef.current = scale;
   translateRef.current = translate;
-  isZoomedRef.current = scale > 1.05;
+  isZoomedRef.current = scale > 1.01;
   currentIndexRef.current = currentIndex;
   dismissYRef.current = dismissY;
 
-  const isZoomed = scale > 1.05;
+  const isZoomed = scale > 1.01;
+  const isCurrentVideo = media[currentIndex]?.type === "video";
 
-  // Reset transform when switching images
+  // Reset transform when switching media
   const resetTransform = useCallback((animate = true) => {
     if (animate) setAnimating(true);
     setScale(1);
@@ -60,15 +63,23 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }) {
     if (animate) setTimeout(() => setAnimating(false), 250);
   }, []);
 
-  // Navigate to a different image
+  // Navigate to a different media item
   const goTo = useCallback(
     (index) => {
-      if (index < 0 || index >= images.length) return;
+      if (index < 0 || index >= media.length) return;
       resetTransform(false);
       setCurrentIndex(index);
     },
-    [images.length, resetTransform]
+    [media.length, resetTransform]
   );
+
+  // Pause video when navigating away
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.pause();
+    }
+    setPlaying(false);
+  }, [currentIndex]);
 
   // Clamp translate so image doesn't go off-screen too far
   const clampTranslate = useCallback(
@@ -174,7 +185,7 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }) {
 
       if (ts.isPinching) {
         ts.isPinching = false;
-        if (scaleRef.current < 1.1) {
+        if (scaleRef.current < 1.05) {
           setAnimating(true);
           setScale(1);
           setTranslate({ x: 0, y: 0 });
@@ -203,7 +214,7 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }) {
         }
 
         // Swipe left/right to navigate
-        if (images.length > 1 && Math.abs(dx) > 80 && Math.abs(dy) < 80) {
+        if (media.length > 1 && Math.abs(dx) > 80 && Math.abs(dy) < 80) {
           if (dx < -80) goTo(currentIndexRef.current + 1);
           else if (dx > 80) goTo(currentIndexRef.current - 1);
           return;
@@ -261,16 +272,154 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }) {
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
     };
-  }, [clampTranslate, goTo, images.length, onClose]);
+  }, [clampTranslate, goTo, media.length, onClose]);
 
-  // Close on Escape
+  // Wheel handler: pinch-to-zoom, trackpad swipe navigation, and pan
+  useEffect(() => {
+    const swipeAccum = { x: 0, timer: null, locked: false };
+
+    const onWheel = (e) => {
+      e.preventDefault();
+
+      // Ctrl+wheel / Cmd+wheel = trackpad pinch = zoom
+      if (e.ctrlKey || e.metaKey) {
+        const oldScale = scaleRef.current;
+        const newScale = Math.max(1, Math.min(5, oldScale * Math.pow(2, -e.deltaY / 100)));
+        const container = containerRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        const cx = e.clientX - rect.left - rect.width / 2;
+        const cy = e.clientY - rect.top - rect.height / 2;
+        const ratio = newScale / oldScale;
+        const tx = translateRef.current.x + cx - cx * ratio;
+        const ty = translateRef.current.y + cy - cy * ratio;
+        setScale(newScale);
+        setTranslate(newScale <= 1 ? { x: 0, y: 0 } : clampTranslate(tx, ty, newScale));
+        return;
+      }
+
+      // When zoomed: two-finger scroll = pan
+      if (scaleRef.current > 1.01) {
+        const tx = translateRef.current.x - e.deltaX;
+        const ty = translateRef.current.y - e.deltaY;
+        setTranslate(clampTranslate(tx, ty, scaleRef.current));
+        return;
+      }
+
+      // At scale=1: accumulate horizontal deltaX for swipe navigation
+      if (media.length > 1 && !swipeAccum.locked && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        swipeAccum.x += e.deltaX;
+        clearTimeout(swipeAccum.timer);
+        swipeAccum.timer = setTimeout(() => { swipeAccum.x = 0; }, 300);
+        if (swipeAccum.x > 80) {
+          goTo(currentIndexRef.current + 1);
+          swipeAccum.x = 0;
+          swipeAccum.locked = true;
+          setTimeout(() => { swipeAccum.locked = false; }, 300);
+        } else if (swipeAccum.x < -80) {
+          goTo(currentIndexRef.current - 1);
+          swipeAccum.x = 0;
+          swipeAccum.locked = true;
+          setTimeout(() => { swipeAccum.locked = false; }, 300);
+        }
+      }
+    };
+
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      window.removeEventListener("wheel", onWheel);
+      clearTimeout(swipeAccum.timer);
+    };
+  }, [clampTranslate, goTo, media.length]);
+
+  // Mouse drag panning when zoomed in
+  useEffect(() => {
+    const mouseState = { active: false, startX: 0, startY: 0, startTx: 0, startTy: 0 };
+
+    const onMouseDown = (e) => {
+      if (e.button !== 0 || scaleRef.current <= 1) return;
+      e.preventDefault();
+      mouseState.active = true;
+      mouseState.startX = e.clientX;
+      mouseState.startY = e.clientY;
+      mouseState.startTx = translateRef.current.x;
+      mouseState.startTy = translateRef.current.y;
+      setDragging(true);
+    };
+
+    const onMouseMove = (e) => {
+      if (!mouseState.active) return;
+      const tx = mouseState.startTx + (e.clientX - mouseState.startX);
+      const ty = mouseState.startTy + (e.clientY - mouseState.startY);
+      setTranslate(clampTranslate(tx, ty, scaleRef.current));
+    };
+
+    const onMouseUp = () => {
+      if (!mouseState.active) return;
+      mouseState.active = false;
+      setDragging(false);
+    };
+
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [clampTranslate]);
+
+  // Keyboard: Escape, arrow keys, Cmd+=/Cmd+-/Cmd+0
   useEffect(() => {
     const handler = (e) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+
+      // Arrow keys navigate between media (resets zoom via goTo)
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        goTo(currentIndexRef.current - 1);
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        goTo(currentIndexRef.current + 1);
+        return;
+      }
+
+      // Cmd+= / Cmd+- / Cmd+0 — zoom
+      if (e.metaKey || e.ctrlKey) {
+        if (e.key === "=" || e.key === "+") {
+          e.preventDefault();
+          const newScale = Math.min(5, scaleRef.current * 1.25);
+          setScale(newScale);
+          setTranslate(clampTranslate(translateRef.current.x, translateRef.current.y, newScale));
+        } else if (e.key === "-") {
+          e.preventDefault();
+          const newScale = Math.max(1, scaleRef.current / 1.25);
+          if (newScale <= 1.05) {
+            setScale(1);
+            setTranslate({ x: 0, y: 0 });
+          } else {
+            setScale(newScale);
+            setTranslate(clampTranslate(translateRef.current.x, translateRef.current.y, newScale));
+          }
+        } else if (e.key === "0") {
+          e.preventDefault();
+          setAnimating(true);
+          setScale(1);
+          setTranslate({ x: 0, y: 0 });
+          setTimeout(() => setAnimating(false), 250);
+        }
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, [onClose, clampTranslate, goTo]);
 
   // Prevent body scroll when lightbox is open
   useEffect(() => {
@@ -280,7 +429,7 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }) {
     };
   }, []);
 
-  const current = images[currentIndex];
+  const current = media[currentIndex];
   if (!current) return null;
 
   const transformStyle = {
@@ -297,6 +446,7 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }) {
         backgroundColor: `rgba(0,0,0,${dismissOpacity * 0.95})`,
         transition: animating ? "background-color 0.25s ease-out" : "none",
         touchAction: "none",
+        cursor: isZoomed ? (dragging ? "grabbing" : "grab") : "default",
       }}
       onClick={(e) => {
         if (!isZoomed && !touchState.current.moved && e.target === containerRef.current) {
@@ -329,33 +479,78 @@ export default function ImageLightbox({ images, initialIndex = 0, onClose }) {
         </svg>
       </button>
 
-      {/* Image counter */}
-      {images.length > 1 && (
+      {/* Media counter */}
+      {media.length > 1 && (
         <div
           className="absolute top-4 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-black/50 text-white/80 text-xs font-medium"
           style={{ marginTop: "env(safe-area-inset-top, 0px)" }}
         >
-          {currentIndex + 1} / {images.length}
+          {currentIndex + 1} / {media.length}
         </div>
       )}
 
-      {/* Image */}
-      <img
-        ref={imgRef}
-        src={current.src}
-        alt={current.filename || ""}
-        draggable={false}
-        className="max-h-[90vh] max-w-[90vw] object-contain pointer-events-none select-none"
-        style={transformStyle}
-      />
+      {/* Media content */}
+      {isCurrentVideo ? (
+        <video
+          ref={videoRef}
+          key={current.src}
+          src={current.src}
+          playsInline
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => setPlaying(false)}
+          className="max-h-[90vh] max-w-[90vw] object-contain pointer-events-none select-none"
+          style={transformStyle}
+        />
+      ) : (
+        <img
+          ref={imgRef}
+          src={current.src}
+          alt={current.filename || ""}
+          draggable={false}
+          className="max-h-[90vh] max-w-[90vw] object-contain pointer-events-none select-none"
+          style={transformStyle}
+        />
+      )}
 
-      {/* Navigation dots for multiple images */}
-      {images.length > 1 && (
+      {/* Play/pause overlay for videos */}
+      {isCurrentVideo && (
+        <div
+          className="absolute inset-0 z-10 flex items-center justify-center"
+          style={{ pointerEvents: "none" }}
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              const v = videoRef.current;
+              if (!v) return;
+              if (v.paused) v.play();
+              else v.pause();
+            }}
+            className="w-16 h-16 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white/90 hover:bg-black/60 transition-colors"
+            style={{ pointerEvents: "auto" }}
+          >
+            {playing ? (
+              <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M6 4h4v16H6zM14 4h4v16h-4z" />
+              </svg>
+            ) : (
+              <svg className="w-8 h-8 ml-1" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
+          </button>
+        </div>
+      )}
+
+      {/* Navigation dots */}
+      {media.length > 1 && (
         <div
           className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5"
           style={{ marginBottom: "env(safe-area-inset-bottom, 0px)" }}
         >
-          {images.map((_, i) => (
+          {media.map((_, i) => (
             <div
               key={i}
               className={`rounded-full transition-all ${

@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 import { authedFetch } from "../lib/api";
 import ImageLightbox from "./ImageLightbox";
 
@@ -23,22 +23,35 @@ function ImagePreview({ src, filename, onOpen }) {
   );
 }
 
-// --- Video Preview ---
+// --- Video Preview (thumbnail, tappable to open in lightbox) ---
 
-function VideoPreview({ src, filename }) {
+function VideoPreview({ src, filename, onOpen }) {
   const [error, setError] = useState(false);
+  const vidRef = useRef(null);
 
   if (error) return null;
 
   return (
-    <div>
-      <video
-        src={src}
-        controls
-        preload="metadata"
-        onError={() => setError(true)}
-        className="max-h-[120px] max-w-full rounded-lg border border-divider"
-      />
+    <div className="group cursor-pointer" onClick={onOpen}>
+      <div className="relative inline-block">
+        <video
+          ref={vidRef}
+          src={src}
+          preload="metadata"
+          muted
+          onLoadedData={() => { if (vidRef.current) vidRef.current.currentTime = 0.1; }}
+          onError={() => setError(true)}
+          className="max-h-[120px] max-w-full rounded-lg border border-divider object-contain block"
+        />
+        {/* Play icon overlay — scoped to video area only */}
+        <div className="absolute inset-0 flex items-center justify-center rounded-lg">
+          <div className="w-8 h-8 rounded-full bg-black/50 flex items-center justify-center">
+            <svg className="w-4 h-4 ml-0.5 text-white" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+        </div>
+      </div>
       <p className="text-xs text-dim mt-1 truncate max-w-[200px]">{filename}</p>
     </div>
   );
@@ -184,40 +197,37 @@ function DocGroupCard({ docs }) {
 // --- Main component ---
 
 export default function FileAttachments({ attachments }) {
-  const [lightbox, setLightbox] = useState(null); // { images, initialIndex } or null
+  const [lightbox, setLightbox] = useState(null); // { media, initialIndex } or null
 
   if (!attachments || attachments.length === 0) return null;
 
   // Split into media (inline) vs doc/file (groupable)
-  const media = [];
+  const mediaAtts = [];
   const docs = [];
   const other = [];
   for (const att of attachments) {
-    if (att.type === "image" || att.type === "video") media.push(att);
+    if (att.type === "image" || att.type === "video") mediaAtts.push(att);
     else if (att.type === "doc") docs.push(att);
     else other.push(att);
   }
 
-  // Collect all images for gallery navigation
-  const imageAtts = media.filter((att) => att.type === "image");
-  const galleryImages = imageAtts.map((att) => ({
+  // Unified media gallery: images and videos in one swipeable lightbox
+  const galleryMedia = mediaAtts.map((att) => ({
+    type: att.type,
     src: att.resolvedUrl,
     filename: att.path.split("/").pop(),
   }));
 
-  const openLightbox = (imageIndex) => {
-    setLightbox({ images: galleryImages, initialIndex: imageIndex });
+  const openLightbox = (mediaIndex) => {
+    setLightbox({ media: galleryMedia, initialIndex: mediaIndex });
   };
-
-  let imageCounter = 0;
 
   return (
     <div className="flex flex-col gap-2 mt-1.5">
       {/* Images and videos always render inline */}
-      {media.map((att) => {
+      {mediaAtts.map((att, idx) => {
         const filename = att.path.split("/").pop();
         if (att.type === "image") {
-          const idx = imageCounter++;
           return (
             <ImagePreview
               key={att.path}
@@ -227,7 +237,7 @@ export default function FileAttachments({ attachments }) {
             />
           );
         }
-        return <VideoPreview key={att.path} src={att.resolvedUrl} filename={filename} />;
+        return <VideoPreview key={att.path} src={att.resolvedUrl} filename={filename} onOpen={() => openLightbox(idx)} />;
       })}
       {/* Doc files: single card if 1, grouped card if 2+ */}
       {docs.length === 1 && (
@@ -239,10 +249,10 @@ export default function FileAttachments({ attachments }) {
         <GenericFilePreview key={att.path} src={att.resolvedUrl} filename={att.path.split("/").pop()} />
       ))}
 
-      {/* Lightbox for image gallery */}
+      {/* Lightbox for media gallery */}
       {lightbox && (
         <ImageLightbox
-          images={lightbox.images}
+          media={lightbox.media}
           initialIndex={lightbox.initialIndex}
           onClose={() => setLightbox(null)}
         />
