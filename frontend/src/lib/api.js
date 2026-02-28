@@ -105,6 +105,8 @@ export const browseProjectFile = (project, path) =>
   request(`/api/projects/${e(project)}/browse?path=${e(path)}`);
 export const refreshClaudeMd = (project) =>
   request(`/api/projects/${e(project)}/refresh-claudemd`, { method: "POST" });
+export const refreshClaudeMdStatus = (project) =>
+  request(`/api/projects/${e(project)}/refresh-claudemd/status`);
 export const applyClaudeMd = (project, payload) =>
   request(`/api/projects/${e(project)}/apply-claudemd`, { method: "POST", body: JSON.stringify(payload) });
 

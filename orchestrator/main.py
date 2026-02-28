@@ -1642,35 +1642,32 @@ import subprocess
 import time as _time
 import threading
 
-# In-memory cache for proposed CLAUDE.md content (project_name -> {proposed, current, ts})
-_claudemd_cache: dict[str, dict] = {}
-_claudemd_cache_lock = threading.Lock()
+# Background jobs: project_name -> {status, data, error, ts}
+# status: "running" | "complete" | "error"
+_claudemd_jobs: dict[str, dict] = {}
+_claudemd_jobs_lock = threading.Lock()
 _CLAUDEMD_CACHE_TTL = 600  # 10 minutes
 
 
-def _claudemd_cache_set(project_name: str, current: str, proposed: str):
-    with _claudemd_cache_lock:
-        _claudemd_cache[project_name] = {
-            "current": current,
-            "proposed": proposed,
-            "ts": _time.monotonic(),
-        }
-
-
-def _claudemd_cache_get(project_name: str) -> dict | None:
-    with _claudemd_cache_lock:
-        entry = _claudemd_cache.get(project_name)
+def _claudemd_job_get(project_name: str) -> dict | None:
+    with _claudemd_jobs_lock:
+        entry = _claudemd_jobs.get(project_name)
         if not entry:
             return None
-        if _time.monotonic() - entry["ts"] > _CLAUDEMD_CACHE_TTL:
-            del _claudemd_cache[project_name]
+        if entry["status"] != "running" and _time.monotonic() - entry["ts"] > _CLAUDEMD_CACHE_TTL:
+            del _claudemd_jobs[project_name]
             return None
         return entry
 
 
-def _claudemd_cache_clear(project_name: str):
-    with _claudemd_cache_lock:
-        _claudemd_cache.pop(project_name, None)
+def _claudemd_job_set(project_name: str, **kwargs):
+    with _claudemd_jobs_lock:
+        _claudemd_jobs[project_name] = {"ts": _time.monotonic(), **kwargs}
+
+
+def _claudemd_job_clear(project_name: str):
+    with _claudemd_jobs_lock:
+        _claudemd_jobs.pop(project_name, None)
 
 
 def _compute_diff_hunks(current: str, proposed: str) -> tuple[str, list[dict]]:
@@ -1715,44 +1712,10 @@ class ApplyClaudeMdRequest(BaseModel):
     accepted_hunk_ids: list[int] = []
 
 
-@app.post("/api/projects/{name}/refresh-claudemd")
-async def refresh_claudemd(name: str, db: Session = Depends(get_db)):
-    """Spawn a one-shot Claude agent to propose CLAUDE.md updates."""
-    project_path = _resolve_project_path(name, db)
-
-    # 1. Gather recent agent activity from DB
-    rows = (
-        db.query(Message.content, Message.created_at, Agent.name)
-        .join(Agent, Message.agent_id == Agent.id)
-        .filter(Agent.project == name, Message.role == MessageRole.AGENT)
-        .order_by(Message.created_at.desc())
-        .limit(50)
-        .all()
-    )
-    parts = []
-    total_len = 0
-    for content, created_at, agent_name in rows:
-        snippet = (content or "")[:500]
-        entry = f"[agent: {agent_name}, {created_at}]\n{snippet}\n"
-        if total_len + len(entry) > 8000:
-            break
-        parts.append(entry)
-        total_len += len(entry)
-    recent_agent_activity = "\n".join(parts) if parts else "(no recent agent activity)"
-
-    # 2. Read current CLAUDE.md and PROGRESS.md
-    claudemd_path = os.path.join(project_path, "CLAUDE.md")
-    progress_path = os.path.join(project_path, "PROGRESS.md")
-    current_claudemd = ""
-    if os.path.isfile(claudemd_path):
-        with open(claudemd_path, "r", encoding="utf-8", errors="replace") as f:
-            current_claudemd = f.read()
-    progress_md = ""
-    if os.path.isfile(progress_path):
-        with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
-            progress_md = f.read()
-
-    # 3. Build prompt and spawn one-shot Claude agent
+def _refresh_claudemd_background(project_name: str, project_path: str,
+                                  recent_agent_activity: str,
+                                  current_claudemd: str, progress_md: str):
+    """Run claude -p in a thread and store result in _claudemd_jobs."""
     prompt = f"""You are updating this project's CLAUDE.md based on accumulated knowledge.
 
 Here is the current CLAUDE.md:
@@ -1788,60 +1751,118 @@ Output ONLY the new CLAUDE.md content, no explanation, no markdown fences. Start
 
     from config import CLAUDE_BIN
     try:
-        result = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: subprocess.run(
-                [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
-                capture_output=True, text=True, timeout=60,
-                cwd=project_path,
-            ),
+        result = subprocess.run(
+            [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
+            capture_output=True, text=True, timeout=90,
+            cwd=project_path,
         )
         if result.returncode != 0:
-            logger.warning("claude -p failed for %s: %s", name, result.stderr[:500])
-            raise HTTPException(status_code=502, detail="Claude agent failed — try again")
+            logger.warning("claude -p failed for %s: %s", project_name, result.stderr[:500])
+            _claudemd_job_set(project_name, status="error", error="Claude agent failed — try again")
+            return
         proposed = result.stdout.strip()
     except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="Claude agent timed out (>60s) — try again")
+        _claudemd_job_set(project_name, status="error", error="Claude agent timed out (>90s) — try again")
+        return
     except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="Claude CLI not found")
+        _claudemd_job_set(project_name, status="error", error="Claude CLI not found")
+        return
+    except Exception as e:
+        _claudemd_job_set(project_name, status="error", error=str(e))
+        return
 
     if not proposed:
-        raise HTTPException(status_code=502, detail="Claude agent returned empty output")
+        _claudemd_job_set(project_name, status="error", error="Claude agent returned empty output")
+        return
 
-    # 4. If CLAUDE.md doesn't exist, skip diff
+    # Build result data
     if not current_claudemd:
-        _claudemd_cache_set(name, "", proposed)
-        return {
-            "current": "",
-            "proposed": proposed,
-            "diff": "",
-            "hunks": [],
-            "is_new": True,
+        data = {
+            "current": "", "proposed": proposed, "diff": "",
+            "hunks": [], "is_new": True, "warning": None,
+        }
+    elif current_claudemd.strip() == proposed.strip():
+        data = {"hunks": [], "message": "No changes needed"}
+    else:
+        raw_diff, hunks = _compute_diff_hunks(current_claudemd, proposed)
+        proposed_lines = len(proposed.splitlines())
+        warning = None
+        if proposed_lines > 60:
+            warning = f"Proposed CLAUDE.md is {proposed_lines} lines (recommended max: 60)"
+            logger.warning("refresh-claudemd %s: %s", project_name, warning)
+        data = {
+            "current": current_claudemd, "proposed": proposed,
+            "diff": raw_diff, "hunks": hunks, "warning": warning,
         }
 
-    # 5. Compute diff
-    if current_claudemd.strip() == proposed.strip():
-        return {"hunks": [], "message": "No changes needed"}
+    _claudemd_job_set(project_name, status="complete", data=data)
 
-    raw_diff, hunks = _compute_diff_hunks(current_claudemd, proposed)
 
-    # 6. Cache for apply endpoint
-    _claudemd_cache_set(name, current_claudemd, proposed)
+@app.post("/api/projects/{name}/refresh-claudemd")
+async def refresh_claudemd(name: str, db: Session = Depends(get_db)):
+    """Start a background Claude agent to propose CLAUDE.md updates."""
+    project_path = _resolve_project_path(name, db)
 
-    # 7. Warn if proposed exceeds 60 lines
-    proposed_lines = len(proposed.splitlines())
-    warning = None
-    if proposed_lines > 60:
-        warning = f"Proposed CLAUDE.md is {proposed_lines} lines (recommended max: 60)"
-        logger.warning("refresh-claudemd %s: %s", name, warning)
+    # If already running, return existing job
+    existing = _claudemd_job_get(name)
+    if existing and existing["status"] == "running":
+        return {"status": "running"}
 
-    return {
-        "current": current_claudemd,
-        "proposed": proposed,
-        "diff": raw_diff,
-        "hunks": hunks,
-        "warning": warning,
-    }
+    # Gather context synchronously (fast DB + file reads)
+    rows = (
+        db.query(Message.content, Message.created_at, Agent.name)
+        .join(Agent, Message.agent_id == Agent.id)
+        .filter(Agent.project == name, Message.role == MessageRole.AGENT)
+        .order_by(Message.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    parts = []
+    total_len = 0
+    for content, created_at, agent_name in rows:
+        snippet = (content or "")[:500]
+        entry = f"[agent: {agent_name}, {created_at}]\n{snippet}\n"
+        if total_len + len(entry) > 8000:
+            break
+        parts.append(entry)
+        total_len += len(entry)
+    recent_agent_activity = "\n".join(parts) if parts else "(no recent agent activity)"
+
+    claudemd_path = os.path.join(project_path, "CLAUDE.md")
+    progress_path = os.path.join(project_path, "PROGRESS.md")
+    current_claudemd = ""
+    if os.path.isfile(claudemd_path):
+        with open(claudemd_path, "r", encoding="utf-8", errors="replace") as f:
+            current_claudemd = f.read()
+    progress_md = ""
+    if os.path.isfile(progress_path):
+        with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
+            progress_md = f.read()
+
+    # Mark as running and spawn background thread
+    _claudemd_job_set(name, status="running")
+    thread = threading.Thread(
+        target=_refresh_claudemd_background,
+        args=(name, project_path, recent_agent_activity, current_claudemd, progress_md),
+        daemon=True,
+    )
+    thread.start()
+
+    return {"status": "started"}
+
+
+@app.get("/api/projects/{name}/refresh-claudemd/status")
+async def refresh_claudemd_status(name: str):
+    """Poll the status of a background CLAUDE.md refresh job."""
+    job = _claudemd_job_get(name)
+    if not job:
+        return {"status": "none"}
+    if job["status"] == "running":
+        return {"status": "running"}
+    if job["status"] == "error":
+        return {"status": "error", "message": job.get("error", "Unknown error")}
+    # complete
+    return {"status": "complete", "data": job["data"]}
 
 
 @app.post("/api/projects/{name}/apply-claudemd")
@@ -1850,12 +1871,12 @@ async def apply_claudemd(name: str, body: ApplyClaudeMdRequest, db: Session = De
     project_path = _resolve_project_path(name, db)
     claudemd_path = os.path.join(project_path, "CLAUDE.md")
 
-    cached = _claudemd_cache_get(name)
-    if not cached:
+    job = _claudemd_job_get(name)
+    if not job or job["status"] != "complete":
         raise HTTPException(status_code=410, detail="Proposal expired — run refresh again")
 
-    proposed = cached["proposed"]
-    current = cached["current"]
+    proposed = job["data"].get("proposed", "")
+    current = job["data"].get("current", "")
 
     if body.mode == "accept_all":
         final_content = proposed
@@ -1893,7 +1914,7 @@ async def apply_claudemd(name: str, body: ApplyClaudeMdRequest, db: Session = De
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    _claudemd_cache_clear(name)
+    _claudemd_job_clear(name)
 
     line_count = len(final_content.splitlines())
     if line_count > 60:
