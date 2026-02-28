@@ -15,6 +15,7 @@ import {
   scanAgents,
   sendMessage,
   generateWorktreeName,
+  uploadFile,
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import VoiceRecorder from "../components/VoiceRecorder";
@@ -366,6 +367,10 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const clearAllDrafts = () => { clearPrompt(); clearModel(); clearEffort(); };
   const [submitting, setSubmitting] = useState(false);
   const [showSchedulePicker, setShowSchedulePicker] = useState(false);
+  const [attachments, setAttachments] = useState([]);
+  const [dragOver, setDragOver] = useState(false);
+  const dragCountRef = useRef(0);
+  const fileInputRef = useRef(null);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
   const textareaRef = useRef(null);
@@ -567,19 +572,94 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     sessions: sessions != null ? sessions.length : 0,
   };
 
+  // Cleanup blob URLs on unmount
+  useEffect(() => {
+    return () => {
+      attachments.forEach((a) => { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); });
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addFiles = (files) => {
+    for (const file of files) {
+      if (file.size > 50 * 1024 * 1024) {
+        showToast(`${file.name} exceeds 50 MB limit`, "error");
+        continue;
+      }
+      const id = Math.random().toString(36).slice(2, 10);
+      const isImage = file.type.startsWith("image/");
+      const previewUrl = isImage ? URL.createObjectURL(file) : null;
+      setAttachments((prev) => [...prev, {
+        id, file, previewUrl, uploading: true, uploadedPath: null,
+        originalName: file.name, size: file.size,
+      }]);
+      uploadFile(file).then((result) => {
+        setAttachments((prev) => prev.map((a) =>
+          a.id === id ? { ...a, uploading: false, uploadedPath: result.path } : a
+        ));
+      }).catch((err) => {
+        setAttachments((prev) => prev.filter((a) => a.id !== id));
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        showToast(`Upload failed: ${err.message}`, "error");
+      });
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length > 0) addFiles(files);
+  };
+
+  const handleDragEnter = (e) => { e.preventDefault(); e.stopPropagation(); dragCountRef.current++; if (e.dataTransfer?.types?.includes("Files")) setDragOver(true); };
+  const handleDragLeave = (e) => { e.preventDefault(); e.stopPropagation(); dragCountRef.current--; if (dragCountRef.current <= 0) { dragCountRef.current = 0; setDragOver(false); } };
+  const handleDragOver = (e) => { e.preventDefault(); e.stopPropagation(); };
+  const handleDrop = (e) => { e.preventDefault(); e.stopPropagation(); dragCountRef.current = 0; setDragOver(false); const files = Array.from(e.dataTransfer?.files || []); if (files.length > 0) addFiles(files); };
+  const handlePaste = (e) => { const items = e.clipboardData?.items; if (!items) return; const files = []; for (const item of items) { if (item.kind === "file") { const f = item.getAsFile(); if (f) files.push(f); } } if (files.length > 0) { e.preventDefault(); addFiles(files); } };
+
+  const removeAttachment = (id) => {
+    setAttachments((prev) => {
+      const att = prev.find((a) => a.id === id);
+      if (att?.previewUrl) URL.revokeObjectURL(att.previewUrl);
+      return prev.filter((a) => a.id !== id);
+    });
+  };
+
+  const clearAttachments = () => {
+    setAttachments((prev) => {
+      prev.forEach((a) => { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); });
+      return [];
+    });
+  };
+
+  const buildPromptText = (baseText, atts) => {
+    let msg = baseText;
+    for (const a of atts) {
+      if (a.uploadedPath) msg += `\n[Attached file: ${a.uploadedPath}]`;
+    }
+    return msg;
+  };
+
+  const anyUploading = attachments.some((a) => a.uploading);
+  const hasContent = prompt.trim() || attachments.some((a) => a.uploadedPath);
+
   // Submit new agent (or launch in tmux if syncMode)
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!prompt.trim()) { showToast("Enter a description.", "error"); return; }
+    if (!prompt.trim() && attachments.length === 0) { showToast("Enter a description.", "error"); return; }
+    if (anyUploading) { showToast("Uploads still in progress...", "error"); return; }
+    const uploaded = attachments.filter((a) => a.uploadedPath);
+    const fullPrompt = buildPromptText(prompt.trim(), uploaded);
     setSubmitting(true);
     try {
       if (syncMode) {
-        const agent = await launchTmuxAgent({ project: name, prompt: prompt.trim(), model, effort, worktree, skip_permissions: skipPermissions });
+        const agent = await launchTmuxAgent({ project: name, prompt: fullPrompt, model, effort, worktree, skip_permissions: skipPermissions });
         clearAllDrafts();
+        clearAttachments();
         navigate(`/agents/${agent.id}`);
       } else {
-        const agent = await createAgent({ project: name, prompt: prompt.trim(), mode: "AUTO", model, effort, worktree, skip_permissions: skipPermissions });
+        const agent = await createAgent({ project: name, prompt: fullPrompt, mode: "AUTO", model, effort, worktree, skip_permissions: skipPermissions });
         clearAllDrafts();
+        clearAttachments();
         showToast("Agent created!");
         setWorktree(null);
         navigate(`/agents/${agent.id}`);
@@ -593,13 +673,17 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
 
   // Schedule agent creation for later
   const handleSchedule = async (scheduledAt) => {
-    if (!prompt.trim()) { showToast("Enter a description.", "error"); return; }
+    if (!prompt.trim() && attachments.length === 0) { showToast("Enter a description.", "error"); return; }
+    if (anyUploading) { showToast("Uploads still in progress...", "error"); return; }
+    const uploaded = attachments.filter((a) => a.uploadedPath);
+    const fullPrompt = buildPromptText(prompt.trim(), uploaded);
     setShowSchedulePicker(false);
     setSubmitting(true);
     try {
-      const agent = await createAgent({ project: name, prompt: prompt.trim(), mode: "AUTO", model, effort, worktree, skip_permissions: skipPermissions });
-      await sendMessage(agent.id, prompt.trim(), { queue: true, scheduled_at: scheduledAt });
+      const agent = await createAgent({ project: name, prompt: fullPrompt, mode: "AUTO", model, effort, worktree, skip_permissions: skipPermissions });
+      await sendMessage(agent.id, fullPrompt, { queue: true, scheduled_at: scheduledAt });
       clearAllDrafts();
+      clearAttachments();
       const when = new Date(scheduledAt);
       showToast(`Scheduled for ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       navigate(`/agents/${agent.id}`);
@@ -772,17 +856,68 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       {project.active && (
       <form onSubmit={handleSubmit} className="rounded-xl bg-surface shadow-card p-4">
         <label className="block text-sm font-medium text-label mb-2">New Agent</label>
-        <div className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 relative mb-5">
+        <div
+          className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 relative mb-5"
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+        >
+          {dragOver && (
+            <div className="absolute inset-0 z-30 rounded-[22px] bg-cyan-500/15 border-2 border-dashed border-cyan-500 flex items-center justify-center pointer-events-none">
+              <span className="text-sm font-medium text-cyan-400">Drop files here</span>
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(e); } }}
+            onPaste={handlePaste}
             placeholder="What should this agent do?"
             rows={3}
             className="w-full min-h-[72px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors"
           />
-          <div className="grid grid-cols-[1fr_auto_auto_auto] gap-1.5 items-center px-1">
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-1">
+              {attachments.map((att) => (
+                <div key={att.id} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[140px]">
+                  {att.previewUrl ? (
+                    <img src={att.previewUrl} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
+                  ) : (
+                    <svg className="w-4 h-4 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                    </svg>
+                  )}
+                  <span className="truncate text-label flex-1 min-w-0">{att.originalName}</span>
+                  {att.uploading ? (
+                    <svg className="w-3.5 h-3.5 text-cyan-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  ) : (
+                    <button type="button" onClick={() => removeAttachment(att.id)} className="text-dim hover:text-heading shrink-0">
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={handleFileSelect} />
+          <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-1.5 items-center px-1">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title="Attach files"
+              className="shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors bg-elevated hover:bg-hover text-label"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
             <div className="min-w-0">
               {voice.recording && voice.analyserNode && (
                 <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} onTap={voice.toggleRecording} className="h-8" />
@@ -798,9 +933,9 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
               <button
                 type="button"
                 onClick={() => setShowSchedulePicker((v) => !v)}
-                disabled={submitting || !prompt.trim()}
+                disabled={submitting || !hasContent || anyUploading}
                 className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                  submitting || !prompt.trim()
+                  submitting || !hasContent || anyUploading
                     ? "bg-elevated text-dim cursor-not-allowed"
                     : "bg-amber-500 hover:bg-amber-400 text-white"
                 }`}
@@ -819,9 +954,9 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             </div>
             <button
               type="submit"
-              disabled={submitting || !prompt.trim()}
+              disabled={submitting || !hasContent || anyUploading}
               className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                submitting || !prompt.trim()
+                submitting || !hasContent || anyUploading
                   ? "bg-elevated text-dim cursor-not-allowed"
                   : "bg-cyan-500 hover:bg-cyan-400 text-white"
               }`}
