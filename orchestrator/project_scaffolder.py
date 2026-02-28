@@ -2,16 +2,22 @@
 
 Scans a project directory to infer tech stack, directory structure,
 key paths, and verification commands, then writes templated files.
+
+Design: CLAUDE.md stays under 50 lines — a one-screen rule sheet.
+Detailed project docs overflow to README.md automatically.
 """
 
 import json
 import logging
 import os
-import subprocess
+import re
 
 logger = logging.getLogger("orchestrator.scaffolder")
 
 TEMPLATE_HEADER = "> Read this file at the start of every task"
+
+MAX_CLAUDE_LINES = 60  # warn if generated CLAUDE.md exceeds this
+MAX_PROJECT_RULES_LINES = 20  # overflow to README.md if exceeded
 
 IGNORED_DIRS = {
     "node_modules", ".git", ".venv", "venv", "__pycache__", ".next",
@@ -28,7 +34,6 @@ def _needs_scaffold(filepath: str) -> bool:
         return True
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            # Check first 5 lines for the header marker
             for _ in range(5):
                 line = f.readline()
                 if TEMPLATE_HEADER in line:
@@ -38,45 +43,16 @@ def _needs_scaffold(filepath: str) -> bool:
     return True
 
 
-def _dir_tree(project_path: str, max_depth: int = 2) -> str:
-    """Generate directory tree (top N levels), ignoring common junk dirs."""
-    lines = []
-    base = os.path.basename(project_path.rstrip("/"))
-    lines.append(f"{base}/")
-
-    def _walk(path: str, prefix: str, depth: int):
-        if depth >= max_depth:
-            return
-        try:
-            entries = sorted(os.listdir(path))
-        except OSError:
-            return
-        dirs = [e for e in entries if os.path.isdir(os.path.join(path, e))
-                and e not in IGNORED_DIRS and not e.startswith(".")]
-        files = [e for e in entries if os.path.isfile(os.path.join(path, e))
-                 and not e.startswith(".")]
-        # At depth 0, show key files; at depth 1, just dirs
-        items = []
-        if depth == 0:
-            key_files = [f for f in files if f in (
-                "package.json", "requirements.txt", "pyproject.toml",
-                "Cargo.toml", "go.mod", "Makefile", "Gemfile",
-                "setup.py", "setup.cfg", "CMakeLists.txt",
-                "docker-compose.yml", "Dockerfile",
-            )]
-            items = [(f, False) for f in key_files] + [(d, True) for d in dirs]
-        else:
-            items = [(d, True) for d in dirs]
-        for i, (name, is_dir) in enumerate(items):
-            connector = "└── " if i == len(items) - 1 else "├── "
-            suffix = "/" if is_dir else ""
-            lines.append(f"{prefix}{connector}{name}{suffix}")
-            if is_dir:
-                ext = "    " if i == len(items) - 1 else "│   "
-                _walk(os.path.join(path, name), prefix + ext, depth + 1)
-
-    _walk(project_path, "", 0)
-    return "\n".join(lines)
+def _top_dirs(project_path: str) -> str:
+    """List top-level directories only (one-liner style)."""
+    try:
+        entries = sorted(os.listdir(project_path))
+    except OSError:
+        return ""
+    dirs = [e + "/" for e in entries
+            if os.path.isdir(os.path.join(project_path, e))
+            and e not in IGNORED_DIRS and not e.startswith(".")]
+    return ", ".join(dirs) if dirs else "N/A"
 
 
 def _detect_tech_stack(project_path: str) -> str:
@@ -189,7 +165,6 @@ def _detect_key_paths(project_path: str) -> dict:
     """Find config, entry point, and test paths."""
     result = {"config": "N/A", "entry_point": "N/A", "tests": "N/A"}
 
-    # Config files (priority order)
     config_candidates = [
         "package.json", "pyproject.toml", "setup.cfg", "setup.py",
         "Cargo.toml", "go.mod", "Gemfile", "_config.yml",
@@ -201,7 +176,6 @@ def _detect_key_paths(project_path: str) -> dict:
     if found_configs:
         result["config"] = ", ".join(found_configs[:3])
 
-    # Entry points
     entry_candidates = [
         "src/main.py", "main.py", "app.py", "server.py",
         "src/index.ts", "src/index.js", "src/main.tsx", "src/main.jsx",
@@ -214,7 +188,6 @@ def _detect_key_paths(project_path: str) -> dict:
             result["entry_point"] = ep
             break
 
-    # Test directories / files
     test_candidates = ["tests/", "test/", "spec/", "__tests__/",
                        "src/tests/", "src/__tests__/"]
     for td in test_candidates:
@@ -222,7 +195,6 @@ def _detect_key_paths(project_path: str) -> dict:
             result["tests"] = td
             break
 
-    # Check for test files at root
     if result["tests"] == "N/A":
         test_files = [f for f in os.listdir(project_path)
                       if f.startswith("test_") or f.endswith("_test.py")
@@ -245,11 +217,11 @@ def _detect_commands(project_path: str) -> dict:
                 pkg = json.load(f)
             scripts = pkg.get("scripts", {})
             if "build" in scripts:
-                result["build"] = f"`npm run build` ({scripts['build']})"
+                result["build"] = f"`npm run build`"
             if "test" in scripts:
-                result["test"] = f"`npm test` ({scripts['test']})"
+                result["test"] = f"`npm test`"
             if "lint" in scripts:
-                result["lint"] = f"`npm run lint` ({scripts['lint']})"
+                result["lint"] = f"`npm run lint`"
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -274,13 +246,10 @@ def _detect_commands(project_path: str) -> dict:
                 result["test"] = "`pytest`"
             if "black" in content.lower() or "ruff" in content.lower():
                 if result["lint"] == "N/A":
-                    result["lint"] = "`pre-commit run --all-files`" if os.path.isfile(
-                        os.path.join(project_path, ".pre-commit-config.yaml")
-                    ) else "`ruff check .`" if "ruff" in content.lower() else "`black --check .`"
+                    result["lint"] = "`ruff check .`" if "ruff" in content.lower() else "`black --check .`"
         except OSError:
             pass
 
-    # Jekyll
     if os.path.isfile(os.path.join(project_path, "Gemfile")):
         if result["build"] == "N/A":
             result["build"] = "`bundle exec jekyll build`"
@@ -288,29 +257,6 @@ def _detect_commands(project_path: str) -> dict:
             result["test"] = "`bundle exec jekyll serve` (manual)"
 
     return result
-
-
-def _downgrade_headers(content: str) -> str:
-    """Downgrade markdown headers so they nest under ## Project-Specific Rules.
-
-    # H1 -> ### H3, ## H2 -> ### H3, ### H3 -> #### H4.
-    Skips lines inside fenced code blocks (```).
-    """
-    lines = content.split("\n")
-    in_code_block = False
-    for i, line in enumerate(lines):
-        if line.startswith("```"):
-            in_code_block = not in_code_block
-            continue
-        if in_code_block:
-            continue
-        if line.startswith("### "):
-            lines[i] = "#" + line      # ### -> ####
-        elif line.startswith("## "):
-            lines[i] = "#" + line      # ## -> ###
-        elif line.startswith("# "):
-            lines[i] = "##" + line     # # -> ###
-    return "\n".join(lines)
 
 
 def _read_existing_content(filepath: str) -> str | None:
@@ -322,7 +268,6 @@ def _read_existing_content(filepath: str) -> str | None:
             content = f.read().strip()
         if not content:
             return None
-        # If it already has the template header, don't preserve (it's our template)
         if TEMPLATE_HEADER in content:
             return None
         return content
@@ -330,8 +275,70 @@ def _read_existing_content(filepath: str) -> str | None:
         return None
 
 
-def scaffold_project(project_name: str, project_path: str) -> dict:
+def _extract_project_rules(claude_path: str) -> str:
+    """Extract only the ## Project-Specific Rules section from an existing scaffolded CLAUDE.md.
+
+    Returns the content after the header, or empty string if not found.
+    """
+    if not os.path.isfile(claude_path):
+        return ""
+    try:
+        with open(claude_path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+
+    # Only extract from already-scaffolded files
+    if TEMPLATE_HEADER not in text:
+        return ""
+
+    m = re.search(r"^## Project-Specific Rules\s*\n", text, re.MULTILINE)
+    if not m:
+        return ""
+    content = text[m.end():].strip()
+    return content
+
+
+def _overflow_to_readme(project_path: str, project_name: str, overflow: str) -> None:
+    """Move overflow content from CLAUDE.md into README.md.
+
+    Creates README.md if missing. Appends under a clearly marked section.
+    """
+    readme_path = os.path.join(project_path, "README.md")
+    marker = "<!-- AUTO-GENERATED: Project details from CLAUDE.md scaffold -->"
+
+    if os.path.isfile(readme_path):
+        try:
+            with open(readme_path, "r", encoding="utf-8", errors="replace") as f:
+                existing = f.read()
+        except OSError:
+            existing = ""
+
+        # If marker already exists, replace that section
+        if marker in existing:
+            # Find the marker and replace everything after it until EOF or next marker
+            idx = existing.index(marker)
+            existing = existing[:idx].rstrip()
+
+        # Append overflow
+        content = existing.rstrip() + f"\n\n{marker}\n\n{overflow}\n"
+    else:
+        content = f"# {project_name}\n\n{marker}\n\n{overflow}\n"
+
+    try:
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info("Wrote overflow project docs to README.md for '%s'", project_name)
+    except OSError as e:
+        logger.error("Failed to write README.md for '%s': %s", project_name, e)
+
+
+def scaffold_project(project_name: str, project_path: str,
+                     force: bool = False) -> dict:
     """Generate CLAUDE.md and PROGRESS.md for a project.
+
+    If force=True, regenerate even if the template header already exists
+    (preserves project-specific rules from the existing file).
 
     Returns dict with 'claude_md' and 'progress_md' booleans indicating
     which files were created/updated.
@@ -346,18 +353,32 @@ def scaffold_project(project_name: str, project_path: str) -> dict:
     progress_path = os.path.join(project_path, "PROGRESS.md")
 
     # --- CLAUDE.md ---
-    if _needs_scaffold(claude_path):
+    needs = _needs_scaffold(claude_path) or force
+    if needs:
         tech_stack = _detect_tech_stack(project_path)
-        dir_tree = _dir_tree(project_path)
+        top_dirs = _top_dirs(project_path)
         key_paths = _detect_key_paths(project_path)
         commands = _detect_commands(project_path)
 
-        # Preserve existing content as project-specific rules
-        # Downgrade headers so they nest properly under ## Project-Specific Rules
-        existing_claude = _read_existing_content(claude_path)
+        # Collect project-specific rules
+        # For force-regeneration: extract rules from existing scaffolded file
         project_rules = ""
-        if existing_claude:
-            project_rules = f"\n{_downgrade_headers(existing_claude)}\n"
+        if force:
+            project_rules = _extract_project_rules(claude_path)
+        if not project_rules:
+            # Fallback: read raw non-scaffolded content
+            existing_claude = _read_existing_content(claude_path)
+            if existing_claude:
+                project_rules = existing_claude.strip()
+
+        # If rules are long, overflow to README.md
+        rules_lines = project_rules.split("\n") if project_rules else []
+        if len(rules_lines) > MAX_PROJECT_RULES_LINES and project_rules:
+            _overflow_to_readme(project_path, project_name, project_rules)
+            project_rules = "See README.md for detailed project documentation."
+
+        # Build short project-specific section
+        rules_section = project_rules if project_rules else ""
 
         claude_content = f"""# CLAUDE.md
 {TEMPLATE_HEADER}. Rarely modified — only update when project structure or conventions change.
@@ -394,30 +415,32 @@ def scaffold_project(project_name: str, project_path: str) -> dict:
 - Match the indentation, naming, and structure of surrounding code
 
 ## Project: {project_name}
-## Tech Stack: {tech_stack}
-## Directory Structure
-```
-{dir_tree}
-```
-
-## Key Paths
+- Tech Stack: {tech_stack}
+- Top Dirs: {top_dirs}
 - Config: {key_paths['config']}
-- Entry point: {key_paths['entry_point']}
+- Entry: {key_paths['entry_point']}
 - Tests: {key_paths['tests']}
-
-## Verification Commands
-- Build: {commands['build']}
-- Test: {commands['test']}
-- Lint: {commands['lint']}
+- Build: {commands['build']}  |  Test: {commands['test']}  |  Lint: {commands['lint']}
 
 ## Project-Specific Rules
-{project_rules}"""
+{rules_section}
+"""
+
+        # Trim trailing whitespace
+        claude_content = claude_content.rstrip() + "\n"
+
+        line_count = len(claude_content.split("\n"))
+        if line_count > MAX_CLAUDE_LINES:
+            logger.warning(
+                "CLAUDE.md for '%s' is %d lines (max %d). Consider trimming project-specific rules.",
+                project_name, line_count, MAX_CLAUDE_LINES,
+            )
 
         try:
             with open(claude_path, "w", encoding="utf-8") as f:
                 f.write(claude_content)
             result["claude_md"] = True
-            logger.info("Created CLAUDE.md for project '%s'", project_name)
+            logger.info("Created CLAUDE.md for project '%s' (%d lines)", project_name, line_count)
         except OSError as e:
             logger.error("Failed to write CLAUDE.md for '%s': %s", project_name, e)
 
@@ -426,20 +449,15 @@ def scaffold_project(project_name: str, project_path: str) -> dict:
         existing_progress = _read_existing_content(progress_path)
         existing_entries = ""
         if existing_progress:
-            # Strip old headers/instructions, keep only real entries.
-            # Look for the first date-stamped entry (## [YYYY- or ### YYYY-)
-            import re
             match = re.search(r"^(##?#?\s*\[?\d{4}-\d{2}-\d{2})", existing_progress, re.MULTILINE)
             if match:
                 entries = existing_progress[match.start():]
-                # Normalize entry headers to ### YYYY-MM-DD format
                 entries = re.sub(
                     r"^##\s*\[(\d{4}-\d{2}-\d{2})\]\s*(.+?)(?:\s*\|\s*Project:\s*\S+)?\s*$",
                     r"### \1 | Task: \2 | Status: success",
                     entries,
                     flags=re.MULTILINE,
                 )
-                # Remove --- separators between entries
                 entries = re.sub(r"\n---\n", "\n", entries)
                 existing_entries = f"\n{entries}\n"
             else:
@@ -471,9 +489,59 @@ def scaffold_project(project_name: str, project_path: str) -> dict:
     return result
 
 
+def trim_existing_claude(project_name: str, project_path: str) -> bool:
+    """Trim an existing scaffolded CLAUDE.md that is over MAX_CLAUDE_LINES.
+
+    Extracts the ## Project-Specific Rules section, and if it's too long,
+    moves it to README.md and replaces with a pointer.
+
+    Returns True if trimmed.
+    """
+    claude_path = os.path.join(project_path, "CLAUDE.md")
+    if not os.path.isfile(claude_path):
+        return False
+
+    try:
+        with open(claude_path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return False
+
+    lines = text.split("\n")
+    if len(lines) <= MAX_CLAUDE_LINES:
+        return False
+
+    # Find the ## Project-Specific Rules section
+    m = re.search(r"^## Project-Specific Rules\s*\n", text, re.MULTILINE)
+    if not m:
+        return False
+
+    before = text[:m.end()]
+    overflow = text[m.end():].strip()
+
+    if not overflow:
+        return False
+
+    # Move overflow to README.md
+    _overflow_to_readme(project_path, project_name, overflow)
+
+    # Replace in CLAUDE.md
+    trimmed = before + "See README.md for detailed project documentation.\n"
+    try:
+        with open(claude_path, "w", encoding="utf-8") as f:
+            f.write(trimmed)
+        logger.info("Trimmed CLAUDE.md for '%s': %d -> %d lines",
+                     project_name, len(lines), len(trimmed.split("\n")))
+        return True
+    except OSError as e:
+        logger.error("Failed to trim CLAUDE.md for '%s': %s", project_name, e)
+        return False
+
+
 def backfill_all_projects(registry_path: str) -> list[dict]:
     """Backfill CLAUDE.md and PROGRESS.md for all projects in the registry.
 
+    Also trims existing CLAUDE.md files that are over MAX_CLAUDE_LINES.
     Returns list of results per project.
     """
     import yaml
@@ -497,7 +565,8 @@ def backfill_all_projects(registry_path: str) -> list[dict]:
             logger.info("Skipping '%s' — path does not exist: %s", name, path)
             continue
 
-        r = scaffold_project(name, path)
+        # Force-regenerate all CLAUDE.md to use new compact template
+        r = scaffold_project(name, path, force=True)
         r["project"] = name
         results.append(r)
 
