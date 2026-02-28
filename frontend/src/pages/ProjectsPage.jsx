@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
@@ -203,6 +203,17 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);
   }, [load]);
+
+  // Auto-navigate to last-viewed project on initial load
+  const didAutoNav = useRef(false);
+  useEffect(() => {
+    if (didAutoNav.current || loading || folders.length === 0) return;
+    didAutoNav.current = true;
+    const last = localStorage.getItem("lastViewedProject");
+    if (last && folders.some((f) => f.name === last && f.active)) {
+      navigate(`/projects/${encodeURIComponent(last)}`, { replace: true });
+    }
+  }, [loading, folders, navigate]);
 
   // Sync customOrder when folders load — append any new projects
   useEffect(() => {

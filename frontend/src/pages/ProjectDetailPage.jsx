@@ -18,6 +18,7 @@ import {
   uploadFile,
   fetchProjectFile,
   refreshClaudeMd,
+  refreshClaudeMdStatus,
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import VoiceRecorder from "../components/VoiceRecorder";
@@ -350,6 +351,11 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const { name } = useParams();
   const navigate = useNavigate();
 
+  // Remember last-viewed project so ProjectsPage can auto-navigate back
+  useEffect(() => {
+    if (name) localStorage.setItem("lastViewedProject", name);
+  }, [name]);
+
   const [project, setProject] = useState(null);
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -547,17 +553,54 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     setTimeout(() => setRefreshing(false), 400);
   }, [loadData]);
 
+  const pollRef = useRef(null);
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
+
+  const startPolling = useCallback(() => {
+    stopPolling();
+    setRefreshingClaudeMd(true);
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await refreshClaudeMdStatus(name);
+        if (res.status === "complete") {
+          stopPolling();
+          setRefreshingClaudeMd(false);
+          setDiffData(res.data);
+        } else if (res.status === "error") {
+          stopPolling();
+          setRefreshingClaudeMd(false);
+          showToast(res.message || "Failed to analyze project — try again", "error");
+        }
+        // "running" → keep polling
+      } catch {
+        stopPolling();
+        setRefreshingClaudeMd(false);
+      }
+    }, 2000);
+  }, [name, stopPolling, showToast]);
+
+  // Check for pending/complete job on mount
+  useEffect(() => {
+    if (!name) return;
+    refreshClaudeMdStatus(name).then((res) => {
+      if (res.status === "running") startPolling();
+      else if (res.status === "complete") setDiffData(res.data);
+    }).catch(() => {});
+    return stopPolling;
+  }, [name, startPolling, stopPolling]);
+
   const handleRefreshClaudeMd = useCallback(async () => {
     setRefreshingClaudeMd(true);
     try {
-      const res = await refreshClaudeMd(name);
-      setDiffData(res);
+      await refreshClaudeMd(name);
+      startPolling();
     } catch (err) {
-      showToast(err.message || "Failed to analyze project — try again", "error");
-    } finally {
       setRefreshingClaudeMd(false);
+      showToast(err.message || "Failed to analyze project — try again", "error");
     }
-  }, [name, showToast]);
+  }, [name, showToast, startPolling]);
 
   useEffect(() => {
     loadData();
@@ -830,7 +873,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         <div className="max-w-2xl mx-auto">
           <button
             type="button"
-            onClick={() => navigate("/projects")}
+            onClick={() => { localStorage.removeItem("lastViewedProject"); navigate("/projects"); }}
             className="flex items-center gap-1 text-sm text-label hover:text-heading mb-2"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -1235,6 +1278,30 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       {/* Project settings */}
       <div className="rounded-xl bg-surface shadow-card p-4 space-y-3">
         <h2 className="text-sm font-semibold text-label uppercase tracking-wider">Settings</h2>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm text-body">Refresh CLAUDE.md</p>
+            <p className="text-xs text-dim">AI-analyze project and propose updates</p>
+          </div>
+          <button
+            type="button"
+            disabled={refreshingClaudeMd}
+            onClick={handleRefreshClaudeMd}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-cyan-600 text-white text-xs font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+          >
+            {refreshingClaudeMd ? (
+              <>
+                <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
+                Analyzing...
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
+                Refresh CLAUDE.md
+              </>
+            )}
+          </button>
+        </div>
         {project.active ? (
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
@@ -1266,30 +1333,6 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             </button>
           </div>
         )}
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-sm text-body">Refresh CLAUDE.md</p>
-            <p className="text-xs text-dim">AI-analyze project and propose updates</p>
-          </div>
-          <button
-            type="button"
-            disabled={refreshingClaudeMd}
-            onClick={handleRefreshClaudeMd}
-            className="shrink-0 px-3 py-1.5 rounded-lg border border-divider text-body text-xs font-medium hover:bg-elevated disabled:opacity-50 transition-colors flex items-center gap-1.5"
-          >
-            {refreshingClaudeMd ? (
-              <>
-                <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
-                Analyzing...
-              </>
-            ) : (
-              <>
-                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
-                Refresh CLAUDE.md
-              </>
-            )}
-          </button>
-        </div>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="text-sm text-body">Delete Project</p>
