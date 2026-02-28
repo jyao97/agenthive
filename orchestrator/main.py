@@ -1550,6 +1550,22 @@ async def unstar_session(name: str, session_id: str, db: Session = Depends(get_d
     return {"starred": False}
 
 
+# ---- Project path resolver (DB or filesystem fallback) ----
+
+def _resolve_project_path(name: str, db) -> str:
+    """Return the project's absolute path. Checks DB first, then PROJECTS_DIR."""
+    proj = db.get(Project, name)
+    if proj:
+        return proj.path
+    # Fallback: project exists on disk but not registered in DB
+    from config import PROJECTS_DIR
+    projects_dir = PROJECTS_DIR or "/projects"
+    candidate = os.path.join(projects_dir, name)
+    if os.path.isdir(candidate):
+        return candidate
+    raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+
 # ---- Project files (CLAUDE.md / PROGRESS.md only) ----
 
 _ALLOWED_PROJECT_FILES = {"CLAUDE.md", "PROGRESS.md"}
@@ -1565,10 +1581,8 @@ async def get_project_file(name: str, path: str, db: Session = Depends(get_db)):
     """Read CLAUDE.md or PROGRESS.md from a project directory."""
     if path not in _ALLOWED_PROJECT_FILES:
         raise HTTPException(status_code=400, detail=f"Only {_ALLOWED_PROJECT_FILES} are accessible")
-    proj = db.get(Project, name)
-    if not proj:
-        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
-    filepath = os.path.join(proj.path, path)
+    project_path = _resolve_project_path(name, db)
+    filepath = os.path.join(project_path, path)
     if not os.path.isfile(filepath):
         return {"exists": False, "content": None, "path": path}
     try:
@@ -1587,18 +1601,14 @@ async def update_project_file(name: str, body: ProjectFileUpdate, db: Session = 
     """
     if body.path not in _ALLOWED_PROJECT_FILES:
         raise HTTPException(status_code=400, detail=f"Only {_ALLOWED_PROJECT_FILES} are accessible")
-    proj = db.get(Project, name)
-    if not proj:
-        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
-    if not os.path.isdir(proj.path):
-        raise HTTPException(status_code=400, detail=f"Project directory does not exist: {proj.path}")
+    project_path = _resolve_project_path(name, db)
 
-    filepath = os.path.join(proj.path, body.path)
+    filepath = os.path.join(project_path, body.path)
 
     # If file doesn't exist and no content provided, scaffold it
     if not os.path.isfile(filepath) and not body.content.strip():
         from project_scaffolder import scaffold_project
-        scaffold_project(proj.name, proj.path)
+        scaffold_project(name, project_path)
         # Read back the generated content
         if os.path.isfile(filepath):
             with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -1627,11 +1637,7 @@ _BROWSE_MAX_FILE_SIZE = 512 * 1024  # 512 KB
 @app.get("/api/projects/{name}/tree")
 async def get_project_tree(name: str, depth: int = 3, db: Session = Depends(get_db)):
     """Return directory tree for a project (top N levels, ignoring common junk dirs)."""
-    proj = db.get(Project, name)
-    if not proj:
-        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
-    if not os.path.isdir(proj.path):
-        raise HTTPException(status_code=400, detail=f"Project directory does not exist: {proj.path}")
+    project_path = _resolve_project_path(name, db)
 
     def _walk(dirpath: str, current_depth: int):
         if current_depth >= depth:
@@ -1643,11 +1649,10 @@ async def get_project_tree(name: str, depth: int = 3, db: Session = Depends(get_
         items = []
         for entry in entries:
             if entry.startswith(".") and entry not in (".env.example",):
-                # skip dotfiles except .env.example
                 if entry not in (".env",):
                     continue
             full = os.path.join(dirpath, entry)
-            rel = os.path.relpath(full, proj.path)
+            rel = os.path.relpath(full, project_path)
             if os.path.isdir(full):
                 if entry.lower() in _BROWSE_IGNORED or entry.endswith(".egg-info"):
                     continue
@@ -1657,20 +1662,18 @@ async def get_project_tree(name: str, depth: int = 3, db: Session = Depends(get_
                 items.append({"name": entry, "path": rel, "type": "file"})
         return items
 
-    tree = _walk(proj.path, 0)
-    return {"tree": tree, "root": proj.path}
+    tree = _walk(project_path, 0)
+    return {"tree": tree, "root": project_path}
 
 
 @app.get("/api/projects/{name}/browse")
 async def browse_project_file(name: str, path: str, db: Session = Depends(get_db)):
     """Read a single file from a project directory (read-only, with size limit)."""
-    proj = db.get(Project, name)
-    if not proj:
-        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+    project_path = _resolve_project_path(name, db)
 
     # Resolve and validate path is within project
-    filepath = os.path.normpath(os.path.join(proj.path, path))
-    if not filepath.startswith(proj.path + os.sep) and filepath != proj.path:
+    filepath = os.path.normpath(os.path.join(project_path, path))
+    if not filepath.startswith(project_path + os.sep) and filepath != project_path:
         raise HTTPException(status_code=400, detail="Path traversal not allowed")
 
     if not os.path.isfile(filepath):
