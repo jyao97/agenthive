@@ -61,7 +61,7 @@ export default function WaveformVisualizer({ analyserNode, remainingSeconds, onT
         ref={canvasRef}
         width={200}
         height={40}
-        className={`rounded bg-transparent ${className}`}
+        className={`w-full rounded bg-transparent ${className}`}
       />
       {remainingSeconds != null && (
         <span className={`text-[11px] tabular-nums ${remainingSeconds <= 10 ? "text-red-400" : "text-dim"}`}>

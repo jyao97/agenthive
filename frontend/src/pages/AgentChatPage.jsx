@@ -329,6 +329,11 @@ function _detectPlanIdx(answer) {
   // Dismissed / escaped answers
   if (answer.startsWith("The user doesn't want to proceed") || answer.startsWith("User declined") || answer.startsWith("Tool use rejected")) return null;
   const a = answer.toLowerCase().trim();
+  // Exact label match first (avoids keyword collision like "bypass manual")
+  const exactLabels = PLAN_OPTIONS.map((o) => o.label.toLowerCase());
+  const exactIdx = exactLabels.indexOf(a);
+  if (exactIdx !== -1) return exactIdx;
+  // Keyword fallback for answers from Claude's tool_result (may differ in wording)
   if (/clear context/.test(a)) return 0;
   if (/bypass/.test(a) && !/clear/.test(a) && !/manual/.test(a)) return 1;
   if (/manual/.test(a)) return 2;
@@ -423,11 +428,10 @@ function PlanBubble({ item, agentId, onAnswered }) {
       {planContent && planExpanded && (
         <div className="mb-3 rounded-lg bg-surface/60 border border-divider/40 overflow-hidden">
           <div className="px-3 py-2 max-h-[300px] overflow-y-auto text-sm">
-            <SafeMarkdown>
-              <div
-                className="prose-sm text-body [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-heading [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-heading [&_h2]:mt-2.5 [&_h2]:mb-1 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:text-heading [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:text-xs [&_p]:mb-1.5 [&_ul]:text-xs [&_ul]:ml-4 [&_ul]:mb-1.5 [&_ol]:text-xs [&_ol]:ml-4 [&_ol]:mb-1.5 [&_li]:mb-0.5 [&_code]:text-[11px] [&_code]:bg-elevated [&_code]:px-1 [&_code]:rounded [&_pre]:text-[11px] [&_pre]:bg-elevated [&_pre]:p-2 [&_pre]:rounded [&_pre]:overflow-x-auto [&_pre]:mb-2"
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(planContent) }}
-              />
+            <SafeMarkdown fallback={planContent}>
+              <div className="prose-sm text-body [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-heading [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-heading [&_h2]:mt-2.5 [&_h2]:mb-1 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:text-heading [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:text-xs [&_p]:mb-1.5 [&_ul]:text-xs [&_ul]:ml-4 [&_ul]:mb-1.5 [&_ol]:text-xs [&_ol]:ml-4 [&_ol]:mb-1.5 [&_li]:mb-0.5 [&_code]:text-[11px] [&_code]:bg-elevated [&_code]:px-1 [&_code]:rounded [&_pre]:text-[11px] [&_pre]:bg-elevated [&_pre]:p-2 [&_pre]:rounded [&_pre]:overflow-x-auto [&_pre]:mb-2">
+                {renderMarkdown(planContent)}
+              </div>
             </SafeMarkdown>
           </div>
         </div>
@@ -492,7 +496,18 @@ function InteractiveBubbles({ metadata, agentId, onAnswered, messageContent, pro
     if (item.type === "exit_plan_mode") {
       return <PlanBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} />;
     }
-    return null;
+    // Unknown interactive type — render a generic informational card
+    return (
+      <div key={item.tool_use_id} className="mt-3 rounded-xl bg-surface/60 border border-divider/40 p-3">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-sm font-medium text-dim">Interactive prompt</span>
+          <span className="ml-auto px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-dim/20 text-dim">
+            {item.type}
+          </span>
+        </div>
+        {item.answer && <p className="text-xs text-body">{item.answer}</p>}
+      </div>
+    );
   });
 }
 
@@ -514,7 +529,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const [editSchedule, setEditSchedule] = useState("");
-  const [inlineLightbox, setInlineLightbox] = useState(null); // { images, initialIndex }
+  const [inlineLightbox, setInlineLightbox] = useState(null); // { media, initialIndex }
   const longPressTimer = useRef(null);
   const editTextareaRef = useRef(null);
   const markdownRef = useRef(null);
@@ -528,8 +543,8 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     const allImgs = Array.from(container.querySelectorAll("img"));
     if (allImgs.length === 0) return;
     const index = allImgs.indexOf(img);
-    const images = allImgs.map((el) => ({ src: el.src, filename: el.alt || "" }));
-    setInlineLightbox({ images, initialIndex: Math.max(0, index) });
+    const media = allImgs.map((el) => ({ type: "image", src: el.src, filename: el.alt || "" }));
+    setInlineLightbox({ media, initialIndex: Math.max(0, index) });
   }, []);
 
   // Initialize editSchedule from message when entering edit mode
@@ -746,7 +761,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
         {attachments.length > 0 && <FileAttachments attachments={attachments} />}
         {inlineLightbox && (
           <ImageLightbox
-            images={inlineLightbox.images}
+            media={inlineLightbox.media}
             initialIndex={inlineLightbox.initialIndex}
             onClose={() => setInlineLightbox(null)}
           />

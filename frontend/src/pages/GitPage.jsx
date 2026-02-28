@@ -309,8 +309,8 @@ export default function GitPage({ theme, onToggleTheme }) {
                 disabled={mergingAll}
                 className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
                   mergingAll
-                    ? "bg-purple-700/50 text-purple-300 cursor-wait"
-                    : "bg-purple-600/30 text-purple-300 hover:bg-purple-600/60 hover:text-white"
+                    ? "bg-purple-400 text-white cursor-wait dark:bg-purple-700/50 dark:text-purple-300"
+                    : "bg-purple-600 text-white hover:bg-purple-700 dark:bg-purple-600 dark:text-white dark:hover:bg-purple-500"
                 }`}
               >
                 {mergingAll ? (
@@ -345,8 +345,8 @@ export default function GitPage({ theme, onToggleTheme }) {
                     key={wt.path || idx}
                     className={`flex items-center gap-2 rounded-lg text-sm px-3 py-2 border transition-colors ${
                       isMain
-                        ? "bg-cyan-600/20 border-cyan-500/50 text-cyan-300"
-                        : "bg-purple-500/10 border-purple-500/30 text-purple-300"
+                        ? "bg-cyan-50 border-cyan-300 text-heading dark:bg-cyan-600/20 dark:border-cyan-500/50 dark:text-cyan-300"
+                        : "bg-purple-50 border-purple-300 text-heading dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-300"
                     }`}
                   >
                     <svg className="w-3.5 h-3.5 shrink-0 opacity-60" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -354,12 +354,12 @@ export default function GitPage({ theme, onToggleTheme }) {
                     </svg>
                     <span className="font-mono text-xs truncate">{name}</span>
                     {wt.branch && (
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${isMain ? "bg-cyan-600/30 text-cyan-200" : "bg-purple-500/20 text-purple-200"}`}>
+                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${isMain ? "bg-cyan-600 text-white dark:bg-cyan-600 dark:text-white" : "bg-purple-600 text-white dark:bg-purple-600 dark:text-white"}`}>
                         {wt.branch}
                       </span>
                     )}
                     {wt.detached && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">detached</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500 text-white dark:bg-amber-500 dark:text-white">detached</span>
                     )}
                     {wt.commit && (
                       <span className="font-mono text-xs text-dim ml-auto">{wt.commit}</span>
@@ -392,8 +392,8 @@ export default function GitPage({ theme, onToggleTheme }) {
                     key={branch.name}
                     className={`flex items-center gap-2 rounded-full text-sm px-3 py-1.5 border transition-colors ${
                       isCurrent
-                        ? "bg-cyan-600/20 border-cyan-500/50 text-cyan-300"
-                        : "bg-input border-edge text-body"
+                        ? "bg-cyan-50 border-cyan-400 text-heading dark:bg-cyan-600/20 dark:border-cyan-500/50 dark:text-cyan-300"
+                        : "bg-input border-edge text-heading"
                     }`}
                   >
                     {/* Branch icon */}
@@ -417,7 +417,7 @@ export default function GitPage({ theme, onToggleTheme }) {
 
                     {isCurrent && (
                       <svg
-                        className="w-4 h-4 text-cyan-400 shrink-0"
+                        className="w-4 h-4 text-cyan-600 dark:text-cyan-400 shrink-0"
                         fill="none"
                         stroke="currentColor"
                         strokeWidth={2.5}
@@ -433,8 +433,8 @@ export default function GitPage({ theme, onToggleTheme }) {
                         disabled={!!mergingBranch}
                         className={`ml-1 px-2 py-0.5 rounded-full text-xs font-medium transition-colors ${
                           isMerging
-                            ? "bg-cyan-700/50 text-cyan-300 cursor-wait"
-                            : "bg-cyan-600/30 text-cyan-300 hover:bg-cyan-600/60 hover:text-white"
+                            ? "bg-cyan-400 text-white cursor-wait dark:bg-cyan-700/50 dark:text-cyan-300"
+                            : "bg-cyan-600 text-white hover:bg-cyan-700 dark:bg-cyan-600 dark:text-white dark:hover:bg-cyan-500"
                         } disabled:opacity-50 disabled:cursor-not-allowed`}
                       >
                         {isMerging ? (
@@ -569,7 +569,7 @@ export default function GitPage({ theme, onToggleTheme }) {
                   className="flex items-start gap-3 py-2 border-b border-divider last:border-b-0"
                 >
                   {/* Short hash */}
-                  <span className="font-mono text-xs text-cyan-400 shrink-0 pt-0.5 select-all">
+                  <span className="font-mono text-xs text-dim shrink-0 pt-0.5 select-all">
                     {(commit.hash || "").slice(0, 7)}
                   </span>
 
