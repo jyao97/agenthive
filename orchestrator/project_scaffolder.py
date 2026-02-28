@@ -290,6 +290,29 @@ def _detect_commands(project_path: str) -> dict:
     return result
 
 
+def _downgrade_headers(content: str) -> str:
+    """Downgrade markdown headers so they nest under ## Project-Specific Rules.
+
+    # H1 -> ### H3, ## H2 -> ### H3, ### H3 -> #### H4.
+    Skips lines inside fenced code blocks (```).
+    """
+    lines = content.split("\n")
+    in_code_block = False
+    for i, line in enumerate(lines):
+        if line.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        if line.startswith("### "):
+            lines[i] = "#" + line      # ### -> ####
+        elif line.startswith("## "):
+            lines[i] = "#" + line      # ## -> ###
+        elif line.startswith("# "):
+            lines[i] = "##" + line     # # -> ###
+    return "\n".join(lines)
+
+
 def _read_existing_content(filepath: str) -> str | None:
     """Read existing file content if it exists and doesn't already have the template header."""
     if not os.path.isfile(filepath):
@@ -330,10 +353,11 @@ def scaffold_project(project_name: str, project_path: str) -> dict:
         commands = _detect_commands(project_path)
 
         # Preserve existing content as project-specific rules
+        # Downgrade headers so they nest properly under ## Project-Specific Rules
         existing_claude = _read_existing_content(claude_path)
         project_rules = ""
         if existing_claude:
-            project_rules = f"\n{existing_claude}\n"
+            project_rules = f"\n{_downgrade_headers(existing_claude)}\n"
 
         claude_content = f"""# CLAUDE.md
 {TEMPLATE_HEADER}. Rarely modified — only update when project structure or conventions change.
@@ -402,8 +426,24 @@ def scaffold_project(project_name: str, project_path: str) -> dict:
         existing_progress = _read_existing_content(progress_path)
         existing_entries = ""
         if existing_progress:
-            # Extract entries after any header section
-            existing_entries = f"\n{existing_progress}\n"
+            # Strip old headers/instructions, keep only real entries.
+            # Look for the first date-stamped entry (## [YYYY- or ### YYYY-)
+            import re
+            match = re.search(r"^(##?#?\s*\[?\d{4}-\d{2}-\d{2})", existing_progress, re.MULTILINE)
+            if match:
+                entries = existing_progress[match.start():]
+                # Normalize entry headers to ### YYYY-MM-DD format
+                entries = re.sub(
+                    r"^##\s*\[(\d{4}-\d{2}-\d{2})\]\s*(.+?)(?:\s*\|\s*Project:\s*\S+)?\s*$",
+                    r"### \1 | Task: \2 | Status: success",
+                    entries,
+                    flags=re.MULTILINE,
+                )
+                # Remove --- separators between entries
+                entries = re.sub(r"\n---\n", "\n", entries)
+                existing_entries = f"\n{entries}\n"
+            else:
+                existing_entries = f"\n{existing_progress}\n"
 
         progress_content = f"""# PROGRESS.md
 {TEMPLATE_HEADER}. Append only, never delete entries.

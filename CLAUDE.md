@@ -59,9 +59,7 @@ cc-orchestrator/
 
 ## Project-Specific Rules
 
-# CLAUDE.md — AgentHive (Multi-Instance Claude Code Orchestration System)
-
-## Project Overview
+### Project Overview
 
 A self-hosted web UI for orchestrating multiple Claude Code agents across projects.
 Agents run as **host subprocesses**, managed by a FastAPI backend.
@@ -80,7 +78,7 @@ Core capabilities:
 
 ---
 
-## Architecture Overview
+### Architecture Overview
 
 ```
 Host Machine
@@ -107,7 +105,7 @@ Host Machine
 
 ---
 
-## Tech Stack
+### Tech Stack
 
 - **Backend**: Python 3.12, FastAPI, Uvicorn
 - **Frontend**: React 19, TailwindCSS 4, Vite 7
@@ -121,7 +119,7 @@ Host Machine
 
 ---
 
-## Directory Structure
+### Directory Structure
 
 ```
 cc-orchestrator/
@@ -207,11 +205,11 @@ cc-orchestrator/
 
 ---
 
-## Agent Execution Model
+### Agent Execution Model
 
 Agents run as **host subprocesses** via `subprocess.Popen`.
 
-### Worker Manager (`worker_manager.py`)
+#### Worker Manager (`worker_manager.py`)
 
 ```python
 # Spawns claude CLI as a subprocess
@@ -238,12 +236,12 @@ Key details:
 - Graceful SIGTERM → wait 10s → SIGKILL on stop/timeout
 - Environment cleaned to prevent nested Claude Code detection (`AGENTHIVE_MANAGED=1` set)
 
-### Two Worker Types
+#### Two Worker Types
 
 1. **Ephemeral workers** (`start_worker`): One-shot task execution, legacy
 2. **Agent workers** (`exec_claude_in_agent`): Persistent conversations with `--resume`
 
-### Agent Dispatcher Loop (`agent_dispatcher.py`)
+#### Agent Dispatcher Loop (`agent_dispatcher.py`)
 
 Runs every 2 seconds:
 
@@ -256,7 +254,7 @@ Runs every 2 seconds:
 
 Respects `MAX_CONCURRENT_WORKERS` (global) and `project.max_concurrent` (per-project).
 
-### Session Continuity (`session_cache.py`)
+#### Session Continuity (`session_cache.py`)
 
 - Incrementally caches session JSONL files (append-only, like git packfiles)
 - Restores from cache when `--resume` fails (stale session)
@@ -264,7 +262,7 @@ Respects `MAX_CONCURRENT_WORKERS` (global) and `project.max_concurrent` (per-pro
 - Disables Claude Code auto-cleanup (`cleanupPeriodDays: 36500`)
 - Evicts old cache when Claude assigns a new session_id (new file is a superset)
 
-### Worktree Session Directories (CRITICAL)
+#### Worktree Session Directories (CRITICAL)
 
 Claude Code stores session JSONL files in a directory derived from the **CWD** where it was launched:
 
@@ -299,7 +297,7 @@ Functions that must be worktree-aware (all fixed as of 2026-02-26):
 - `_recover_agents()` — recovery JSONL path + liveness
 - `_auto_detect_cli_sessions()` — must scan worktree session dirs too
 
-### tmux Session Naming
+#### tmux Session Naming
 
 Each agent launched via tmux gets session name `ah-{agent_id[:8]}`. This enables **definitive** pane-to-agent matching:
 
@@ -319,7 +317,7 @@ pane = session_name_to_pane.get(expected_name)
 
 This is more reliable than PID/session-file matching, which can mis-assign panes during recovery.
 
-### CWD Matching for Worktree Agents
+#### CWD Matching for Worktree Agents
 
 When matching a tmux pane's CWD to a project, use **subdirectory matching** (not exact match):
 
@@ -330,22 +328,22 @@ def _cwd_matches(cwd: str, project_path: str) -> bool:
 
 Worktree agents have CWDs like `{project}/.claude/worktrees/{name}`, which fail exact `==` checks.
 
-### Auto-detect Tiered Matching (`_auto_detect_cli_sessions`)
+#### Auto-detect Tiered Matching (`_auto_detect_cli_sessions`)
 
 Detection of orphaned tmux Claude sessions uses tiered matching:
 - **Tier 0**: tmux session name `ah-{id}` → direct agent lookup (most reliable)
 - **Tier 1**: Session JSONL matching (finds session file in project or worktree dir)
 - **Tier 2**: PID/CWD-based matching (least reliable)
 
-### Streaming Output
+#### Streaming Output
 
 During execution, an asyncio task tails the output file every 0.5s, parses stream-json events, and broadcasts incremental content via WebSocket (`agent_stream` event) for live display in the chat UI.
 
 ---
 
-## Database Models
+### Database Models
 
-### Agent (persistent Claude sessions)
+#### Agent (persistent Claude sessions)
 
 ```python
 class Agent:
@@ -368,7 +366,7 @@ class Agent:
     skip_permissions: bool   # --dangerously-skip-permissions (default True)
 ```
 
-### Message (agent conversation entries)
+#### Message (agent conversation entries)
 
 ```python
 class Message:
@@ -385,7 +383,7 @@ class Message:
     scheduled_at: datetime | None  # For scheduled message delivery
 ```
 
-### Project
+#### Project
 
 ```python
 class Project:
@@ -399,7 +397,7 @@ class Project:
     archived: bool
 ```
 
-### Supporting Models
+#### Supporting Models
 
 - **Task**: Legacy ephemeral tasks (PID tracked via container_id field)
 - **StarredSession**: Bookmarked Claude sessions
@@ -408,9 +406,9 @@ class Project:
 
 ---
 
-## API Endpoints
+### API Endpoints
 
-### Authentication
+#### Authentication
 ```
 POST   /api/auth/check              Check if auth is set up
 POST   /api/auth/set-password       First-time password setup
@@ -418,7 +416,7 @@ POST   /api/auth/login              Login (returns JWT)
 POST   /api/auth/change-password    Change password
 ```
 
-### Projects
+#### Projects
 ```
 GET    /api/projects                List projects with stats
 POST   /api/projects                Create/register project
@@ -436,7 +434,7 @@ PUT    /api/projects/{name}/sessions/{sid}/star    Star session
 DELETE /api/projects/{name}/sessions/{sid}/star    Unstar session
 ```
 
-### Agents
+#### Agents
 ```
 POST   /api/agents                  Create agent (starts persistent session)
 POST   /api/agents/launch-tmux      Launch agent in tmux pane
@@ -454,13 +452,13 @@ DELETE /api/agents/{id}/messages/{mid}  Delete a pending message
 PUT    /api/agents/{id}/read       Mark messages as read
 ```
 
-### Tasks (legacy)
+#### Tasks (legacy)
 ```
 GET    /api/tasks                   List tasks (derived from agent messages)
 GET    /api/tasks/{id}              Task detail with conversation thread
 ```
 
-### Git
+#### Git
 ```
 GET    /api/git/{project}/log       Commit history
 GET    /api/git/{project}/branches  List branches
@@ -468,7 +466,7 @@ GET    /api/git/{project}/status    Working tree status
 POST   /api/git/{project}/merge/{branch}  Merge branch
 ```
 
-### System
+#### System
 ```
 GET    /api/health                  Health check (DB, Claude CLI)
 GET    /api/system/stats            System stats (disk, memory, GPU)
@@ -478,7 +476,7 @@ GET    /api/workers                 Worker statuses (legacy)
 GET    /api/logs                    Recent log entries
 ```
 
-### Files, Voice, Push
+#### Files, Voice, Push
 ```
 GET    /api/files/{project}/{path}  Serve project files (images, videos, CSVs)
 POST   /api/voice                   Whisper speech-to-text
@@ -487,7 +485,7 @@ POST   /api/push/subscribe          Subscribe to push
 POST   /api/push/unsubscribe        Unsubscribe from push
 ```
 
-### WebSocket
+#### WebSocket
 ```
 ws://host:8080/ws                   Real-time events (auth via ?token=jwt)
 ```
@@ -496,7 +494,7 @@ Events: `agent_update`, `agent_stream`, `new_message`, `task_update`, `worker_up
 
 ---
 
-## Configuration
+### Configuration
 
 Environment variables (see `config.py`):
 
@@ -544,7 +542,7 @@ TELEGRAM_CHAT_ID = ""              # Chat ID for notifications
 
 ---
 
-## Authentication
+### Authentication
 
 1. First visit: `/login` prompts for password setup
 2. Password stored as SHA-256 hash (salt:hash) in `SystemConfig` table
@@ -556,22 +554,22 @@ TELEGRAM_CHAT_ID = ""              # Chat ID for notifications
 
 ---
 
-## Development Standards
+### Development Standards
 
-### Code Style
+#### Code Style
 1. PEP 8 (backend Python)
 2. ESLint (frontend JavaScript)
 3. SQLAlchemy 2.0 mapped_column style for models
 4. Pydantic v2 for API schemas
 5. Use `logging` module with clear level differentiation
 
-### Worker Behavior
+#### Worker Behavior
 1. Agent commits use format: `[agent-{id}] short description`
 2. INTERVIEW mode agents must not modify files
 3. Session continuity via `--resume` when possible
 4. Graceful degradation: restore from cache, re-queue on failure
 
-### Error Handling
+#### Error Handling
 1. Stale session recovery with retry limit (max 3 attempts)
 2. Truncated JSONL repair on crash recovery
 3. Partial output salvage from interrupted processes

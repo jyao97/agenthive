@@ -12,27 +12,7 @@
 - Lesson: (what future agents should know)
 -->
 
-# PROGRESS.md — Lessons Learned
-
-> Each CC worker should append here after completing a task. Never make the same mistake twice.
-
----
-
-## General Lessons
-
-### CC Instance Scheduling
-- (to be filled)
-
-### Frontend
-- (to be filled)
-
----
-
-## Task Log
-
-(CC workers append below after each task, using this format)
-
-## [2026-02-23] Task 1.1–1.4: Phase 1 Scheduler Core | Project: cc-orchestrator
+### 2026-02-23 | Task: Phase 1 Scheduler Core (1.1–1.4) | Status: success
 
 ### What was done
 - **1.1 Database Schema**: models.py (Task, Project, SystemConfig tables), database.py (SQLite WAL mode, session factory), config.py (env vars)
@@ -51,9 +31,7 @@
 - SQLite WAL mode + `check_same_thread=False` needed for async dispatcher + sync API sharing the same DB
 - `datetime.now(timezone.utc)` instead of `datetime.utcnow()` to avoid naive datetime comparison issues
 
----
-
-## [2026-02-24] Session Persistence + Auth Simplification | Project: cc-orchestrator
+### 2026-02-24 | Task: Session Persistence + Auth Simplification | Status: success
 
 ### What was done
 1. **Session persistence**: Session files and refreshed tokens survive restarts. `--resume` works across restarts.
@@ -70,9 +48,7 @@
 - When removing config vars, grep the entire codebase for imports — not just the file you're working on
 - Plan mode was later removed entirely (commit ad1c2c9) — only INTERVIEW and AUTO modes remain
 
----
-
-## [2026-02-26] Worktree Session Resolution + tmux Recovery | Project: cc-orchestrator
+### 2026-02-26 | Task: Worktree Session Resolution + tmux Recovery | Status: success
 
 ### What was done
 
@@ -132,9 +108,7 @@
 - **Audit pattern**: When fixing a helper function bug, grep for ALL call sites of the old pattern. Don't assume you found them all — `session_source_dir` appeared 13+ times.
 - **Wrong session file ≠ empty file**: A wrong session file can appear to work (has messages), just from a different session. Validate session IDs match, not just file existence.
 
----
-
-## [2026-02-26] Notification + Streaming Investigation | Project: cc-orchestrator
+### 2026-02-26 | Task: Notification + Streaming Investigation | Status: success
 
 ### What was done
 - Audited all 6 `send_push_notification` call sites — **all are properly guarded** with `_is_agent_in_use()` check
