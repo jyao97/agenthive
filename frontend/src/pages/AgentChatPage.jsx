@@ -17,7 +17,6 @@ import {
   answerAgent,
   escapeAgent,
   uploadFile,
-  authedFetch,
 } from "../lib/api";
 import { relativeTime, renderMarkdown, extractFileAttachments, stripAttachmentTags } from "../lib/formatters";
 
@@ -42,6 +41,7 @@ class SafeMarkdown extends Component {
   }
 }
 import FileAttachments from "../components/FilePreview";
+import ImageLightbox from "../components/ImageLightbox";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, modelDisplayName } from "../lib/constants";
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
@@ -85,59 +85,147 @@ function SystemBubble({ message }) {
   );
 }
 
+// --- Sub-agent task notification bubble (collapsible) ---
+
+function SubAgentBubble({ message, project }) {
+  const [expanded, setExpanded] = useState(false);
+  const content = message.content || "";
+  const status = content.match(/<status>(.*?)<\/status>/s)?.[1] || "";
+  const summary = content.match(/<summary>([\s\S]*?)<\/summary>/)?.[1] || "";
+  const result = content.match(/<result>([\s\S]*?)<\/result>/)?.[1]?.trim();
+
+  const statusColor = status === "completed"
+    ? "text-emerald-400"
+    : status === "failed" ? "text-red-400" : "text-amber-400";
+  const borderColor = status === "completed"
+    ? "border-emerald-500/30"
+    : status === "failed" ? "border-red-500/30" : "border-amber-500/30";
+
+  return (
+    <div className="flex justify-start my-2">
+      <div className="max-w-[85%]">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className={`w-full text-left rounded-2xl px-4 py-2.5 border ${borderColor} bg-purple-900/20 cursor-pointer hover:bg-purple-900/30 transition-colors rounded-bl-md`}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-purple-400">Sub-agent</span>
+            <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
+            <svg className={`w-3 h-3 shrink-0 text-dim transition-transform ml-auto ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" d="m19 9-7 7-7-7" />
+            </svg>
+          </div>
+          {summary && <p className="text-sm text-body mt-1">{summary}</p>}
+        </button>
+        {expanded && result && (
+          <div className={`mt-0 border ${borderColor} border-t-0 rounded-b-2xl bg-purple-900/10 px-4 py-3 max-h-[400px] overflow-y-auto`}>
+            <div className="text-sm">
+              <SafeMarkdown fallback={result}>
+                {renderMarkdown(result, project)}
+              </SafeMarkdown>
+            </div>
+          </div>
+        )}
+        <div className="text-xs text-dim mt-1 px-1">
+          {relativeTime(message.completed_at || message.created_at)}
+          {message.source && (
+            <span className={`ml-1.5 px-1 py-0.5 rounded text-[10px] font-medium leading-none ${
+              message.source === "web"
+                ? "bg-cyan-500/20 text-cyan-300"
+                : "bg-emerald-500/20 text-emerald-300"
+            }`}>
+              {message.source}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Interactive: AskUserQuestion ---
 
 function QuestionBubble({ item, agentId, onAnswered }) {
-  // Track locally chosen index so the selection sticks immediately
-  // (before the DB roundtrip updates item.answer).
-  const [chosenIdx, setChosenIdx] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
+  // Per-question state: { [questionIndex]: optionIndex }
+  const [chosenIndices, setChosenIndices] = useState({});
+  // Track which question is currently submitting (null = none)
+  const [submittingQi, setSubmittingQi] = useState(null);
 
   const questions = item.questions || [];
   // Detect dismissed/escaped answers (not a real selection)
   const isDismissed = item.answer != null && typeof item.answer === "string" &&
-    (item.answer.startsWith("The user doesn't want to proceed") || item.answer.startsWith("User declined"));
+    (item.answer.startsWith("The user doesn't want to proceed") ||
+     item.answer.startsWith("User declined") ||
+     item.answer.startsWith("Tool use rejected"));
 
-  const handleSubmit = async (idx) => {
-    setChosenIdx(idx);
-    setSubmitting(true);
+  const handleSubmit = async (qi, idx) => {
+    setChosenIndices(prev => ({ ...prev, [qi]: idx }));
+    setSubmittingQi(qi);
     try {
       await answerAgent(agentId, {
         tool_use_id: item.tool_use_id,
         type: "ask_user_question",
         selected_index: idx,
+        question_index: qi,
       });
       onAnswered?.();
     } catch (e) {
       console.error("Failed to answer:", e);
-      setChosenIdx(null); // revert on failure
+      setChosenIndices(prev => { const next = { ...prev }; delete next[qi]; return next; });
     } finally {
-      setSubmitting(false);
+      setSubmittingQi(null);
     }
   };
 
-  // Resolve which option index was selected (per-question, but shared for single-Q items)
-  const resolveIdx = (q) => {
-    // 1. Best: backend stored the numeric index directly
-    if (item.selected_index != null) return item.selected_index;
-    // 2. Parse the answer string for ="label" pattern
-    if (item.answer != null && typeof item.answer === "string" && !isDismissed) {
+  // Resolve which option index was selected for a specific question
+  const resolveIdx = (q, qi) => {
+    // Dismissed = no valid selection, regardless of stored indices
+    if (isDismissed) return null;
+    // 1. Best: per-question index from backend (new field)
+    if (item.selected_indices && item.selected_indices[String(qi)] != null)
+      return item.selected_indices[String(qi)];
+    // 2. Parse the answer string: use positional matching (qi-th ="label"
+    //    pair corresponds to qi-th question) to avoid cross-question leakage
+    if (item.answer != null && typeof item.answer === "string") {
       const allMatches = [...item.answer.matchAll(/="([^"]+)"/g)];
-      for (let i = allMatches.length - 1; i >= 0; i--) {
-        const idx = (q.options || []).findIndex((o) => o.label === allMatches[i][1]);
-        if (idx !== -1) return idx;
+      // For single-question: try all matches against this question's options
+      if (questions.length <= 1) {
+        for (const m of allMatches) {
+          const idx = (q.options || []).findIndex((o) => o.label === m[1]);
+          if (idx !== -1) return idx;
+        }
+      } else {
+        // Multi-question: match labels to questions in order (consumed set)
+        const used = new Set();
+        for (let qj = 0; qj <= qi; qj++) {
+          const opts = (questions[qj]?.options || []);
+          for (let mi = 0; mi < allMatches.length; mi++) {
+            if (used.has(mi)) continue;
+            const matchedOi = opts.findIndex((o) => o.label === allMatches[mi][1]);
+            if (matchedOi !== -1) {
+              used.add(mi);
+              if (qj === qi) return matchedOi;
+              break; // move to next question
+            }
+          }
+        }
       }
     }
-    // 3. Local optimistic choice
-    if (chosenIdx != null) return chosenIdx;
+    // 3. Local optimistic choice for this question
+    if (chosenIndices[qi] != null) return chosenIndices[qi];
+    // 4. Backward compat: selected_index only applies to first question
+    if (qi === 0 && item.selected_index != null) return item.selected_index;
     return null;
   };
 
   return (
     <div className="mt-3 space-y-3">
       {questions.map((q, qi) => {
-        const answeredIdx = resolveIdx(q);
+        const answeredIdx = resolveIdx(q, qi);
         const isAnswered = answeredIdx != null || isDismissed;
+        // Sequential lock: question qi is locked if any prior question is unanswered
+        const isLocked = qi > 0 && !isDismissed && resolveIdx(questions[qi - 1], qi - 1) == null;
 
         // Badge text & style
         let badgeText = null;
@@ -151,7 +239,7 @@ function QuestionBubble({ item, agentId, onAnswered }) {
         }
 
         return (
-          <div key={qi} className="rounded-xl bg-indigo-500/10 border border-indigo-500/20 p-3">
+          <div key={qi} className={`rounded-xl bg-indigo-500/10 border border-indigo-500/20 p-3 ${isLocked ? "opacity-50" : ""}`}>
             <div className="flex items-center gap-2 mb-1.5">
               {q.header && (
                 <span className="inline-block px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 text-[10px] font-semibold uppercase tracking-wider">
@@ -165,26 +253,32 @@ function QuestionBubble({ item, agentId, onAnswered }) {
               )}
             </div>
             <p className="text-sm text-heading font-medium mb-2">{q.question}</p>
+            {isLocked && (
+              <p className="text-xs text-dim mb-2 italic">Answer above first</p>
+            )}
             <div className="space-y-1.5 max-h-80 overflow-y-auto">
               {(q.options || []).map((opt, oi) => {
                 const isChosen = answeredIdx === oi;
                 const dimmed = isAnswered && !isChosen;
+                const disabled = isAnswered || isLocked || submittingQi === qi;
 
                 return (
                   <button
                     key={oi}
                     type="button"
-                    disabled={isAnswered || submitting}
+                    disabled={disabled}
                     onClick={() => {
-                      if (!isAnswered) handleSubmit(oi);
+                      if (!isAnswered && !isLocked) handleSubmit(qi, oi);
                     }}
                     className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-all border ${
                       isChosen
                         ? "bg-cyan-500/20 border-cyan-500/40 text-heading"
                         : dimmed
                           ? "bg-surface/30 border-divider/30 text-dim/50"
-                          : "bg-surface/50 border-divider hover:bg-hover hover:border-heading/20 text-body"
-                    } ${isAnswered ? "cursor-default" : "cursor-pointer"}`}
+                          : isLocked
+                            ? "bg-surface/30 border-divider/30 text-dim/50 cursor-not-allowed"
+                            : "bg-surface/50 border-divider hover:bg-hover hover:border-heading/20 text-body"
+                    } ${isAnswered || isLocked ? "cursor-default" : "cursor-pointer"}`}
                   >
                     <div className="flex items-start gap-2">
                       <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
@@ -207,7 +301,7 @@ function QuestionBubble({ item, agentId, onAnswered }) {
                 );
               })}
             </div>
-            {submitting && (
+            {submittingQi === qi && (
               <p className="text-xs text-dim mt-2 flex items-center gap-1.5">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
                 Sending answer...
@@ -233,7 +327,7 @@ const PLAN_OPTIONS = [
 function _detectPlanIdx(answer) {
   if (answer == null || typeof answer !== "string") return null;
   // Dismissed / escaped answers
-  if (answer.startsWith("The user doesn't want to proceed") || answer.startsWith("User declined")) return null;
+  if (answer.startsWith("The user doesn't want to proceed") || answer.startsWith("User declined") || answer.startsWith("Tool use rejected")) return null;
   const a = answer.toLowerCase().trim();
   if (/clear context/.test(a)) return 0;
   if (/bypass/.test(a) && !/clear/.test(a) && !/manual/.test(a)) return 1;
@@ -246,74 +340,23 @@ function _detectPlanIdx(answer) {
 
 function _isPlanDismissed(item) {
   if (!item.answer || typeof item.answer !== "string") return false;
-  return item.answer.startsWith("The user doesn't want to proceed") || item.answer.startsWith("User declined");
+  return item.answer.startsWith("The user doesn't want to proceed") || item.answer.startsWith("User declined") || item.answer.startsWith("Tool use rejected");
 }
 
-// Detect plan .md file path from the message content surrounding an ExitPlanMode call
-function _extractPlanFile(messageContent, project) {
-  if (!messageContent || !project) return null;
-  // Look for .md files in backticks (e.g. `clever-enchanting-cerf.md`) or
-  // bare paths ending in .md — plan files are typically short names
-  const patterns = [
-    /`([^`\n]+\.md)`/g,
-    /(\S+\.md)(?:\s|$)/g,
-  ];
-  for (const re of patterns) {
-    let m;
-    re.lastIndex = 0;
-    while ((m = re.exec(messageContent)) !== null) {
-      const raw = m[1];
-      // Skip common non-plan files
-      if (/readme|changelog|claude|progress/i.test(raw)) continue;
-      // Clean project path prefix if present
-      const cleaned = raw.replace(/^\/+/, "");
-      return {
-        path: cleaned,
-        url: `/api/files/${encodeURIComponent(project)}/${cleaned.split("/").map(encodeURIComponent).join("/")}`,
-      };
-    }
-  }
-  return null;
-}
-
-function PlanBubble({ item, agentId, onAnswered, messageContent, project }) {
+function PlanBubble({ item, agentId, onAnswered }) {
   const [chosenIdx, setChosenIdx] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const [planContent, setPlanContent] = useState(null);
-  const [planLoading, setPlanLoading] = useState(false);
   const [planExpanded, setPlanExpanded] = useState(true);
 
   const isDismissed = _isPlanDismissed(item);
   // Determine the effective selected index: stored index > answer parse > local choice
-  const serverIdx = item.selected_index ?? (item.answer != null ? _detectPlanIdx(item.answer) : null);
-  const effectiveIdx = serverIdx ?? chosenIdx;
+  // When dismissed, do NOT fall back to index detection — no option should highlight
+  const serverIdx = isDismissed ? null : (item.selected_index ?? (item.answer != null ? _detectPlanIdx(item.answer) : null));
+  const effectiveIdx = isDismissed ? null : (serverIdx ?? chosenIdx);
   const isAnswered = effectiveIdx != null || isDismissed;
 
-  // Detect plan file from message content
-  const planFile = useMemo(
-    () => _extractPlanFile(messageContent, project),
-    [messageContent, project],
-  );
-
-  // Auto-fetch plan content on mount
-  useEffect(() => {
-    if (!planFile || planContent !== null || planLoading) return;
-    let cancelled = false;
-    setPlanLoading(true);
-    (async () => {
-      try {
-        const res = await authedFetch(planFile.url);
-        if (!res.ok) throw new Error("fetch failed");
-        const text = await res.text();
-        if (!cancelled) setPlanContent(text);
-      } catch {
-        if (!cancelled) setPlanContent(null);
-      } finally {
-        if (!cancelled) setPlanLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [planFile]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Plan content comes directly from metadata (extracted from ExitPlanMode tool_input)
+  const planContent = item.plan || null;
 
   const handleSelect = async (idx) => {
     setChosenIdx(idx);
@@ -361,7 +404,7 @@ function PlanBubble({ item, agentId, onAnswered, messageContent, project }) {
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
         <span className="text-sm font-medium text-amber-300">Plan Approval</span>
-        {planFile && (
+        {planContent && (
           <button
             type="button"
             onClick={() => setPlanExpanded((v) => !v)}
@@ -377,33 +420,16 @@ function PlanBubble({ item, agentId, onAnswered, messageContent, project }) {
         )}
       </div>
       {/* Inline plan content */}
-      {planFile && planExpanded && (
+      {planContent && planExpanded && (
         <div className="mb-3 rounded-lg bg-surface/60 border border-divider/40 overflow-hidden">
-          <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-divider/30 bg-surface/40">
-            <svg className="w-3 h-3 text-dim" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-            </svg>
-            <span className="text-[11px] text-dim font-mono truncate">{planFile.path}</span>
+          <div className="px-3 py-2 max-h-[300px] overflow-y-auto text-sm">
+            <SafeMarkdown>
+              <div
+                className="prose-sm text-body [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-heading [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-heading [&_h2]:mt-2.5 [&_h2]:mb-1 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:text-heading [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:text-xs [&_p]:mb-1.5 [&_ul]:text-xs [&_ul]:ml-4 [&_ul]:mb-1.5 [&_ol]:text-xs [&_ol]:ml-4 [&_ol]:mb-1.5 [&_li]:mb-0.5 [&_code]:text-[11px] [&_code]:bg-elevated [&_code]:px-1 [&_code]:rounded [&_pre]:text-[11px] [&_pre]:bg-elevated [&_pre]:p-2 [&_pre]:rounded [&_pre]:overflow-x-auto [&_pre]:mb-2"
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(planContent) }}
+              />
+            </SafeMarkdown>
           </div>
-          {planLoading && (
-            <div className="px-3 py-4 text-xs text-dim flex items-center gap-1.5">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-              Loading plan...
-            </div>
-          )}
-          {planContent && (
-            <div className="px-3 py-2 max-h-[300px] overflow-y-auto text-sm">
-              <SafeMarkdown>
-                <div
-                  className="prose-sm text-body [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-heading [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-heading [&_h2]:mt-2.5 [&_h2]:mb-1 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:text-heading [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:text-xs [&_p]:mb-1.5 [&_ul]:text-xs [&_ul]:ml-4 [&_ul]:mb-1.5 [&_ol]:text-xs [&_ol]:ml-4 [&_ol]:mb-1.5 [&_li]:mb-0.5 [&_code]:text-[11px] [&_code]:bg-elevated [&_code]:px-1 [&_code]:rounded [&_pre]:text-[11px] [&_pre]:bg-elevated [&_pre]:p-2 [&_pre]:rounded [&_pre]:overflow-x-auto [&_pre]:mb-2"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(planContent) }}
-                />
-              </SafeMarkdown>
-            </div>
-          )}
-          {!planLoading && planContent === null && (
-            <div className="px-3 py-2 text-xs text-dim">Could not load plan file</div>
-          )}
         </div>
       )}
       <div className="space-y-1.5">
@@ -464,7 +490,7 @@ function InteractiveBubbles({ metadata, agentId, onAnswered, messageContent, pro
       return <QuestionBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} />;
     }
     if (item.type === "exit_plan_mode") {
-      return <PlanBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} messageContent={messageContent} project={project} />;
+      return <PlanBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} />;
     }
     return null;
   });
@@ -475,6 +501,11 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     return <SystemBubble message={message} />;
   }
 
+  // Sub-agent task notifications get their own collapsible bubble
+  if ((message.content || "").trimStart().startsWith("<task-notification>")) {
+    return <SubAgentBubble message={message} project={project} />;
+  }
+
   const isUser = message.role === "USER";
   const isScheduled = isUser && message.scheduled_at && message.status === "PENDING";
   const isPending = isUser && message.status === "PENDING" && !message.scheduled_at;
@@ -483,8 +514,23 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const [editSchedule, setEditSchedule] = useState("");
+  const [inlineLightbox, setInlineLightbox] = useState(null); // { images, initialIndex }
   const longPressTimer = useRef(null);
   const editTextareaRef = useRef(null);
+  const markdownRef = useRef(null);
+
+  // Handle click on inline markdown images to open lightbox
+  const handleMarkdownClick = useCallback((e) => {
+    const img = e.target.closest("img");
+    if (!img) return;
+    const container = markdownRef.current;
+    if (!container) return;
+    const allImgs = Array.from(container.querySelectorAll("img"));
+    if (allImgs.length === 0) return;
+    const index = allImgs.indexOf(img);
+    const images = allImgs.map((el) => ({ src: el.src, filename: el.alt || "" }));
+    setInlineLightbox({ images, initialIndex: Math.max(0, index) });
+  }, []);
 
   // Initialize editSchedule from message when entering edit mode
   useEffect(() => {
@@ -655,7 +701,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
           {isUser ? (
             displayContent && <p className="text-sm whitespace-pre-wrap">{displayContent}</p>
           ) : (
-            <div className="text-sm">
+            <div className="text-sm" ref={markdownRef} onClick={handleMarkdownClick}>
               <SafeMarkdown fallback={displayContent}>
                 {renderMarkdown(displayContent, project)}
               </SafeMarkdown>
@@ -698,6 +744,13 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
           </div>
         </div>
         {attachments.length > 0 && <FileAttachments attachments={attachments} />}
+        {inlineLightbox && (
+          <ImageLightbox
+            images={inlineLightbox.images}
+            initialIndex={inlineLightbox.initialIndex}
+            onClose={() => setInlineLightbox(null)}
+          />
+        )}
         {!isUser && message.metadata?.interactive?.length > 0 && (
           <InteractiveBubbles metadata={message.metadata} agentId={agentId} onAnswered={onRefresh} messageContent={message.content} project={project} />
         )}
@@ -1145,7 +1198,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
             </svg>
           </button>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 overflow-hidden">
             {voice.recording && voice.analyserNode && (
               <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} onTap={voice.toggleRecording} className="h-8" />
             )}
@@ -1633,8 +1686,17 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       const meta = msg.metadata;
       if (!meta?.interactive) continue;
       for (const item of meta.interactive) {
-        // No answer at all and no local selection → still pending
-        if (item.answer == null && item.selected_index == null) return true;
+        const questions = item.questions || [];
+        if (questions.length > 1) {
+          // Multi-question: pending if any question lacks a selection
+          const indices = item.selected_indices || {};
+          for (let qi = 0; qi < questions.length; qi++) {
+            if (indices[String(qi)] == null && item.answer == null) return true;
+          }
+        } else {
+          // Single-question: existing backward-compat logic
+          if (item.answer == null && item.selected_index == null) return true;
+        }
       }
     }
     return false;

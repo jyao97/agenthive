@@ -99,7 +99,7 @@ export function renderMarkdown(text, project) {
           key={elements.length}
           src={resolvedSrc}
           alt=""
-          className="my-2 max-w-full rounded-lg border border-divider"
+          className="my-2 max-w-full rounded-lg border border-divider cursor-pointer"
         />
       );
       i++;
