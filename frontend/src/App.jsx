@@ -12,13 +12,14 @@ import GitPage from "./pages/GitPage";
 import LoginPage from "./pages/LoginPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import useTheme from "./hooks/useTheme";
-import { authCheck, clearAuthToken, fetchUnreadCount, getAuthToken } from "./lib/api";
+import { authCheck, clearAuthToken, fetchUnreadCount, fetchClaudeMdPending, getAuthToken } from "./lib/api";
 import { isPushSupported, setupPushNotifications } from "./lib/pushNotifications";
 import useIdleLock from "./hooks/useIdleLock";
 
 const tabs = [
   {
     to: "/projects",
+    key: "projects",
     label: "Projects",
     icon: (
       <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -178,6 +179,7 @@ export default function App() {
   const location = useLocation();
   const hideNav = location.pathname.match(/^\/agents\/[^/]+$/) || location.pathname === "/login";
   const [unread, setUnread] = useState(0);
+  const [claudeMdPending, setClaudeMdPending] = useState(0);
 
   useEffect(() => {
     // Only poll unread when not on login page and has a token
@@ -185,6 +187,14 @@ export default function App() {
     const poll = () => fetchUnreadCount().then((r) => setUnread(r.unread)).catch(() => {});
     poll();
     const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (location.pathname === "/login" || !getAuthToken()) return;
+    const poll = () => fetchClaudeMdPending().then((r) => setClaudeMdPending(r.count || 0)).catch(() => {});
+    poll();
+    const id = setInterval(poll, 30000);
     return () => clearInterval(id);
   }, [location.pathname]);
 
@@ -295,6 +305,11 @@ export default function App() {
                   {tab.key === "agents" && unread > 0 && (
                     <span className="absolute top-1.5 left-[calc(50%+6px)] inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold leading-none">
                       {unread > 99 ? "99+" : unread}
+                    </span>
+                  )}
+                  {tab.key === "projects" && claudeMdPending > 0 && (
+                    <span className="absolute top-1.5 left-[calc(50%+6px)] inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold leading-none">
+                      {claudeMdPending}
                     </span>
                   )}
                 </NavLink>

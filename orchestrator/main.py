@@ -1865,6 +1865,18 @@ async def refresh_claudemd_status(name: str):
     return {"status": "complete", "data": job["data"]}
 
 
+@app.get("/api/projects/claudemd-pending")
+async def claudemd_pending():
+    """Return count and list of projects with completed CLAUDE.md refresh jobs."""
+    with _claudemd_jobs_lock:
+        now = _time.monotonic()
+        projects = [
+            k for k, v in _claudemd_jobs.items()
+            if v["status"] == "complete" and now - v["ts"] <= _CLAUDEMD_CACHE_TTL
+        ]
+    return {"count": len(projects), "projects": projects}
+
+
 @app.post("/api/projects/{name}/apply-claudemd")
 async def apply_claudemd(name: str, body: ApplyClaudeMdRequest, db: Session = Depends(get_db)):
     """Apply proposed CLAUDE.md changes (all or selective hunks)."""

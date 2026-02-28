@@ -405,6 +405,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [fileExists, setFileExists] = useState({ "CLAUDE.md": null, "PROGRESS.md": null });
   const [refreshingClaudeMd, setRefreshingClaudeMd] = useState(false);
+  const [claudeMdReady, setClaudeMdReady] = useState(false); // completed result available
   const [diffData, setDiffData] = useState(null); // response from refresh-claudemd
 
   // Track which agents are actively streaming via WebSocket
@@ -567,13 +568,12 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         if (res.status === "complete") {
           stopPolling();
           setRefreshingClaudeMd(false);
-          setDiffData(res.data);
+          setClaudeMdReady(true);
         } else if (res.status === "error") {
           stopPolling();
           setRefreshingClaudeMd(false);
           showToast(res.message || "Failed to analyze project — try again", "error");
         }
-        // "running" → keep polling
       } catch {
         stopPolling();
         setRefreshingClaudeMd(false);
@@ -586,13 +586,14 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     if (!name) return;
     refreshClaudeMdStatus(name).then((res) => {
       if (res.status === "running") startPolling();
-      else if (res.status === "complete") setDiffData(res.data);
+      else if (res.status === "complete") setClaudeMdReady(true);
     }).catch(() => {});
     return stopPolling;
   }, [name, startPolling, stopPolling]);
 
   const handleRefreshClaudeMd = useCallback(async () => {
     setRefreshingClaudeMd(true);
+    setClaudeMdReady(false);
     try {
       await refreshClaudeMd(name);
       startPolling();
@@ -601,6 +602,20 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       showToast(err.message || "Failed to analyze project — try again", "error");
     }
   }, [name, showToast, startPolling]);
+
+  const handleReviewUpdates = useCallback(async () => {
+    try {
+      const res = await refreshClaudeMdStatus(name);
+      if (res.status === "complete") {
+        setDiffData(res.data);
+      } else {
+        showToast("Update expired — run refresh again", "error");
+        setClaudeMdReady(false);
+      }
+    } catch {
+      showToast("Failed to load updates", "error");
+    }
+  }, [name, showToast]);
 
   useEffect(() => {
     loadData();
@@ -923,13 +938,16 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                         type="button"
                         onClick={() => setFileModal(fn)}
                         title={fn}
-                        className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-md hover:bg-white/5 transition-colors ${color}`}
+                        className={`relative shrink-0 w-6 h-6 flex items-center justify-center rounded-md hover:bg-white/5 transition-colors ${color}`}
                       >
                         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
                           <path strokeLinecap="round" strokeLinejoin="round" d="M14 2v6h6" />
                           <text x="12" y="17" textAnchor="middle" fill="currentColor" stroke="none" fontSize="7" fontWeight="700" fontFamily="system-ui">{letter}</text>
                         </svg>
+                        {fn === "CLAUDE.md" && claudeMdReady && (
+                          <span className="absolute -top-1 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-amber-500 text-[7px] font-bold text-white">1</span>
+                        )}
                       </button>
                     );
                   })}
@@ -1283,24 +1301,38 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             <p className="text-sm text-body">Refresh CLAUDE.md</p>
             <p className="text-xs text-dim">AI-analyze project and propose updates</p>
           </div>
-          <button
-            type="button"
-            disabled={refreshingClaudeMd}
-            onClick={handleRefreshClaudeMd}
-            className="shrink-0 px-3 py-1.5 rounded-lg bg-cyan-600 text-white text-xs font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors flex items-center gap-1.5"
-          >
-            {refreshingClaudeMd ? (
-              <>
-                <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
-                Analyzing...
-              </>
-            ) : (
-              <>
-                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
-                Refresh CLAUDE.md
-              </>
-            )}
-          </button>
+          {claudeMdReady ? (
+            <button
+              type="button"
+              onClick={handleReviewUpdates}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-medium hover:bg-amber-400 transition-colors flex items-center gap-1.5"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-white" />
+              </span>
+              Review Updates
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={refreshingClaudeMd}
+              onClick={handleRefreshClaudeMd}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-cyan-600 text-white text-xs font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+            >
+              {refreshingClaudeMd ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
+                  Analyzing...
+                </>
+              ) : (
+                <>
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
+                  Refresh CLAUDE.md
+                </>
+              )}
+            </button>
+          )}
         </div>
         {project.active ? (
           <div className="flex items-center justify-between gap-3">
@@ -1440,9 +1472,10 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         <ClaudeMdDiffModal
           data={diffData}
           project={name}
-          onClose={() => setDiffData(null)}
+          onClose={() => { setDiffData(null); setClaudeMdReady(false); }}
           onApplied={(lines, error) => {
             setDiffData(null);
+            setClaudeMdReady(false);
             if (error) {
               showToast("Apply failed: " + error, "error");
             } else {

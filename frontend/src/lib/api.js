@@ -109,6 +109,8 @@ export const refreshClaudeMdStatus = (project) =>
   request(`/api/projects/${e(project)}/refresh-claudemd/status`);
 export const applyClaudeMd = (project, payload) =>
   request(`/api/projects/${e(project)}/apply-claudemd`, { method: "POST", body: JSON.stringify(payload) });
+export const fetchClaudeMdPending = () =>
+  request("/api/projects/claudemd-pending");
 
 // --- Tasks (agent-sourced: each USER message = one task) ---
 export const fetchTasks = (params = "") =>
