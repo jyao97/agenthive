@@ -1,40 +1,25 @@
 import { useState, useCallback } from "react";
 import { authedFetch } from "../lib/api";
+import ImageLightbox from "./ImageLightbox";
 
 // --- Image Preview (compact thumbnail, tappable fullscreen) ---
 
-function ImagePreview({ src, filename }) {
+function ImagePreview({ src, filename, onOpen }) {
   const [error, setError] = useState(false);
-  const [lightbox, setLightbox] = useState(false);
 
   if (error) return null;
 
   return (
-    <>
-      <div className="group cursor-pointer" onClick={() => setLightbox(true)}>
-        <img
-          src={src}
-          alt={filename}
-          loading="lazy"
-          onError={() => setError(true)}
-          className="max-h-[120px] max-w-full rounded-lg border border-divider object-contain"
-        />
-        <p className="text-xs text-dim mt-1 truncate max-w-[200px]">{filename}</p>
-      </div>
-
-      {lightbox && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-          onClick={() => setLightbox(false)}
-        >
-          <img
-            src={src}
-            alt={filename}
-            className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
-          />
-        </div>
-      )}
-    </>
+    <div className="group cursor-pointer" onClick={onOpen}>
+      <img
+        src={src}
+        alt={filename}
+        loading="lazy"
+        onError={() => setError(true)}
+        className="max-h-[120px] max-w-full rounded-lg border border-divider object-contain"
+      />
+      <p className="text-xs text-dim mt-1 truncate max-w-[200px]">{filename}</p>
+    </div>
   );
 }
 
@@ -199,6 +184,8 @@ function DocGroupCard({ docs }) {
 // --- Main component ---
 
 export default function FileAttachments({ attachments }) {
+  const [lightbox, setLightbox] = useState(null); // { images, initialIndex } or null
+
   if (!attachments || attachments.length === 0) return null;
 
   // Split into media (inline) vs doc/file (groupable)
@@ -211,14 +198,36 @@ export default function FileAttachments({ attachments }) {
     else other.push(att);
   }
 
+  // Collect all images for gallery navigation
+  const imageAtts = media.filter((att) => att.type === "image");
+  const galleryImages = imageAtts.map((att) => ({
+    src: att.resolvedUrl,
+    filename: att.path.split("/").pop(),
+  }));
+
+  const openLightbox = (imageIndex) => {
+    setLightbox({ images: galleryImages, initialIndex: imageIndex });
+  };
+
+  let imageCounter = 0;
+
   return (
     <div className="flex flex-col gap-2 mt-1.5">
       {/* Images and videos always render inline */}
       {media.map((att) => {
         const filename = att.path.split("/").pop();
-        return att.type === "image"
-          ? <ImagePreview key={att.path} src={att.resolvedUrl} filename={filename} />
-          : <VideoPreview key={att.path} src={att.resolvedUrl} filename={filename} />;
+        if (att.type === "image") {
+          const idx = imageCounter++;
+          return (
+            <ImagePreview
+              key={att.path}
+              src={att.resolvedUrl}
+              filename={filename}
+              onOpen={() => openLightbox(idx)}
+            />
+          );
+        }
+        return <VideoPreview key={att.path} src={att.resolvedUrl} filename={filename} />;
       })}
       {/* Doc files: single card if 1, grouped card if 2+ */}
       {docs.length === 1 && (
@@ -229,6 +238,15 @@ export default function FileAttachments({ attachments }) {
       {other.map((att) => (
         <GenericFilePreview key={att.path} src={att.resolvedUrl} filename={att.path.split("/").pop()} />
       ))}
+
+      {/* Lightbox for image gallery */}
+      {lightbox && (
+        <ImageLightbox
+          images={lightbox.images}
+          initialIndex={lightbox.initialIndex}
+          onClose={() => setLightbox(null)}
+        />
+      )}
     </div>
   );
 }
