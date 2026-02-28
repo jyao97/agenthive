@@ -16,6 +16,7 @@ import {
   sendMessage,
   generateWorktreeName,
   uploadFile,
+  fetchProjectFile,
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import VoiceRecorder from "../components/VoiceRecorder";
@@ -26,6 +27,7 @@ import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, MODEL_OPTIONS, modelDisplayName } from "../lib/constants";
 import FilterTabs from "../components/FilterTabs";
+import ProjectFileModal from "../components/ProjectFileModal";
 import useWebSocket from "../hooks/useWebSocket";
 
 const AGENT_TABS = [
@@ -390,6 +392,8 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const textareaRef = useRef(null);
 
   const [refreshing, setRefreshing] = useState(false);
+  const [fileModal, setFileModal] = useState(null); // "CLAUDE.md" | "PROGRESS.md" | null
+  const [fileExists, setFileExists] = useState({ "CLAUDE.md": null, "PROGRESS.md": null });
 
   // Track which agents are actively streaming via WebSocket
   const { lastEvent } = useWebSocket();
@@ -542,6 +546,17 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     const interval = setInterval(loadData, 5000);
     return () => clearInterval(interval);
   }, [loadData]);
+
+  // Check CLAUDE.md / PROGRESS.md existence
+  useEffect(() => {
+    if (!name) return;
+    Promise.all([
+      fetchProjectFile(name, "CLAUDE.md").catch(() => ({ exists: false })),
+      fetchProjectFile(name, "PROGRESS.md").catch(() => ({ exists: false })),
+    ]).then(([c, p]) => {
+      setFileExists({ "CLAUDE.md": c.exists, "PROGRESS.md": p.exists });
+    });
+  }, [name]);
 
   // Fetch sessions on mount (for starred IDs + counts)
   useEffect(() => {
@@ -836,6 +851,28 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                 ) : (
                   <span className="shrink-0 px-2 py-0.5 text-[10px] font-bold uppercase rounded-full bg-zinc-500/15 text-zinc-400 tracking-wide">Inactive</span>
                 )}
+                {["CLAUDE.md", "PROGRESS.md"].map((fn) => {
+                  const label = fn === "CLAUDE.md" ? "C" : "P";
+                  const exists = fileExists[fn];
+                  return (
+                    <button
+                      key={fn}
+                      type="button"
+                      onClick={() => setFileModal(fn)}
+                      title={fn}
+                      className={`relative shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-[11px] font-bold transition-colors ${
+                        exists === false
+                          ? "bg-zinc-500/10 text-zinc-500 hover:bg-zinc-500/20"
+                          : "bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25"
+                      }`}
+                    >
+                      {label}
+                      {exists === false && (
+                        <span className="absolute -top-1 -right-1 w-3 h-3 flex items-center justify-center rounded-full bg-zinc-600 text-[8px] text-zinc-300 leading-none">+</span>
+                      )}
+                    </button>
+                  );
+                })}
                 <button
                   type="button"
                   onClick={handleRefresh}
@@ -1279,6 +1316,23 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       )}
       </div>
       </div>
+
+      {fileModal && (
+        <ProjectFileModal
+          project={name}
+          filename={fileModal}
+          onClose={() => {
+            setFileModal(null);
+            // Refresh existence state after modal closes
+            Promise.all([
+              fetchProjectFile(name, "CLAUDE.md").catch(() => ({ exists: false })),
+              fetchProjectFile(name, "PROGRESS.md").catch(() => ({ exists: false })),
+            ]).then(([c, p]) => {
+              setFileExists({ "CLAUDE.md": c.exists, "PROGRESS.md": p.exists });
+            });
+          }}
+        />
+      )}
     </div>
   );
 }

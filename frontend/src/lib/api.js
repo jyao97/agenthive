@@ -95,6 +95,10 @@ export const starSession = (project, sessionId) =>
   request(`/api/projects/${e(project)}/sessions/${e(sessionId)}/star`, { method: "PUT" });
 export const unstarSession = (project, sessionId) =>
   request(`/api/projects/${e(project)}/sessions/${e(sessionId)}/star`, { method: "DELETE" });
+export const fetchProjectFile = (project, path) =>
+  request(`/api/projects/${e(project)}/file?path=${e(path)}`);
+export const updateProjectFile = (project, path, content) =>
+  request(`/api/projects/${e(project)}/file`, { method: "PUT", body: JSON.stringify({ path, content }) });
 
 // --- Tasks (agent-sourced: each USER message = one task) ---
 export const fetchTasks = (params = "") =>

@@ -1550,6 +1550,69 @@ async def unstar_session(name: str, session_id: str, db: Session = Depends(get_d
     return {"starred": False}
 
 
+# ---- Project files (CLAUDE.md / PROGRESS.md only) ----
+
+_ALLOWED_PROJECT_FILES = {"CLAUDE.md", "PROGRESS.md"}
+
+
+class ProjectFileUpdate(BaseModel):
+    path: str
+    content: str
+
+
+@app.get("/api/projects/{name}/file")
+async def get_project_file(name: str, path: str, db: Session = Depends(get_db)):
+    """Read CLAUDE.md or PROGRESS.md from a project directory."""
+    if path not in _ALLOWED_PROJECT_FILES:
+        raise HTTPException(status_code=400, detail=f"Only {_ALLOWED_PROJECT_FILES} are accessible")
+    proj = db.get(Project, name)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+    filepath = os.path.join(proj.path, path)
+    if not os.path.isfile(filepath):
+        return {"exists": False, "content": None, "path": path}
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        return {"exists": True, "content": content, "path": path}
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/projects/{name}/file")
+async def update_project_file(name: str, body: ProjectFileUpdate, db: Session = Depends(get_db)):
+    """Write CLAUDE.md or PROGRESS.md in a project directory.
+
+    If the file doesn't exist and content is empty, run the scaffolder instead.
+    """
+    if body.path not in _ALLOWED_PROJECT_FILES:
+        raise HTTPException(status_code=400, detail=f"Only {_ALLOWED_PROJECT_FILES} are accessible")
+    proj = db.get(Project, name)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+    if not os.path.isdir(proj.path):
+        raise HTTPException(status_code=400, detail=f"Project directory does not exist: {proj.path}")
+
+    filepath = os.path.join(proj.path, body.path)
+
+    # If file doesn't exist and no content provided, scaffold it
+    if not os.path.isfile(filepath) and not body.content.strip():
+        from project_scaffolder import scaffold_project
+        scaffold_project(proj.name, proj.path)
+        # Read back the generated content
+        if os.path.isfile(filepath):
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                return {"saved": True, "content": f.read(), "scaffolded": True}
+        return {"saved": False, "detail": "Scaffolder did not generate the file"}
+
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(body.content)
+        return {"saved": True, "content": body.content, "scaffolded": False}
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ---- Tasks (agent-sourced: each USER message = one task) ----
 
 @app.get("/api/tasks", response_model=list[AgentTaskBrief])
