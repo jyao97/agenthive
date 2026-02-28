@@ -1041,10 +1041,15 @@ async def scan_projects(request: Request, db: Session = Depends(get_db)):
         db.commit()
         logger.info("Scan registered %d new project(s): %s", len(added), ", ".join(added))
 
-        # Auto-generate CLAUDE.md / PROGRESS.md for new projects
-        from project_scaffolder import scaffold_project
-        for dirname in added:
-            scaffold_project(dirname, os.path.join(projects_dir, dirname))
+    # Auto-generate CLAUDE.md / PROGRESS.md for all active projects missing them
+    from project_scaffolder import scaffold_project
+    for dirname in all_dirs:
+        if dirname in [a for a in skipped_archived]:
+            continue
+        dirpath = os.path.join(projects_dir, dirname)
+        if not os.path.isfile(os.path.join(dirpath, "CLAUDE.md")) or \
+           not os.path.isfile(os.path.join(dirpath, "PROGRESS.md")):
+            scaffold_project(dirname, dirpath)
 
     if skipped_archived:
         logger.info("Scan skipped %d archived project(s): %s", len(skipped_archived), ", ".join(skipped_archived))
