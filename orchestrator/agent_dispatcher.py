@@ -87,6 +87,63 @@ def _derive_selected_index(item: dict) -> None:
             item["selected_index"] = 0
 
 
+def _merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> str | None:
+    """Merge interactive metadata, preserving web-set answers during sync.
+
+    When the web UI answers an interactive prompt via /api/agents/{id}/answer,
+    _patch_interactive_answer() immediately stores selected_index + answer in
+    the DB.  The sync loop later re-parses the JSONL and may overwrite the
+    metadata with a version where answer is still null (Claude hasn't written
+    the tool_result yet).  This function prevents that regression by keeping
+    the DB's selected_index/answer when the JSONL version has answer=null.
+
+    If the JSONL version has a non-null answer, it takes precedence (it's the
+    authoritative response from Claude's actual tool_result).
+
+    Returns a JSON string.  Does NOT mutate *new_meta*.
+    """
+    import copy
+
+    if new_meta is None:
+        return db_meta_json  # Nothing to merge — keep existing
+    if not db_meta_json:
+        return json.dumps(new_meta)  # No existing — use new
+
+    try:
+        db_meta = json.loads(db_meta_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps(new_meta)
+
+    db_items = {
+        item.get("tool_use_id"): item
+        for item in db_meta.get("interactive", [])
+        if item.get("tool_use_id")
+    }
+    if not db_items:
+        return json.dumps(new_meta)
+
+    # Work on a copy so the caller's parsed turns are not mutated
+    merged = copy.deepcopy(new_meta)
+
+    for item in merged.get("interactive", []):
+        tid = item.get("tool_use_id", "")
+        db_item = db_items.get(tid)
+        if not db_item:
+            continue
+        # JSONL answer is null but DB has a web-set answer → preserve it
+        if item.get("answer") is None and db_item.get("answer") is not None:
+            item["answer"] = db_item["answer"]
+            if db_item.get("selected_index") is not None:
+                item["selected_index"] = db_item["selected_index"]
+        # JSONL has a real answer → authoritative, but carry over selected_index
+        # if the JSONL version doesn't have one (keyword matching may fail)
+        elif item.get("answer") is not None:
+            if item.get("selected_index") is None and db_item.get("selected_index") is not None:
+                item["selected_index"] = db_item["selected_index"]
+
+    return json.dumps(merged)
+
+
 def _format_tool_summary(name: str, input_data: dict) -> str | None:
     """Format a tool call as a brief one-line markdown summary."""
     if name == "Bash":
@@ -1071,8 +1128,8 @@ def send_tmux_message(pane_id: str, text: str) -> bool:
 def send_tmux_keys(pane_id: str, keys: list[str]) -> bool:
     """Send raw key names to a tmux pane (e.g., 'Down', 'Enter').
 
-    Each key is sent individually with a short delay between them
-    to allow the TUI to process each keystroke.
+    Each key is sent individually with a 200ms delay between them
+    to allow the Ink-based TUI to process each keystroke reliably.
     """
     import time
 
@@ -1085,7 +1142,7 @@ def send_tmux_keys(pane_id: str, keys: list[str]) -> bool:
             if r.returncode != 0:
                 logger.warning("tmux send-keys %s failed: %s", key, r.stderr)
                 return False
-            time.sleep(0.05)
+            time.sleep(0.2)
         return True
     except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning("tmux send_tmux_keys failed: %s", e)
@@ -2993,6 +3050,7 @@ class AgentDispatcher:
         last_size = 0
         last_turn_count = 0
         last_tail_hash = ""  # Hash of last turn content to detect updates
+        last_streamed_hash = ""  # Hash of last agent_stream content (avoid re-emit)
         is_generating = False
         pending_push_body = ""  # Deferred notification until response stabilizes
         pending_push_idle = 0   # Consecutive idle polls since pending was set
@@ -3001,6 +3059,16 @@ class AgentDispatcher:
             """Fast hash of content for change detection."""
             import hashlib
             return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+        def _dedup_sig(text: str) -> str:
+            """Normalize content for dedup comparison.
+
+            tmux converts tabs to spaces, so a message sent via web (tabs)
+            won't exactly match the same message in the JSONL (spaces).
+            Collapse all whitespace runs to single space for comparison.
+            """
+            import re
+            return re.sub(r"\s+", " ", text[:200]).strip()
 
         # Get the current file size and turn count so we only import new turns
         try:
@@ -3044,14 +3112,14 @@ class AgentDispatcher:
                 db_sig_counts: dict[tuple[str, str], int] = {}
                 for m in all_db:
                     role_char = "u" if m.role == MessageRole.USER else "a"
-                    sig = (role_char, m.content[:200])
+                    sig = (role_char, _dedup_sig(m.content))
                     db_sig_counts[sig] = db_sig_counts.get(sig, 0) + 1
 
                 # Walk through JSONL turns and collect missing ones
                 missing: list[tuple[str, str, dict | None]] = []
                 for r, c, mt in conv_turns:
                     role_char = "u" if r == "user" else "a"
-                    sig = (role_char, c[:200])
+                    sig = (role_char, _dedup_sig(c))
                     if db_sig_counts.get(sig, 0) > 0:
                         db_sig_counts[sig] -= 1  # consume the match
                     else:
@@ -3112,7 +3180,9 @@ class AgentDispatcher:
                         last_agent_msg.content = last_assistant
                         last_agent_msg.completed_at = _utcnow()
                         if last_assistant_meta is not None:
-                            last_agent_msg.meta_json = json.dumps(last_assistant_meta)
+                            last_agent_msg.meta_json = _merge_interactive_meta(
+                                last_agent_msg.meta_json, last_assistant_meta,
+                            )
                         db.commit()
                         self._emit(emit_new_message(
                             agent_id, "sync", _sync_agent_name, _sync_project,
@@ -3356,6 +3426,7 @@ class AgentDispatcher:
                 _t = turns[-1] if turns else ("", "", None)
                 _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
                 last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
+                last_streamed_hash = ""  # Reset for fresh post-compact streaming
                 # Notify UI about the compact
                 db_compact = SessionLocal()
                 try:
@@ -3394,12 +3465,19 @@ class AgentDispatcher:
                 # File grew but turns didn't change — Claude is mid-generation.
                 # Stream the current assistant content so the frontend can
                 # show a live preview instead of just typing dots.
-                if not is_generating:
-                    is_generating = True
                 partial = ""
                 if turns and turns[-1][0] == "assistant":
                     partial = turns[-1][1]
-                self._emit(emit_agent_stream(agent_id, partial))
+                # Only emit when content actually changed — otherwise the
+                # frontend shows a streaming bubble duplicating the already-
+                # committed message (the 1.5s WS lock expires before the
+                # next 3s poll).
+                p_hash = _content_hash(partial) if partial else ""
+                if p_hash != last_streamed_hash:
+                    last_streamed_hash = p_hash
+                    if not is_generating:
+                        is_generating = True
+                    self._emit(emit_agent_stream(agent_id, partial))
                 continue
 
             db = SessionLocal()
@@ -3420,7 +3498,9 @@ class AgentDispatcher:
                         last_msg.content = _last_content
                         last_msg.completed_at = _utcnow()
                         if _last_meta is not None:
-                            last_msg.meta_json = json.dumps(_last_meta)
+                            last_msg.meta_json = _merge_interactive_meta(
+                                last_msg.meta_json, _last_meta,
+                            )
                         agent.last_message_preview = (_last_content or "")[:200]
                         agent.last_message_at = _utcnow()
                         db.commit()
@@ -3430,6 +3510,7 @@ class AgentDispatcher:
                         ))
                         self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
                         last_tail_hash = tail_hash
+                        last_streamed_hash = _content_hash(_last_content) if _last_content else ""
                         is_generating = False
                         # Update deferred push body with latest content
                         if pending_push_body:
@@ -3463,7 +3544,9 @@ class AgentDispatcher:
                                 last_agent_msg.content = prev_content
                                 last_agent_msg.completed_at = _utcnow()
                                 if prev_meta is not None:
-                                    last_agent_msg.meta_json = json.dumps(prev_meta)
+                                    last_agent_msg.meta_json = _merge_interactive_meta(
+                                        last_agent_msg.meta_json, prev_meta,
+                                    )
                                 logger.info(
                                     "Updated previous turn content for agent %s "
                                     "(%d -> %d chars)",
@@ -3475,14 +3558,20 @@ class AgentDispatcher:
                         meta = rest[0] if rest else None
                         meta_json = json.dumps(meta) if meta else None
                         if role == "user":
-                            # Dedup: skip if a matching web-sent (or sourceless) message already exists
+                            # Dedup: skip if a matching web-sent (or sourceless)
+                            # message already exists.  Use whitespace-normalised
+                            # comparison because tmux converts tabs to spaces.
                             from sqlalchemy import or_
-                            existing_web = db.query(Message).filter(
+                            _norm = _dedup_sig(content)
+                            _candidates = db.query(Message).filter(
                                 Message.agent_id == agent_id,
                                 Message.role == MessageRole.USER,
                                 or_(Message.source == "web", Message.source.is_(None)),
-                                Message.content == content,
-                            ).first()
+                            ).all()
+                            existing_web = any(
+                                _dedup_sig(m.content) == _norm
+                                for m in _candidates
+                            )
                             if existing_web:
                                 logger.debug(
                                     "Skipping duplicate user turn for agent %s "
@@ -3527,6 +3616,14 @@ class AgentDispatcher:
 
                     last_turn_count = len(turns)
                     last_tail_hash = tail_hash
+                    # Record committed content so mid-generation streaming
+                    # won't re-emit the same content as a duplicate bubble.
+                    _last_assistant = ""
+                    for _r, _c, *_ in reversed(new_turns):
+                        if _r == "assistant":
+                            _last_assistant = _c
+                            break
+                    last_streamed_hash = _content_hash(_last_assistant) if _last_assistant else ""
                     is_generating = False
                     self._emit(emit_agent_update(
                         agent.id, agent.status.value, agent.project

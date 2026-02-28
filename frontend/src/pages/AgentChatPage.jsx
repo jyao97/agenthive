@@ -17,6 +17,7 @@ import {
   answerAgent,
   escapeAgent,
   uploadFile,
+  authedFetch,
 } from "../lib/api";
 import { relativeTime, renderMarkdown, extractFileAttachments, stripAttachmentTags } from "../lib/formatters";
 
@@ -248,15 +249,71 @@ function _isPlanDismissed(item) {
   return item.answer.startsWith("The user doesn't want to proceed") || item.answer.startsWith("User declined");
 }
 
-function PlanBubble({ item, agentId, onAnswered }) {
+// Detect plan .md file path from the message content surrounding an ExitPlanMode call
+function _extractPlanFile(messageContent, project) {
+  if (!messageContent || !project) return null;
+  // Look for .md files in backticks (e.g. `clever-enchanting-cerf.md`) or
+  // bare paths ending in .md — plan files are typically short names
+  const patterns = [
+    /`([^`\n]+\.md)`/g,
+    /(\S+\.md)(?:\s|$)/g,
+  ];
+  for (const re of patterns) {
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(messageContent)) !== null) {
+      const raw = m[1];
+      // Skip common non-plan files
+      if (/readme|changelog|claude|progress/i.test(raw)) continue;
+      // Clean project path prefix if present
+      const cleaned = raw.replace(/^\/+/, "");
+      return {
+        path: cleaned,
+        url: `/api/files/${encodeURIComponent(project)}/${cleaned.split("/").map(encodeURIComponent).join("/")}`,
+      };
+    }
+  }
+  return null;
+}
+
+function PlanBubble({ item, agentId, onAnswered, messageContent, project }) {
   const [chosenIdx, setChosenIdx] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [planContent, setPlanContent] = useState(null);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [planExpanded, setPlanExpanded] = useState(true);
 
   const isDismissed = _isPlanDismissed(item);
   // Determine the effective selected index: stored index > answer parse > local choice
   const serverIdx = item.selected_index ?? (item.answer != null ? _detectPlanIdx(item.answer) : null);
   const effectiveIdx = serverIdx ?? chosenIdx;
   const isAnswered = effectiveIdx != null || isDismissed;
+
+  // Detect plan file from message content
+  const planFile = useMemo(
+    () => _extractPlanFile(messageContent, project),
+    [messageContent, project],
+  );
+
+  // Auto-fetch plan content on mount
+  useEffect(() => {
+    if (!planFile || planContent !== null || planLoading) return;
+    let cancelled = false;
+    setPlanLoading(true);
+    (async () => {
+      try {
+        const res = await authedFetch(planFile.url);
+        if (!res.ok) throw new Error("fetch failed");
+        const text = await res.text();
+        if (!cancelled) setPlanContent(text);
+      } catch {
+        if (!cancelled) setPlanContent(null);
+      } finally {
+        if (!cancelled) setPlanLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [planFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelect = async (idx) => {
     setChosenIdx(idx);
@@ -304,12 +361,51 @@ function PlanBubble({ item, agentId, onAnswered }) {
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
         <span className="text-sm font-medium text-amber-300">Plan Approval</span>
+        {planFile && (
+          <button
+            type="button"
+            onClick={() => setPlanExpanded((v) => !v)}
+            className="text-[10px] text-dim hover:text-body transition-colors"
+          >
+            {planExpanded ? "Hide plan" : "Show plan"}
+          </button>
+        )}
         {badgeText && (
           <span className={`ml-auto px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${badgeClass}`}>
             {badgeText}
           </span>
         )}
       </div>
+      {/* Inline plan content */}
+      {planFile && planExpanded && (
+        <div className="mb-3 rounded-lg bg-surface/60 border border-divider/40 overflow-hidden">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-divider/30 bg-surface/40">
+            <svg className="w-3 h-3 text-dim" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+            </svg>
+            <span className="text-[11px] text-dim font-mono truncate">{planFile.path}</span>
+          </div>
+          {planLoading && (
+            <div className="px-3 py-4 text-xs text-dim flex items-center gap-1.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              Loading plan...
+            </div>
+          )}
+          {planContent && (
+            <div className="px-3 py-2 max-h-[300px] overflow-y-auto text-sm">
+              <SafeMarkdown>
+                <div
+                  className="prose-sm text-body [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-heading [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-heading [&_h2]:mt-2.5 [&_h2]:mb-1 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:text-heading [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:text-xs [&_p]:mb-1.5 [&_ul]:text-xs [&_ul]:ml-4 [&_ul]:mb-1.5 [&_ol]:text-xs [&_ol]:ml-4 [&_ol]:mb-1.5 [&_li]:mb-0.5 [&_code]:text-[11px] [&_code]:bg-elevated [&_code]:px-1 [&_code]:rounded [&_pre]:text-[11px] [&_pre]:bg-elevated [&_pre]:p-2 [&_pre]:rounded [&_pre]:overflow-x-auto [&_pre]:mb-2"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(planContent) }}
+                />
+              </SafeMarkdown>
+            </div>
+          )}
+          {!planLoading && planContent === null && (
+            <div className="px-3 py-2 text-xs text-dim">Could not load plan file</div>
+          )}
+        </div>
+      )}
       <div className="space-y-1.5">
         {PLAN_OPTIONS.map((opt, oi) => {
           const isChosen = effectiveIdx === oi;
@@ -361,14 +457,14 @@ function PlanBubble({ item, agentId, onAnswered }) {
 
 // --- Interactive items renderer ---
 
-function InteractiveBubbles({ metadata, agentId, onAnswered }) {
+function InteractiveBubbles({ metadata, agentId, onAnswered, messageContent, project }) {
   if (!metadata?.interactive?.length) return null;
   return metadata.interactive.map((item) => {
     if (item.type === "ask_user_question") {
       return <QuestionBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} />;
     }
     if (item.type === "exit_plan_mode") {
-      return <PlanBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} />;
+      return <PlanBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} messageContent={messageContent} project={project} />;
     }
     return null;
   });
@@ -603,7 +699,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
         </div>
         {attachments.length > 0 && <FileAttachments attachments={attachments} />}
         {!isUser && message.metadata?.interactive?.length > 0 && (
-          <InteractiveBubbles metadata={message.metadata} agentId={agentId} onAnswered={onRefresh} />
+          <InteractiveBubbles metadata={message.metadata} agentId={agentId} onAnswered={onRefresh} messageContent={message.content} project={project} />
         )}
 
         {/* Action popover for scheduled/pending messages */}
@@ -1824,10 +1920,20 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
             ))}
 
             {/* Streaming output or typing indicator while executing/syncing */}
-            {streamingContent
-              ? <StreamingBubble content={streamingContent} project={agent.project} />
-              : (isExecuting && <TypingIndicator />)
-            }
+            {(() => {
+              // Guard: don't show streaming bubble if content matches
+              // the last saved AGENT message (prevents duplicate bubbles
+              // when the sync loop re-emits already-committed content).
+              if (streamingContent) {
+                const lastAgent = [...messages].reverse().find((m) => m.role === "AGENT");
+                const isDuplicate = lastAgent && (
+                  lastAgent.content === streamingContent
+                  || lastAgent.content.startsWith(streamingContent.slice(0, 200))
+                );
+                if (!isDuplicate) return <StreamingBubble content={streamingContent} project={agent.project} />;
+              }
+              return isExecuting ? <TypingIndicator /> : null;
+            })()}
 
             {/* Pending/scheduled messages always at the bottom */}
             {messages.filter((m) => m.role === "USER" && m.status === "PENDING").map((msg) => (

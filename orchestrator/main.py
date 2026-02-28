@@ -3064,18 +3064,19 @@ async def answer_agent_interactive(
     pane_id = agent.tmux_pane
     MAX_INDEX = 20  # safety cap to prevent excessive keystrokes
 
+    # Immediately mark the answer in the DB FIRST so the UI updates right
+    # away.  The sync loop's _merge_interactive_meta() will preserve this
+    # answer until Claude's authoritative tool_result arrives.
     if body.type == "ask_user_question":
         if body.selected_index is None or body.selected_index < 0:
             raise HTTPException(status_code=400, detail="selected_index required for ask_user_question")
         if body.selected_index > MAX_INDEX:
             raise HTTPException(status_code=400, detail=f"selected_index too large (max {MAX_INDEX})")
+        _patch_interactive_answer(db, agent_id, body.tool_use_id, body.selected_index, body.type)
         # Send Down keys to navigate to selected option, then Enter
         keys = ["Down"] * body.selected_index + ["Enter"]
         if not send_tmux_keys(pane_id, keys):
             raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
-        # Immediately mark the answer in the DB so the UI updates without
-        # waiting for the next sync loop cycle.
-        _patch_interactive_answer(db, agent_id, body.tool_use_id, body.selected_index, body.type)
         return {"detail": "ok", "keys_sent": len(keys)}
 
     elif body.type == "exit_plan_mode":
@@ -3094,12 +3095,12 @@ async def answer_agent_interactive(
             keys = ["Down", "Down", "Enter"]  # legacy: reject → manual approval (safest)
         else:
             raise HTTPException(status_code=400, detail="selected_index or approved required for exit_plan_mode")
-        if not send_tmux_keys(pane_id, keys):
-            raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
         effective_index = body.selected_index
         if effective_index is None:
             effective_index = 0 if body.approved else 2
         _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+        if not send_tmux_keys(pane_id, keys):
+            raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
         return {"detail": "ok", "keys_sent": len(keys)}
 
     else:
