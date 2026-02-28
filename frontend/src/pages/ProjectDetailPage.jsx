@@ -17,6 +17,7 @@ import {
   generateWorktreeName,
   uploadFile,
   fetchProjectFile,
+  refreshClaudeMd,
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import VoiceRecorder from "../components/VoiceRecorder";
@@ -29,6 +30,7 @@ import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, MODEL_OPTIONS, modelDisp
 import FilterTabs from "../components/FilterTabs";
 import ProjectFileModal from "../components/ProjectFileModal";
 import ProjectBrowserModal from "../components/ProjectBrowserModal";
+import ClaudeMdDiffModal from "../components/ClaudeMdDiffModal";
 import useWebSocket from "../hooks/useWebSocket";
 
 const AGENT_TABS = [
@@ -396,6 +398,8 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const [fileModal, setFileModal] = useState(null); // "CLAUDE.md" | "PROGRESS.md" | null
   const [showBrowser, setShowBrowser] = useState(false);
   const [fileExists, setFileExists] = useState({ "CLAUDE.md": null, "PROGRESS.md": null });
+  const [refreshingClaudeMd, setRefreshingClaudeMd] = useState(false);
+  const [diffData, setDiffData] = useState(null); // response from refresh-claudemd
 
   // Track which agents are actively streaming via WebSocket
   const { lastEvent } = useWebSocket();
@@ -542,6 +546,18 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     await loadData();
     setTimeout(() => setRefreshing(false), 400);
   }, [loadData]);
+
+  const handleRefreshClaudeMd = useCallback(async () => {
+    setRefreshingClaudeMd(true);
+    try {
+      const res = await refreshClaudeMd(name);
+      setDiffData(res);
+    } catch (err) {
+      showToast(err.message || "Failed to analyze project — try again", "error");
+    } finally {
+      setRefreshingClaudeMd(false);
+    }
+  }, [name, showToast]);
 
   useEffect(() => {
     loadData();
@@ -1252,6 +1268,30 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         )}
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
+            <p className="text-sm text-body">Refresh CLAUDE.md</p>
+            <p className="text-xs text-dim">AI-analyze project and propose updates</p>
+          </div>
+          <button
+            type="button"
+            disabled={refreshingClaudeMd}
+            onClick={handleRefreshClaudeMd}
+            className="shrink-0 px-3 py-1.5 rounded-lg border border-divider text-body text-xs font-medium hover:bg-elevated disabled:opacity-50 transition-colors flex items-center gap-1.5"
+          >
+            {refreshingClaudeMd ? (
+              <>
+                <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
+                Analyzing...
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
+                Refresh CLAUDE.md
+              </>
+            )}
+          </button>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
             <p className="text-sm text-body">Delete Project</p>
             <p className="text-xs text-dim">Move files to .trash</p>
           </div>
@@ -1350,6 +1390,22 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         <ProjectBrowserModal
           project={name}
           onClose={() => setShowBrowser(false)}
+        />
+      )}
+
+      {diffData && (
+        <ClaudeMdDiffModal
+          data={diffData}
+          project={name}
+          onClose={() => setDiffData(null)}
+          onApplied={(lines, error) => {
+            setDiffData(null);
+            if (error) {
+              showToast("Apply failed: " + error, "error");
+            } else {
+              showToast(`CLAUDE.md updated (${lines} lines)`);
+            }
+          }}
         />
       )}
     </div>

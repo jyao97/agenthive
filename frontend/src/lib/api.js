@@ -103,6 +103,10 @@ export const fetchProjectTree = (project, depth = 3) =>
   request(`/api/projects/${e(project)}/tree?depth=${depth}`);
 export const browseProjectFile = (project, path) =>
   request(`/api/projects/${e(project)}/browse?path=${e(path)}`);
+export const refreshClaudeMd = (project) =>
+  request(`/api/projects/${e(project)}/refresh-claudemd`, { method: "POST" });
+export const applyClaudeMd = (project, payload) =>
+  request(`/api/projects/${e(project)}/apply-claudemd`, { method: "POST", body: JSON.stringify(payload) });
 
 // --- Tasks (agent-sourced: each USER message = one task) ---
 export const fetchTasks = (params = "") =>

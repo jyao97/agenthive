@@ -1635,6 +1635,273 @@ async def update_project_file(name: str, body: ProjectFileUpdate, db: Session = 
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ---- CLAUDE.md refresh (AI-powered) ----
+
+import difflib
+import subprocess
+import time as _time
+import threading
+
+# In-memory cache for proposed CLAUDE.md content (project_name -> {proposed, current, ts})
+_claudemd_cache: dict[str, dict] = {}
+_claudemd_cache_lock = threading.Lock()
+_CLAUDEMD_CACHE_TTL = 600  # 10 minutes
+
+
+def _claudemd_cache_set(project_name: str, current: str, proposed: str):
+    with _claudemd_cache_lock:
+        _claudemd_cache[project_name] = {
+            "current": current,
+            "proposed": proposed,
+            "ts": _time.monotonic(),
+        }
+
+
+def _claudemd_cache_get(project_name: str) -> dict | None:
+    with _claudemd_cache_lock:
+        entry = _claudemd_cache.get(project_name)
+        if not entry:
+            return None
+        if _time.monotonic() - entry["ts"] > _CLAUDEMD_CACHE_TTL:
+            del _claudemd_cache[project_name]
+            return None
+        return entry
+
+
+def _claudemd_cache_clear(project_name: str):
+    with _claudemd_cache_lock:
+        _claudemd_cache.pop(project_name, None)
+
+
+def _compute_diff_hunks(current: str, proposed: str) -> tuple[str, list[dict]]:
+    """Compute unified diff and parse into structured hunks."""
+    current_lines = current.splitlines(keepends=True)
+    proposed_lines = proposed.splitlines(keepends=True)
+    diff_lines = list(difflib.unified_diff(
+        current_lines, proposed_lines,
+        fromfile="CLAUDE.md (current)", tofile="CLAUDE.md (proposed)",
+        lineterm="",
+    ))
+    raw_diff = "\n".join(diff_lines)
+
+    hunks = []
+    current_hunk = None
+    for line in diff_lines:
+        if line.startswith("@@"):
+            if current_hunk is not None:
+                hunks.append(current_hunk)
+            current_hunk = {
+                "id": len(hunks),
+                "header": line.rstrip(),
+                "lines": [],
+            }
+        elif current_hunk is not None:
+            if line.startswith("+"):
+                current_hunk["lines"].append({"type": "added", "content": line[1:].rstrip("\n")})
+            elif line.startswith("-"):
+                current_hunk["lines"].append({"type": "removed", "content": line[1:].rstrip("\n")})
+            else:
+                # context line (starts with " " or is empty)
+                content = line[1:].rstrip("\n") if line.startswith(" ") else line.rstrip("\n")
+                current_hunk["lines"].append({"type": "context", "content": content})
+    if current_hunk is not None:
+        hunks.append(current_hunk)
+
+    return raw_diff, hunks
+
+
+class ApplyClaudeMdRequest(BaseModel):
+    mode: str  # "accept_all" or "selective"
+    accepted_hunk_ids: list[int] = []
+
+
+@app.post("/api/projects/{name}/refresh-claudemd")
+async def refresh_claudemd(name: str, db: Session = Depends(get_db)):
+    """Spawn a one-shot Claude agent to propose CLAUDE.md updates."""
+    project_path = _resolve_project_path(name, db)
+
+    # 1. Gather recent agent activity from DB
+    rows = (
+        db.query(Message.content, Message.created_at, Agent.name)
+        .join(Agent, Message.agent_id == Agent.id)
+        .filter(Agent.project == name, Message.role == MessageRole.AGENT)
+        .order_by(Message.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    parts = []
+    total_len = 0
+    for content, created_at, agent_name in rows:
+        snippet = (content or "")[:500]
+        entry = f"[agent: {agent_name}, {created_at}]\n{snippet}\n"
+        if total_len + len(entry) > 8000:
+            break
+        parts.append(entry)
+        total_len += len(entry)
+    recent_agent_activity = "\n".join(parts) if parts else "(no recent agent activity)"
+
+    # 2. Read current CLAUDE.md and PROGRESS.md
+    claudemd_path = os.path.join(project_path, "CLAUDE.md")
+    progress_path = os.path.join(project_path, "PROGRESS.md")
+    current_claudemd = ""
+    if os.path.isfile(claudemd_path):
+        with open(claudemd_path, "r", encoding="utf-8", errors="replace") as f:
+            current_claudemd = f.read()
+    progress_md = ""
+    if os.path.isfile(progress_path):
+        with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
+            progress_md = f.read()
+
+    # 3. Build prompt and spawn one-shot Claude agent
+    prompt = f"""You are updating this project's CLAUDE.md based on accumulated knowledge.
+
+Here is the current CLAUDE.md:
+---
+{current_claudemd}
+---
+
+Here is PROGRESS.md (historical lessons):
+---
+{progress_md}
+---
+
+Here is recent agent activity in this project (last 50 messages):
+---
+{recent_agent_activity}
+---
+
+Also examine:
+- The project file structure (top 3 levels)
+- package.json / pyproject.toml / Makefile / Cargo.toml / setup.py (if they exist) for build/test/lint commands
+- README.md (if exists)
+- Any config files you find relevant
+
+Based on ALL of the above, output a COMPLETE updated CLAUDE.md that:
+- Keeps the universal rules section UNCHANGED (everything above "Project:")
+- Updates "Project-Specific Rules" with useful lessons from PROGRESS.md and agent activity
+- Updates Tech Stack, Top Dirs, Config, Entry, Tests, Build/Test/Lint if you found more accurate info
+- Stays UNDER 50 lines total — be ruthless about brevity
+- Does NOT include full documentation — only rules, key paths, and critical lessons
+- Merges duplicate or overlapping lessons into single concise rules
+
+Output ONLY the new CLAUDE.md content, no explanation, no markdown fences. Start with the first line of the file."""
+
+    from config import CLAUDE_BIN
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
+                capture_output=True, text=True, timeout=60,
+                cwd=project_path,
+            ),
+        )
+        if result.returncode != 0:
+            logger.warning("claude -p failed for %s: %s", name, result.stderr[:500])
+            raise HTTPException(status_code=502, detail="Claude agent failed — try again")
+        proposed = result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Claude agent timed out (>60s) — try again")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Claude CLI not found")
+
+    if not proposed:
+        raise HTTPException(status_code=502, detail="Claude agent returned empty output")
+
+    # 4. If CLAUDE.md doesn't exist, skip diff
+    if not current_claudemd:
+        _claudemd_cache_set(name, "", proposed)
+        return {
+            "current": "",
+            "proposed": proposed,
+            "diff": "",
+            "hunks": [],
+            "is_new": True,
+        }
+
+    # 5. Compute diff
+    if current_claudemd.strip() == proposed.strip():
+        return {"hunks": [], "message": "No changes needed"}
+
+    raw_diff, hunks = _compute_diff_hunks(current_claudemd, proposed)
+
+    # 6. Cache for apply endpoint
+    _claudemd_cache_set(name, current_claudemd, proposed)
+
+    # 7. Warn if proposed exceeds 60 lines
+    proposed_lines = len(proposed.splitlines())
+    warning = None
+    if proposed_lines > 60:
+        warning = f"Proposed CLAUDE.md is {proposed_lines} lines (recommended max: 60)"
+        logger.warning("refresh-claudemd %s: %s", name, warning)
+
+    return {
+        "current": current_claudemd,
+        "proposed": proposed,
+        "diff": raw_diff,
+        "hunks": hunks,
+        "warning": warning,
+    }
+
+
+@app.post("/api/projects/{name}/apply-claudemd")
+async def apply_claudemd(name: str, body: ApplyClaudeMdRequest, db: Session = Depends(get_db)):
+    """Apply proposed CLAUDE.md changes (all or selective hunks)."""
+    project_path = _resolve_project_path(name, db)
+    claudemd_path = os.path.join(project_path, "CLAUDE.md")
+
+    cached = _claudemd_cache_get(name)
+    if not cached:
+        raise HTTPException(status_code=410, detail="Proposal expired — run refresh again")
+
+    proposed = cached["proposed"]
+    current = cached["current"]
+
+    if body.mode == "accept_all":
+        final_content = proposed
+    elif body.mode == "selective":
+        # Apply only accepted hunks via SequenceMatcher opcodes.
+        # Each non-equal opcode maps 1:1 to a hunk id (same order as
+        # _compute_diff_hunks produces).
+        accepted_ids = set(body.accepted_hunk_ids)
+        current_lines = current.splitlines(keepends=True)
+        proposed_lines = proposed.splitlines(keepends=True)
+
+        sm = difflib.SequenceMatcher(None, current_lines, proposed_lines)
+        result_lines = []
+        hunk_idx = 0
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                result_lines.extend(current_lines[i1:i2])
+            else:
+                if hunk_idx in accepted_ids:
+                    # Accept: use proposed side
+                    result_lines.extend(proposed_lines[j1:j2])
+                else:
+                    # Reject: keep current side
+                    result_lines.extend(current_lines[i1:i2])
+                hunk_idx += 1
+
+        final_content = "".join(result_lines)
+    else:
+        raise HTTPException(status_code=400, detail="mode must be 'accept_all' or 'selective'")
+
+    # Write to disk
+    try:
+        with open(claudemd_path, "w", encoding="utf-8") as f:
+            f.write(final_content)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    _claudemd_cache_clear(name)
+
+    line_count = len(final_content.splitlines())
+    if line_count > 60:
+        logger.warning("apply-claudemd %s: written CLAUDE.md is %d lines (>60)", name, line_count)
+
+    return {"success": True, "content": final_content, "lines": line_count}
+
+
 # ---- Project directory browser (read-only) ----
 
 _BROWSE_IGNORED = {
