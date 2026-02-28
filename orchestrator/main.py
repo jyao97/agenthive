@@ -988,6 +988,11 @@ async def restore_trash_folder(name: str):
         raise HTTPException(status_code=409, detail=f"Folder '{name}' already exists")
     shutil.move(src, dst)
     logger.info("Restored trash folder %s to %s", src, dst)
+
+    # Auto-generate CLAUDE.md / PROGRESS.md if missing
+    from project_scaffolder import scaffold_project
+    scaffold_project(name, dst)
+
     return {"status": "restored", "name": name}
 
 
@@ -1035,6 +1040,12 @@ async def scan_projects(request: Request, db: Session = Depends(get_db)):
     if added:
         db.commit()
         logger.info("Scan registered %d new project(s): %s", len(added), ", ".join(added))
+
+        # Auto-generate CLAUDE.md / PROGRESS.md for new projects
+        from project_scaffolder import scaffold_project
+        for dirname in added:
+            scaffold_project(dirname, os.path.join(projects_dir, dirname))
+
     if skipped_archived:
         logger.info("Scan skipped %d archived project(s): %s", len(skipped_archived), ", ".join(skipped_archived))
 
@@ -1111,6 +1122,10 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
     data["projects"].append(entry)
     with open(registry_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False)
+
+    # Auto-generate CLAUDE.md / PROGRESS.md if missing
+    from project_scaffolder import scaffold_project
+    scaffold_project(proj.name, proj.path)
 
     logger.info("Project '%s' created", body.name)
     return proj
