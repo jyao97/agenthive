@@ -82,9 +82,6 @@ function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandlePr
           {folder.git_remote && (
             <p className="text-xs text-dim truncate mt-0.5">{folder.git_remote}</p>
           )}
-          {folder.description && (
-            <p className="text-xs text-label mt-1 line-clamp-2">{folder.description}</p>
-          )}
         </div>
       </div>
 
