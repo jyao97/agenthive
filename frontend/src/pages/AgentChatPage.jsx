@@ -722,7 +722,22 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
-  const [attachments, setAttachments] = useState([]);
+  const attachmentCacheKey = agentId ? `draft:chat:${agentId}:attachments` : null;
+  const [attachments, setAttachments] = useState(() => {
+    if (!attachmentCacheKey) return [];
+    try {
+      const cached = localStorage.getItem(attachmentCacheKey);
+      if (cached) {
+        return JSON.parse(cached).map((a) => ({
+          ...a,
+          uploading: false,
+          file: null,
+          previewUrl: a.thumbnailUrl || null,
+        }));
+      }
+    } catch { /* ignore */ }
+    return [];
+  });
   const [uploadError, setUploadError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const dragCountRef = useRef(0);
@@ -757,12 +772,35 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
     el.style.height = Math.min(el.scrollHeight, 160) + "px";
   }, [text]);
 
-  // Cleanup blob URLs on unmount
+  // Cleanup blob URLs on unmount (only revoke actual blob: URLs, not server URLs)
   useEffect(() => {
     return () => {
-      attachments.forEach((a) => { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); });
+      attachments.forEach((a) => { if (a.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(a.previewUrl); });
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync completed attachments to localStorage cache
+  useEffect(() => {
+    if (!attachmentCacheKey) return;
+    const completed = attachments.filter((a) => !a.uploading && a.uploadedPath);
+    if (completed.length > 0) {
+      const toCache = completed.map((a) => ({
+        id: a.id,
+        uploadedPath: a.uploadedPath,
+        originalName: a.originalName,
+        size: a.size,
+        mimeType: a.mimeType || a.file?.type || null,
+        thumbnailUrl: a.thumbnailUrl || (
+          (a.mimeType || a.file?.type || "").startsWith("image/")
+            ? `/api/uploads/${a.uploadedPath.split("/").pop()}`
+            : null
+        ),
+      }));
+      try { localStorage.setItem(attachmentCacheKey, JSON.stringify(toCache)); } catch { /* ignore */ }
+    } else {
+      try { localStorage.removeItem(attachmentCacheKey); } catch { /* ignore */ }
+    }
+  }, [attachments, attachmentCacheKey]);
 
   const buildMessageText = useCallback((baseText, atts) => {
     let msg = baseText;
@@ -774,10 +812,13 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   const clearAttachments = useCallback(() => {
     setAttachments((prev) => {
-      prev.forEach((a) => { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); });
+      prev.forEach((a) => { if (a.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(a.previewUrl); });
       return [];
     });
-  }, []);
+    if (attachmentCacheKey) {
+      try { localStorage.removeItem(attachmentCacheKey); } catch { /* ignore */ }
+    }
+  }, [attachmentCacheKey]);
 
   const handleSend = useCallback(() => {
     const uploading = attachments.some((a) => a.uploading);
@@ -835,7 +876,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
       setAttachments((prev) => [...prev, {
         id, file, previewUrl, uploading: true, uploadedPath: null,
-        originalName: file.name, size: file.size,
+        originalName: file.name, size: file.size, mimeType: file.type,
       }]);
 
       uploadFile(file).then((result) => {
@@ -903,7 +944,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const removeAttachment = useCallback((id) => {
     setAttachments((prev) => {
       const att = prev.find((a) => a.id === id);
-      if (att?.previewUrl) URL.revokeObjectURL(att.previewUrl);
+      if (att?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(att.previewUrl);
       return prev.filter((a) => a.id !== id);
     });
   }, []);
