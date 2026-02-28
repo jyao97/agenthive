@@ -318,44 +318,89 @@ function cleanProjectPath(raw, project) {
   return p;
 }
 
-// File extensions we detect for inline previews
+// File extension groups
 const IMAGE_EXTS = /\.(png|jpg|jpeg|gif|svg|webp)$/i;
 const VIDEO_EXTS = /\.(mp4|webm|mov)$/i;
-const CSV_EXT = /\.csv$/i;
-const ALL_EXTS = /\.(png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|csv)$/i;
+const DOC_EXTS = /\.(py|js|ts|jsx|tsx|html|css|md|txt|pdf|sh|bash|rb|go|rs|c|cpp|h|hpp|java|kt|swift|yaml|yml|toml|xml|sql|r|lua|pl|ex|exs|zig|nim|dart|scala|clj|hs|erl|elm)$/i;
+const IGNORE_EXTS = /\.(jsonl|log|csv|json|lock)$/i;
 
-// Compiled regexes for path detection
-const RE_MD_IMAGE = /!\[.*?\]\((\S+?\.(?:png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|csv))\)/gi;
-const RE_BACKTICK = /`([^`]*\/[^`]*\.(?:png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|csv))`/gi;
-const RE_BARE_PATH = /(?:^|[\s(])([^\s()\[\]!]*\/[^\s()\[\]]+\.(?:png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|csv))(?=[\s),\]]|$)/gim;
+// All extensions the agent path scanner should match (media + doc)
+const AGENT_EXTS = /\.(png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|py|js|ts|jsx|tsx|html|css|md|txt|pdf|sh|bash|rb|go|rs|c|cpp|h|hpp|java|kt|swift|yaml|yml|toml|xml|sql|r|lua|pl|ex|exs|zig|nim|dart|scala|clj|hs|erl|elm)$/i;
+
+// Compiled regexes for agent path detection
+const AGENT_EXT_LIST = "png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|py|js|ts|jsx|tsx|html|css|md|txt|pdf|sh|bash|rb|go|rs|c|cpp|h|hpp|java|kt|swift|yaml|yml|toml|xml|sql|r|lua|pl|ex|exs|zig|nim|dart|scala|clj|hs|erl|elm";
+const RE_MD_IMAGE = new RegExp(`!\\[.*?\\]\\((\\S+?\\.(?:${AGENT_EXT_LIST}))\\)`, "gi");
+const RE_BACKTICK = new RegExp("`([^`]*/[^`]*\\.(?:" + AGENT_EXT_LIST + "))`", "gi");
+const RE_BARE_PATH = new RegExp("(?:^|[\\s(])([^\\s()\\[\\]!]*/[^\\s()\\[\\]]+\\.(?:" + AGENT_EXT_LIST + "))(?=[\\s),\\]]|$)", "gim");
+
+// User-uploaded file tag
 const RE_ATTACHED_FILE = /\[Attached file: ([^\]]+)\]/gi;
 
+/** Strip [Attached file: ...] tags from display text. */
+export function stripAttachmentTags(text) {
+  if (!text) return text;
+  return text.replace(/\n?\[Attached file: [^\]]+\]/g, "").trim();
+}
+
+function classifyExt(filename) {
+  if (IMAGE_EXTS.test(filename)) return "image";
+  if (VIDEO_EXTS.test(filename)) return "video";
+  if (DOC_EXTS.test(filename)) return "doc";
+  return "file";
+}
+
 /**
- * Extract file attachments (images, videos, CSVs) from message text.
- * Returns an array of { path, resolvedUrl, type, ext } objects (data, not JSX).
- * Skips images that renderMarkdown already renders inline (full-line ![](...)
- * or bare filename lines) to avoid double-rendering.
+ * Extract file attachments from message text.
+ *
+ * @param {string} text - Message content
+ * @param {string} project - Project name (for resolving project file URLs)
+ * @param {"USER"|"AGENT"} role - Message role controls detection strategy:
+ *   USER  → only [Attached file: ...] tags (uploaded via "+" button)
+ *   AGENT → detect file paths; images/videos as thumbnails, code/doc as
+ *           collapsible cards, ignore log/data files (.jsonl,.log,.csv,.json,.lock)
+ *
+ * Returns array of { path, resolvedUrl, type, ext }.
  */
-export function extractFileAttachments(text, project) {
+export function extractFileAttachments(text, project, role) {
   if (!text) return [];
+
+  const seen = new Set();
+  const results = [];
+
+  // --- USER messages: only uploaded file tags ---
+  if (role === "USER") {
+    let m;
+    RE_ATTACHED_FILE.lastIndex = 0;
+    while ((m = RE_ATTACHED_FILE.exec(text)) !== null) {
+      const filePath = m[1];
+      if (!filePath) continue;
+      const filename = filePath.split("/").pop();
+      if (seen.has(filename)) continue;
+      seen.add(filename);
+
+      const resolvedUrl = `/api/uploads/${encodeURIComponent(filename)}`;
+      const ext = filename.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
+      const type = classifyExt(filename);
+      results.push({ path: filename, resolvedUrl, type, ext });
+    }
+    return results;
+  }
+
+  // --- AGENT messages: detect file paths in text ---
 
   // Collect paths already rendered inline by renderMarkdown
   const inlineRendered = new Set();
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
-    // Full-line markdown image: ![...](path.ext)
     const mdFull = trimmed.match(/^!\[.*?\]\((.+?)\)$/);
     if (mdFull) inlineRendered.add(mdFull[1]);
-    // Bare filename on its own line: image.png
     const bareFull = trimmed.match(/^(\S+\.(?:png|jpg|jpeg|gif|svg|webp))$/i);
     if (bareFull) inlineRendered.add(bareFull[1]);
   }
 
-  const seen = new Set();
-  const results = [];
-
   const addPath = (rawPath) => {
-    if (!rawPath || !ALL_EXTS.test(rawPath)) return;
+    if (!rawPath || !AGENT_EXTS.test(rawPath)) return;
+    if (IGNORE_EXTS.test(rawPath)) return;
     let path = cleanProjectPath(rawPath, project);
     if (seen.has(path) || inlineRendered.has(rawPath)) return;
     seen.add(path);
@@ -364,36 +409,12 @@ export function extractFileAttachments(text, project) {
       ? rawPath
       : `/api/files/${encodeURIComponent(project)}/${path.split("/").map(encodeURIComponent).join("/")}`;
 
-    let type = "unknown";
-    if (IMAGE_EXTS.test(path)) type = "image";
-    else if (VIDEO_EXTS.test(path)) type = "video";
-    else if (CSV_EXT.test(path)) type = "csv";
-
     const ext = path.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
+    const type = classifyExt(path);
     results.push({ path, resolvedUrl, type, ext });
   };
 
-  const addUpload = (filePath) => {
-    if (!filePath) return;
-    const filename = filePath.split("/").pop();
-    if (seen.has(filename)) return;
-    seen.add(filename);
-
-    const resolvedUrl = `/api/uploads/${encodeURIComponent(filename)}`;
-    const ext = filename.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
-
-    let type = "unknown";
-    if (IMAGE_EXTS.test(filename)) type = "image";
-    else if (VIDEO_EXTS.test(filename)) type = "video";
-    else if (CSV_EXT.test(filename)) type = "csv";
-
-    results.push({ path: filename, resolvedUrl, type, ext });
-  };
-
-  // Match all patterns
   let m;
-  RE_ATTACHED_FILE.lastIndex = 0;
-  while ((m = RE_ATTACHED_FILE.exec(text)) !== null) addUpload(m[1]);
   RE_MD_IMAGE.lastIndex = 0;
   while ((m = RE_MD_IMAGE.exec(text)) !== null) addPath(m[1]);
   RE_BACKTICK.lastIndex = 0;

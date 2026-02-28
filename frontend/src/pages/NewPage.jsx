@@ -127,6 +127,8 @@ function NewAgentForm({ showToast, navigate }) {
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [attachments, setAttachments] = useState([]);
+  const [dragOver, setDragOver] = useState(false);
+  const dragCountRef = useRef(0);
   const clearAllDrafts = () => { clearProject(); clearPrompt(); clearModel(); clearEffort(); };
   const [showSchedulePicker, setShowSchedulePicker] = useState(false);
   const textareaRef = useRef(null);
@@ -166,11 +168,7 @@ function NewAgentForm({ showToast, navigate }) {
     });
   };
 
-  const handleFileSelect = async (e) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (files.length === 0) return;
-
+  const addFiles = (files) => {
     for (const file of files) {
       if (file.size > 50 * 1024 * 1024) {
         showToast(`${file.name} exceeds 50 MB limit`, "error");
@@ -194,6 +192,56 @@ function NewAgentForm({ showToast, navigate }) {
         if (previewUrl) URL.revokeObjectURL(previewUrl);
         showToast(`Upload failed: ${err.message}`, "error");
       });
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length > 0) addFiles(files);
+  };
+
+  const handleDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCountRef.current++;
+    if (e.dataTransfer?.types?.includes("Files")) setDragOver(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCountRef.current--;
+    if (dragCountRef.current <= 0) { dragCountRef.current = 0; setDragOver(false); }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCountRef.current = 0;
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length > 0) addFiles(files);
+  };
+
+  const handlePaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files = [];
+    for (const item of items) {
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault();
+      addFiles(files);
     }
   };
 
@@ -275,12 +323,25 @@ function NewAgentForm({ showToast, navigate }) {
         <label className="block text-sm font-medium text-label mb-2">
           Initial Prompt <span className="text-red-400">*</span>
         </label>
-        <div className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 relative mb-5">
+        <div
+          className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 relative mb-5"
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+        >
+          {/* Drop zone overlay */}
+          {dragOver && (
+            <div className="absolute inset-0 z-30 rounded-[22px] bg-cyan-500/15 border-2 border-dashed border-cyan-500 flex items-center justify-center pointer-events-none">
+              <span className="text-sm font-medium text-cyan-400">Drop files here</span>
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(e); } }}
+            onPaste={handlePaste}
             placeholder="What should this agent do?"
             rows={3}
             className="w-full min-h-[72px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors"
