@@ -325,7 +325,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     <select
       value={sortMode}
       onChange={(e) => handleSortChange(e.target.value)}
-      className="w-full h-[36px] pl-3 pr-7 text-sm font-medium leading-[36px] rounded-full bg-surface text-label border-none outline-none appearance-none text-center"
+      className="w-full h-[36px] pl-3.5 pr-5 text-sm font-medium leading-[36px] rounded-full bg-surface text-label border-none outline-none appearance-none text-center"
       style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center" }}
     >
       {SORT_OPTIONS.map((o) => (
@@ -363,7 +363,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
               );
             })}
           </div>
-          <div className="ml-auto flex-1 max-w-[8rem]">{sortDropdown}</div>
+          <div className="ml-auto max-w-[7rem]">{sortDropdown}</div>
         </div>
       </PageHeader>
       {/* Scan result toast */}

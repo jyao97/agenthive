@@ -18,7 +18,7 @@ import {
   escapeAgent,
   uploadFile,
 } from "../lib/api";
-import { relativeTime, renderMarkdown, extractFileAttachments } from "../lib/formatters";
+import { relativeTime, renderMarkdown, extractFileAttachments, stripAttachmentTags } from "../lib/formatters";
 
 // Mini error boundary that wraps individual markdown renders so a single
 // broken message doesn't crash the entire chat page.
@@ -464,8 +464,14 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   };
 
   const attachments = useMemo(
-    () => extractFileAttachments(message.content, project),
-    [message.content, project],
+    () => extractFileAttachments(message.content, project, message.role),
+    [message.content, project, message.role],
+  );
+
+  // Strip [Attached file: ...] tags from user message display text
+  const displayContent = useMemo(
+    () => isUser ? stripAttachmentTags(message.content) : message.content,
+    [isUser, message.content],
   );
 
   const scheduledTime = isScheduled
@@ -551,11 +557,11 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
           onTouchCancel={handleLongPressEnd}
         >
           {isUser ? (
-            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+            displayContent && <p className="text-sm whitespace-pre-wrap">{displayContent}</p>
           ) : (
             <div className="text-sm">
-              <SafeMarkdown fallback={message.content}>
-                {renderMarkdown(message.content, project)}
+              <SafeMarkdown fallback={displayContent}>
+                {renderMarkdown(displayContent, project)}
               </SafeMarkdown>
             </div>
           )}
@@ -817,11 +823,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
     }
   }, [attachments, handleSend, handleSchedule]);
 
-  const handleFileSelect = useCallback(async (e) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (files.length === 0) return;
-
+  const addFiles = useCallback((files) => {
     for (const file of files) {
       if (file.size > 50 * 1024 * 1024) {
         setUploadError(`${file.name} exceeds 50 MB limit`);
@@ -847,6 +849,56 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       });
     }
   }, []);
+
+  const handleFileSelect = useCallback((e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length > 0) addFiles(files);
+  }, [addFiles]);
+
+  const handleDragEnter = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCountRef.current++;
+    if (e.dataTransfer?.types?.includes("Files")) setDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCountRef.current--;
+    if (dragCountRef.current <= 0) { dragCountRef.current = 0; setDragOver(false); }
+  }, []);
+
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCountRef.current = 0;
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length > 0) addFiles(files);
+  }, [addFiles]);
+
+  const handlePaste = useCallback((e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files = [];
+    for (const item of items) {
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault();
+      addFiles(files);
+    }
+  }, [addFiles]);
 
   const removeAttachment = useCallback((id) => {
     setAttachments((prev) => {
@@ -885,12 +937,26 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div className="absolute bottom-0 left-0 right-0 pb-2 safe-area-pb-tight flex justify-center px-4 z-20 pointer-events-none">
-      <div className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto" style={{ maxWidth: "24rem" }}>
+      <div
+        className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
+        style={{ maxWidth: "24rem" }}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
+        {/* Drop zone overlay */}
+        {dragOver && (
+          <div className="absolute inset-0 z-30 rounded-[22px] bg-cyan-500/15 border-2 border-dashed border-cyan-500 flex items-center justify-center pointer-events-none">
+            <span className="text-sm font-medium text-cyan-400">Drop files here</span>
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           onBlur={handleBlur}
           placeholder={tmuxMode ? "Send via tmux..." : isBusy ? "Send (queued until ready)..." : disabled ? disabledReason : "Type a message..."}
           disabled={!canType}

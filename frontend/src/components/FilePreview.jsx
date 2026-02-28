@@ -1,59 +1,7 @@
 import { useState, useCallback } from "react";
 import { authedFetch } from "../lib/api";
 
-// --- CSV parser (handles quoted fields) ---
-
-function parseCSV(text) {
-  const rows = [];
-  let i = 0;
-  while (i < text.length) {
-    const row = [];
-    while (i < text.length) {
-      if (text[i] === '"') {
-        // Quoted field
-        i++;
-        let field = "";
-        while (i < text.length) {
-          if (text[i] === '"') {
-            if (i + 1 < text.length && text[i + 1] === '"') {
-              field += '"';
-              i += 2;
-            } else {
-              i++; // closing quote
-              break;
-            }
-          } else {
-            field += text[i];
-            i++;
-          }
-        }
-        row.push(field);
-      } else {
-        // Unquoted field
-        let field = "";
-        while (i < text.length && text[i] !== "," && text[i] !== "\n" && text[i] !== "\r") {
-          field += text[i];
-          i++;
-        }
-        row.push(field);
-      }
-      if (i < text.length && text[i] === ",") {
-        i++;
-      } else {
-        break;
-      }
-    }
-    // Skip line endings
-    if (i < text.length && text[i] === "\r") i++;
-    if (i < text.length && text[i] === "\n") i++;
-    if (row.length > 0 && !(row.length === 1 && row[0] === "")) {
-      rows.push(row);
-    }
-  }
-  return rows;
-}
-
-// --- Image Preview ---
+// --- Image Preview (compact thumbnail, tappable fullscreen) ---
 
 function ImagePreview({ src, filename }) {
   const [error, setError] = useState(false);
@@ -69,9 +17,9 @@ function ImagePreview({ src, filename }) {
           alt={filename}
           loading="lazy"
           onError={() => setError(true)}
-          className="max-h-48 max-w-full rounded-lg border border-divider object-contain"
+          className="max-h-[120px] max-w-full rounded-lg border border-divider object-contain"
         />
-        <p className="text-xs text-dim mt-1 truncate max-w-[240px]">{filename}</p>
+        <p className="text-xs text-dim mt-1 truncate max-w-[200px]">{filename}</p>
       </div>
 
       {lightbox && (
@@ -104,120 +52,147 @@ function VideoPreview({ src, filename }) {
         controls
         preload="metadata"
         onError={() => setError(true)}
-        className="max-h-64 max-w-full rounded-lg border border-divider"
+        className="max-h-[120px] max-w-full rounded-lg border border-divider"
       />
-      <p className="text-xs text-dim mt-1 truncate max-w-[240px]">{filename}</p>
+      <p className="text-xs text-dim mt-1 truncate max-w-[200px]">{filename}</p>
     </div>
   );
 }
 
-// --- CSV Preview ---
+// --- Doc/Code File Preview (collapsible card) ---
 
-function CsvPreview({ src, filename }) {
-  const [state, setState] = useState("idle"); // idle | loading | loaded | error
-  const [rows, setRows] = useState([]);
-  const [totalRows, setTotalRows] = useState(0);
+function DocFilePreview({ src, filename, ext }) {
+  const [expanded, setExpanded] = useState(false);
+  const [content, setContent] = useState(null);
+  const [loadState, setLoadState] = useState("idle"); // idle | loading | loaded | error
 
-  const loadCsv = useCallback(async () => {
-    setState("loading");
+  const loadContent = useCallback(async () => {
+    if (loadState === "loading") return;
+    setLoadState("loading");
     try {
       const res = await authedFetch(src);
       if (!res.ok) throw new Error("fetch failed");
       const text = await res.text();
-      const parsed = parseCSV(text);
-      setTotalRows(parsed.length > 0 ? parsed.length - 1 : 0); // exclude header
-      setRows(parsed.slice(0, 21)); // header + 20 data rows
-      setState("loaded");
+      setContent(text);
+      setLoadState("loaded");
     } catch {
-      setState("error");
+      setLoadState("error");
     }
-  }, [src]);
+  }, [src, loadState]);
 
-  if (state === "error") {
-    return (
-      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 text-xs">
-        <span>Failed to load</span>
-        <span className="text-dim truncate max-w-[160px]">{filename}</span>
-      </div>
-    );
-  }
+  const handleToggle = () => {
+    if (!expanded && loadState === "idle") loadContent();
+    setExpanded((v) => !v);
+  };
 
-  if (state === "idle" || state === "loading") {
-    return (
-      <button
-        type="button"
-        onClick={loadCsv}
-        disabled={state === "loading"}
-        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-elevated hover:bg-input text-sm text-label transition-colors disabled:opacity-50"
-      >
-        <svg className="w-4 h-4 text-dim" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M3 14h18M3 6h18M3 18h18" />
-        </svg>
-        {state === "loading" ? "Loading..." : filename}
-      </button>
-    );
-  }
-
-  // loaded
-  const header = rows[0] || [];
-  const data = rows.slice(1);
+  const isPdf = ext === "pdf";
 
   return (
-    <div className="space-y-1">
-      <p className="text-xs text-dim truncate max-w-[240px]">{filename}</p>
-      <div className="overflow-x-auto rounded-lg border border-divider max-h-72">
-        <table className="text-xs text-body w-full border-collapse">
-          <thead className="sticky top-0 bg-elevated">
-            <tr>
-              {header.map((col, i) => (
-                <th key={i} className="px-2 py-1.5 text-left font-medium text-heading whitespace-nowrap border-b border-divider">
-                  {col}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((row, ri) => (
-              <tr key={ri} className="border-b border-divider last:border-0">
-                {row.map((cell, ci) => (
-                  <td key={ci} className="px-2 py-1 whitespace-nowrap">{cell}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {totalRows > 20 && (
-        <p className="text-xs text-dim">Showing 20 of {totalRows} rows</p>
+    <div className="rounded-lg bg-elevated overflow-hidden max-w-[280px]">
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-hover transition-colors text-left"
+      >
+        <svg className="w-4 h-4 text-cyan-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+        </svg>
+        <span className="text-xs text-label truncate flex-1 min-w-0">{filename}</span>
+        <span className="text-[10px] text-dim uppercase shrink-0">{ext}</span>
+        <svg className={`w-3 h-3 text-dim shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" d="m19 9-7 7-7-7" />
+        </svg>
+      </button>
+      {expanded && (
+        <div className="border-t border-divider">
+          {loadState === "loading" && (
+            <div className="px-3 py-2 text-xs text-dim">Loading...</div>
+          )}
+          {loadState === "error" && (
+            <div className="px-3 py-2 text-xs text-red-400">Failed to load</div>
+          )}
+          {loadState === "loaded" && !isPdf && content != null && (
+            <pre className="px-3 py-2 text-xs text-body font-mono overflow-x-auto max-h-48 whitespace-pre-wrap break-words">
+              {content.length > 3000 ? content.slice(0, 3000) + "\n..." : content}
+            </pre>
+          )}
+          {isPdf && (
+            <a
+              href={src}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block px-3 py-2 text-xs text-cyan-400 hover:underline"
+            >
+              Open PDF in new tab
+            </a>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-// --- Generic File Preview ---
+// --- Generic File Card (non-media, non-doc — fallback for user uploads) ---
 
-function GenericFilePreview({ src, filename, size }) {
-  const sizeStr = size
-    ? size < 1024 ? `${size} B`
-      : size < 1024 * 1024 ? `${(size / 1024).toFixed(1)} KB`
-      : `${(size / (1024 * 1024)).toFixed(1)} MB`
-    : null;
-
+function GenericFilePreview({ src, filename }) {
   return (
     <a
       href={src}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-elevated hover:bg-input transition-colors max-w-[260px]"
+      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-elevated hover:bg-hover transition-colors max-w-[240px]"
     >
-      <svg className="w-5 h-5 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+      <svg className="w-4 h-4 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
       </svg>
-      <div className="min-w-0 flex-1">
-        <p className="text-xs text-label truncate">{filename}</p>
-        {sizeStr && <p className="text-[10px] text-dim">{sizeStr}</p>}
-      </div>
+      <span className="text-xs text-label truncate flex-1 min-w-0">{filename}</span>
     </a>
+  );
+}
+
+// --- Grouped doc files card (collapsible list for 2+ doc files) ---
+
+function DocGroupCard({ docs }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="rounded-lg bg-elevated overflow-hidden max-w-[280px]">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-hover transition-colors text-left"
+      >
+        <svg className="w-4 h-4 text-cyan-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+        </svg>
+        <span className="text-xs text-label flex-1 min-w-0">{docs.length} files referenced</span>
+        <svg className={`w-3 h-3 text-dim shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" d="m19 9-7 7-7-7" />
+        </svg>
+      </button>
+      {expanded && (
+        <div className="border-t border-divider max-h-60 overflow-y-auto">
+          {docs.map((att) => {
+            const filename = att.path.split("/").pop();
+            return (
+              <a
+                key={att.path}
+                href={att.resolvedUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-3 py-1.5 hover:bg-hover transition-colors text-left"
+              >
+                <svg className="w-3.5 h-3.5 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+                <span className="text-xs text-label truncate flex-1 min-w-0">{filename}</span>
+                <span className="text-[10px] text-dim uppercase shrink-0">{att.ext}</span>
+              </a>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -226,21 +201,34 @@ function GenericFilePreview({ src, filename, size }) {
 export default function FileAttachments({ attachments }) {
   if (!attachments || attachments.length === 0) return null;
 
+  // Split into media (inline) vs doc/file (groupable)
+  const media = [];
+  const docs = [];
+  const other = [];
+  for (const att of attachments) {
+    if (att.type === "image" || att.type === "video") media.push(att);
+    else if (att.type === "doc") docs.push(att);
+    else other.push(att);
+  }
+
   return (
     <div className="flex flex-col gap-2 mt-1.5">
-      {attachments.map((att) => {
+      {/* Images and videos always render inline */}
+      {media.map((att) => {
         const filename = att.path.split("/").pop();
-        if (att.type === "image") {
-          return <ImagePreview key={att.path} src={att.resolvedUrl} filename={filename} />;
-        }
-        if (att.type === "video") {
-          return <VideoPreview key={att.path} src={att.resolvedUrl} filename={filename} />;
-        }
-        if (att.type === "csv") {
-          return <CsvPreview key={att.path} src={att.resolvedUrl} filename={filename} />;
-        }
-        return <GenericFilePreview key={att.path} src={att.resolvedUrl} filename={filename} size={att.size} />;
+        return att.type === "image"
+          ? <ImagePreview key={att.path} src={att.resolvedUrl} filename={filename} />
+          : <VideoPreview key={att.path} src={att.resolvedUrl} filename={filename} />;
       })}
+      {/* Doc files: single card if 1, grouped card if 2+ */}
+      {docs.length === 1 && (
+        <DocFilePreview src={docs[0].resolvedUrl} filename={docs[0].path.split("/").pop()} ext={docs[0].ext} />
+      )}
+      {docs.length >= 2 && <DocGroupCard docs={docs} />}
+      {/* Generic fallback for non-media, non-doc */}
+      {other.map((att) => (
+        <GenericFilePreview key={att.path} src={att.resolvedUrl} filename={att.path.split("/").pop()} />
+      ))}
     </div>
   );
 }
