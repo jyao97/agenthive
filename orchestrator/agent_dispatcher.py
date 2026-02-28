@@ -3333,37 +3333,9 @@ class AgentDispatcher:
                         )
                         return
 
-                    # If pane is alive but session hasn't grown for a very
-                    # long time (600 polls ≈ 30 min), the pane is likely
-                    # running a different session — stop this agent.
-                    if idle_polls >= 600:
-                        logger.warning(
-                            "Sync loop stopping for agent %s — "
-                            "session file idle for %d polls despite pane alive "
-                            "(pane likely running a different session)",
-                            agent_id, idle_polls,
-                        )
-                        db_stop = SessionLocal()
-                        try:
-                            ag_stop = db_stop.get(Agent, agent_id)
-                            if ag_stop and ag_stop.status == AgentStatus.SYNCING:
-                                ag_stop.status = AgentStatus.STOPPED
-                                ag_stop.tmux_pane = None
-                                sys_msg = Message(
-                                    agent_id=agent_id,
-                                    role=MessageRole.SYSTEM,
-                                    content="Session file inactive too long — agent stopped",
-                                    status=MessageStatus.COMPLETED,
-                                )
-                                db_stop.add(sys_msg)
-                                ag_stop.last_message_at = _utcnow()
-                                db_stop.commit()
-                                self._emit(emit_agent_update(
-                                    agent_id, "STOPPED", ag_stop.project,
-                                ))
-                        finally:
-                            db_stop.close()
-                        return
+                    # Pane is alive — agent stays syncing even if
+                    # the session file hasn't grown.  The user may
+                    # simply be idle in the tmux session.
                 continue
             idle_polls = 0
             pending_push_idle = 0  # File grew — response may still be generating
