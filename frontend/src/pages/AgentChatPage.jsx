@@ -542,8 +542,10 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const [editSchedule, setEditSchedule] = useState("");
+  const [copied, setCopied] = useState(false);
   const [inlineLightbox, setInlineLightbox] = useState(null); // { media, initialIndex }
   const longPressTimer = useRef(null);
+  const lastTapRef = useRef(0);
   const editTextareaRef = useRef(null);
   const markdownRef = useRef(null);
 
@@ -589,10 +591,24 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
     }
+    // Double-tap detection for touch (copy content)
+    if (!canModify) {
+      const now = Date.now();
+      if (now - lastTapRef.current < 350) {
+        handleDoubleClick();
+      }
+      lastTapRef.current = now;
+    }
   };
   const handleDoubleClick = () => {
-    if (!canModify) return;
-    setShowActions(true);
+    if (canModify) {
+      setShowActions(true);
+      return;
+    }
+    navigator.clipboard.writeText(message.content || "").then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
   };
 
   const handleCancel = () => {
@@ -771,6 +787,13 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
             )}
           </div>
         </div>
+        {copied && (
+          <div className="fixed inset-0 flex items-center justify-center pointer-events-none z-[9999]">
+            <div className="bg-black/80 text-white text-sm font-medium px-4 py-2 rounded-xl shadow-lg">
+              Copied
+            </div>
+          </div>
+        )}
         {attachments.length > 0 && <FileAttachments attachments={attachments} />}
         {inlineLightbox && (
           <ImageLightbox
