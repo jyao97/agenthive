@@ -1710,6 +1710,7 @@ def _compute_diff_hunks(current: str, proposed: str) -> tuple[str, list[dict]]:
 class ApplyClaudeMdRequest(BaseModel):
     mode: str  # "accept_all" or "selective"
     accepted_hunk_ids: list[int] = []
+    final_content: str | None = None
 
 
 def _refresh_claudemd_background(project_name: str, project_path: str,
@@ -1733,21 +1734,18 @@ Here is recent agent activity in this project (last 50 messages):
 {recent_agent_activity}
 ---
 
-Also examine:
-- The project file structure (top 3 levels)
-- package.json / pyproject.toml / Makefile / Cargo.toml / setup.py (if they exist) for build/test/lint commands
-- README.md (if exists)
-- Any config files you find relevant
+Also examine package.json / pyproject.toml / Makefile / Cargo.toml / setup.py (if they exist) for build/test/lint commands, and README.md if it exists.
 
 Based on ALL of the above, output a COMPLETE updated CLAUDE.md that:
 - Keeps the universal rules section UNCHANGED (everything above "Project:")
 - Updates "Project-Specific Rules" with useful lessons from PROGRESS.md and agent activity
 - Updates Tech Stack, Top Dirs, Config, Entry, Tests, Build/Test/Lint if you found more accurate info
-- Stays UNDER 50 lines total — be ruthless about brevity
-- Does NOT include full documentation — only rules, key paths, and critical lessons
+- The ENTIRE file must be under 40 lines. Prioritize: key paths > build commands > critical lessons. Drop anything generic
+- Each bullet point must be ONE line, max 100 characters. No multi-line explanations
+- Do NOT repeat information already in the universal rules section
 - Merges duplicate or overlapping lessons into single concise rules
 
-Output ONLY the new CLAUDE.md content, no explanation, no markdown fences. Start with the first line of the file."""
+Start directly with the first line of the file. No preamble, no explanation, no markdown fences."""
 
     from config import CLAUDE_BIN
     try:
@@ -1900,27 +1898,27 @@ async def apply_claudemd(name: str, body: ApplyClaudeMdRequest, db: Session = De
     if body.mode == "accept_all":
         final_content = proposed
     elif body.mode == "selective":
-        # Apply only accepted hunks via SequenceMatcher opcodes.
-        # Each non-equal opcode maps 1:1 to a hunk id (same order as
-        # _compute_diff_hunks produces).
-        accepted_ids = set(body.accepted_hunk_ids)
-        current_lines = current.splitlines(keepends=True)
-        proposed_lines = proposed.splitlines(keepends=True)
+        if body.final_content is not None:
+            # Frontend assembled the final content — just use it
+            final_content = body.final_content
+        else:
+            # Legacy: hunk-level selection via SequenceMatcher opcodes
+            accepted_ids = set(body.accepted_hunk_ids)
+            current_lines = current.splitlines(keepends=True)
+            proposed_lines = proposed.splitlines(keepends=True)
 
-        sm = difflib.SequenceMatcher(None, current_lines, proposed_lines)
-        result_lines = []
-        hunk_idx = 0
-        for tag, i1, i2, j1, j2 in sm.get_opcodes():
-            if tag == "equal":
-                result_lines.extend(current_lines[i1:i2])
-            else:
-                if hunk_idx in accepted_ids:
-                    # Accept: use proposed side
-                    result_lines.extend(proposed_lines[j1:j2])
-                else:
-                    # Reject: keep current side
+            sm = difflib.SequenceMatcher(None, current_lines, proposed_lines)
+            result_lines = []
+            hunk_idx = 0
+            for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                if tag == "equal":
                     result_lines.extend(current_lines[i1:i2])
-                hunk_idx += 1
+                else:
+                    if hunk_idx in accepted_ids:
+                        result_lines.extend(proposed_lines[j1:j2])
+                    else:
+                        result_lines.extend(current_lines[i1:i2])
+                    hunk_idx += 1
 
         final_content = "".join(result_lines)
     else:
