@@ -216,12 +216,16 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
   // POP = browser back / swipe-back → clear memory and stay on list.
   // PUSH/REPLACE = tab click → push detail so back gesture returns to list.
   //
-  // CRITICAL: The push must be deferred via requestAnimationFrame so that
-  // the NavLink replace (tab switch → /projects) commits to browser history
+  // CRITICAL: The push must be deferred to a separate macrotask (setTimeout)
+  // so the NavLink replace (tab → /projects) fully commits to browser history
   // BEFORE the push to /projects/:name.  In React Router v7 + React 19,
-  // a navigate() inside useEffect can supersede a pending replace from the
-  // same render cycle, resulting in /projects never entering the history
-  // stack (swipe-back skips straight to the previous tab).
+  // a navigate() inside useEffect supersedes the pending replace from the
+  // same render cycle — /projects never enters the history stack, and iOS
+  // swipe-back skips straight to the previous tab.
+  //
+  // requestAnimationFrame is NOT sufficient: it fires before the next paint
+  // but still within the same frame, so React Router can still batch them.
+  // setTimeout(fn, 0) creates a true macrotask boundary.
   useEffect(() => {
     if (navType === "POP") {
       localStorage.removeItem("lastViewed:projects");
@@ -230,11 +234,11 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     }
     const last = localStorage.getItem("lastViewed:projects");
     if (last) {
-      // Defer push to next animation frame so the /projects replace commits first
-      const id = requestAnimationFrame(() => {
+      setAutoNavigating(true);
+      const id = setTimeout(() => {
         navigate(`/projects/${encodeURIComponent(last)}`);
-      });
-      return () => cancelAnimationFrame(id);
+      }, 0);
+      return () => clearTimeout(id);
     }
     setAutoNavigating(false);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
