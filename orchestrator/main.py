@@ -1757,9 +1757,8 @@ Start directly with the first line of the file. No preamble, no explanation, no 
     from config import CLAUDE_BIN
     try:
         result = subprocess.run(
-            [CLAUDE_BIN, "-p", prompt, "--output-format", "text",
-             "--allowedTools", ""],
-            capture_output=True, text=True, timeout=60,
+            [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
+            capture_output=True, text=True, timeout=180,
             cwd=project_path,
         )
         if result.returncode != 0:
@@ -1768,7 +1767,7 @@ Start directly with the first line of the file. No preamble, no explanation, no 
             return
         proposed = result.stdout.strip()
     except subprocess.TimeoutExpired:
-        _claudemd_job_set(project_name, status="error", error="Claude agent timed out (>60s) — try again")
+        _claudemd_job_set(project_name, status="error", error="Claude agent timed out (>180s) — try again")
         return
     except FileNotFoundError:
         _claudemd_job_set(project_name, status="error", error="Claude CLI not found")
