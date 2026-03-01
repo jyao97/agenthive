@@ -1715,8 +1715,17 @@ class ApplyClaudeMdRequest(BaseModel):
 
 def _refresh_claudemd_background(project_name: str, project_path: str,
                                   recent_agent_activity: str,
-                                  current_claudemd: str, progress_md: str):
+                                  current_claudemd: str, progress_md: str,
+                                  build_files_content: str = ""):
     """Run claude -p in a thread and store result in _claudemd_jobs."""
+    build_section = ""
+    if build_files_content:
+        build_section = f"""
+Here are project config/build files:
+{build_files_content}
+---
+"""
+
     prompt = f"""You are updating this project's CLAUDE.md based on accumulated knowledge.
 
 Here is the current CLAUDE.md:
@@ -1733,9 +1742,7 @@ Here is recent agent activity in this project (last 50 messages):
 ---
 {recent_agent_activity}
 ---
-
-Also examine package.json / pyproject.toml / Makefile / Cargo.toml / setup.py (if they exist) for build/test/lint commands, and README.md if it exists.
-
+{build_section}
 Based on ALL of the above, output a COMPLETE updated CLAUDE.md that:
 - Keeps the universal rules section UNCHANGED (everything above "Project:")
 - Updates "Project-Specific Rules" with useful lessons from PROGRESS.md and agent activity
@@ -1750,8 +1757,9 @@ Start directly with the first line of the file. No preamble, no explanation, no 
     from config import CLAUDE_BIN
     try:
         result = subprocess.run(
-            [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
-            capture_output=True, text=True, timeout=180,
+            [CLAUDE_BIN, "-p", prompt, "--output-format", "text",
+             "--allowedTools", ""],
+            capture_output=True, text=True, timeout=60,
             cwd=project_path,
         )
         if result.returncode != 0:
@@ -1760,7 +1768,7 @@ Start directly with the first line of the file. No preamble, no explanation, no 
             return
         proposed = result.stdout.strip()
     except subprocess.TimeoutExpired:
-        _claudemd_job_set(project_name, status="error", error="Claude agent timed out (>180s) — try again")
+        _claudemd_job_set(project_name, status="error", error="Claude agent timed out (>60s) — try again")
         return
     except FileNotFoundError:
         _claudemd_job_set(project_name, status="error", error="Claude CLI not found")
@@ -1837,11 +1845,25 @@ async def refresh_claudemd(name: str, db: Session = Depends(get_db)):
         with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
             progress_md = f.read()
 
+    # Pre-read build/config files so the agent doesn't need tool access
+    build_files_content = ""
+    for fname in ("package.json", "pyproject.toml", "Makefile", "Cargo.toml",
+                  "setup.py", "README.md"):
+        fpath = os.path.join(project_path, fname)
+        if os.path.isfile(fpath):
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(4000)  # cap per file
+                build_files_content += f"\n--- {fname} ---\n{text}\n"
+            except Exception:
+                pass
+
     # Mark as running and spawn background thread
     _claudemd_job_set(name, status="running")
     thread = threading.Thread(
         target=_refresh_claudemd_background,
-        args=(name, project_path, recent_agent_activity, current_claudemd, progress_md),
+        args=(name, project_path, recent_agent_activity, current_claudemd,
+              progress_md, build_files_content),
         daemon=True,
     )
     thread.start()
