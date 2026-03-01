@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, memo } from "react";
 import { useNavigate, useNavigationType } from "react-router-dom";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
@@ -49,7 +49,7 @@ function SortableFolderCard(props) {
   );
 }
 
-function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandleProps }) {
+const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandleProps }) {
   const state = botState(folder);
 
   return (
@@ -131,7 +131,7 @@ function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandlePr
       </div>
     </button>
   );
-}
+});
 
 const SORT_OPTIONS = [
   { value: "custom", label: "Custom" },
@@ -143,6 +143,7 @@ const SORT_OPTIONS = [
 
 export default function ProjectsPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
+  const navType = useNavigationType();
   const [folders, setFolders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -204,27 +205,15 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     return () => clearInterval(interval);
   }, [load]);
 
-  // Auto-navigate to last-viewed project on tab switch / initial load.
-  // Skip if user swiped back (POP) or tapped back button (returnedFrom flag).
-  const navType = useNavigationType();
-  const didAutoNav = useRef(false);
+  // Auto-navigate to last-viewed project on tab switch.
+  // POP = browser back / swipe-back → stay on list. PUSH/REPLACE = tab click → restore.
   useEffect(() => {
-    if (didAutoNav.current || loading || folders.length === 0) return;
-    didAutoNav.current = true;
-    // Back button sets this flag explicitly
-    if (sessionStorage.getItem("returnedFrom:projects")) {
-      sessionStorage.removeItem("returnedFrom:projects");
-      localStorage.removeItem("lastViewed:projects");
-      return;
-    }
-    // Swipe-back = POP navigation; skip auto-nav but keep lastViewed
-    // (POP on fresh page load has no lastViewed yet, so it's harmless)
     if (navType === "POP") return;
     const last = localStorage.getItem("lastViewed:projects");
-    if (last && folders.some((f) => f.name === last && f.active)) {
+    if (last) {
       navigate(`/projects/${encodeURIComponent(last)}`, { replace: true });
     }
-  }, [loading, folders, navigate, navType]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync customOrder when folders load — append any new projects
   useEffect(() => {

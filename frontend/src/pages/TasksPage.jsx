@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { fetchTasks } from "../lib/api";
 import { STATUS_TABS, POLL_INTERVAL } from "../lib/constants";
 import TaskCard from "../components/TaskCard";
@@ -46,17 +46,20 @@ export default function TasksPage({ theme, onToggleTheme }) {
   ).length;
 
   // Filtered list
-  const filtered =
+  const filtered = useMemo(() =>
     activeTab === "ALL"
       ? tasks
       : activeTab === "FAILED"
         ? tasks.filter((t) => ["FAILED", "TIMEOUT", "CANCELLED"].includes(t.status))
-        : tasks.filter((t) => t.status === activeTab);
+        : tasks.filter((t) => t.status === activeTab),
+    [tasks, activeTab]);
 
   // Sort: newest first by created_at
-  const sorted = [...filtered].sort((a, b) =>
-    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-  );
+  const sorted = useMemo(() =>
+    [...filtered].sort((a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    ),
+    [filtered]);
 
   return (
     <div className="h-full flex flex-col">

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchAgents, stopAgent, deleteAgent, scanAgents, searchMessages, markAgentRead } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
@@ -8,6 +8,7 @@ import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
 import useWebSocket from "../hooks/useWebSocket";
+import usePageVisible from "../hooks/usePageVisible";
 
 const FILTER_TABS = [
   { key: "ALL", label: "All" },
@@ -24,7 +25,7 @@ function agentBotState(status) {
   return "idle";
 }
 
-function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }) {
+const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }) {
   const state = agentBotState(agent.status);
   const statusDotColor = AGENT_STATUS_COLORS[agent.status] || "bg-gray-500";
   const statusTextColor = AGENT_STATUS_TEXT_COLORS[agent.status] || "text-dim";
@@ -117,7 +118,7 @@ function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }
       </div>
     </button>
   );
-}
+});
 
 export default function AgentsPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
@@ -244,26 +245,29 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     return () => clearInterval(pollRef.current);
   }, [load]);
 
-  const statusFiltered =
+  const statusFiltered = useMemo(() =>
     filter === "ALL"
       ? agents
       : filter === "SYNCING"
         ? agents.filter((a) => a.status === "SYNCING")
         : filter === "ACTIVE"
           ? agents.filter((a) => a.status !== "STOPPED" && a.status !== "SYNCING")
-          : agents.filter((a) => a.status === "STOPPED");
+          : agents.filter((a) => a.status === "STOPPED"),
+    [agents, filter]);
 
-  const filtered = search.trim()
-    ? statusFiltered.filter((a) => {
-        const q = search.toLowerCase();
-        return (
-          a.id?.toLowerCase().includes(q) ||
-          a.name?.toLowerCase().includes(q) ||
-          a.project?.toLowerCase().includes(q) ||
-          a.last_message_preview?.toLowerCase().includes(q)
-        );
-      })
-    : statusFiltered;
+  const filtered = useMemo(() =>
+    search.trim()
+      ? statusFiltered.filter((a) => {
+          const q = search.toLowerCase();
+          return (
+            a.id?.toLowerCase().includes(q) ||
+            a.name?.toLowerCase().includes(q) ||
+            a.project?.toLowerCase().includes(q) ||
+            a.last_message_preview?.toLowerCase().includes(q)
+          );
+        })
+      : statusFiltered,
+    [statusFiltered, search]);
 
   const enterSelectMode = () => {
     setSelecting(true);
