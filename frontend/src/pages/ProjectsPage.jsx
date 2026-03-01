@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useNavigate, useNavigationType } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -204,26 +204,22 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     return () => clearInterval(interval);
   }, [load]);
 
-  // Auto-navigate to last-viewed project on tab switch or initial load.
-  // Skip on browser back (POP) to avoid redirect loop after swipe-back.
-  const navType = useNavigationType();
+  // Auto-navigate to last-viewed project on tab switch / initial load.
+  // Skip if user just swiped back from detail (returnedFrom flag).
   const didAutoNav = useRef(false);
   useEffect(() => {
     if (didAutoNav.current || loading || folders.length === 0) return;
     didAutoNav.current = true;
-    // POP = browser back/forward OR initial load.
-    // If autoNavDone flag exists, this is a back-from-detail — skip.
-    // If no flag, this is initial load — allow auto-nav.
-    if (navType === "POP" && sessionStorage.getItem("autoNavDone:projects")) {
-      sessionStorage.removeItem("autoNavDone:projects");
+    if (sessionStorage.getItem("returnedFrom:projects")) {
+      sessionStorage.removeItem("returnedFrom:projects");
+      localStorage.removeItem("lastViewed:projects");
       return;
     }
     const last = localStorage.getItem("lastViewed:projects");
     if (last && folders.some((f) => f.name === last && f.active)) {
-      sessionStorage.setItem("autoNavDone:projects", "1");
-      navigate(`/projects/${encodeURIComponent(last)}`);
+      navigate(`/projects/${encodeURIComponent(last)}`, { replace: true });
     }
-  }, [loading, folders, navigate, navType]);
+  }, [loading, folders, navigate]);
 
   // Sync customOrder when folders load — append any new projects
   useEffect(() => {

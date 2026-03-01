@@ -355,6 +355,9 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   // Remember last-viewed project so ProjectsPage can auto-navigate back
   useEffect(() => {
     if (name) localStorage.setItem("lastViewed:projects", name);
+    return () => {
+      sessionStorage.setItem("returnedFrom:projects", "true");
+    };
   }, [name]);
 
   const [project, setProject] = useState(null);

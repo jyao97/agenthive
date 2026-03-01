@@ -1294,12 +1294,6 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 export default function AgentChatPage({ theme, onToggleTheme }) {
   const { id } = useParams();
   const navigate = useNavigate();
-
-  // Remember last-viewed agent so AgentsPage can auto-navigate back
-  useEffect(() => {
-    if (id) localStorage.setItem("lastViewed:agents", id);
-  }, [id]);
-
   const [agent, setAgent] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1781,7 +1775,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => { localStorage.removeItem("lastViewed:agents"); navigate("/agents"); }}
+              onClick={() => navigate("/agents")}
               className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
             >
               <svg className="w-5 h-5 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

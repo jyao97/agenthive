@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate, useNavigationType } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { fetchAgents, stopAgent, deleteAgent, scanAgents, searchMessages, markAgentRead } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, POLL_INTERVAL, modelDisplayName } from "../lib/constants";
@@ -173,23 +173,6 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   useEffect(() => {
     return () => Object.values(streamTimers.current).forEach(clearTimeout);
   }, []);
-
-  // Auto-navigate to last-viewed agent on tab switch or initial load
-  const navType = useNavigationType();
-  const didAutoNav = useRef(false);
-  useEffect(() => {
-    if (didAutoNav.current || loading) return;
-    didAutoNav.current = true;
-    if (navType === "POP" && sessionStorage.getItem("autoNavDone:agents")) {
-      sessionStorage.removeItem("autoNavDone:agents");
-      return;
-    }
-    const last = localStorage.getItem("lastViewed:agents");
-    if (last && agents.some((a) => a.id === last)) {
-      sessionStorage.setItem("autoNavDone:agents", "1");
-      navigate(`/agents/${encodeURIComponent(last)}`);
-    }
-  }, [loading, agents, navigate, navType]);
 
   // Multi-select state
   const [selecting, setSelecting] = useState(false);
