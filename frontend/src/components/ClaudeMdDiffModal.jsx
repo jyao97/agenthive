@@ -20,7 +20,7 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
           lineIdx: i,
           type: l.type,
           content: l.content,
-          checked: l.type !== "context",
+          checked: l.type === "added",
           edited: false,
           editValue: l.content,
         });
@@ -160,7 +160,7 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
   // ── No changes needed ──
   if (message && hunks.length === 0 && !is_new) {
     return (
-      <div className="fixed inset-0 z-50 flex flex-col bg-page">
+      <div className="fixed inset-0 z-50 flex flex-col bg-page" style={{ paddingTop: "env(safe-area-inset-top, 44px)" }}>
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-divider">
           <h2 className="text-base font-bold text-heading">Proposed CLAUDE.md Updates</h2>
           <button onClick={onClose} className="text-dim hover:text-heading text-xl leading-none">&times;</button>
@@ -180,7 +180,7 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
   // ── New file — show full preview ──
   if (is_new) {
     return (
-      <div className="fixed inset-0 z-50 flex flex-col bg-page">
+      <div className="fixed inset-0 z-50 flex flex-col bg-page" style={{ paddingTop: "env(safe-area-inset-top, 44px)" }}>
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-divider">
           <h2 className="text-base font-bold text-heading">New CLAUDE.md</h2>
           <button onClick={onClose} className="text-dim hover:text-heading text-xl leading-none">&times;</button>
@@ -207,7 +207,7 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
 
   // ── Diff review with per-line controls ──
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-page">
+    <div className="fixed inset-0 z-50 flex flex-col bg-page" style={{ paddingTop: "env(safe-area-inset-top, 44px)" }}>
       {/* Title bar */}
       <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-divider">
         <h2 className="text-base font-bold text-heading">Proposed CLAUDE.md Updates</h2>
@@ -220,7 +220,11 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
 
       {/* Sticky action bar */}
       <div className="shrink-0 border-b border-divider bg-surface sticky top-0 z-10">
-        <div className="flex items-center gap-3 px-4 py-3">
+        {/* Summary line */}
+        <div className="px-4 pt-2 pb-1 text-xs text-dim">
+          <span className="text-green-500">{addCount} addition{addCount !== 1 ? "s" : ""}</span>, <span className="text-red-400">{removeCount} removal{removeCount !== 1 ? "s" : ""}</span>
+        </div>
+        <div className="flex items-center gap-3 px-4 pb-3">
           <button
             disabled={applying}
             onClick={handleAcceptAll}
@@ -238,10 +242,6 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
           <button onClick={onClose} className="px-4 py-2 text-dim hover:text-body text-sm transition-colors">
             Discard All
           </button>
-        </div>
-        {/* Summary line */}
-        <div className="px-4 pb-2 text-xs text-dim">
-          {addCount} addition{addCount !== 1 ? "s" : ""}, {removeCount} removal{removeCount !== 1 ? "s" : ""} across {hunks.length} hunk{hunks.length !== 1 ? "s" : ""}
         </div>
       </div>
 
@@ -309,7 +309,7 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
                 return (
                   <div
                     key={fl.key}
-                    className={`flex items-center gap-0 px-3 py-1 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${rowClass} ${dimClass}`}
+                    className={`flex items-start gap-0 px-3 py-1 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${rowClass} ${dimClass}`}
                   >
                     {/* Checkbox column */}
                     <div className="w-7 shrink-0 flex items-center justify-center">
@@ -341,14 +341,17 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
                         className="flex-1 min-w-0 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 outline-none text-sm font-mono py-0.5 px-2 border border-blue-400 dark:border-blue-400 rounded"
                       />
                     ) : (
+                      !fl.content && !fl.editValue ? (
+                        <span className="flex-1 h-2" />
+                      ) : (
                       <span
-                        className={`flex-1 min-w-0 py-0.5 px-1 truncate ${canEdit ? "cursor-pointer" : ""} ${fl.type === "removed" ? "line-through" : ""}`}
+                        className={`flex-1 min-w-0 py-0.5 px-1 whitespace-pre-wrap break-words text-xs ${canEdit ? "cursor-pointer" : ""} ${fl.type === "removed" ? "line-through" : ""}`}
                         onClick={canEdit ? () => startEdit(fl.key) : undefined}
                         title={canEdit ? "Click to edit" : undefined}
                       >
                         {fl.edited ? fl.editValue : fl.content}
-                        {!fl.content && !fl.editValue && <span className="text-dim italic">empty line</span>}
                       </span>
+                      )
                     )}
                   </div>
                 );

@@ -176,6 +176,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await refresh();
+    // Minimum 400ms spinner display to prevent jarring sub-frame flicker
     setTimeout(() => setRefreshing(false), 400);
   }, [refresh]);
 
