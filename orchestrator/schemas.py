@@ -134,6 +134,11 @@ class MessageOut(BaseModel):
         return v
 
 
+class PaginatedMessages(BaseModel):
+    messages: list[MessageOut]
+    has_more: bool
+
+
 class MessageSearchResult(BaseModel):
     message_id: str
     agent_id: str

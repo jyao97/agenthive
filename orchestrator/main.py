@@ -47,6 +47,7 @@ from schemas import (
     HealthResponse,
     MessageOut,
     MessageSearchResponse,
+    PaginatedMessages,
     MessageSearchResult,
     ProjectCreate,
     ProjectOut,
@@ -1229,7 +1230,12 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
     from models import Task
     db.execute(update(Task).where(Task.project == name).values(project=new_name))
 
-    db.commit()
+    ghost = db.execute(text("SELECT name FROM projects WHERE name = :old"), {"old": name}).fetchone()
+    if ghost:
+        db.execute(text("DELETE FROM projects WHERE name = :old"), {"old": name})
+
+    db.flush()
+    db.expire_all()
 
     new_proj = db.get(Project, new_name)
 
@@ -1256,12 +1262,13 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
         if not os.path.exists(new_path):
             try:
                 os.rename(old_path, new_path)
-                new_proj.path = new_path
-                db.commit()
                 logger.info("Renamed project directory %s → %s", old_path, new_path)
             except OSError:
                 logger.warning("Failed to rename project directory %s → %s", old_path, new_path)
                 new_path = old_path  # rename failed, keep old path
+
+    new_proj.path = new_path
+    db.commit()
 
     # --- Migrate Claude session directory and session cache ---
     # When the project path changes, the encoded directory name changes too.
@@ -1362,12 +1369,19 @@ async def delete_project(name: str, request: Request, db: Session = Depends(get_
     """Delete a project — unregisters and moves files to .trash. Works even if not registered."""
     _validate_folder_name(name)
     import shutil
+    from models import Task
 
     proj = db.get(Project, name)
 
     # If registered, clean up DB resources
     if proj:
         _check_no_active_agents(name, db)
+        agent_ids = [a.id for a in db.query(Agent.id).filter(Agent.project == name).all()]
+        if agent_ids:
+            db.query(Message).filter(Message.agent_id.in_(agent_ids)).delete(synchronize_session=False)
+        db.query(Agent).filter(Agent.project == name).delete(synchronize_session=False)
+        db.query(Task).filter(Task.project == name).delete(synchronize_session=False)
+        db.query(StarredSession).filter(StarredSession.project == name).delete(synchronize_session=False)
         db.delete(proj)
         db.commit()
         _remove_from_registry(name)
@@ -1768,7 +1782,7 @@ Here is recent agent activity in this project (last 50 messages):
     try:
         result = subprocess.run(
             [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=600,
             cwd=project_path,
         )
         if result.returncode != 0:
@@ -1787,7 +1801,7 @@ Here is recent agent activity in this project (last 50 messages):
             # Looks like prose preamble — skip it
         proposed = "\n".join(out_lines[start:])
     except subprocess.TimeoutExpired:
-        _claudemd_job_set(project_name, status="error", error="Claude agent timed out (>180s) — try again")
+        _claudemd_job_set(project_name, status="error", error="Claude agent timed out (>10min) — try again")
         return
     except FileNotFoundError:
         _claudemd_job_set(project_name, status="error", error="Claude CLI not found")
@@ -1961,7 +1975,7 @@ async def apply_claudemd(name: str, body: ApplyClaudeMdRequest, db: Session = De
                         result_lines.extend(current_lines[i1:i2])
                     hunk_idx += 1
 
-        final_content = "".join(result_lines)
+            final_content = "".join(result_lines)
     else:
         raise HTTPException(status_code=400, detail="mode must be 'accept_all' or 'selective'")
 
@@ -3317,31 +3331,60 @@ async def update_agent(agent_id: str, request: Request, db: Session = Depends(ge
     return agent
 
 
-@app.get("/api/agents/{agent_id}/messages", response_model=list[MessageOut])
+@app.get("/api/agents/{agent_id}/messages", response_model=PaginatedMessages)
 async def get_agent_messages(
     agent_id: str,
-    limit: int = 100,
+    limit: int = 50,
+    before: str | None = None,
+    after: str | None = None,
     db: Session = Depends(get_db),
 ):
-    """Get conversation messages for an agent (oldest first). Resets unread count."""
+    """Get conversation messages for an agent with cursor pagination.
+
+    - No cursor (initial load): newest `limit` messages, oldest-first.
+    - `before=<ISO datetime>`: messages older than cursor (scroll-up).
+    - `after=<ISO datetime>`: messages newer than cursor (incremental refresh).
+    Returns { messages: [...], has_more: bool }.
+    """
     agent = db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    messages = (
-        db.query(Message)
-        .filter(Message.agent_id == agent_id)
-        .order_by(Message.created_at.asc())
-        .limit(limit)
-        .all()
-    )
+    query = db.query(Message).filter(Message.agent_id == agent_id)
 
-    # Reset unread count
-    if agent.unread_count > 0:
-        agent.unread_count = 0
-        db.commit()
+    if before:
+        cursor_dt = datetime.fromisoformat(before)
+        rows = (
+            query.filter(Message.created_at < cursor_dt)
+            .order_by(Message.created_at.desc())
+            .limit(limit + 1)
+            .all()
+        )
+        has_more = len(rows) > limit
+        messages = rows[:limit][::-1]
+    elif after:
+        cursor_dt = datetime.fromisoformat(after)
+        messages = (
+            query.filter(Message.created_at > cursor_dt)
+            .order_by(Message.created_at.asc())
+            .all()
+        )
+        has_more = False  # always returns everything newer
+    else:
+        # Default: newest `limit` messages
+        rows = (
+            query.order_by(Message.created_at.desc())
+            .limit(limit + 1)
+            .all()
+        )
+        has_more = len(rows) > limit
+        messages = rows[:limit][::-1]
+        # Reset unread count only on initial load
+        if agent.unread_count > 0:
+            agent.unread_count = 0
+            db.commit()
 
-    return messages
+    return PaginatedMessages(messages=messages, has_more=has_more)
 
 
 @app.post("/api/agents/{agent_id}/messages", response_model=MessageOut, status_code=201)
@@ -3796,7 +3839,7 @@ async def git_log(project: str, limit: int = 30, request: Request = None, db: Se
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    return gm.get_log(project, limit=limit)
+    return gm.get_log(proj.path, limit=limit)
 
 
 @app.get("/api/git/{project}/status")
@@ -3808,7 +3851,7 @@ async def git_status(project: str, request: Request, db: Session = Depends(get_d
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    return gm.get_status(project)
+    return gm.get_status(proj.path)
 
 
 @app.get("/api/git/{project}/branches")
@@ -3820,7 +3863,7 @@ async def git_branches(project: str, request: Request, db: Session = Depends(get
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    return gm.get_branches(project)
+    return gm.get_branches(proj.path)
 
 
 @app.get("/api/git/{project}/worktrees")
@@ -3832,10 +3875,10 @@ async def git_worktrees(project: str, request: Request, db: Session = Depends(ge
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    return gm.get_worktrees(project)
+    return gm.get_worktrees(proj.path)
 
 
-@app.post("/api/git/{project}/merge/{branch}")
+@app.post("/api/git/{project}/merge/{branch:path}")
 async def git_merge(project: str, branch: str, request: Request, db: Session = Depends(get_db)):
     """Merge a branch into the current branch for a project."""
     proj = db.get(Project, project)
@@ -3844,7 +3887,7 @@ async def git_merge(project: str, branch: str, request: Request, db: Session = D
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    result = gm.merge_branch(project, branch)
+    result = gm.merge_branch(proj.path, branch)
     if not result.get("success"):
         raise HTTPException(status_code=409, detail=result)
     return result
