@@ -122,6 +122,7 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
 
 export default function AgentsPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
+  const visible = usePageVisible();
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -240,10 +241,11 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   }, [load]);
 
   useEffect(() => {
+    if (!visible) return;
     load();
     pollRef.current = setInterval(load, POLL_INTERVAL);
     return () => clearInterval(pollRef.current);
-  }, [load]);
+  }, [load, visible]);
 
   const statusFiltered = useMemo(() =>
     filter === "ALL"
@@ -297,6 +299,13 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   };
 
   const allSelected = filtered.length > 0 && selected.size === filtered.length;
+
+  const filterCounts = useMemo(() => ({
+    ALL: agents.length,
+    SYNCING: agents.filter(a => a.status === "SYNCING").length,
+    ACTIVE: agents.filter(a => a.status !== "STOPPED" && a.status !== "SYNCING").length,
+    STOPPED: agents.filter(a => a.status === "STOPPED").length,
+  }), [agents]);
 
   // Count how many selected agents are stoppable (not already stopped)
   const stoppableSelected = filtered.filter(
@@ -433,12 +442,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
             tabs={FILTER_TABS}
             active={filter}
             onChange={setFilter}
-            counts={{
-              ALL: agents.length,
-              SYNCING: agents.filter(a => a.status === "SYNCING").length,
-              ACTIVE: agents.filter(a => a.status !== "STOPPED" && a.status !== "SYNCING").length,
-              STOPPED: agents.filter(a => a.status === "STOPPED").length,
-            }}
+            counts={filterCounts}
           />
         ) : (
           <div className="flex items-center justify-between px-4 pb-2">

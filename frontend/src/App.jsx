@@ -16,6 +16,7 @@ import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchUnreadCount, fetchClaudeMdPending, getAuthToken } from "./lib/api";
 import { isPushSupported, setupPushNotifications } from "./lib/pushNotifications";
 import useIdleLock from "./hooks/useIdleLock";
+import usePageVisible from "./hooks/usePageVisible";
 
 const tabs = [
   {
@@ -181,23 +182,24 @@ export default function App() {
   const hideNav = location.pathname.match(/^\/agents\/[^/]+$/) || location.pathname === "/login";
   const [unread, setUnread] = useState(0);
   const [claudeMdPending, setClaudeMdPending] = useState(0);
+  const visible = usePageVisible();
 
   useEffect(() => {
     // Only poll unread when not on login page and has a token
-    if (location.pathname === "/login" || !getAuthToken()) return;
+    if (!visible || location.pathname === "/login" || !getAuthToken()) return;
     const poll = () => fetchUnreadCount().then((r) => setUnread(r.unread)).catch(() => {});
     poll();
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
-  }, [location.pathname]);
+  }, [location.pathname, visible]);
 
   useEffect(() => {
-    if (location.pathname === "/login" || !getAuthToken()) return;
+    if (!visible || location.pathname === "/login" || !getAuthToken()) return;
     const poll = () => fetchClaudeMdPending().then((r) => setClaudeMdPending(r.count || 0)).catch(() => {});
     poll();
     const id = setInterval(poll, 30000);
     return () => clearInterval(id);
-  }, [location.pathname]);
+  }, [location.pathname, visible]);
 
   // Safari iOS: after keyboard dismiss the visual viewport desyncs from
   // the layout viewport.  The ONLY thing that fixes it is an actual

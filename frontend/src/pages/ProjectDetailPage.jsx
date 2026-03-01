@@ -34,6 +34,7 @@ import ProjectFileModal from "../components/ProjectFileModal";
 import ProjectBrowserModal from "../components/ProjectBrowserModal";
 import ClaudeMdDiffModal from "../components/ClaudeMdDiffModal";
 import useWebSocket from "../hooks/useWebSocket";
+import usePageVisible from "../hooks/usePageVisible";
 
 const AGENT_TABS = [
   { key: "starred", label: "Starred" },
@@ -351,6 +352,7 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
 export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const { name } = useParams();
   const navigate = useNavigate();
+  const visible = usePageVisible();
 
   // Remember last-viewed project so ProjectsPage can auto-navigate back
   useEffect(() => {
@@ -619,10 +621,11 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   }, [name, showToast]);
 
   useEffect(() => {
+    if (!visible) return;
     loadData();
     const interval = setInterval(loadData, 5000);
     return () => clearInterval(interval);
-  }, [loadData]);
+  }, [loadData, visible]);
 
   // Check CLAUDE.md / PROGRESS.md existence
   useEffect(() => {
@@ -889,7 +892,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         <div className="max-w-2xl mx-auto">
           <button
             type="button"
-            onClick={() => { sessionStorage.setItem("returnedFrom:projects", "true"); localStorage.removeItem("lastViewed:projects"); navigate("/projects"); }}
+            onClick={() => { localStorage.removeItem("lastViewed:projects"); navigate("/projects"); }}
             className="flex items-center gap-1 text-sm text-label hover:text-heading mb-2"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

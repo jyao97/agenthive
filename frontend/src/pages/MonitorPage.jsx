@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
+import usePageVisible from "../hooks/usePageVisible";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS } from "../lib/constants";
 import {
   fetchHealth as apiFetchHealth,
@@ -166,6 +167,7 @@ function StorageChart({ data }) {
 
 export default function MonitorPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
+  const visible = usePageVisible();
   const [health, setHealth] = useState(null);
   const [healthError, setHealthError] = useState(false);
   const [agents, setAgents] = useState([]);
@@ -236,32 +238,36 @@ export default function MonitorPage({ theme, onToggleTheme }) {
   }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats, fetchUsage, fetchStorage]);
 
   useEffect(() => {
-    const interval = setInterval(() => { fetchAgents(); fetchProcesses(); fetchSysStats(); }, 3000);
+    if (!visible) return;
+    const interval = setInterval(() => { fetchAgents(); fetchProcesses(); fetchSysStats(); }, 5000);
     return () => clearInterval(interval);
-  }, [fetchAgents, fetchProcesses, fetchSysStats]);
+  }, [fetchAgents, fetchProcesses, fetchSysStats, visible]);
 
   // Token usage polls less frequently (every 30s) since it hits an external API
   useEffect(() => {
+    if (!visible) return;
     const interval = setInterval(fetchUsage, 30000);
     return () => clearInterval(interval);
-  }, [fetchUsage]);
+  }, [fetchUsage, visible]);
 
   // Storage stats poll every 30s (storage changes slowly)
   useEffect(() => {
+    if (!visible) return;
     const interval = setInterval(fetchStorage, 30000);
     return () => clearInterval(interval);
-  }, [fetchStorage]);
+  }, [fetchStorage, visible]);
 
   useEffect(() => {
+    if (!visible) return;
     const interval = setInterval(fetchHealth, 10000);
     return () => clearInterval(interval);
-  }, [fetchHealth]);
+  }, [fetchHealth, visible]);
 
   return (
     <div className="h-full flex flex-col">
       <PageHeader title="Monitor" theme={theme} onToggleTheme={onToggleTheme}>
         <div className="px-4 pb-2 flex items-center justify-between">
-          <span className="text-xs text-faint">Auto-refreshing every 3s</span>
+          <span className="text-xs text-faint">Auto-refreshing every 5s</span>
           <button
             type="button"
             onClick={handleRefresh}

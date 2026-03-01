@@ -49,6 +49,7 @@ import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import useWebSocket, { isAgentMuted, setAgentMuted, clearAgentNotified } from "../hooks/useWebSocket";
 import useHealthStatus from "../hooks/useHealthStatus";
+import usePageVisible from "../hooks/usePageVisible";
 
 // --- Chat Bubble ---
 
@@ -1294,6 +1295,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 export default function AgentChatPage({ theme, onToggleTheme }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const visible = usePageVisible();
   const [agent, setAgent] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1364,13 +1366,14 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     return () => abortRef.current?.abort();
   }, [loadData, id]);
 
-  // Polling — faster when executing
+  // Polling — faster when executing, pauses when page hidden
   useEffect(() => {
+    if (!visible) return;
     const isActive = agent?.status === "EXECUTING" || agent?.status === "SYNCING";
     const interval = isActive ? 3000 : 10000;
     const timer = setInterval(loadData, interval);
     return () => clearInterval(timer);
-  }, [loadData, agent?.status]);
+  }, [loadData, agent?.status, visible]);
 
   // Mark as read on mount and when new messages arrive
   useEffect(() => {

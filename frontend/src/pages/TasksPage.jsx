@@ -6,6 +6,7 @@ import TaskDetail from "../components/TaskDetail";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
+import usePageVisible from "../hooks/usePageVisible";
 
 export default function TasksPage({ theme, onToggleTheme }) {
   const [tasks, setTasks] = useState([]);
@@ -14,6 +15,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
   const [activeTab, setActiveTab] = useDraft("ui:tasks:filter", "ALL");
   const [expandedId, setExpandedId] = useState(null);
   const pollRef = useRef(null);
+  const visible = usePageVisible();
 
   const load = useCallback(async () => {
     try {
@@ -28,10 +30,11 @@ export default function TasksPage({ theme, onToggleTheme }) {
   }, []);
 
   useEffect(() => {
+    if (!visible) return;
     load();
     pollRef.current = setInterval(load, POLL_INTERVAL);
     return () => clearInterval(pollRef.current);
-  }, [load]);
+  }, [load, visible]);
 
   // Compute counts per status
   const counts = {};

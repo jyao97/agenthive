@@ -9,6 +9,7 @@ import BotIcon from "../components/BotIcon";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
+import usePageVisible from "../hooks/usePageVisible";
 
 function botState(folder) {
   if (!folder.active) return "idle";
@@ -144,6 +145,7 @@ const SORT_OPTIONS = [
 export default function ProjectsPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
   const navType = useNavigationType();
+  const visible = usePageVisible();
   const [folders, setFolders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -200,10 +202,11 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
   };
 
   useEffect(() => {
+    if (!visible) return;
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);
-  }, [load]);
+  }, [load, visible]);
 
   // Auto-navigate to last-viewed project on tab switch.
   // POP = browser back / swipe-back → stay on list. PUSH/REPLACE = tab click → restore.
