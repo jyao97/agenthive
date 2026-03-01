@@ -160,6 +160,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     catch { return []; }
   });
   const [activeDragId, setActiveDragId] = useState(null);
+  const [autoNavigating, setAutoNavigating] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -209,12 +210,17 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
   }, [load, visible]);
 
   // Auto-navigate to last-viewed project on tab switch.
-  // POP = browser back / swipe-back → stay on list. PUSH/REPLACE = tab click → restore.
+  // POP = browser back / swipe-back → clear memory and stay on list.
+  // PUSH/REPLACE = tab click → push detail so back gesture returns to list.
   useEffect(() => {
-    if (navType === "POP") return;
+    if (navType === "POP") {
+      localStorage.removeItem("lastViewed:projects");
+      return;
+    }
     const last = localStorage.getItem("lastViewed:projects");
     if (last) {
-      navigate(`/projects/${encodeURIComponent(last)}`, { replace: true });
+      setAutoNavigating(true);
+      navigate(`/projects/${encodeURIComponent(last)}`); // push, not replace
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -344,6 +350,9 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
       ))}
     </select>
   );
+
+  // Prevent flash of list page while auto-navigating to remembered project
+  if (autoNavigating) return null;
 
   return (
     <div className="h-full flex flex-col">

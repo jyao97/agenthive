@@ -283,6 +283,7 @@ export default function App() {
                 <NavLink
                   key={tab.to}
                   to={tab.to}
+                  replace
                   className={({ isActive }) =>
                     `flex items-center justify-center mx-auto -mt-4 w-13 h-13 rounded-full transition-colors shadow-lg shadow-cyan-500/20 ${
                       isActive
@@ -297,6 +298,7 @@ export default function App() {
                 <NavLink
                   key={tab.to}
                   to={tab.to}
+                  replace
                   className={({ isActive }) => {
                     const active = tab.key === "projects" ? location.pathname.startsWith("/projects") : isActive;
                     return `relative flex flex-col items-center justify-center min-h-[58px] py-2.5 transition-colors ${
