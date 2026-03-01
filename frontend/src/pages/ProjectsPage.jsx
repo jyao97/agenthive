@@ -160,7 +160,10 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     catch { return []; }
   });
   const [activeDragId, setActiveDragId] = useState(null);
-  const [autoNavigating, setAutoNavigating] = useState(false);
+  // Pre-compute whether we'll auto-navigate so the first render returns null (no flash)
+  const [autoNavigating, setAutoNavigating] = useState(
+    () => navType !== "POP" && !!localStorage.getItem("lastViewed:projects")
+  );
 
   const load = useCallback(async () => {
     try {
@@ -212,16 +215,28 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
   // Auto-navigate to last-viewed project on tab switch.
   // POP = browser back / swipe-back → clear memory and stay on list.
   // PUSH/REPLACE = tab click → push detail so back gesture returns to list.
+  //
+  // CRITICAL: The push must be deferred via requestAnimationFrame so that
+  // the NavLink replace (tab switch → /projects) commits to browser history
+  // BEFORE the push to /projects/:name.  In React Router v7 + React 19,
+  // a navigate() inside useEffect can supersede a pending replace from the
+  // same render cycle, resulting in /projects never entering the history
+  // stack (swipe-back skips straight to the previous tab).
   useEffect(() => {
     if (navType === "POP") {
       localStorage.removeItem("lastViewed:projects");
+      setAutoNavigating(false);
       return;
     }
     const last = localStorage.getItem("lastViewed:projects");
     if (last) {
-      setAutoNavigating(true);
-      navigate(`/projects/${encodeURIComponent(last)}`); // push, not replace
+      // Defer push to next animation frame so the /projects replace commits first
+      const id = requestAnimationFrame(() => {
+        navigate(`/projects/${encodeURIComponent(last)}`);
+      });
+      return () => cancelAnimationFrame(id);
     }
+    setAutoNavigating(false);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync customOrder when folders load — append any new projects
