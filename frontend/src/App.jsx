@@ -17,6 +17,7 @@ import { authCheck, clearAuthToken, fetchUnreadCount, fetchClaudeMdPending, getA
 import { isPushSupported, setupPushNotifications } from "./lib/pushNotifications";
 import useIdleLock from "./hooks/useIdleLock";
 import usePageVisible from "./hooks/usePageVisible";
+import { MonitorProvider } from "./contexts/MonitorContext";
 
 const tabs = [
   {
@@ -252,6 +253,7 @@ export default function App() {
             path="/*"
             element={
               <AuthGuard>
+                <MonitorProvider>
                 <ErrorBoundary>
                   <Suspense fallback={<div/>}>
                   <Routes>
@@ -268,6 +270,7 @@ export default function App() {
                   </Routes>
                   </Suspense>
                 </ErrorBoundary>
+                </MonitorProvider>
               </AuthGuard>
             }
           />

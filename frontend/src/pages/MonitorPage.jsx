@@ -1,16 +1,8 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
-import usePageVisible from "../hooks/usePageVisible";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS } from "../lib/constants";
-import {
-  fetchHealth as apiFetchHealth,
-  fetchAgents as apiFetchAgents,
-  fetchProcesses as apiFetchProcesses,
-  fetchSystemStats,
-  fetchStorageStats,
-  fetchTokenUsage,
-} from "../lib/api";
+import { useMonitor } from "../contexts/MonitorContext";
 
 const HEALTH_COLORS = {
   ok: "bg-green-500",
@@ -167,101 +159,25 @@ function StorageChart({ data }) {
 
 export default function MonitorPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
-  const visible = usePageVisible();
-  const [health, setHealth] = useState(null);
-  const [healthError, setHealthError] = useState(false);
-  const [agents, setAgents] = useState([]);
-  const [agentCounts, setAgentCounts] = useState({});
-  const [processes, setProcesses] = useState([]);
-  const [sysStats, setSysStats] = useState(null);
-  const [tokenUsage, setTokenUsage] = useState(null);
-  const [storageStats, setStorageStats] = useState(null);
+  const {
+    health, healthError, agents, agentCounts, processes, sysStats, tokenUsage, storageStats,
+    refresh, activate, deactivate,
+  } = useMonitor();
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchHealth = useCallback(async () => {
-    try {
-      const data = await apiFetchHealth();
-      setHealth(data);
-      setHealthError(false);
-    } catch {
-      setHealthError(true);
-    }
-  }, []);
-
-  const fetchAgents = useCallback(async () => {
-    try {
-      const data = await apiFetchAgents("limit=200");
-      setAgents(data);
-      const counts = {};
-      for (const a of data) counts[a.status] = (counts[a.status] || 0) + 1;
-      setAgentCounts(counts);
-    } catch { /* retry next poll */ }
-  }, []);
-
-  const fetchProcesses = useCallback(async () => {
-    try {
-      setProcesses(await apiFetchProcesses());
-    } catch { /* retry next poll */ }
-  }, []);
-
-  const fetchSysStats = useCallback(async () => {
-    try {
-      setSysStats(await fetchSystemStats());
-    } catch { /* retry next poll */ }
-  }, []);
-
-  const fetchUsage = useCallback(async () => {
-    try {
-      setTokenUsage(await fetchTokenUsage());
-    } catch { /* credentials not configured or API error — ignore */ }
-  }, []);
-
-  const fetchStorage = useCallback(async () => {
-    try {
-      setStorageStats(await fetchStorageStats());
-    } catch { /* ignore */ }
-  }, []);
+  // Activate fast polling while this page is mounted; show cached data
+  // immediately, then do a fresh fetch.
+  useEffect(() => {
+    activate();
+    refresh();
+    return () => deactivate();
+  }, [activate, deactivate, refresh]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([fetchHealth(), fetchAgents(), fetchProcesses(), fetchSysStats(), fetchUsage(), fetchStorage()]);
+    await refresh();
     setTimeout(() => setRefreshing(false), 400);
-  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats, fetchUsage, fetchStorage]);
-
-  useEffect(() => {
-    fetchHealth();
-    fetchAgents();
-    fetchProcesses();
-    fetchSysStats();
-    fetchUsage();
-    fetchStorage();
-  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats, fetchUsage, fetchStorage]);
-
-  useEffect(() => {
-    if (!visible) return;
-    const interval = setInterval(() => { fetchAgents(); fetchProcesses(); fetchSysStats(); }, 5000);
-    return () => clearInterval(interval);
-  }, [fetchAgents, fetchProcesses, fetchSysStats, visible]);
-
-  // Token usage polls less frequently (every 30s) since it hits an external API
-  useEffect(() => {
-    if (!visible) return;
-    const interval = setInterval(fetchUsage, 30000);
-    return () => clearInterval(interval);
-  }, [fetchUsage, visible]);
-
-  // Storage stats poll every 30s (storage changes slowly)
-  useEffect(() => {
-    if (!visible) return;
-    const interval = setInterval(fetchStorage, 30000);
-    return () => clearInterval(interval);
-  }, [fetchStorage, visible]);
-
-  useEffect(() => {
-    if (!visible) return;
-    const interval = setInterval(fetchHealth, 10000);
-    return () => clearInterval(interval);
-  }, [fetchHealth, visible]);
+  }, [refresh]);
 
   return (
     <div className="h-full flex flex-col">
