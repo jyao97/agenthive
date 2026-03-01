@@ -1103,7 +1103,16 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
     wm = getattr(request.app.state, "worker_manager", None)
     if wm:
         if body.git_url:
-            wm.clone_project(body.name, body.git_url)
+            try:
+                wm.clone_project(body.name, body.git_url)
+            except Exception as e:
+                # Clone failed — remove the DB entry we just committed
+                db.delete(proj)
+                db.commit()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Git clone failed: {e}",
+                )
         else:
             wm.ensure_project_dir(body.name)
 

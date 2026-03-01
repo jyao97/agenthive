@@ -62,7 +62,11 @@ def get_agent(agent_id):
     return api("get", f"/api/agents/{agent_id}")
 
 def get_messages(agent_id, limit=100):
-    return api("get", f"/api/agents/{agent_id}/messages?limit={limit}")
+    resp = api("get", f"/api/agents/{agent_id}/messages?limit={limit}")
+    # Endpoint returns PaginatedMessages {messages, has_more}
+    if isinstance(resp, dict) and "messages" in resp:
+        return resp["messages"]
+    return resp
 
 def find_interactive_items(agent_id, item_type=None):
     """Find all interactive items in an agent's messages."""
