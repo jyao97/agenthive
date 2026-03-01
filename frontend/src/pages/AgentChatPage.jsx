@@ -1411,6 +1411,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       const data = await fetchMessages(id, { before: oldest.created_at });
       const older = Array.isArray(data?.messages) ? data.messages : [];
       if (older.length) {
+        // Capture scroll height before DOM update for scroll preservation
+        const el = scrollContainerRef.current;
+        if (el) savedScrollHeight.current = el.scrollHeight;
         setMessages((prev) => [...older, ...prev]);
       }
       setHasMore(!!data?.has_more);
@@ -1551,13 +1554,8 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     };
   }, [scrollKey]);
 
-  // Save scrollHeight before React commits DOM changes (for scroll preservation on prepend)
+  // useLayoutEffect so scroll adjustments happen before browser paint (no flicker)
   useLayoutEffect(() => {
-    const el = scrollContainerRef.current;
-    if (el) savedScrollHeight.current = el.scrollHeight;
-  });
-
-  useEffect(() => {
     if (loading || !messages.length) return;
     const lastId = messages[messages.length - 1]?.id;
     const firstId = messages[0]?.id;
@@ -2144,7 +2142,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
 
             {/* Pending/scheduled messages always at the bottom */}
             {messages.filter((m) => m.role === "USER" && m.status === "PENDING").map((msg) => (
-              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={loadData} />
+              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
             ))}
           </>
         )}
