@@ -160,10 +160,6 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     catch { return []; }
   });
   const [activeDragId, setActiveDragId] = useState(null);
-  // Pre-compute whether we'll auto-navigate so the first render returns null (no flash)
-  const [autoNavigating, setAutoNavigating] = useState(
-    () => navType !== "POP" && !!localStorage.getItem("lastViewed:projects")
-  );
 
   const load = useCallback(async () => {
     try {
@@ -212,35 +208,13 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     return () => clearInterval(interval);
   }, [load, visible]);
 
-  // Auto-navigate to last-viewed project on tab switch.
-  // POP = browser back / swipe-back → clear memory and stay on list.
-  // PUSH/REPLACE = tab click → push detail so back gesture returns to list.
-  //
-  // CRITICAL: The push must be deferred to a separate macrotask (setTimeout)
-  // so the NavLink replace (tab → /projects) fully commits to browser history
-  // BEFORE the push to /projects/:name.  In React Router v7 + React 19,
-  // a navigate() inside useEffect supersedes the pending replace from the
-  // same render cycle — /projects never enters the history stack, and iOS
-  // swipe-back skips straight to the previous tab.
-  //
-  // requestAnimationFrame is NOT sufficient: it fires before the next paint
-  // but still within the same frame, so React Router can still batch them.
-  // setTimeout(fn, 0) creates a true macrotask boundary.
+  // When user swipes back (POP) to the list, flag it so the tab bar
+  // click handler knows to show the list instead of auto-navigating
+  // back to the last-viewed project.
   useEffect(() => {
     if (navType === "POP") {
-      localStorage.removeItem("lastViewed:projects");
-      setAutoNavigating(false);
-      return;
+      sessionStorage.setItem("returnedFrom:projects", "1");
     }
-    const last = localStorage.getItem("lastViewed:projects");
-    if (last) {
-      setAutoNavigating(true);
-      const id = setTimeout(() => {
-        navigate(`/projects/${encodeURIComponent(last)}`);
-      }, 0);
-      return () => clearTimeout(id);
-    }
-    setAutoNavigating(false);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync customOrder when folders load — append any new projects
@@ -369,9 +343,6 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
       ))}
     </select>
   );
-
-  // Prevent flash of list page while auto-navigating to remembered project
-  if (autoNavigating) return null;
 
   return (
     <div className="h-full flex flex-col">

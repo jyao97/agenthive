@@ -84,8 +84,6 @@ function AgentRow({ agent, onClick, starred, onToggleStar, project, isStreaming 
         await starSession(project, sessionId);
       }
       if (onToggleStar) onToggleStar(sessionId, !starred);
-    } catch {
-      // silently fail
     } finally {
       setStarLoading(false);
     }
@@ -200,8 +198,6 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
         await starSession(project, session.session_id);
       }
       if (onToggleStar) onToggleStar(session.session_id, !session.starred);
-    } catch {
-      // silently fail
     } finally {
       setStarLoading(false);
     }
@@ -354,9 +350,11 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
   const visible = usePageVisible();
 
-  // Remember last-viewed project so ProjectsPage can auto-navigate back
+  // Remember last-viewed project so the tab bar can auto-navigate back.
+  // Clear returnedFrom since the user is actively viewing a project.
   useEffect(() => {
     if (name) localStorage.setItem("lastViewed:projects", name);
+    sessionStorage.removeItem("returnedFrom:projects");
   }, [name]);
 
   const [project, setProject] = useState(null);
@@ -543,8 +541,6 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       }
       setProject(folder);
       setAgents(agentList);
-    } catch {
-      // silently retry
     } finally {
       setLoading(false);
     }
@@ -552,7 +548,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await scanAgents(); } catch {}
+    scanAgents().catch(() => {});
     await loadData();
     setTimeout(() => setRefreshing(false), 400);
   }, [loadData]);

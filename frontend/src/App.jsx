@@ -180,6 +180,7 @@ export default function App() {
   const { theme, toggle } = useTheme();
   const themeProps = { theme, onToggleTheme: toggle };
   const location = useLocation();
+  const navigate = useNavigate();
   const hideNav = location.pathname.match(/^\/agents\/[^/]+$/) || location.pathname === "/login";
   const [unread, setUnread] = useState(0);
   const [claudeMdPending, setClaudeMdPending] = useState(0);
@@ -302,6 +303,30 @@ export default function App() {
                   key={tab.to}
                   to={tab.to}
                   replace
+                  onClick={tab.key === "projects" ? (e) => {
+                    e.preventDefault();
+                    // Already on a /projects route → go to list
+                    if (location.pathname.startsWith("/projects")) {
+                      navigate("/projects", { replace: true });
+                      sessionStorage.removeItem("returnedFrom:projects");
+                      return;
+                    }
+                    const returnedFrom = sessionStorage.getItem("returnedFrom:projects");
+                    const lastViewed = localStorage.getItem("lastViewed:projects");
+                    if (returnedFrom) {
+                      // User previously swiped back to list → go to list
+                      sessionStorage.removeItem("returnedFrom:projects");
+                      localStorage.removeItem("lastViewed:projects");
+                      navigate("/projects", { replace: true });
+                    } else if (lastViewed) {
+                      // Slip /projects into history, then push detail on top
+                      // Stack: [..., /projects, /projects/xxx] → swipe back → list ✓
+                      window.history.replaceState(window.history.state, "", "/projects");
+                      navigate(`/projects/${encodeURIComponent(lastViewed)}`);
+                    } else {
+                      navigate("/projects", { replace: true });
+                    }
+                  } : undefined}
                   className={({ isActive }) => {
                     const active = tab.key === "projects" ? location.pathname.startsWith("/projects") : isActive;
                     return `relative flex flex-col items-center justify-center min-h-[58px] py-2.5 transition-colors ${
