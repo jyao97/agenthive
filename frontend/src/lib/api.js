@@ -48,7 +48,11 @@ async function request(url, opts = {}) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `HTTP ${res.status}`);
+    const detail = body?.detail;
+    const msg = typeof detail === "string" ? detail
+      : Array.isArray(detail) ? detail.map(e => e.msg || JSON.stringify(e)).join("; ")
+      : `HTTP ${res.status}`;
+    throw new Error(msg);
   }
   return res.json();
 }
@@ -143,8 +147,12 @@ export const resumeAgent = (id, body = null) =>
     method: "POST",
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
-export const fetchMessages = (agentId, limit = 100) =>
-  request(`/api/agents/${agentId}/messages?limit=${limit}`);
+export const fetchMessages = (agentId, { limit = 50, before, after } = {}) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (before) params.set("before", before);
+  if (after) params.set("after", after);
+  return request(`/api/agents/${agentId}/messages?${params}`);
+};
 export const sendMessage = (agentId, content, { queue = false, scheduled_at = null } = {}) =>
   request(`/api/agents/${agentId}/messages`, {
     method: "POST",

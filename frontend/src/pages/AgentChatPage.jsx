@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, Component } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, Component } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   fetchAgent,
@@ -1332,6 +1332,8 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const visible = usePageVisible();
   const [agent, setAgent] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
@@ -1362,8 +1364,13 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   // On subsequent poll refreshes, errors are silenced (transient network issues).
   const initialLoadDone = useRef(false);
   const abortRef = useRef(null);
+  const messagesRef = useRef([]);
+
+  // Keep messagesRef in sync
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // Initial load: fetch agent + latest 50 messages
   const loadData = useCallback(async () => {
-    // Abort any in-flight request from a previous call
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -1375,7 +1382,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       if (controller.signal.aborted) return;
       if (!agentData || !agentData.id) return;
       setAgent(agentData);
-      setMessages(Array.isArray(msgData) ? msgData : []);
+      const msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
+      setMessages(msgs);
+      setHasMore(!!msgData?.has_more);
       if (!initialLoadDone.current && agentData.muted != null) {
         setMuted(agentData.muted);
         setAgentMuted(id, agentData.muted);
@@ -1392,6 +1401,49 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     }
   }, [id, showToast]);
 
+  // Load older messages (scroll-up pagination)
+  const loadOlderMessages = useCallback(async () => {
+    const current = messagesRef.current;
+    if (!current.length || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const oldest = current[0];
+      const data = await fetchMessages(id, { before: oldest.created_at });
+      const older = Array.isArray(data?.messages) ? data.messages : [];
+      if (older.length) {
+        setMessages((prev) => [...older, ...prev]);
+      }
+      setHasMore(!!data?.has_more);
+    } catch (err) {
+      console.warn("Failed to load older messages:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [id, loadingMore]);
+
+  // Incremental refresh: fetch only messages newer than the latest
+  const refreshMessages = useCallback(async () => {
+    try {
+      const agentData = await fetchAgent(id);
+      if (!agentData || !agentData.id) return;
+      setAgent(agentData);
+      const current = messagesRef.current;
+      if (!current.length) return;
+      const newest = current[current.length - 1];
+      const data = await fetchMessages(id, { after: newest.created_at });
+      const newer = Array.isArray(data?.messages) ? data.messages : [];
+      if (newer.length) {
+        setMessages((prev) => {
+          const existingIds = new Set(prev.map((m) => m.id));
+          const unique = newer.filter((m) => !existingIds.has(m.id));
+          return unique.length ? [...prev, ...unique] : prev;
+        });
+      }
+    } catch {
+      // Transient errors during polling — silently ignore
+    }
+  }, [id]);
+
   // Initial load + clear notification flag for this agent
   useEffect(() => {
     clearAgentNotified(id);
@@ -1406,9 +1458,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     if (!visible) return;
     const isActive = agent?.status === "EXECUTING" || agent?.status === "SYNCING";
     const interval = isActive ? 3000 : 10000;
-    const timer = setInterval(loadData, interval);
+    const timer = setInterval(refreshMessages, interval);
     return () => clearInterval(timer);
-  }, [loadData, agent?.status, visible]);
+  }, [refreshMessages, agent?.status, visible]);
 
   // Mark as read on mount and when new messages arrive
   useEffect(() => {
@@ -1465,7 +1517,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const scrollContainerRef = useRef(null);
   const userScrolledUp = useRef(false);
   const scrollSaveTimer = useRef(null);
-  const prevMsgCount = useRef(null);
+  const prevLastMsgId = useRef(null);
+  const prevFirstMsgId = useRef(null);
+  const savedScrollHeight = useRef(null);
   const scrollKey = `scroll:chat:${id}`;
   const scrollCountKey = `scroll:chat:${id}:count`;
 
@@ -1476,11 +1530,15 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     if (!el) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     userScrolledUp.current = distFromBottom > 100;
+    // Scroll-up trigger for lazy loading
+    if (el.scrollTop < 200 && hasMore && !loadingMore) {
+      loadOlderMessages();
+    }
     clearTimeout(scrollSaveTimer.current);
     scrollSaveTimer.current = setTimeout(() => {
       try { sessionStorage.setItem(scrollKey, String(el.scrollTop)); } catch { /* ignore */ }
     }, 200);
-  }, [scrollKey]);
+  }, [scrollKey, hasMore, loadingMore, loadOlderMessages]);
 
   // Save scroll position on unmount
   useEffect(() => {
@@ -1493,11 +1551,22 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     };
   }, [scrollKey]);
 
+  // Save scrollHeight before React commits DOM changes (for scroll preservation on prepend)
+  useLayoutEffect(() => {
+    const el = scrollContainerRef.current;
+    if (el) savedScrollHeight.current = el.scrollHeight;
+  });
+
   useEffect(() => {
-    if (loading) return;
-    const isFirstLoad = prevMsgCount.current === null;
-    const msgCountChanged = prevMsgCount.current !== null && prevMsgCount.current !== messages.length;
-    prevMsgCount.current = messages.length;
+    if (loading || !messages.length) return;
+    const lastId = messages[messages.length - 1]?.id;
+    const firstId = messages[0]?.id;
+    const isFirstLoad = prevLastMsgId.current === null;
+    const newMessagesAppended = !isFirstLoad && prevLastMsgId.current !== lastId;
+    const olderMessagesPrepended = !isFirstLoad && prevFirstMsgId.current !== firstId && prevLastMsgId.current === lastId;
+
+    prevLastMsgId.current = lastId;
+    prevFirstMsgId.current = firstId;
 
     if (isFirstLoad) {
       // Restore saved position if message count matches (no new messages since last visit)
@@ -1518,8 +1587,17 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       return;
     }
 
-    // New messages arrived after initial load — clear saved position, auto-scroll
-    if (msgCountChanged) {
+    // Older messages prepended — preserve scroll position
+    if (olderMessagesPrepended) {
+      const el = scrollContainerRef.current;
+      if (el && savedScrollHeight.current != null) {
+        el.scrollTop += el.scrollHeight - savedScrollHeight.current;
+      }
+      return;
+    }
+
+    // New messages appended — clear saved position, auto-scroll
+    if (newMessagesAppended) {
       try {
         sessionStorage.removeItem(scrollKey);
         sessionStorage.setItem(scrollCountKey, String(messages.length));
@@ -1528,7 +1606,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     if (!userScrolledUp.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [loading, messages.length, streamingContent, scrollKey, scrollCountKey]);
+  }, [loading, messages, streamingContent, scrollKey, scrollCountKey]);
 
   // Keep saved message count in sync for future visits
   useEffect(() => {
@@ -1583,7 +1661,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       clearTimeout(streamTimeoutRef.current);
       streamTimeoutRef.current = setTimeout(() => { streamLockedRef.current = false; }, 1500);
       setStreamingContent(null);
-      loadData();
+      refreshMessages();
       return;
     }
 
@@ -1598,9 +1676,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         clearTimeout(streamTimeoutRef.current);
         setStreamingContent(null);
       }
-      loadData();
+      refreshMessages();
     }
-  }, [lastEvent, id, loadData, agent?.status]);
+  }, [lastEvent, id, refreshMessages, agent?.status]);
 
   // Cleanup
   useEffect(() => {
@@ -2036,8 +2114,16 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
           <InitializingIndicator />
         ) : (
           <>
+            {/* Lazy-load indicator at top */}
+            {loadingMore && (
+              <div className="text-center py-3 text-xs opacity-60">Loading older messages...</div>
+            )}
+            {!hasMore && messages.length > 0 && (
+              <div className="text-center py-3 text-xs opacity-40">Beginning of conversation</div>
+            )}
+
             {messages.filter((m) => !(m.role === "USER" && m.status === "PENDING")).map((msg) => (
-              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={loadData} />
+              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
             ))}
 
             {/* Streaming output or typing indicator while executing/syncing */}
