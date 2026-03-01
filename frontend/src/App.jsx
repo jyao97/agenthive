@@ -1,16 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, lazy, Suspense } from "react";
 import { Routes, Route, NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
-import ProjectsPage from "./pages/ProjectsPage";
-import TrashPage from "./pages/TrashPage";
-import ProjectDetailPage from "./pages/ProjectDetailPage";
-import AgentsPage from "./pages/AgentsPage";
-import AgentChatPage from "./pages/AgentChatPage";
-import TasksPage from "./pages/TasksPage";
-import NewPage from "./pages/NewPage";
-import MonitorPage from "./pages/MonitorPage";
-import GitPage from "./pages/GitPage";
 import LoginPage from "./pages/LoginPage";
 import ErrorBoundary from "./components/ErrorBoundary";
+
+const ProjectsPage = lazy(() => import("./pages/ProjectsPage"));
+const TrashPage = lazy(() => import("./pages/TrashPage"));
+const ProjectDetailPage = lazy(() => import("./pages/ProjectDetailPage"));
+const AgentsPage = lazy(() => import("./pages/AgentsPage"));
+const AgentChatPage = lazy(() => import("./pages/AgentChatPage"));
+const TasksPage = lazy(() => import("./pages/TasksPage"));
+const NewPage = lazy(() => import("./pages/NewPage"));
+const MonitorPage = lazy(() => import("./pages/MonitorPage"));
+const GitPage = lazy(() => import("./pages/GitPage"));
 import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchUnreadCount, fetchClaudeMdPending, getAuthToken } from "./lib/api";
 import { isPushSupported, setupPushNotifications } from "./lib/pushNotifications";
@@ -250,6 +251,7 @@ export default function App() {
             element={
               <AuthGuard>
                 <ErrorBoundary>
+                  <Suspense fallback={<div/>}>
                   <Routes>
                     <Route path="/" element={<Navigate to="/projects" replace />} />
                     <Route path="/projects" element={<ProjectsPage {...themeProps} />} />
@@ -262,6 +264,7 @@ export default function App() {
                     <Route path="/monitor" element={<MonitorPage {...themeProps} />} />
                     <Route path="/git" element={<GitPage {...themeProps} />} />
                   </Routes>
+                  </Suspense>
                 </ErrorBoundary>
               </AuthGuard>
             }
@@ -292,13 +295,14 @@ export default function App() {
                 <NavLink
                   key={tab.to}
                   to={tab.to}
-                  className={({ isActive }) =>
-                    `relative flex flex-col items-center justify-center min-h-[58px] py-2.5 transition-colors ${
-                      isActive
+                  className={({ isActive }) => {
+                    const active = tab.key === "projects" ? location.pathname.startsWith("/projects") : isActive;
+                    return `relative flex flex-col items-center justify-center min-h-[58px] py-2.5 transition-colors ${
+                      active
                         ? "text-cyan-400"
                         : "text-dim hover:text-body"
-                    }`
-                  }
+                    }`;
+                  }}
                 >
                   {tab.icon}
                   <span className="text-[10px] mt-0.5">{tab.label}</span>
