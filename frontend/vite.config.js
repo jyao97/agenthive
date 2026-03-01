@@ -3,6 +3,7 @@ import path from 'node:path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { VitePWA } from 'vite-plugin-pwa'
 
 // Load self-signed certs for HTTPS (needed for microphone access over LAN)
 const certsDir = path.resolve(__dirname, '../certs')
@@ -12,7 +13,52 @@ const httpsConfig = fs.existsSync(path.join(certsDir, 'selfsigned.key'))
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Import existing push notification handler into generated SW
+        importScripts: ['/push-handler.js'],
+        runtimeCaching: [
+          {
+            urlPattern: /^.*\/api\/.*/,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'api-cache',
+              expiration: { maxEntries: 50, maxAgeSeconds: 30 },
+              networkTimeoutSeconds: 3,
+            },
+          },
+          {
+            urlPattern: /\.thumb\.jpg$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'thumbnail-cache',
+              expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
+            },
+          },
+        ],
+      },
+      manifest: {
+        name: 'AgentHive',
+        short_name: 'AgentHive',
+        description: 'Multi-agent Claude Code dashboard',
+        theme_color: '#06b6d4',
+        background_color: '#0a0a0a',
+        display: 'standalone',
+        orientation: 'portrait',
+        start_url: '/',
+        icons: [
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/icon-mask.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+      },
+    }),
+  ],
   server: {
     https: httpsConfig,
     host: '0.0.0.0',
