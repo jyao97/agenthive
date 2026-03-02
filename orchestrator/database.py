@@ -224,6 +224,18 @@ def init_db():
             conn.execute(text("ALTER TABLE agents DROP COLUMN plan"))
             conn.commit()
 
+        # Drop plan-related columns from tasks (plan mode fully removed)
+        result = conn.execute(text("PRAGMA table_info(tasks)"))
+        task_cols_pre = {row[1] for row in result}
+        if "plan_approved" in task_cols_pre:
+            conn.execute(text("ALTER TABLE tasks DROP COLUMN plan_approved"))
+            conn.commit()
+        result = conn.execute(text("PRAGMA table_info(tasks)"))
+        task_cols_pre = {row[1] for row in result}
+        if "plan" in task_cols_pre:
+            conn.execute(text("ALTER TABLE tasks DROP COLUMN plan"))
+            conn.commit()
+
         # --- Task v2 migrations ---
         result = conn.execute(text("PRAGMA table_info(tasks)"))
         task_cols = {row[1] for row in result}

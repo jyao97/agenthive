@@ -89,9 +89,10 @@ class Task(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
     # Legacy columns (kept for old dispatcher compatibility)
-    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    project: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    mode: Mapped[AgentMode | None] = mapped_column(Enum(AgentMode), nullable=True)
+    # NOTE: existing DB has NOT NULL on these — provide defaults for v2 inserts
+    prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    project: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    mode: Mapped[AgentMode] = mapped_column(Enum(AgentMode), nullable=False, default=AgentMode.AUTO)
     container_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     branch: Mapped[str | None] = mapped_column(String(200), nullable=True)
     retries: Mapped[int] = mapped_column(Integer, default=0)
