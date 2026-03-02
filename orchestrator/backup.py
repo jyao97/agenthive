@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 from datetime import datetime, timezone
 
-from config import BACKUP_DIR, BACKUP_INTERVAL_HOURS, DB_PATH, MAX_BACKUPS, PROJECTS_DIR
+from config import BACKUP_DIR, BACKUP_INTERVAL_HOURS, DB_PATH, MAX_BACKUPS
 
 logger = logging.getLogger("orchestrator.backup")
 
@@ -52,15 +52,21 @@ def do_backup():
         files_backed += 1
         logger.debug("Backed up database")
 
-    # 2. All PROGRESS.md files from projects
-    projects_dir = PROJECTS_DIR or "/projects"
-    if os.path.isdir(projects_dir):
+    # 2. All PROGRESS.md files from projects (keyed by DB project name, not folder)
+    from database import SessionLocal
+    from models import Project
+    db = SessionLocal()
+    try:
+        projects = db.query(Project).filter(Project.archived == False).all()  # noqa: E712
+    finally:
+        db.close()
+    if projects:
         progress_dir = os.path.join(backup_subdir, "progress")
         os.makedirs(progress_dir, exist_ok=True)
-        for proj in os.listdir(projects_dir):
-            pm = os.path.join(projects_dir, proj, "PROGRESS.md")
+        for proj in projects:
+            pm = os.path.join(proj.path, "PROGRESS.md")
             if os.path.isfile(pm):
-                shutil.copy2(pm, os.path.join(progress_dir, f"{proj}_PROGRESS.md"))
+                shutil.copy2(pm, os.path.join(progress_dir, f"{proj.name}_PROGRESS.md"))
                 files_backed += 1
 
     # 3. registry.yaml

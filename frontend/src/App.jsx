@@ -333,10 +333,8 @@ export default function App() {
                       localStorage.removeItem("lastViewed:projects");
                       navigate("/projects", { replace: true });
                     } else if (lastViewed) {
-                      // Slip /projects into history, then push detail on top
-                      // Stack: [..., /projects, /projects/xxx] → swipe back → list ✓
-                      window.history.replaceState(window.history.state, "", "/projects");
-                      navigate(`/projects/${encodeURIComponent(lastViewed)}`);
+                      // Directly navigate to the last viewed project
+                      navigate(`/projects/${encodeURIComponent(lastViewed)}`, { replace: true });
                     } else {
                       navigate("/projects", { replace: true });
                     }

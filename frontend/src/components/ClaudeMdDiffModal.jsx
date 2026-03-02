@@ -4,10 +4,13 @@ import { applyClaudeMd } from "../lib/api";
 /**
  * Fullscreen diff review modal for proposed CLAUDE.md updates.
  * Per-line checkboxes + inline editing + assembled final_content.
+ * "Edit Final" step lets users rearrange lines before applying.
  */
 export default function ClaudeMdDiffModal({ data, project, onClose, onApplied }) {
   const { hunks = [], current = "", proposed = "", warning, is_new, message } = data;
   const [applying, setApplying] = useState(false);
+  const [reviewText, setReviewText] = useState(null); // null = diff view, string = edit-final view
+  const reviewRef = useRef(null);
 
   // Build flat line list: { hunkId, lineIdx, type, content, checked, edited, editValue }
   const [lines, setLines] = useState(() => {
@@ -55,10 +58,16 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
   const removeCount = lines.filter((l) => l.type === "removed").length;
 
   useEffect(() => {
-    const handler = (e) => { if (e.key === "Escape") { if (editingKey) setEditingKey(null); else onClose(); } };
+    const handler = (e) => {
+      if (e.key === "Escape") {
+        if (reviewText !== null) setReviewText(null);
+        else if (editingKey) setEditingKey(null);
+        else onClose();
+      }
+    };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose, editingKey]);
+  }, [onClose, editingKey, reviewText]);
 
   useEffect(() => {
     document.body.style.overflow = "hidden";
@@ -68,6 +77,10 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
   useEffect(() => {
     if (editingKey && editRef.current) editRef.current.focus();
   }, [editingKey]);
+
+  useEffect(() => {
+    if (reviewText !== null && reviewRef.current) reviewRef.current.focus();
+  }, [reviewText]);
 
   const toggleLine = useCallback((key) => {
     setLines((prev) => prev.map((l) => l.key === key ? { ...l, checked: !l.checked } : l));
@@ -144,18 +157,23 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
     }
   }, [project, onApplied]);
 
-  const handleApplySelected = useCallback(async () => {
+  // Open the edit-final textarea instead of applying directly
+  const handleEditFinal = useCallback(() => {
+    setReviewText(assembleFinalContent());
+  }, [assembleFinalContent]);
+
+  // Apply the edited final content
+  const handleApplyFinal = useCallback(async (content) => {
     setApplying(true);
     try {
-      const finalContent = assembleFinalContent();
-      const res = await applyClaudeMd(project, { mode: "selective", final_content: finalContent });
+      const res = await applyClaudeMd(project, { mode: "selective", final_content: content });
       onApplied(res.lines);
     } catch (err) {
       onApplied(null, err.message);
     } finally {
       setApplying(false);
     }
-  }, [project, onApplied, assembleFinalContent]);
+  }, [project, onApplied]);
 
   // ── No changes needed ──
   if (message && hunks.length === 0 && !is_new) {
@@ -205,6 +223,45 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
     );
   }
 
+  // ── Edit Final view: editable textarea of assembled content ──
+  if (reviewText !== null) {
+    const lineCount = reviewText.split("\n").length;
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col bg-page" style={{ paddingTop: "env(safe-area-inset-top, 44px)" }}>
+        <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-divider">
+          <h2 className="text-base font-bold text-heading">Edit Final CLAUDE.md</h2>
+          <button onClick={() => setReviewText(null)} className="text-dim hover:text-heading text-xl leading-none">&times;</button>
+        </div>
+        <div className="shrink-0 px-4 py-2 bg-surface border-b border-divider">
+          <p className="text-xs text-dim">
+            Rearrange, edit, or remove lines as needed. {lineCount} line{lineCount !== 1 ? "s" : ""}.
+          </p>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          <textarea
+            ref={reviewRef}
+            value={reviewText}
+            onChange={(e) => setReviewText(e.target.value)}
+            spellCheck={false}
+            className="w-full h-full min-h-[60vh] bg-surface text-body text-xs font-mono p-4 rounded-lg border border-divider outline-none focus:border-cyan-500 resize-none leading-relaxed"
+          />
+        </div>
+        <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-t border-divider">
+          <button
+            disabled={applying}
+            onClick={() => handleApplyFinal(reviewText)}
+            className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+          >
+            {applying ? "Applying..." : "Apply"}
+          </button>
+          <button onClick={() => setReviewText(null)} className="px-4 py-2 text-dim hover:text-body text-sm transition-colors">
+            Back to Diff
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── Diff review with per-line controls ──
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-page" style={{ paddingTop: "env(safe-area-inset-top, 44px)" }}>
@@ -234,7 +291,7 @@ export default function ClaudeMdDiffModal({ data, project, onClose, onApplied })
           </button>
           <button
             disabled={applying || checkedCount === 0}
-            onClick={handleApplySelected}
+            onClick={handleEditFinal}
             className="px-4 py-2 rounded-lg border border-divider text-body text-sm font-medium hover:bg-elevated transition-colors disabled:opacity-50"
           >
             Apply Selected ({checkedCount}/{totalCheckable})

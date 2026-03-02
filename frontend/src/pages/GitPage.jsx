@@ -9,7 +9,6 @@ import {
   fetchGitBranches,
   fetchGitStatus,
   fetchGitWorktrees,
-  mergeGitBranch,
   createAgent,
 } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
@@ -152,32 +151,30 @@ export default function GitPage({ theme, onToggleTheme }) {
     return () => { cancelled = true; };
   }, [selectedProject]);
 
-  // --- Merge handler ---
+  // --- Merge handler (spawns an agent) ---
   const handleMerge = useCallback(
     async (branchName) => {
       if (!selectedProject || mergingBranch) return;
       setMergingBranch(branchName);
       try {
-        const data = await mergeGitBranch(selectedProject, branchName);
-        addToast(`Merged "${branchName}" successfully.`, "success");
-        // Refresh commits, branches, and status
-        const [newCommits, newBranches, newStatus, newWt] = await Promise.all([
-          fetchGitLog(selectedProject).catch(() => []),
-          fetchGitBranches(selectedProject).catch(() => []),
-          fetchGitStatus(selectedProject).catch(() => null),
-          fetchGitWorktrees(selectedProject).catch(() => []),
-        ]);
-        setCommits(newCommits);
-        setBranches(newBranches);
-        setStatus(newStatus);
-        setWorktrees(newWt);
+        const agent = await createAgent({
+          project: selectedProject,
+          mode: "AUTO",
+          skip_permissions: true,
+          prompt:
+            `Merge the branch "${branchName}" into the current branch. ` +
+            `Steps: 1) git fetch origin, 2) git merge ${branchName} --no-edit. ` +
+            `If there are merge conflicts, resolve them intelligently by reading both versions and picking the correct resolution. ` +
+            `After resolving, stage and commit. Report the result.`,
+        });
+        navigate(`/agents/${agent.id}`);
       } catch (err) {
         addToast(`Merge error: ${err.message}`, "error");
       } finally {
         setMergingBranch(null);
       }
     },
-    [selectedProject, mergingBranch, addToast]
+    [selectedProject, mergingBranch, addToast, navigate]
   );
 
   // --- Merge All worktrees handler ---
@@ -195,10 +192,9 @@ export default function GitPage({ theme, onToggleTheme }) {
     try {
       const agent = await createAgent({
         project: selectedProject,
-        name: `merge-worktrees`,
         mode: "AUTO",
         skip_permissions: true,
-        initial_message:
+        prompt:
           `Merge all worktree branches into main and clean up. ` +
           `The branches to merge are: ${branchList}. ` +
           `For each branch: 1) checkout main, 2) git merge <branch>, ` +

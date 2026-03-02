@@ -398,8 +398,24 @@ def _extract_result(logs: str) -> tuple[str, str | None]:
     if text:
         return text, meta_json
 
-    # Fallback: return last chunk of raw output
+    # Fallback: return last chunk of raw output — but skip if the log only
+    # contains system/init events (no actual assistant response).
     lines = logs.strip().splitlines()
+    has_only_system = True
+    for raw_line in lines:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            ev = json.loads(raw_line)
+            if ev.get("type") not in ("system", None):
+                has_only_system = False
+                break
+        except (json.JSONDecodeError, TypeError):
+            has_only_system = False
+            break
+    if has_only_system:
+        return "(no output)", meta_json
     fallback = "\n".join(lines[-20:]) if lines else "(no output)"
     return fallback, meta_json
 

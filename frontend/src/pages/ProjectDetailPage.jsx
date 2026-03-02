@@ -516,6 +516,34 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       await renameProjectApi(name, slug, displayName);
       showToast("Project renamed!");
       setShowRenameConfirm(false);
+
+      // Clean up old localStorage keys that embed the project name
+      try {
+        // Draft keys from useDraft (prefixed with "draft:")
+        localStorage.removeItem(`draft:project-agent:${name}:prompt`);
+        localStorage.removeItem(`draft:project-agent:${name}:model`);
+        localStorage.removeItem(`draft:project-agent:${name}:effort`);
+        // Attachment cache (already has "draft:" prefix)
+        localStorage.removeItem(`draft:project-agent:${name}:attachments`);
+        // Tab state from useDraft
+        localStorage.removeItem(`draft:ui:project:${name}:tab`);
+        // Update lastViewed to new name
+        const lastViewed = localStorage.getItem("lastViewed:projects");
+        if (lastViewed === name) {
+          localStorage.setItem("lastViewed:projects", slug);
+        }
+        // Update custom order array
+        const orderRaw = localStorage.getItem("projects-custom-order");
+        if (orderRaw) {
+          const order = JSON.parse(orderRaw);
+          const idx = order.indexOf(name);
+          if (idx !== -1) {
+            order[idx] = slug;
+            localStorage.setItem("projects-custom-order", JSON.stringify(order));
+          }
+        }
+      } catch { /* ignore localStorage errors */ }
+
       navigate(`/projects/${encodeURIComponent(slug)}`, { replace: true });
     } catch (err) {
       showToast("Rename failed: " + err.message, "error");
@@ -919,7 +947,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         <div className="max-w-2xl mx-auto">
           <button
             type="button"
-            onClick={() => { localStorage.removeItem("lastViewed:projects"); navigate(-1); }}
+            onClick={() => { localStorage.removeItem("lastViewed:projects"); navigate("/projects", { replace: true }); }}
             className="flex items-center gap-1 text-sm text-label hover:text-heading mb-2"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

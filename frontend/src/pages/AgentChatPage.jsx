@@ -1424,8 +1424,10 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     }
   }, [id, loadingMore]);
 
-  // Incremental refresh: fetch only messages newer than the latest
-  const refreshMessages = useCallback(async () => {
+  // Incremental refresh: fetch messages newer than the latest, and optionally
+  // merge the tail to catch in-place content updates from sync agents (sync loop
+  // grows the last message without changing created_at, so after= misses it).
+  const refreshMessages = useCallback(async ({ syncHint = false } = {}) => {
     try {
       const agentData = await fetchAgent(id);
       if (!agentData || !agentData.id) return;
@@ -1439,15 +1441,35 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         return;
       }
       const newest = current[current.length - 1];
-      const data = await fetchMessages(id, { after: newest.created_at });
-      const newer = Array.isArray(data?.messages) ? data.messages : [];
-      if (newer.length) {
-        setMessages((prev) => {
-          const existingIds = new Set(prev.map((m) => m.id));
-          const unique = newer.filter((m) => !existingIds.has(m.id));
-          return unique.length ? [...prev, ...unique] : prev;
-        });
-      }
+      const needTail = syncHint || agentData.status === "SYNCING";
+      const fetches = [fetchMessages(id, { after: newest.created_at })];
+      if (needTail) fetches.push(fetchMessages(id, { limit: 5 }));
+      const [afterData, tailData] = await Promise.all(fetches);
+      const newer = Array.isArray(afterData?.messages) ? afterData.messages : [];
+      const tail = tailData ? (Array.isArray(tailData?.messages) ? tailData.messages : []) : [];
+
+      setMessages((prev) => {
+        let result = prev;
+        // Merge tail: replace existing messages whose content grew in-place
+        if (tail.length) {
+          const tailById = new Map(tail.map((m) => [m.id, m]));
+          let anyChanged = false;
+          const merged = result.map((m) => {
+            const fresh = tailById.get(m.id);
+            if (fresh && (fresh.content !== m.content || fresh.completed_at !== m.completed_at)) {
+              anyChanged = true;
+              return fresh;
+            }
+            return m;
+          });
+          if (anyChanged) result = merged;
+        }
+        // Append truly new messages from either source
+        const existingIds = new Set(result.map((m) => m.id));
+        const unique = [...newer, ...tail].filter((m) => !existingIds.has(m.id));
+        if (unique.length) return [...result, ...unique];
+        return result !== prev ? result : prev;
+      });
     } catch {
       // Transient errors during polling — silently ignore
     }
@@ -1665,7 +1687,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       clearTimeout(streamTimeoutRef.current);
       streamTimeoutRef.current = setTimeout(() => { streamLockedRef.current = false; }, 1500);
       setStreamingContent(null);
-      refreshMessages();
+      refreshMessages({ syncHint: lastEvent.data?.message_id === "sync" });
       return;
     }
 
