@@ -64,6 +64,7 @@ class TaskOut(BaseModel):
     attempt_number: int = 1
     agent_summary: str | None = None
     rejection_reason: str | None = None
+    error_message: str | None = None
     model: str | None = None
     effort: str | None = None
     created_at: datetime
@@ -154,6 +155,7 @@ class AgentBrief(BaseModel):
     skip_permissions: bool = True
     muted: bool = False
     parent_id: str | None = None
+    task_id: str | None = None
     is_generating: bool = False
 
     model_config = {"from_attributes": True}
