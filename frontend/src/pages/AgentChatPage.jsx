@@ -524,7 +524,7 @@ function InteractiveBubbles({ metadata, agentId, onAnswered, messageContent, pro
   });
 }
 
-function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, agentId, onRefresh }) {
+function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, agentId, onRefresh, queuePosition, queueTotal }) {
   if (message.role === "SYSTEM") {
     return <SystemBubble message={message} />;
   }
@@ -768,7 +768,9 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
               relativeTime(message.completed_at || message.created_at)
             )}
             {isPending && (
-              <span className="text-cyan-300/70">queued</span>
+              <span className="text-cyan-300/70">
+                {queueTotal > 1 ? `queued (${queuePosition} of ${queueTotal})` : "queued"}
+              </span>
             )}
             {message.source && (
               <span className={`px-1 py-0.5 rounded text-[10px] font-medium leading-none ${
@@ -1441,7 +1443,8 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         return;
       }
       const newest = current[current.length - 1];
-      const needTail = syncHint || agentData.status === "SYNCING";
+      const hasPending = current.some((m) => m.role === "USER" && m.status === "PENDING");
+      const needTail = syncHint || agentData.status === "SYNCING" || hasPending;
       const fetches = [fetchMessages(id, { after: newest.created_at })];
       if (needTail) fetches.push(fetchMessages(id, { limit: 5 }));
       const [afterData, tailData] = await Promise.all(fetches);
@@ -1456,7 +1459,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
           let anyChanged = false;
           const merged = result.map((m) => {
             const fresh = tailById.get(m.id);
-            if (fresh && (fresh.content !== m.content || fresh.completed_at !== m.completed_at)) {
+            if (fresh && (fresh.content !== m.content || fresh.completed_at !== m.completed_at || fresh.status !== m.status)) {
               anyChanged = true;
               return fresh;
             }
@@ -1688,6 +1691,18 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       streamTimeoutRef.current = setTimeout(() => { streamLockedRef.current = false; }, 1500);
       setStreamingContent(null);
       refreshMessages({ syncHint: lastEvent.data?.message_id === "sync" });
+      return;
+    }
+
+    if (lastEvent.type === "message_update" && lastEvent.data?.agent_id === id) {
+      const { message_id, status } = lastEvent.data;
+      if (status === "CANCELLED") {
+        setMessages((prev) => prev.filter((m) => m.id !== message_id));
+      } else {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === message_id ? { ...m, status } : m))
+        );
+      }
       return;
     }
 
@@ -2169,9 +2184,21 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
             })()}
 
             {/* Pending/scheduled messages always at the bottom */}
-            {messages.filter((m) => m.role === "USER" && m.status === "PENDING").map((msg) => (
-              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
-            ))}
+            {(() => {
+              const pending = messages.filter((m) => m.role === "USER" && m.status === "PENDING");
+              const queued = pending.filter((m) => !m.scheduled_at);
+              const scheduled = pending.filter((m) => m.scheduled_at);
+              return (
+                <>
+                  {queued.map((msg, idx) => (
+                    <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} queuePosition={idx + 1} queueTotal={queued.length} />
+                  ))}
+                  {scheduled.map((msg) => (
+                    <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
+                  ))}
+                </>
+              );
+            })()}
           </>
         )}
 

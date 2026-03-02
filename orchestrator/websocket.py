@@ -144,6 +144,15 @@ async def emit_new_message(agent_id: str, message_id: str,
     })
 
 
+async def emit_message_update(agent_id: str, message_id: str, status: str):
+    """Notify clients that a message's status changed (e.g. PENDING→EXECUTING)."""
+    await ws_manager.broadcast("message_update", {
+        "agent_id": agent_id,
+        "message_id": message_id,
+        "status": status,
+    })
+
+
 async def emit_agent_stream(agent_id: str, content: str):
     """Send incremental streaming content for an executing agent."""
     await ws_manager.broadcast("agent_stream", {

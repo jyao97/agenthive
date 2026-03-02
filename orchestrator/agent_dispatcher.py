@@ -1557,6 +1557,8 @@ class AgentDispatcher:
                     message.status = MessageStatus.FAILED
                     message.error_message = "Agent stopped by user"
                     message.completed_at = _utcnow()
+                    from websocket import emit_message_update
+                    self._emit(emit_message_update(agent_id, message.id, "FAILED"))
                 done_agents.append(agent_id)
                 continue
 
@@ -1602,6 +1604,8 @@ class AgentDispatcher:
             if message:
                 message.status = MessageStatus.COMPLETED
                 message.completed_at = _utcnow()
+                from websocket import emit_message_update
+                self._emit(emit_message_update(agent_id, message.id, "COMPLETED"))
 
             # Auto-recover from stale session: try cache restore + repair first.
             # Use previous_session_id (the one used for --resume) for cache lookup,
@@ -1650,6 +1654,8 @@ class AgentDispatcher:
                     if message:
                         message.status = MessageStatus.PENDING
                         message.completed_at = None
+                        from websocket import emit_message_update
+                        self._emit(emit_message_update(agent_id, message.id, "PENDING"))
                     # cli_sync agents should return to SYNCING (not IDLE)
                     # so the sync loop can resume watching the session.
                     agent.status = AgentStatus.SYNCING if agent.cli_sync else AgentStatus.IDLE
@@ -1806,6 +1812,8 @@ class AgentDispatcher:
                     message.status = MessageStatus.TIMEOUT
                     message.error_message = f"Timed out after {int(idle_seconds)}s of inactivity"
                     message.completed_at = now
+                    from websocket import emit_message_update
+                    self._emit(emit_message_update(agent_id, message.id, "TIMEOUT"))
 
                 # Create system message
                 sys_msg = Message(
@@ -1968,9 +1976,11 @@ class AgentDispatcher:
                 Message.agent_id == agent.id,
                 Message.status == MessageStatus.PENDING,
             ).all()
+            from websocket import emit_message_update
             for m in pending:
                 m.status = MessageStatus.FAILED
                 m.error_message = "Agent tmux session no longer exists"
+                self._emit(emit_message_update(agent.id, m.id, "FAILED"))
             # NOTE: removed db.commit() here — it was flushing ALL dirty
             # objects in the session (including harvest changes from step 1),
             # making re-queued messages visible to the dispatch query below
@@ -2064,6 +2074,8 @@ class AgentDispatcher:
                     # dirty objects caused double-dispatch.  Let _tick()
                     # commit atomically at the end.
                     self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
+                    from websocket import emit_message_update
+                    self._emit(emit_message_update(agent.id, pending_msg.id, "FAILED"))
                 continue
 
             # Use --resume with session_id if available.
@@ -2135,14 +2147,17 @@ class AgentDispatcher:
                     "Dispatched message %s to agent %s (resume=%s)",
                     pending_msg.id, agent.id, bool(resume_session_id),
                 )
-                from websocket import emit_agent_update
+                from websocket import emit_agent_update, emit_message_update
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
+                self._emit(emit_message_update(agent.id, pending_msg.id, "EXECUTING"))
             except Exception:
                 logger.exception(
                     "Failed to exec claude for agent %s", agent.id
                 )
                 pending_msg.status = MessageStatus.FAILED
                 pending_msg.error_message = "Failed to start claude process"
+                from websocket import emit_message_update
+                self._emit(emit_message_update(agent.id, pending_msg.id, "FAILED"))
 
     def _dispatch_tmux_pending(self, db: Session):
         """Send pending messages to SYNCING agents via tmux.
@@ -2190,6 +2205,8 @@ class AgentDispatcher:
                     "Dispatched pending message %s to SYNCING agent %s via tmux",
                     due_msg.id, agent.id,
                 )
+                from websocket import emit_message_update
+                self._emit(emit_message_update(agent.id, due_msg.id, "COMPLETED"))
             else:
                 due_msg.status = MessageStatus.FAILED
                 due_msg.error_message = "Failed to send via tmux"
@@ -2197,6 +2214,8 @@ class AgentDispatcher:
                     "Failed to dispatch pending message %s via tmux for agent %s",
                     due_msg.id, agent.id,
                 )
+                from websocket import emit_message_update
+                self._emit(emit_message_update(agent.id, due_msg.id, "FAILED"))
 
     def _build_agent_prompt(
         self, agent: Agent, project: Project, user_message: str,

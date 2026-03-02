@@ -3508,6 +3508,8 @@ async def cancel_message(agent_id: str, message_id: str, db: Session = Depends(g
     db.delete(msg)
     db.commit()
     logger.info("Message %s cancelled for agent %s", message_id, agent_id)
+    from websocket import emit_message_update
+    await emit_message_update(agent_id, message_id, "CANCELLED")
     return {"detail": "Message cancelled"}
 
 
