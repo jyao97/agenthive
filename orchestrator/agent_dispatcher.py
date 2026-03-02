@@ -255,18 +255,24 @@ def _format_tool_summary(name: str, input_data: dict) -> str | None:
 
 def _parse_stream_parts(
     logs: str,
-) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
+) -> tuple[list[tuple[str, str]], dict | None, list[dict], dict | None]:
     """Parse stream-json logs into an ordered list of (kind, content) parts.
 
-    Returns ``(parts, result_event, interactive_items)`` where *parts* is a
-    list of ``("text", text_string)`` or ``("tool", summary_string)`` tuples
-    and *interactive_items* captures any ``AskUserQuestion`` /
-    ``ExitPlanMode`` tool calls together with their answers (if present).
+    Returns ``(parts, result_event, interactive_items, active_tool)`` where
+    *parts* is a list of ``("text", text_string)`` or
+    ``("tool", summary_string)`` tuples, *interactive_items* captures any
+    ``AskUserQuestion`` / ``ExitPlanMode`` tool calls together with their
+    answers (if present), and *active_tool* is a dict with ``name`` and
+    ``summary`` keys for the most recent tool_use that has no matching
+    tool_result yet (or ``None``).
     """
     parts: list[tuple[str, str]] = []
     result_event = None
     interactive_items: list[dict] = []
     interactive_by_id: dict[str, dict] = {}
+    # Track tool_use order and matched tool_results for active-tool detection
+    tool_use_order: list[tuple[str, str, str | None]] = []  # (id, name, summary)
+    tool_result_ids: set[str] = set()
 
     for line in logs.strip().splitlines():
         line = line.strip()
@@ -319,6 +325,7 @@ def _parse_stream_parts(
                             )
                             if summary:
                                 parts.append(("tool", summary))
+                            tool_use_order.append((tool_use_id, tool_name, summary))
 
             # Check user entries for tool_result answers to interactive calls
             if event.get("type") == "user":
@@ -327,6 +334,7 @@ def _parse_stream_parts(
                     for block in user_content:
                         if isinstance(block, dict) and block.get("type") == "tool_result":
                             tid = block.get("tool_use_id", "")
+                            tool_result_ids.add(tid)
                             if tid in interactive_by_id:
                                 rc = block.get("content", "")
                                 if isinstance(rc, list):
@@ -342,7 +350,16 @@ def _parse_stream_parts(
         except (KeyError, TypeError):
             logger.warning("_parse_stream_parts: unexpected error parsing line: %s", line[:200], exc_info=True)
             continue
-    return parts, result_event, interactive_items
+
+    # Determine the currently active tool: walk tool_use_order in reverse,
+    # first entry whose id is NOT in tool_result_ids is the active one.
+    active_tool: dict | None = None
+    for tu_id, tu_name, tu_summary in reversed(tool_use_order):
+        if tu_id not in tool_result_ids:
+            active_tool = {"name": tu_name, "summary": tu_summary or f"`{tu_name}`"}
+            break
+
+    return parts, result_event, interactive_items, active_tool
 
 
 def _format_parts(parts: list[tuple[str, str]]) -> str:
@@ -369,6 +386,27 @@ def _format_parts(parts: list[tuple[str, str]]) -> str:
     return text
 
 
+_TOOL_SUMMARY_RE = re.compile(r'^> `(\w+)`\s*(.*)')
+
+
+def _extract_last_tool_from_content(content: str) -> dict | None:
+    """Extract last tool summary from formatted content if it's the final block.
+
+    Used by the sync streaming path (which uses ``_parse_session_turns``
+    rather than ``_parse_stream_parts``) to detect the currently active tool
+    from the rendered markdown content.
+    """
+    lines = content.rstrip().split("\n")
+    for line in reversed(lines):
+        stripped = line.strip()
+        m = _TOOL_SUMMARY_RE.match(stripped)
+        if m:
+            return {"name": m.group(1), "summary": f"`{m.group(1)}` {m.group(2)}".strip()}
+        if stripped:
+            return None  # text after tools = no active tool
+    return None
+
+
 def _extract_result(logs: str) -> tuple[str, str | None]:
     """Extract agent response text and tool call summaries from stream-json.
 
@@ -376,7 +414,7 @@ def _extract_result(logs: str) -> tuple[str, str | None]:
     containing interactive tool call data (``AskUserQuestion``,
     ``ExitPlanMode``) if any were found, or ``None``.
     """
-    parts, result_event, interactive_items = _parse_stream_parts(logs)
+    parts, result_event, interactive_items, _ = _parse_stream_parts(logs)
 
     meta_json = None
     if interactive_items:
@@ -2882,12 +2920,12 @@ class AgentDispatcher:
                 with open(output_file, "r", errors="replace") as f:
                     full_logs = f.read()
 
-                parts, _, _ = _parse_stream_parts(full_logs)
+                parts, _, _, active_tool = _parse_stream_parts(full_logs)
                 content = _format_parts(parts)
 
                 if content and content != last_content:
                     last_content = content
-                    self._emit(emit_agent_stream(agent_id, content, generation_id=gid))
+                    self._emit(emit_agent_stream(agent_id, content, generation_id=gid, active_tool=active_tool))
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -3753,7 +3791,8 @@ class AgentDispatcher:
                     if not is_generating:
                         is_generating = True
                         _sync_gen_id = self._start_generating(agent_id)
-                    self._emit(emit_agent_stream(agent_id, partial, generation_id=_sync_gen_id))
+                    _sync_active_tool = _extract_last_tool_from_content(partial) if partial else None
+                    self._emit(emit_agent_stream(agent_id, partial, generation_id=_sync_gen_id, active_tool=_sync_active_tool))
                 continue
 
             db = SessionLocal()
@@ -3781,8 +3820,10 @@ class AgentDispatcher:
                         agent.last_message_at = _utcnow()
                         db.commit()
                         # Stream the updated content to connected clients
+                        _sync_active_tool = _extract_last_tool_from_content(_last_content) if _last_content else None
                         self._emit(emit_agent_stream(
                             agent_id, _last_content, generation_id=_sync_gen_id,
+                            active_tool=_sync_active_tool,
                         ))
                         self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
                         last_tail_hash = tail_hash

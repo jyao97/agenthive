@@ -158,7 +158,8 @@ async def emit_message_update(agent_id: str, message_id: str, status: str,
 
 
 async def emit_agent_stream(agent_id: str, content: str,
-                            generation_id: int | None = None):
+                            generation_id: int | None = None,
+                            active_tool: dict | None = None):
     """Send incremental streaming content for an executing agent."""
     payload: dict = {
         "agent_id": agent_id,
@@ -166,6 +167,8 @@ async def emit_agent_stream(agent_id: str, content: str,
     }
     if generation_id is not None:
         payload["generation_id"] = generation_id
+    if active_tool is not None:
+        payload["active_tool"] = active_tool
     await ws_manager.broadcast("agent_stream", payload)
 
 
