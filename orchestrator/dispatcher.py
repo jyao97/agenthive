@@ -114,7 +114,7 @@ class TaskDispatcher:
             task.completed_at = _utcnow()
 
             if "EXIT_SUCCESS" in logs:
-                task.status = TaskStatus.COMPLETED
+                task.status = TaskStatus.COMPLETE
                 task.result_summary = _extract_summary(logs)
                 logger.info("Task %s completed successfully", task.id)
             elif "EXIT_FAILURE" in logs:
@@ -162,6 +162,8 @@ class TaskDispatcher:
                 task.status = TaskStatus.TIMEOUT
                 task.error_message = f"Timed out after {int(elapsed)}s"
                 task.completed_at = now
+                from websocket import emit_task_update
+                self._emit(emit_task_update(task.id, task.status.value, task.project))
 
     # ---- Step 3: Auto-retry ----
 
@@ -185,6 +187,8 @@ class TaskDispatcher:
                 "Task %s re-queued for retry #%d (was: %s)",
                 task.id, task.retries, prev_error,
             )
+            from websocket import emit_task_update
+            self._emit(emit_task_update(task.id, task.status.value, task.project))
 
     # ---- Step 4: Assign ----
 
@@ -215,6 +219,8 @@ class TaskDispatcher:
             if not project:
                 task.status = TaskStatus.FAILED
                 task.error_message = f"Project '{task.project}' not found"
+                from websocket import emit_task_update
+                self._emit(emit_task_update(task.id, task.status.value, task.project))
                 continue
 
             proj_active = project_counts.get(task.project, 0)
@@ -232,13 +238,16 @@ class TaskDispatcher:
                     "Assigned task %s to worker (project: %s, active: %d/%d)",
                     task.id, task.project, total_active, MAX_CONCURRENT_WORKERS,
                 )
-                from websocket import emit_worker_update
+                from websocket import emit_task_update, emit_worker_update
+                self._emit(emit_task_update(task.id, task.status.value, task.project))
                 self._emit(emit_worker_update("created", f"claude-worker-{task.id[:8]}", task.project))
             except Exception:
                 logger.exception("Failed to start worker for task %s", task.id)
                 task.status = TaskStatus.FAILED
                 task.error_message = "Failed to start worker process"
                 task.completed_at = _utcnow()
+                from websocket import emit_task_update
+                self._emit(emit_task_update(task.id, task.status.value, task.project))
 
     # ---- Housekeeping ----
 

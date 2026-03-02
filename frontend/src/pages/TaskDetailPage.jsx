@@ -5,6 +5,7 @@ import { TASK_STATUS_COLORS, TASK_STATUS_TEXT_COLORS, projectBadgeColor, POLL_IN
 import { relativeTime, renderMarkdown } from "../lib/formatters";
 import ProjectSelector from "../components/ProjectSelector";
 import usePageVisible from "../hooks/usePageVisible";
+import useWebSocket from "../hooks/useWebSocket";
 
 export default function TaskDetailPage({ theme, onToggleTheme }) {
   const { id } = useParams();
@@ -21,6 +22,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
   const [editProject, setEditProject] = useState("");
   const pollRef = useRef(null);
   const visible = usePageVisible();
+  const { lastEvent } = useWebSocket();
 
   const load = useCallback(async () => {
     try {
@@ -41,6 +43,12 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
     return () => clearInterval(pollRef.current);
   }, [load, visible]);
 
+  // Refresh on WebSocket task_update for this task
+  useEffect(() => {
+    if (!lastEvent || lastEvent.type !== "task_update") return;
+    if (lastEvent.data?.task_id === id) load();
+  }, [lastEvent, id, load]);
+
   const doAction = async (fn, ...args) => {
     setActionLoading(true);
     try {
@@ -49,6 +57,17 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
     } catch (err) {
       setError(err.message);
     } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const doDelete = async () => {
+    setActionLoading(true);
+    try {
+      await cancelTask(id);
+      navigate("/tasks", { replace: true });
+    } catch (err) {
+      setError(err.message);
       setActionLoading(false);
     }
   };
@@ -353,25 +372,35 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
 
       {/* Action bar */}
       <div className="shrink-0 border-t border-divider bg-page px-4 py-3 safe-area-pb flex gap-2 justify-center">
-        {/* INBOX → Queue */}
+        {/* INBOX → Dispatch + Delete */}
         {task.status === "INBOX" && (
-          <button
-            type="button"
-            onClick={() => doAction(dispatchTask, id)}
-            disabled={actionLoading || !task.project_name}
-            className="px-5 py-2.5 rounded-lg bg-cyan-500 text-white text-sm font-medium hover:bg-cyan-400 disabled:opacity-50 transition-colors"
-          >
-            Queue for Dispatch
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => doAction(dispatchTask, id)}
+              disabled={actionLoading || !task.project_name}
+              className="px-5 py-2.5 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
+            >
+              Dispatch
+            </button>
+            <button
+              type="button"
+              onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
+              disabled={actionLoading}
+              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+            >
+              Delete
+            </button>
+          </>
         )}
 
         {/* PENDING → Cancel */}
         {task.status === "PENDING" && (
           <button
             type="button"
-            onClick={() => doAction(cancelTask, id)}
+            onClick={() => { if (confirm("Cancel this task?")) doDelete(); }}
             disabled={actionLoading}
-            className="px-5 py-2.5 rounded-lg bg-elevated text-label text-sm font-medium hover:text-heading transition-colors"
+            className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
           >
             Cancel
           </button>
@@ -381,15 +410,15 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
         {task.status === "EXECUTING" && (
           <button
             type="button"
-            onClick={() => doAction(cancelTask, id)}
+            onClick={() => { if (confirm("Cancel this task?")) doDelete(); }}
             disabled={actionLoading}
-            className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 transition-colors"
+            className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
           >
             Cancel
           </button>
         )}
 
-        {/* REVIEW → Approve + Reject */}
+        {/* REVIEW → Approve + Reject + Delete */}
         {task.status === "REVIEW" && !rejectOpen && (
           <>
             <button
@@ -404,45 +433,63 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => setRejectOpen(true)}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 transition-colors"
+              className="px-5 py-2.5 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-500 transition-colors"
             >
               Reject
+            </button>
+            <button
+              type="button"
+              onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
+              disabled={actionLoading}
+              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 transition-colors"
+            >
+              Delete
             </button>
           </>
         )}
 
-        {/* CONFLICT → Retry merge */}
+        {/* CONFLICT → Retry + Delete */}
         {task.status === "CONFLICT" && (
           <>
             <button
               type="button"
               onClick={() => doAction(approveTask, id)}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors"
+              className="px-5 py-2.5 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
             >
               Retry Merge
             </button>
             <button
               type="button"
-              onClick={() => doAction(cancelTask, id)}
+              onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-elevated text-label text-sm font-medium hover:text-heading transition-colors"
+              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
             >
-              Cancel
+              Delete
             </button>
           </>
         )}
 
-        {/* REJECTED / FAILED / TIMEOUT → Retry */}
+        {/* REJECTED / FAILED / TIMEOUT → Retry + Delete */}
         {(task.status === "REJECTED" || task.status === "FAILED" || task.status === "TIMEOUT") && (
-          <button
-            type="button"
-            onClick={() => doAction(dispatchTask, id)}
-            disabled={actionLoading || !task.project_name}
-            className="px-5 py-2.5 rounded-lg bg-cyan-500 text-white text-sm font-medium hover:bg-cyan-400 disabled:opacity-50 transition-colors"
-          >
-            Retry
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => doAction(dispatchTask, id)}
+              disabled={actionLoading || !task.project_name}
+              className="px-5 py-2.5 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
+              disabled={actionLoading}
+              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+            >
+              Delete
+            </button>
+          </>
         )}
       </div>
     </div>
