@@ -1991,8 +1991,6 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
               </h1>
             )}
 
-            <span className="shrink-0 text-xs text-dim">{agent.project}</span>
-
             {/* Icon buttons */}
             <div className="shrink-0 flex items-center">
               {["CLAUDE.md", "PROGRESS.md"].map((fn) => {
@@ -2099,6 +2097,13 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
                   {modelDisplayName(agent.model)}
                 </span>
               )}
+              <span
+                className="text-[10px] text-cyan-400 font-medium px-1.5 py-0.5 rounded bg-cyan-500/10 truncate cursor-pointer hover:bg-cyan-500/20 transition-colors"
+                onClick={() => navigate(`/projects/${encodeURIComponent(agent.project)}`)}
+                title={agent.project}
+              >
+                {agent.project}
+              </span>
               {agent.branch && (
                 <span className="text-xs text-violet-400 font-mono truncate max-w-[120px]">
                   {agent.branch}
