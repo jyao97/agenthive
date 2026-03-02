@@ -900,7 +900,7 @@ function InitializingIndicator() {
 
 // --- Streaming Bubble (live output while agent is executing) ---
 
-function StreamingBubble({ content, project }) {
+function StreamingBubble({ content, project, activeTool }) {
   return (
     <div className="flex justify-start my-2">
       <div className="max-w-[85%]">
@@ -912,7 +912,11 @@ function StreamingBubble({ content, project }) {
           </div>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-            <span className="text-xs text-dim">Streaming...</span>
+            {activeTool ? (
+              <span className="text-xs text-dim"><code className="text-[11px] px-1 py-0.5 rounded bg-elevated text-cyan-300 font-mono">{activeTool.name}</code> running...</span>
+            ) : (
+              <span className="text-xs text-dim">Streaming...</span>
+            )}
           </div>
         </div>
       </div>
@@ -1683,11 +1687,13 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       // Track the current generation
       if (gid != null) generationIdRef.current = gid;
       setStreamingContent(lastEvent.data.content);
+      setActiveTool(lastEvent.data.active_tool || null);
       // Safety fallback: auto-clear after inactivity in case agent_stream_end
       // is never received (e.g., WS disconnect).
       clearTimeout(streamTimeoutRef.current);
       streamTimeoutRef.current = setTimeout(() => {
         setStreamingContent(null);
+        setActiveTool(null);
       }, 6000);
       return;
     }
@@ -1698,12 +1704,14 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
       clearTimeout(streamTimeoutRef.current);
       setStreamingContent(null);
+      setActiveTool(null);
       return;
     }
 
     if (lastEvent.type === "new_message" && lastEvent.data?.agent_id === id) {
       clearTimeout(streamTimeoutRef.current);
       setStreamingContent(null);
+      setActiveTool(null);
       refreshMessages({ syncHint: lastEvent.data?.message_id === "sync" });
       return;
     }
@@ -1728,6 +1736,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         // Agent no longer active — clear streaming
         clearTimeout(streamTimeoutRef.current);
         setStreamingContent(null);
+        setActiveTool(null);
         generationIdRef.current = null;
       }
       refreshMessages();
@@ -2074,7 +2083,12 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
           <div className="flex items-center gap-2 ml-9">
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
               <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
-              <span className={`text-xs shrink-0 ${statusText}`}>{agent.status.toLowerCase().replace("_", " ")}</span>
+              <span className={`text-xs shrink-0 ${statusText}`}>
+                {agent.status.toLowerCase().replace("_", " ")}
+                {activeTool && (isExecuting || isSyncing) && (
+                  <span className="text-faint">: <span className="font-mono">{activeTool.name}</span></span>
+                )}
+              </span>
               {hasTmux && (
                 <span className="text-[10px] text-emerald-400 font-medium px-1.5 py-0.5 rounded bg-emerald-500/15 shrink-0">
                   tmux
@@ -2221,7 +2235,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
                   lastAgent.content === streamingContent
                   || lastAgent.content.startsWith(streamingContent.slice(0, 200))
                 );
-                if (!isDuplicate) return <StreamingBubble content={streamingContent} project={agent.project} />;
+                if (!isDuplicate) return <StreamingBubble content={streamingContent} project={agent.project} activeTool={activeTool} />;
               }
               return (isExecuting || agent?.is_generating) ? <TypingIndicator /> : null;
             })()}
