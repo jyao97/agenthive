@@ -81,6 +81,21 @@ async def websocket_endpoint(ws: WebSocket):
         db.close()
 
     await ws_manager.connect(ws)
+
+    # Send currently-generating agents so the client can seed its streaming
+    # set and defer notifications correctly even after a reconnect.
+    try:
+        ad = getattr(ws.app.state, "agent_dispatcher", None)
+        generating = list(ad._generating_agents) if ad else []
+        if generating:
+            await ws.send_text(json.dumps({
+                "type": "generating_agents",
+                "data": {"agent_ids": generating},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }))
+    except Exception:
+        logger.debug("Failed to send generating_agents on connect", exc_info=True)
+
     try:
         while True:
             # Keep connection alive; client may send pings or viewing updates
@@ -103,12 +118,18 @@ async def websocket_endpoint(ws: WebSocket):
 
 # ---- Event helpers (called from dispatcher/main) ----
 
-async def emit_task_update(task_id: str, status: str, project: str):
-    await ws_manager.broadcast("task_update", {
+async def emit_task_update(task_id: str, status: str, project: str,
+                           title: str | None = None, agent_id: str | None = None):
+    payload = {
         "task_id": task_id,
         "status": status,
         "project": project,
-    })
+    }
+    if title is not None:
+        payload["title"] = title
+    if agent_id is not None:
+        payload["agent_id"] = agent_id
+    await ws_manager.broadcast("task_update", payload)
 
 
 async def emit_worker_update(action: str, process_name: str, project: str = ""):
@@ -144,9 +165,38 @@ async def emit_new_message(agent_id: str, message_id: str,
     })
 
 
-async def emit_agent_stream(agent_id: str, content: str):
+async def emit_message_update(agent_id: str, message_id: str, status: str,
+                              error_message: str | None = None):
+    """Notify clients that a message's status changed (e.g. PENDING→EXECUTING)."""
+    payload: dict = {
+        "agent_id": agent_id,
+        "message_id": message_id,
+        "status": status,
+    }
+    if error_message:
+        payload["error_message"] = error_message
+    await ws_manager.broadcast("message_update", payload)
+
+
+async def emit_agent_stream(agent_id: str, content: str,
+                            generation_id: int | None = None,
+                            active_tool: dict | None = None):
     """Send incremental streaming content for an executing agent."""
-    await ws_manager.broadcast("agent_stream", {
+    payload: dict = {
         "agent_id": agent_id,
         "content": content,
-    })
+    }
+    if generation_id is not None:
+        payload["generation_id"] = generation_id
+    if active_tool is not None:
+        payload["active_tool"] = active_tool
+    await ws_manager.broadcast("agent_stream", payload)
+
+
+async def emit_agent_stream_end(agent_id: str,
+                                generation_id: int | None = None):
+    """Signal that an agent's current generation has finished."""
+    payload: dict = {"agent_id": agent_id}
+    if generation_id is not None:
+        payload["generation_id"] = generation_id
+    await ws_manager.broadcast("agent_stream_end", payload)

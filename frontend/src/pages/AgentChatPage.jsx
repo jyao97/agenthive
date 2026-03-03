@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, Component } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, Component } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   fetchAgent,
@@ -17,7 +17,10 @@ import {
   answerAgent,
   escapeAgent,
   uploadFile,
+  fetchProjectFile,
 } from "../lib/api";
+import ProjectFileModal from "../components/ProjectFileModal";
+import ProjectBrowserModal from "../components/ProjectBrowserModal";
 import { relativeTime, renderMarkdown, extractFileAttachments, stripAttachmentTags } from "../lib/formatters";
 
 // Mini error boundary that wraps individual markdown renders so a single
@@ -49,6 +52,7 @@ import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import useWebSocket, { isAgentMuted, setAgentMuted, clearAgentNotified } from "../hooks/useWebSocket";
 import useHealthStatus from "../hooks/useHealthStatus";
+import usePageVisible from "../hooks/usePageVisible";
 
 // --- Chat Bubble ---
 
@@ -151,6 +155,7 @@ function QuestionBubble({ item, agentId, onAnswered }) {
   const [chosenIndices, setChosenIndices] = useState({});
   // Track which question is currently submitting (null = none)
   const [submittingQi, setSubmittingQi] = useState(null);
+  const [submitError, setSubmitError] = useState(null);
 
   const questions = item.questions || [];
   // Detect dismissed/escaped answers (not a real selection)
@@ -162,6 +167,7 @@ function QuestionBubble({ item, agentId, onAnswered }) {
   const handleSubmit = async (qi, idx) => {
     setChosenIndices(prev => ({ ...prev, [qi]: idx }));
     setSubmittingQi(qi);
+    setSubmitError(null);
     try {
       await answerAgent(agentId, {
         tool_use_id: item.tool_use_id,
@@ -172,6 +178,7 @@ function QuestionBubble({ item, agentId, onAnswered }) {
       onAnswered?.();
     } catch (e) {
       console.error("Failed to answer:", e);
+      setSubmitError("Failed to send answer: " + (e.message || "Unknown error"));
       setChosenIndices(prev => { const next = { ...prev }; delete next[qi]; return next; });
     } finally {
       setSubmittingQi(null);
@@ -310,6 +317,9 @@ function QuestionBubble({ item, agentId, onAnswered }) {
           </div>
         );
       })}
+      {submitError && (
+        <p className="text-xs text-red-400 mt-2 px-1">{submitError}</p>
+      )}
     </div>
   );
 }
@@ -340,7 +350,7 @@ function _detectPlanIdx(answer) {
   if (/feedback|type here|tell claude/.test(a)) return 3;
   if (/^yes\b/.test(a) || a === "approve" || a === "approved") return 0;
   if (/^no\b/.test(a) || a === "reject") return 2;
-  return 0; // default to first option
+  return null; // unrecognized input — do not select any option
 }
 
 function _isPlanDismissed(item) {
@@ -352,6 +362,7 @@ function PlanBubble({ item, agentId, onAnswered }) {
   const [chosenIdx, setChosenIdx] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [planExpanded, setPlanExpanded] = useState(true);
+  const [planError, setPlanError] = useState(null);
 
   const isDismissed = _isPlanDismissed(item);
   // Determine the effective selected index: stored index > answer parse > local choice
@@ -366,6 +377,7 @@ function PlanBubble({ item, agentId, onAnswered }) {
   const handleSelect = async (idx) => {
     setChosenIdx(idx);
     setSubmitting(true);
+    setPlanError(null);
     try {
       await answerAgent(agentId, {
         tool_use_id: item.tool_use_id,
@@ -375,6 +387,7 @@ function PlanBubble({ item, agentId, onAnswered }) {
       onAnswered?.();
     } catch (e) {
       console.error("Failed to answer plan:", e);
+      setPlanError("Failed to send plan response: " + (e.message || "Unknown error"));
       setChosenIdx(null); // revert on failure
     } finally {
       setSubmitting(false);
@@ -481,6 +494,9 @@ function PlanBubble({ item, agentId, onAnswered }) {
           Sending response...
         </p>
       )}
+      {planError && (
+        <p className="text-xs text-red-400 mt-2 px-1">{planError}</p>
+      )}
     </div>
   );
 }
@@ -511,7 +527,7 @@ function InteractiveBubbles({ metadata, agentId, onAnswered, messageContent, pro
   });
 }
 
-function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, agentId, onRefresh }) {
+function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, agentId, onRefresh, queuePosition, queueTotal }) {
   if (message.role === "SYSTEM") {
     return <SystemBubble message={message} />;
   }
@@ -529,8 +545,10 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const [editSchedule, setEditSchedule] = useState("");
+  const [copied, setCopied] = useState(false);
   const [inlineLightbox, setInlineLightbox] = useState(null); // { media, initialIndex }
   const longPressTimer = useRef(null);
+  const lastTapRef = useRef(0);
   const editTextareaRef = useRef(null);
   const markdownRef = useRef(null);
 
@@ -556,10 +574,10 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     }
   }, [editing, message.scheduled_at]);
 
-  // Auto-focus textarea when editing starts
+  // Auto-focus textarea when editing starts (useEffect runs after DOM commit)
   useEffect(() => {
     if (editing) {
-      setTimeout(() => editTextareaRef.current?.focus(), 0);
+      editTextareaRef.current?.focus();
     }
   }, [editing]);
 
@@ -576,10 +594,24 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
     }
+    // Double-tap detection for touch (copy content)
+    if (!canModify) {
+      const now = Date.now();
+      if (now - lastTapRef.current < 350) {
+        handleDoubleClick();
+      }
+      lastTapRef.current = now;
+    }
   };
   const handleDoubleClick = () => {
-    if (!canModify) return;
-    setShowActions(true);
+    if (canModify) {
+      setShowActions(true);
+      return;
+    }
+    navigator.clipboard.writeText(message.content || "").then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
   };
 
   const handleCancel = () => {
@@ -739,7 +771,9 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
               relativeTime(message.completed_at || message.created_at)
             )}
             {isPending && (
-              <span className="text-cyan-300/70">queued</span>
+              <span className="text-cyan-300/70">
+                {queueTotal > 1 ? `queued (${queuePosition} of ${queueTotal})` : "queued"}
+              </span>
             )}
             {message.source && (
               <span className={`px-1 py-0.5 rounded text-[10px] font-medium leading-none ${
@@ -751,13 +785,23 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
               </span>
             )}
             {message.status === "FAILED" && (
-              <span className="text-red-400">Failed</span>
+              <span className="text-red-400" title={message.error_message || ""}>Failed</span>
             )}
             {message.status === "TIMEOUT" && (
               <span className="text-orange-400">Timed out</span>
             )}
           </div>
         </div>
+        {message.status === "FAILED" && message.error_message && (
+          <p className="text-xs text-red-400/70 mt-1 px-1">{message.error_message}</p>
+        )}
+        {copied && (
+          <div className="fixed inset-0 flex items-center justify-center pointer-events-none z-[9999]">
+            <div className="bg-black/80 text-white text-sm font-medium px-4 py-2 rounded-xl shadow-lg">
+              Copied
+            </div>
+          </div>
+        )}
         {attachments.length > 0 && <FileAttachments attachments={attachments} />}
         {inlineLightbox && (
           <ImageLightbox
@@ -856,7 +900,7 @@ function InitializingIndicator() {
 
 // --- Streaming Bubble (live output while agent is executing) ---
 
-function StreamingBubble({ content, project }) {
+function StreamingBubble({ content, project, activeTool }) {
   return (
     <div className="flex justify-start my-2">
       <div className="max-w-[85%]">
@@ -868,7 +912,11 @@ function StreamingBubble({ content, project }) {
           </div>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-            <span className="text-xs text-dim">Streaming...</span>
+            {activeTool ? (
+              <span className="text-xs text-dim"><code className="text-[11px] px-1 py-0.5 rounded bg-elevated text-cyan-300 font-mono">{activeTool.name}</code> running...</span>
+            ) : (
+              <span className="text-xs text-dim">Streaming...</span>
+            )}
           </div>
         </div>
       </div>
@@ -1125,11 +1173,10 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
     setEscCooldown(true);
     try {
       await onEscape();
-    } catch (e) {
-      console.error("Escape failed:", e);
+    } finally {
+      // 2.5s cooldown on the frontend to match backend rate limit
+      setTimeout(() => setEscCooldown(false), 2500);
     }
-    // 2.5s cooldown on the frontend to match backend rate limit
-    setTimeout(() => setEscCooldown(false), 2500);
   };
 
   const canType = !disabled || isBusy;
@@ -1294,8 +1341,11 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 export default function AgentChatPage({ theme, onToggleTheme }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const visible = usePageVisible();
   const [agent, setAgent] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
@@ -1306,11 +1356,15 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const [starLoading, setStarLoading] = useState(false);
   const [muted, setMuted] = useState(() => isAgentMuted(id));
   const [streamingContent, setStreamingContent] = useState(null);
+  const [activeTool, setActiveTool] = useState(null);
   const streamTimeoutRef = useRef(null);
-  const streamLockedRef = useRef(false); // prevents late agent_stream after new_message
+  const generationIdRef = useRef(null); // tracks current backend generation_id
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const nameInputRef = useRef(null);
+  const [fileModal, setFileModal] = useState(null); // "CLAUDE.md" | "PROGRESS.md" | null
+  const [showBrowser, setShowBrowser] = useState(false);
+  const [fileExists, setFileExists] = useState({ "CLAUDE.md": null, "PROGRESS.md": null });
   const messagesEndRef = useRef(null);
   const toastTimer = useRef(null);
   const health = useHealthStatus();
@@ -1326,8 +1380,13 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   // On subsequent poll refreshes, errors are silenced (transient network issues).
   const initialLoadDone = useRef(false);
   const abortRef = useRef(null);
+  const messagesRef = useRef([]);
+
+  // Keep messagesRef in sync
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // Initial load: fetch agent + latest 50 messages
   const loadData = useCallback(async () => {
-    // Abort any in-flight request from a previous call
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -1339,7 +1398,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       if (controller.signal.aborted) return;
       if (!agentData || !agentData.id) return;
       setAgent(agentData);
-      setMessages(Array.isArray(msgData) ? msgData : []);
+      const msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
+      setMessages(msgs);
+      setHasMore(!!msgData?.has_more);
       if (!initialLoadDone.current && agentData.muted != null) {
         setMuted(agentData.muted);
         setAgentMuted(id, agentData.muted);
@@ -1349,9 +1410,89 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       if (controller.signal.aborted) return;
       if (!initialLoadDone.current) {
         console.error("AgentChatPage: initial load failed", err);
+        showToast("Failed to load agent: " + (err.message || "Unknown error"), "error");
       }
     } finally {
       if (!controller.signal.aborted) setLoading(false);
+    }
+  }, [id, showToast]);
+
+  // Load older messages (scroll-up pagination)
+  const loadOlderMessages = useCallback(async () => {
+    const current = messagesRef.current;
+    if (!current.length || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const oldest = current[0];
+      const data = await fetchMessages(id, { before: oldest.created_at });
+      const older = Array.isArray(data?.messages) ? data.messages : [];
+      if (older.length) {
+        // Capture scroll height before DOM update for scroll preservation
+        const el = scrollContainerRef.current;
+        if (el) savedScrollHeight.current = el.scrollHeight;
+        setMessages((prev) => [...older, ...prev]);
+      }
+      setHasMore(!!data?.has_more);
+    } catch (err) {
+      console.warn("Failed to load older messages:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [id, loadingMore]);
+
+  // Incremental refresh: fetch messages newer than the latest, and optionally
+  // merge the tail to catch in-place content updates from sync agents (sync loop
+  // grows the last message without changing created_at, so after= misses it).
+  const refreshMessages = useCallback(async ({ syncHint = false } = {}) => {
+    try {
+      const agentData = await fetchAgent(id);
+      if (!agentData || !agentData.id) return;
+      setAgent(agentData);
+      const current = messagesRef.current;
+      if (!current.length) {
+        // No messages yet — do a full fetch so the first message appears
+        const data = await fetchMessages(id, { limit: 50 });
+        const msgs = Array.isArray(data?.messages) ? data.messages : [];
+        if (msgs.length) setMessages(msgs);
+        return;
+      }
+      const newest = current[current.length - 1];
+      const hasPending = current.some((m) => m.role === "USER" && m.status === "PENDING");
+      const needTail = syncHint || agentData.status === "SYNCING" || hasPending;
+      const fetches = [fetchMessages(id, { after: newest.created_at })];
+      if (needTail) fetches.push(fetchMessages(id, { limit: 5 }));
+      const [afterData, tailData] = await Promise.all(fetches);
+      const newer = Array.isArray(afterData?.messages) ? afterData.messages : [];
+      const tail = tailData ? (Array.isArray(tailData?.messages) ? tailData.messages : []) : [];
+
+      setMessages((prev) => {
+        let result = prev;
+        // Merge tail: replace existing messages whose content grew in-place
+        if (tail.length) {
+          const tailById = new Map(tail.map((m) => [m.id, m]));
+          let anyChanged = false;
+          const merged = result.map((m) => {
+            const fresh = tailById.get(m.id);
+            if (fresh && (fresh.content !== m.content || fresh.completed_at !== m.completed_at || fresh.status !== m.status || JSON.stringify(fresh.metadata) !== JSON.stringify(m.metadata))) {
+              anyChanged = true;
+              return fresh;
+            }
+            return m;
+          });
+          if (anyChanged) result = merged;
+        }
+        // Append truly new messages from either source (dedup across newer+tail)
+        const seenIds = new Set(result.map((m) => m.id));
+        const unique = [...newer, ...tail].filter((m) => {
+          if (seenIds.has(m.id)) return false;
+          seenIds.add(m.id);
+          return true;
+        });
+        if (unique.length) return [...result, ...unique];
+        return result !== prev ? result : prev;
+      });
+    } catch {
+      // Transient errors during polling — silently ignore
     }
   }, [id]);
 
@@ -1364,18 +1505,21 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     return () => abortRef.current?.abort();
   }, [loadData, id]);
 
-  // Polling — faster when executing
+  // Polling — faster when executing, pauses when page hidden
   useEffect(() => {
+    if (!visible) return;
     const isActive = agent?.status === "EXECUTING" || agent?.status === "SYNCING";
     const interval = isActive ? 3000 : 10000;
-    const timer = setInterval(loadData, interval);
+    const timer = setInterval(refreshMessages, interval);
     return () => clearInterval(timer);
-  }, [loadData, agent?.status]);
+  }, [refreshMessages, agent?.status, visible]);
 
   // Mark as read on mount and when new messages arrive
   useEffect(() => {
     if (agent && agent.unread_count > 0) {
-      markAgentRead(id).catch(() => {});
+      markAgentRead(id).catch((err) => {
+        console.warn("Failed to mark agent as read:", err);
+      });
     }
   }, [id, messages.length, agent?.unread_count]);
 
@@ -1388,8 +1532,21 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
         const match = sessions.find((s) => s.session_id === sessionId);
         setStarred(match?.starred ?? false);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn("Failed to fetch starred status:", err);
+      });
   }, [agent?.project, agent?.session_id, agent?.id]);
+
+  // Check CLAUDE.md / PROGRESS.md existence once agent is loaded
+  useEffect(() => {
+    if (!agent?.project) return;
+    Promise.all([
+      fetchProjectFile(agent.project, "CLAUDE.md").catch(() => ({ exists: false })),
+      fetchProjectFile(agent.project, "PROGRESS.md").catch(() => ({ exists: false })),
+    ]).then(([c, p]) => {
+      setFileExists({ "CLAUDE.md": c.exists, "PROGRESS.md": p.exists });
+    });
+  }, [agent?.project]);
 
   const handleToggleStar = async () => {
     if (!agent || starLoading) return;
@@ -1409,15 +1566,13 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     }
   };
 
-  const handleToggleMute = async () => {
+  const handleToggleMute = () => {
     const nextMuted = !muted;
     setAgentMuted(id, nextMuted);
     setMuted(nextMuted);
-    try {
-      await updateAgent(id, { muted: nextMuted });
-    } catch {
-      // Backend update failed — local state still applies for browser notifs
-    }
+    updateAgent(id, { muted: nextMuted }).catch((err) => {
+      showToast("Failed to save mute setting: " + (err.message || "Unknown error"), "error");
+    });
     showToast(nextMuted ? "Notifications muted for this agent" : "Notifications enabled for this agent");
   };
 
@@ -1425,7 +1580,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const scrollContainerRef = useRef(null);
   const userScrolledUp = useRef(false);
   const scrollSaveTimer = useRef(null);
-  const prevMsgCount = useRef(null);
+  const prevLastMsgId = useRef(null);
+  const prevFirstMsgId = useRef(null);
+  const savedScrollHeight = useRef(null);
   const scrollKey = `scroll:chat:${id}`;
   const scrollCountKey = `scroll:chat:${id}:count`;
 
@@ -1436,11 +1593,15 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     if (!el) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     userScrolledUp.current = distFromBottom > 100;
+    // Scroll-up trigger for lazy loading
+    if (el.scrollTop < 200 && hasMore && !loadingMore) {
+      loadOlderMessages();
+    }
     clearTimeout(scrollSaveTimer.current);
     scrollSaveTimer.current = setTimeout(() => {
       try { sessionStorage.setItem(scrollKey, String(el.scrollTop)); } catch { /* ignore */ }
     }, 200);
-  }, [scrollKey]);
+  }, [scrollKey, hasMore, loadingMore, loadOlderMessages]);
 
   // Save scroll position on unmount
   useEffect(() => {
@@ -1453,11 +1614,17 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     };
   }, [scrollKey]);
 
-  useEffect(() => {
-    if (loading) return;
-    const isFirstLoad = prevMsgCount.current === null;
-    const msgCountChanged = prevMsgCount.current !== null && prevMsgCount.current !== messages.length;
-    prevMsgCount.current = messages.length;
+  // useLayoutEffect so scroll adjustments happen before browser paint (no flicker)
+  useLayoutEffect(() => {
+    if (loading || !messages.length) return;
+    const lastId = messages[messages.length - 1]?.id;
+    const firstId = messages[0]?.id;
+    const isFirstLoad = prevLastMsgId.current === null;
+    const newMessagesAppended = !isFirstLoad && prevLastMsgId.current !== lastId;
+    const olderMessagesPrepended = !isFirstLoad && prevFirstMsgId.current !== firstId && prevLastMsgId.current === lastId;
+
+    prevLastMsgId.current = lastId;
+    prevFirstMsgId.current = firstId;
 
     if (isFirstLoad) {
       // Restore saved position if message count matches (no new messages since last visit)
@@ -1478,8 +1645,17 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       return;
     }
 
-    // New messages arrived after initial load — clear saved position, auto-scroll
-    if (msgCountChanged) {
+    // Older messages prepended — preserve scroll position
+    if (olderMessagesPrepended) {
+      const el = scrollContainerRef.current;
+      if (el && savedScrollHeight.current != null) {
+        el.scrollTop += el.scrollHeight - savedScrollHeight.current;
+      }
+      return;
+    }
+
+    // New messages appended — clear saved position, auto-scroll
+    if (newMessagesAppended) {
       try {
         sessionStorage.removeItem(scrollKey);
         sessionStorage.setItem(scrollCountKey, String(messages.length));
@@ -1488,7 +1664,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     if (!userScrolledUp.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [loading, messages.length, streamingContent, scrollKey, scrollCountKey]);
+  }, [loading, messages, streamingContent, scrollKey, scrollCountKey]);
 
   // Keep saved message count in sync for future visits
   useEffect(() => {
@@ -1507,60 +1683,69 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   }, [id, sendWsMessage]);
   useEffect(() => {
     if (!lastEvent) return;
-    const syncing = agent?.status === "SYNCING";
 
     if (lastEvent.type === "agent_stream" && lastEvent.data?.agent_id === id) {
-      // Reject late agent_stream that arrives after new_message already cleared streaming
-      if (streamLockedRef.current) return;
+      const gid = lastEvent.data.generation_id;
+      // Reject stream chunks from a stale generation
+      if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
+      // Track the current generation
+      if (gid != null) generationIdRef.current = gid;
       setStreamingContent(lastEvent.data.content);
+      setActiveTool(lastEvent.data.active_tool || null);
       // Safety fallback: auto-clear after inactivity in case agent_stream_end
-      // is never received (e.g., WS disconnect).  Generous timeout since the
-      // deterministic agent_stream_end is the primary signal.
+      // is never received (e.g., WS disconnect).
       clearTimeout(streamTimeoutRef.current);
       streamTimeoutRef.current = setTimeout(() => {
         setStreamingContent(null);
-      }, syncing ? 8000 : 6000);
+        setActiveTool(null);
+      }, 6000);
       return;
     }
 
     if (lastEvent.type === "agent_stream_end" && lastEvent.data?.agent_id === id) {
-      // Deterministic signal from backend that generation finished.
-      // Lock streaming briefly, then auto-unlock for next message.
-      streamLockedRef.current = true;
+      const gid = lastEvent.data.generation_id;
+      // Ignore end for a stale generation
+      if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
       clearTimeout(streamTimeoutRef.current);
-      streamTimeoutRef.current = setTimeout(() => {
-        setStreamingContent(null);
-        streamLockedRef.current = false;
-      }, 300);
+      setStreamingContent(null);
+      setActiveTool(null);
       return;
     }
 
     if (lastEvent.type === "new_message" && lastEvent.data?.agent_id === id) {
-      // New message arrived — clear streaming, briefly lock to reject late agent_stream.
-      // Auto-unlock after 1.5s so the NEXT message's streams can come through
-      // (SYNCING agents don't emit agent_update between messages to unlock).
-      streamLockedRef.current = true;
       clearTimeout(streamTimeoutRef.current);
-      streamTimeoutRef.current = setTimeout(() => { streamLockedRef.current = false; }, 1500);
       setStreamingContent(null);
-      loadData();
+      setActiveTool(null);
+      refreshMessages({ syncHint: lastEvent.data?.message_id === "sync" });
+      return;
+    }
+
+    if (lastEvent.type === "message_update" && lastEvent.data?.agent_id === id) {
+      const { message_id, status, error_message } = lastEvent.data;
+      if (status === "CANCELLED") {
+        setMessages((prev) => prev.filter((m) => m.id !== message_id));
+      } else {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === message_id
+            ? { ...m, status, ...(error_message ? { error_message } : {}) }
+            : m))
+        );
+      }
       return;
     }
 
     if (lastEvent.type === "agent_update" && lastEvent.data?.agent_id === id) {
       const status = lastEvent.data.status;
-      if (status === "EXECUTING" || status === "SYNCING") {
-        // New execution starting — unlock streaming for fresh events
-        streamLockedRef.current = false;
-      } else {
-        // Agent no longer executing — lock and clear streaming
-        streamLockedRef.current = true;
+      if (status !== "EXECUTING" && status !== "SYNCING") {
+        // Agent no longer active — clear streaming
         clearTimeout(streamTimeoutRef.current);
         setStreamingContent(null);
+        setActiveTool(null);
+        generationIdRef.current = null;
       }
-      loadData();
+      refreshMessages();
     }
-  }, [lastEvent, id, loadData, agent?.status]);
+  }, [lastEvent, id, refreshMessages]);
 
   // Cleanup
   useEffect(() => {
@@ -1570,11 +1755,15 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     };
   }, []);
 
+  // Auto-select name input when rename starts (useEffect runs after DOM commit)
+  useEffect(() => {
+    if (editingName) nameInputRef.current?.select();
+  }, [editingName]);
+
   // Rename agent
   const startRename = () => {
     setNameDraft(agent?.name || "");
     setEditingName(true);
-    setTimeout(() => nameInputRef.current?.select(), 0);
   };
   const submitRename = async () => {
     const trimmed = nameDraft.trim();
@@ -1806,10 +1995,38 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
               </h1>
             )}
 
-            <span className="shrink-0 text-xs text-dim">{agent.project}</span>
-
             {/* Icon buttons */}
             <div className="shrink-0 flex items-center">
+              {["CLAUDE.md", "PROGRESS.md"].map((fn) => {
+                const letter = fn === "CLAUDE.md" ? "C" : "P";
+                const exists = fileExists[fn];
+                const color = exists === false ? "text-zinc-500 hover:text-zinc-400" : "text-cyan-400 hover:text-cyan-300";
+                return (
+                  <button
+                    key={fn}
+                    type="button"
+                    onClick={() => setFileModal(fn)}
+                    title={fn}
+                    className={`shrink-0 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${color}`}
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2v6h6" />
+                      <text x="12" y="17" textAnchor="middle" fill="currentColor" stroke="none" fontSize="7" fontWeight="700" fontFamily="system-ui">{letter}</text>
+                    </svg>
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => setShowBrowser(true)}
+                title="Browse files"
+                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-300 hover:bg-input transition-colors"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+              </button>
               <button
                 type="button"
                 onClick={handleToggleMute}
@@ -1864,11 +2081,32 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
             </div>
           </div>
 
+          {/* Task banner */}
+          {agent.task_id && (
+            <div className="ml-9 flex items-center gap-1.5">
+              <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+              <button
+                type="button"
+                onClick={() => navigate(`/tasks/${agent.task_id}`)}
+                className="text-xs text-amber-400 hover:text-amber-300 underline truncate"
+              >
+                Working on task
+              </button>
+            </div>
+          )}
+
           {/* Row 2: Status + model + branch | action buttons (ml-9 aligns with name after back btn) */}
           <div className="flex items-center gap-2 ml-9">
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
               <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
-              <span className={`text-xs shrink-0 ${statusText}`}>{agent.status.toLowerCase().replace("_", " ")}</span>
+              <span className={`text-xs shrink-0 ${statusText}`}>
+                {agent.status.toLowerCase().replace("_", " ")}
+                {activeTool && (isExecuting || isSyncing) && (
+                  <span className="text-faint">: <span className="font-mono">{activeTool.name}</span></span>
+                )}
+              </span>
               {hasTmux && (
                 <span className="text-[10px] text-emerald-400 font-medium px-1.5 py-0.5 rounded bg-emerald-500/15 shrink-0">
                   tmux
@@ -1879,6 +2117,13 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
                   {modelDisplayName(agent.model)}
                 </span>
               )}
+              <span
+                className="text-[10px] text-cyan-400 font-medium px-1.5 py-0.5 rounded bg-cyan-500/10 truncate cursor-pointer hover:bg-cyan-500/20 transition-colors"
+                onClick={() => navigate(`/projects/${encodeURIComponent(agent.project)}`)}
+                title={agent.project}
+              >
+                {agent.project}
+              </span>
               {agent.branch && (
                 <span className="text-xs text-violet-400 font-mono truncate max-w-[120px]">
                   {agent.branch}
@@ -1992,8 +2237,16 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
           <InitializingIndicator />
         ) : (
           <>
+            {/* Lazy-load indicator at top */}
+            {loadingMore && (
+              <div className="text-center py-3 text-xs opacity-60">Loading older messages...</div>
+            )}
+            {!hasMore && messages.length > 0 && (
+              <div className="text-center py-3 text-xs opacity-40">Beginning of conversation</div>
+            )}
+
             {messages.filter((m) => !(m.role === "USER" && m.status === "PENDING")).map((msg) => (
-              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={loadData} />
+              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
             ))}
 
             {/* Streaming output or typing indicator while executing/syncing */}
@@ -2007,15 +2260,27 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
                   lastAgent.content === streamingContent
                   || lastAgent.content.startsWith(streamingContent.slice(0, 200))
                 );
-                if (!isDuplicate) return <StreamingBubble content={streamingContent} project={agent.project} />;
+                if (!isDuplicate) return <StreamingBubble content={streamingContent} project={agent.project} activeTool={activeTool} />;
               }
-              return isExecuting ? <TypingIndicator /> : null;
+              return (isExecuting || agent?.is_generating) ? <TypingIndicator /> : null;
             })()}
 
             {/* Pending/scheduled messages always at the bottom */}
-            {messages.filter((m) => m.role === "USER" && m.status === "PENDING").map((msg) => (
-              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={loadData} />
-            ))}
+            {(() => {
+              const pending = messages.filter((m) => m.role === "USER" && m.status === "PENDING");
+              const queued = pending.filter((m) => !m.scheduled_at);
+              const scheduled = pending.filter((m) => m.scheduled_at);
+              return (
+                <>
+                  {queued.map((msg, idx) => (
+                    <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} queuePosition={idx + 1} queueTotal={queued.length} />
+                  ))}
+                  {scheduled.map((msg) => (
+                    <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
+                  ))}
+                </>
+              );
+            })()}
           </>
         )}
 
@@ -2035,7 +2300,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
           try { await escapeAgent(id); loadData(); } catch (e) { showToast(e.message || "Escape failed", "error"); }
         } : null}
         escapeDisabled={isStopped || isError}
-        escapeUrgent={isExecuting || hasPendingInteractive || (hasTmux && (streamingContent || (messages.length > 0 && messages[messages.length - 1].role === "USER")))}
+        escapeUrgent={isExecuting || hasPendingInteractive || agent.is_generating || (hasTmux && (streamingContent || (messages.length > 0 && messages[messages.length - 1].role === "USER")))}
         escapeAvailable={hasTmuxPane}
       />
 
@@ -2102,6 +2367,29 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
             </div>
           </div>
         </div>
+      )}
+
+      {fileModal && agent && (
+        <ProjectFileModal
+          project={agent.project}
+          filename={fileModal}
+          onClose={() => {
+            setFileModal(null);
+            Promise.all([
+              fetchProjectFile(agent.project, "CLAUDE.md").catch(() => ({ exists: false })),
+              fetchProjectFile(agent.project, "PROGRESS.md").catch(() => ({ exists: false })),
+            ]).then(([c, p]) => {
+              setFileExists({ "CLAUDE.md": c.exists, "PROGRESS.md": p.exists });
+            });
+          }}
+        />
+      )}
+
+      {showBrowser && agent && (
+        <ProjectBrowserModal
+          project={agent.project}
+          onClose={() => setShowBrowser(false)}
+        />
       )}
     </div>
   );

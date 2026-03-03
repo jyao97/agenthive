@@ -32,13 +32,22 @@
 - Follow existing patterns in the codebase — don't introduce new conventions
 - Match the indentation, naming, and structure of surrounding code
 
-## Project: cc-orchestrator
-- Tech Stack: Python
+## Project: cc-orchestrator (AgentHive)
+- Tech Stack: Python 3.11+ (FastAPI), React (Vite), SQLite
 - Top Dirs: certs/, frontend/, orchestrator/, project-configs/, projects/
 - Config: .env
-- Entry: N/A
+- Entry: orchestrator/main.py
 - Tests: test_multi_question.py
-- Build: N/A  |  Test: N/A  |  Lint: N/A
+- Build: `cd frontend && npx vite build` | Test: `cd frontend && npx vitest run`
+- Verify backend: `cd orchestrator && python3 -c "from models import *; print('OK')"`
+- Restart: `./run.sh` or POST `/api/system/restart`
+- Logs: `logs/server.log`, `logs/orchestrator.log`
 
 ## Project-Specific Rules
 See README.md for detailed project documentation.
+- Worktree sessions: always use `_resolve_session_jsonl()`, never bare `session_source_dir()`
+- tmux pane matching: `ah-{agent_id[:8]}` session name is authoritative
+- CWD matching: use `startswith(proj + "/")` not `==` (worktree subdirs)
+- SQLAlchemy: `metadata` is reserved — use alt attr name with explicit column
+- When fixing a helper, grep ALL call sites — don't assume you found them all
+- JSONL has dual entries (queue-operation + user) — parse ONE, skip the other

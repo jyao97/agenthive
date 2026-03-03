@@ -1,121 +1,132 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { fetchTasks } from "../lib/api";
-import { STATUS_TABS, POLL_INTERVAL } from "../lib/constants";
-import TaskCard from "../components/TaskCard";
-import TaskDetail from "../components/TaskDetail";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { fetchTasksV2 } from "../lib/api";
+import { TASK_PERSPECTIVE_TABS } from "../lib/constants";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
+import usePageVisible from "../hooks/usePageVisible";
+import useWebSocket from "../hooks/useWebSocket";
+import InboxView from "./tasks/InboxView";
+import QueueView from "./tasks/QueueView";
+import ActiveView from "./tasks/ActiveView";
+import ReviewView from "./tasks/ReviewView";
+import DoneView from "./tasks/DoneView";
+
+const PERSPECTIVE_STATUSES = {
+  INBOX: "INBOX",
+  QUEUE: "PENDING",
+  ACTIVE: "EXECUTING",
+  REVIEW: "REVIEW,MERGING,CONFLICT",
+  DONE: "COMPLETE,CANCELLED,REJECTED,FAILED,TIMEOUT",
+};
+
+const POLL_INTERVALS = {
+  INBOX: 5000,
+  QUEUE: 5000,
+  ACTIVE: 3000,
+  REVIEW: 5000,
+  DONE: 10000,
+};
 
 export default function TasksPage({ theme, onToggleTheme }) {
+  const [perspective, setPerspective] = useDraft("ui:tasks-v2:perspective", "INBOX");
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [activeTab, setActiveTab] = useDraft("ui:tasks:filter", "ALL");
-  const [expandedId, setExpandedId] = useState(null);
+  const [counts, setCounts] = useState({});
   const pollRef = useRef(null);
+  const countPollRef = useRef(null);
+  const visible = usePageVisible();
+  const { lastEvent } = useWebSocket();
 
-  const load = useCallback(async () => {
+  // Fetch counts for all perspectives (lightweight)
+  const loadCounts = useCallback(async () => {
     try {
-      const data = await fetchTasks();
-      setTasks(Array.isArray(data) ? data : []);
-      setError(null);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      const all = await fetchTasksV2();
+      const arr = Array.isArray(all) ? all : [];
+      setCounts({
+        INBOX: arr.filter((t) => t.status === "INBOX").length,
+        QUEUE: arr.filter((t) => t.status === "PENDING").length,
+        ACTIVE: arr.filter((t) => t.status === "EXECUTING").length,
+        REVIEW: arr.filter((t) => ["REVIEW", "MERGING", "CONFLICT"].includes(t.status)).length,
+        DONE: arr.filter((t) => ["COMPLETE", "CANCELLED", "REJECTED", "FAILED", "TIMEOUT"].includes(t.status)).length,
+        DONE_COMPLETED: arr.filter((t) => t.status === "COMPLETE").length,
+      });
+    } catch {
+      // silently fail count refresh
     }
   }, []);
 
-  useEffect(() => {
-    load();
-    pollRef.current = setInterval(load, POLL_INTERVAL);
-    return () => clearInterval(pollRef.current);
-  }, [load]);
-
-  // Compute counts per status
-  const counts = {};
-  counts.ALL = tasks.length;
-  for (const tab of STATUS_TABS) {
-    if (tab.key !== "ALL") {
-      counts[tab.key] = tasks.filter((t) => t.status === tab.key).length;
+  // Fetch tasks for current perspective
+  const loadTasks = useCallback(async () => {
+    try {
+      const statuses = PERSPECTIVE_STATUSES[perspective];
+      const limit = perspective === "DONE" ? 50 : 100;
+      const data = await fetchTasksV2(`statuses=${statuses}&limit=${limit}`);
+      setTasks(Array.isArray(data) ? data : []);
+    } catch {
+      // keep stale data on error
+    } finally {
+      setLoading(false);
     }
-  }
-  counts.FAILED = tasks.filter((t) =>
-    ["FAILED", "TIMEOUT", "CANCELLED"].includes(t.status)
-  ).length;
+  }, [perspective]);
 
-  // Filtered list
-  const filtered =
-    activeTab === "ALL"
-      ? tasks
-      : activeTab === "FAILED"
-        ? tasks.filter((t) => ["FAILED", "TIMEOUT", "CANCELLED"].includes(t.status))
-        : tasks.filter((t) => t.status === activeTab);
+  // Refresh on task_update WebSocket events
+  useEffect(() => {
+    if (!lastEvent || lastEvent.type !== "task_update") return;
+    loadTasks();
+    loadCounts();
+  }, [lastEvent, loadTasks, loadCounts]);
 
-  // Sort: newest first by created_at
-  const sorted = [...filtered].sort((a, b) =>
-    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-  );
+  // Load on mount + poll
+  useEffect(() => {
+    if (!visible) return;
+    setLoading(true);
+    loadTasks();
+    loadCounts();
+    const interval = POLL_INTERVALS[perspective] || 5000;
+    pollRef.current = setInterval(loadTasks, interval);
+    countPollRef.current = setInterval(loadCounts, 10000);
+    return () => {
+      clearInterval(pollRef.current);
+      clearInterval(countPollRef.current);
+    };
+  }, [loadTasks, loadCounts, visible, perspective]);
+
+  const onRefresh = useCallback(() => {
+    loadTasks();
+    loadCounts();
+  }, [loadTasks, loadCounts]);
+
+  const ViewComponent = {
+    INBOX: InboxView,
+    QUEUE: QueueView,
+    ACTIVE: ActiveView,
+    REVIEW: ReviewView,
+    DONE: DoneView,
+  }[perspective] || InboxView;
 
   return (
     <div className="h-full flex flex-col">
       <PageHeader title="Tasks" theme={theme} onToggleTheme={onToggleTheme}>
-        <FilterTabs tabs={STATUS_TABS} active={activeTab} onChange={setActiveTab} counts={counts} />
+        <FilterTabs
+          tabs={TASK_PERSPECTIVE_TABS}
+          active={perspective}
+          onChange={setPerspective}
+          counts={counts}
+        />
       </PageHeader>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-      <div className="max-w-2xl mx-auto w-full">
-      {/* Task list */}
-      <div className="pb-20 px-4 py-3 space-y-3">
-        {loading && tasks.length === 0 && (
-          <div className="flex justify-center py-12">
-            <span className="text-dim text-sm animate-pulse">Loading tasks...</span>
+        <div className="max-w-2xl mx-auto w-full">
+          <div className="pb-20 px-4 py-3">
+            {loading && tasks.length === 0 && (
+              <div className="flex justify-center py-12">
+                <span className="text-dim text-sm animate-pulse">Loading...</span>
+              </div>
+            )}
+            {!loading && <ViewComponent tasks={tasks} loading={loading} onRefresh={onRefresh} />}
           </div>
-        )}
-
-        {error && (
-          <div className="bg-red-950/40 border border-red-800 rounded-xl p-4">
-            <p className="text-red-400 text-sm">Failed to fetch tasks: {error}</p>
-            <button type="button" onClick={load} className="mt-2 text-xs text-red-300 underline hover:text-red-200">
-              Retry
-            </button>
-          </div>
-        )}
-
-        {!loading && !error && sorted.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 text-faint">
-            <svg className="w-12 h-12 mb-3" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>
-            <p className="text-sm">No tasks found</p>
-          </div>
-        )}
-
-        {sorted.map((task) => {
-          const isExpanded = expandedId === task.id;
-          return (
-            <div key={task.id} className="space-y-2">
-              <TaskCard
-                task={task}
-                isExpanded={isExpanded}
-                onToggle={() => setExpandedId(isExpanded ? null : task.id)}
-              />
-              {isExpanded && (
-                <TaskDetail
-                  taskId={task.id}
-                  agentId={task.agent_id}
-                  project={task.project}
-                  status={task.status}
-                />
-              )}
-            </div>
-          );
-        })}
-
-        <div className="h-4" />
-      </div>
-      </div>
+        </div>
       </div>
     </div>
   );

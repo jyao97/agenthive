@@ -31,9 +31,8 @@ export async function setupPushNotifications() {
     const permission = await Notification.requestPermission();
     if (permission !== "granted") return false;
 
-    // Register the service worker
-    const reg = await navigator.serviceWorker.register("/sw.js");
-    await navigator.serviceWorker.ready;
+    // Use the SW already registered by vite-plugin-pwa (includes push-handler.js)
+    const reg = await navigator.serviceWorker.ready;
 
     // Fetch VAPID public key from backend
     const res = await authedFetch("/api/push/vapid-public-key");

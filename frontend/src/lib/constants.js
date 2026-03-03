@@ -95,3 +95,50 @@ export function projectBadgeColor(name) {
 }
 
 export const POLL_INTERVAL = 5000;
+
+// ---- Task v2 ----
+
+export const TASK_STATUS_COLORS = {
+  INBOX: "bg-blue-500",
+  PENDING: "bg-gray-500",
+  EXECUTING: "bg-cyan-500 animate-pulse",
+  REVIEW: "bg-amber-500",
+  MERGING: "bg-purple-500",
+  CONFLICT: "bg-red-500",
+  COMPLETE: "bg-green-500",
+  REJECTED: "bg-orange-500",
+  CANCELLED: "bg-gray-600",
+  FAILED: "bg-red-500",
+  TIMEOUT: "bg-orange-500",
+};
+
+export const TASK_STATUS_TEXT_COLORS = {
+  INBOX: "text-blue-400",
+  PENDING: "text-dim",
+  EXECUTING: "text-cyan-400",
+  REVIEW: "text-amber-400",
+  MERGING: "text-purple-400",
+  CONFLICT: "text-red-400",
+  COMPLETE: "text-green-400",
+  REJECTED: "text-orange-400",
+  CANCELLED: "text-faint",
+  FAILED: "text-red-400",
+  TIMEOUT: "text-orange-400",
+};
+
+export const TASK_STATUS_TABS = [
+  { key: "ALL", label: "All" },
+  { key: "INBOX", label: "Inbox" },
+  { key: "PENDING", label: "Pending" },
+  { key: "ACTIVE", label: "Active" },
+  { key: "REVIEW", label: "Review" },
+  { key: "DONE", label: "Done" },
+];
+
+export const TASK_PERSPECTIVE_TABS = [
+  { key: "INBOX", label: "Inbox" },
+  { key: "QUEUE", label: "Queue" },
+  { key: "ACTIVE", label: "Active" },
+  { key: "REVIEW", label: "Review" },
+  { key: "DONE", label: "Done" },
+];

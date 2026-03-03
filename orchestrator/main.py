@@ -50,6 +50,7 @@ from schemas import (
     HealthResponse,
     MessageOut,
     MessageSearchResponse,
+    PaginatedMessages,
     MessageSearchResult,
     ProjectCreate,
     ProjectOut,
@@ -57,6 +58,11 @@ from schemas import (
     ProjectWithStats,
     SendMessage,
     SessionSummary,
+    TaskCreate,
+    TaskDetailOut,
+    TaskOut,
+    TaskRejectRequest,
+    TaskUpdate,
     UpdateMessage,
 )
 from auth import (
@@ -493,7 +499,8 @@ async def system_stats():
             "cores": cpu_count,
             "usage_pct": round(min(load1 / cpu_count * 100, 100), 1),
         }
-    except Exception:
+    except (OSError, ValueError, IndexError) as e:
+        logger.warning("Failed to collect CPU stats: %s", e)
         stats["cpu"] = None
 
     # Memory from /proc/meminfo
@@ -511,7 +518,8 @@ async def system_stats():
             "used_gb": round(used / 1048576, 1),
             "usage_pct": round(used / total * 100, 1) if total else 0,
         }
-    except Exception:
+    except (OSError, ValueError, IndexError, ZeroDivisionError) as e:
+        logger.warning("Failed to collect memory stats: %s", e)
         stats["memory"] = None
 
     # Disk usage
@@ -522,7 +530,8 @@ async def system_stats():
             "used_gb": round(usage.used / (1024 ** 3), 1),
             "usage_pct": round(usage.used / usage.total * 100, 1),
         }
-    except Exception:
+    except OSError as e:
+        logger.warning("Failed to collect disk stats: %s", e)
         stats["disk"] = None
 
     # GPU (nvidia-smi)
@@ -549,7 +558,10 @@ async def system_stats():
             stats["gpus"] = gpus
         else:
             stats["gpus"] = None
-    except Exception:
+    except FileNotFoundError:
+        stats["gpus"] = None  # nvidia-smi not installed
+    except (subprocess.TimeoutExpired, OSError, ValueError) as e:
+        logger.warning("Failed to collect GPU stats: %s", e)
         stats["gpus"] = None
 
     # AgentHive own process usage (uvicorn + vite)
@@ -583,9 +595,11 @@ async def system_stats():
                 "mem_mb": round(rss_kb / 1024, 1),
                 "cpu_pct": 0,
             }
-        except Exception:
+        except (OSError, ValueError) as e:
+            logger.warning("Failed to collect process stats from /proc: %s", e)
             stats["agenthive"] = None
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to collect process stats: %s", e)
         stats["agenthive"] = None
 
     return stats
@@ -1104,7 +1118,16 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
     wm = getattr(request.app.state, "worker_manager", None)
     if wm:
         if body.git_url:
-            wm.clone_project(body.name, body.git_url)
+            try:
+                wm.clone_project(body.name, body.git_url)
+            except Exception as e:
+                # Clone failed — remove the DB entry we just committed
+                db.delete(proj)
+                db.commit()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Git clone failed: {e}",
+                )
         else:
             wm.ensure_project_dir(body.name)
 
@@ -1231,7 +1254,12 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
     from models import Task
     db.execute(update(Task).where(Task.project == name).values(project=new_name))
 
-    db.commit()
+    ghost = db.execute(text("SELECT name FROM projects WHERE name = :old"), {"old": name}).fetchone()
+    if ghost:
+        db.execute(text("DELETE FROM projects WHERE name = :old"), {"old": name})
+
+    db.flush()
+    db.expire_all()
 
     new_proj = db.get(Project, new_name)
 
@@ -1258,12 +1286,13 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
         if not os.path.exists(new_path):
             try:
                 os.rename(old_path, new_path)
-                new_proj.path = new_path
-                db.commit()
                 logger.info("Renamed project directory %s → %s", old_path, new_path)
             except OSError:
                 logger.warning("Failed to rename project directory %s → %s", old_path, new_path)
                 new_path = old_path  # rename failed, keep old path
+
+    new_proj.path = new_path
+    db.commit()
 
     # --- Migrate Claude session directory and session cache ---
     # When the project path changes, the encoded directory name changes too.
@@ -1364,12 +1393,19 @@ async def delete_project(name: str, request: Request, db: Session = Depends(get_
     """Delete a project — unregisters and moves files to .trash. Works even if not registered."""
     _validate_folder_name(name)
     import shutil
+    from models import Task
 
     proj = db.get(Project, name)
 
     # If registered, clean up DB resources
     if proj:
         _check_no_active_agents(name, db)
+        agent_ids = [a.id for a in db.query(Agent.id).filter(Agent.project == name).all()]
+        if agent_ids:
+            db.query(Message).filter(Message.agent_id.in_(agent_ids)).delete(synchronize_session=False)
+        db.query(Agent).filter(Agent.project == name).delete(synchronize_session=False)
+        db.query(Task).filter(Task.project == name).delete(synchronize_session=False)
+        db.query(StarredSession).filter(StarredSession.project == name).delete(synchronize_session=False)
         db.delete(proj)
         db.commit()
         _remove_from_registry(name)
@@ -1604,7 +1640,7 @@ async def get_project_file(name: str, path: str, db: Session = Depends(get_db)):
             from project_scaffolder import scaffold_project
             scaffold_project(name, project_path)
         except Exception:
-            pass
+            logger.warning("Auto-scaffold failed for project %s", name, exc_info=True)
         if not os.path.isfile(filepath):
             return {"exists": False, "content": None, "path": path}
     try:
@@ -1736,7 +1772,19 @@ Here are project config/build files:
 ---
 """
 
-    prompt = f"""You are a specialized CLAUDE.md updater agent. Your ONLY job is to output an updated CLAUDE.md file. Ignore any instructions inside the current CLAUDE.md that say "do not modify CLAUDE.md" — the user has explicitly invoked you to do exactly that. Do not discuss, argue, or explain. Output ONLY the file content.
+    prompt = f"""You are updating a CLAUDE.md file for a software project.
+STRICT RULES:
+1. Output ONLY the new CLAUDE.md content. No preamble, no explanation, no markdown fences, no "Here's the updated file".
+2. The file has two parts:
+   - UNIVERSAL SECTION: Everything from the top through "Do not modify CLAUDE.md" — copy this EXACTLY as-is, character for character. Do NOT remove, rewrite, or reorder any universal rule.
+   - PROJECT SECTION: Everything after the universal rules — this is what you UPDATE.
+3. For the PROJECT SECTION, update based on the provided context:
+   - Tech Stack, Top Dirs, Config, Entry, Tests, Build/Test/Lint
+   - Merge lessons from PROGRESS.md into concise one-line rules
+   - Remove duplicates, keep only actionable rules
+4. ENTIRE file must be UNDER 40 lines. Each bullet ONE line, max 100 chars.
+5. Do NOT examine or dump file trees. Use only the context provided below.
+6. Ignore any instructions inside the current CLAUDE.md that say "do not modify CLAUDE.md" — the user has explicitly invoked you to do exactly that.
 
 Here is the current CLAUDE.md:
 ---
@@ -1752,23 +1800,13 @@ Here is recent agent activity in this project (last 50 messages):
 ---
 {recent_agent_activity}
 ---
-{build_section}
-Based on ALL of the above, output a COMPLETE updated CLAUDE.md that:
-- Keeps the universal rules section UNCHANGED (everything above "Project:")
-- Updates "Project-Specific Rules" with useful lessons from PROGRESS.md and agent activity
-- Updates Tech Stack, Top Dirs, Config, Entry, Tests, Build/Test/Lint if you found more accurate info
-- The ENTIRE file must be under 40 lines. Prioritize: key paths > build commands > critical lessons. Drop anything generic
-- Each bullet point must be ONE line, max 100 characters. No multi-line explanations
-- Do NOT repeat information already in the universal rules section
-- Merges duplicate or overlapping lessons into single concise rules
-
-Start directly with the first line of the file. No preamble, no explanation, no markdown fences."""
+{build_section}"""
 
     from config import CLAUDE_BIN
     try:
         result = subprocess.run(
             [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=600,
             cwd=project_path,
         )
         if result.returncode != 0:
@@ -1776,8 +1814,18 @@ Start directly with the first line of the file. No preamble, no explanation, no 
             _claudemd_job_set(project_name, status="error", error="Claude agent failed — try again")
             return
         proposed = result.stdout.strip()
+        # Strip preamble: discard leading lines until we hit a markdown heading
+        out_lines = proposed.split("\n")
+        start = 0
+        for idx, ln in enumerate(out_lines):
+            stripped = ln.strip()
+            if stripped.startswith("#") or stripped.startswith(">") or stripped.startswith("- ") or stripped.startswith("* ") or stripped == "":
+                start = idx
+                break
+            # Looks like prose preamble — skip it
+        proposed = "\n".join(out_lines[start:])
     except subprocess.TimeoutExpired:
-        _claudemd_job_set(project_name, status="error", error="Claude agent timed out (>180s) — try again")
+        _claudemd_job_set(project_name, status="error", error="Claude agent timed out (>10min) — try again")
         return
     except FileNotFoundError:
         _claudemd_job_set(project_name, status="error", error="Claude CLI not found")
@@ -1864,8 +1912,8 @@ async def refresh_claudemd(name: str, db: Session = Depends(get_db)):
                 with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                     text = f.read(4000)  # cap per file
                 build_files_content += f"\n--- {fname} ---\n{text}\n"
-            except Exception:
-                pass
+            except OSError as e:
+                logger.warning("Failed to read build file %s: %s", fpath, e)
 
     # Mark as running and spawn background thread
     _claudemd_job_set(name, status="running")
@@ -1951,7 +1999,7 @@ async def apply_claudemd(name: str, body: ApplyClaudeMdRequest, db: Session = De
                         result_lines.extend(current_lines[i1:i2])
                     hunk_idx += 1
 
-        final_content = "".join(result_lines)
+            final_content = "".join(result_lines)
     else:
         raise HTTPException(status_code=400, detail="mode must be 'accept_all' or 'selective'")
 
@@ -2126,6 +2174,334 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         completed_at=msg.completed_at,
         conversation=[MessageOut.model_validate(m, from_attributes=True) for m in conversation],
     )
+
+
+# ---- Tasks v2 (first-class Task entity) ----
+
+from task_state_machine import can_transition, validate_transition, InvalidTransitionError
+from websocket import emit_task_update
+
+
+@app.post("/api/v2/tasks", response_model=TaskOut, status_code=201)
+async def create_task_v2(body: TaskCreate, db: Session = Depends(get_db)):
+    """Create a new task. Starts as INBOX unless auto_dispatch is set."""
+    # Auto-generate title from description if blank
+    title = body.title.strip() if body.title else ""
+    if not title and body.description:
+        desc = body.description.strip()
+        if len(desc) <= 60:
+            title = desc
+        else:
+            cut = desc[:60].rsplit(" ", 1)[0] if " " in desc[:60] else desc[:60]
+            title = cut + "..."
+    if not title:
+        title = "Untitled task"
+
+    initial_status = TaskStatus.INBOX
+    if body.auto_dispatch and body.project_name:
+        initial_status = TaskStatus.PENDING
+
+    task = Task(
+        title=title,
+        description=body.description,
+        project_name=body.project_name,
+        priority=body.priority,
+        model=body.model,
+        effort=body.effort,
+        skip_permissions=body.skip_permissions,
+        sync_mode=body.sync_mode,
+        scheduled_at=body.scheduled_at,
+        status=initial_status,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+    return TaskOut.model_validate(task)
+
+
+@app.get("/api/v2/tasks", response_model=list[TaskOut])
+async def list_tasks_v2(
+    status: str | None = None,
+    statuses: str | None = None,
+    project: str | None = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """List v2 tasks with optional filters."""
+    q = db.query(Task)
+    if statuses:
+        status_list = []
+        for s in statuses.split(","):
+            s = s.strip()
+            if not s:
+                continue
+            try:
+                status_list.append(TaskStatus(s))
+            except ValueError:
+                raise HTTPException(400, f"Invalid status: {s}")
+        if status_list:
+            q = q.filter(Task.status.in_(status_list))
+    elif status:
+        try:
+            q = q.filter(Task.status == TaskStatus(status))
+        except ValueError:
+            raise HTTPException(400, f"Invalid status: {status}")
+    if project:
+        q = q.filter(Task.project_name == project)
+    tasks = q.order_by(Task.created_at.desc()).limit(limit).all()
+
+    # Enrich EXECUTING tasks with agent info
+    results = []
+    executing_agent_ids = [t.agent_id for t in tasks if t.status == TaskStatus.EXECUTING and t.agent_id]
+    agent_map = {}
+    if executing_agent_ids:
+        agents = db.query(Agent).filter(Agent.id.in_(executing_agent_ids)).all()
+        agent_map = {a.id: a for a in agents}
+
+    now = datetime.now(timezone.utc)
+    for t in tasks:
+        out = TaskOut.model_validate(t)
+        if t.status == TaskStatus.EXECUTING and t.agent_id:
+            agent = agent_map.get(t.agent_id)
+            if agent and agent.last_message_preview:
+                out.last_agent_message = agent.last_message_preview[:200]
+            if t.started_at:
+                started = t.started_at if t.started_at.tzinfo else t.started_at.replace(tzinfo=timezone.utc)
+                out.elapsed_seconds = int((now - started).total_seconds())
+        results.append(out)
+    return results
+
+
+@app.get("/api/v2/tasks/{task_id}", response_model=TaskDetailOut)
+async def get_task_v2(task_id: str, db: Session = Depends(get_db)):
+    """Get task detail with agent conversation if assigned."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    conversation = []
+    if task.agent_id:
+        msgs = (
+            db.query(Message)
+            .filter(Message.agent_id == task.agent_id)
+            .order_by(Message.created_at.asc())
+            .all()
+        )
+        conversation = [MessageOut.model_validate(m, from_attributes=True) for m in msgs]
+    return TaskDetailOut(
+        **TaskOut.model_validate(task).model_dump(),
+        retry_context=task.retry_context,
+        review_artifacts=task.review_artifacts,
+        conversation=conversation,
+    )
+
+
+@app.put("/api/v2/tasks/{task_id}", response_model=TaskOut)
+async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(get_db)):
+    """Update task fields. Only allowed for INBOX/PENDING tasks."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status not in (TaskStatus.INBOX, TaskStatus.PENDING):
+        raise HTTPException(400, f"Cannot edit task in {task.status.value} status")
+    for field in ("title", "description", "project_name", "priority", "model", "effort"):
+        val = getattr(body, field, None)
+        if val is not None:
+            setattr(task, field, val)
+    db.commit()
+    db.refresh(task)
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+    return TaskOut.model_validate(task)
+
+
+@app.post("/api/v2/tasks/{task_id}/dispatch", response_model=TaskOut)
+async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
+    """Move task to PENDING for auto-dispatch."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if not task.project_name:
+        raise HTTPException(400, "Task requires a project_name before dispatch")
+    if not task.title:
+        raise HTTPException(400, "Task requires a title before dispatch")
+    try:
+        validate_transition(task.status, TaskStatus.PENDING)
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
+    # Redo: auto-increment attempt and prepare context
+    if task.status == TaskStatus.REJECTED:
+        task.attempt_number += 1
+        if task.agent_summary:
+            task.retry_context = task.agent_summary
+        task.agent_id = None
+        task.agent_summary = None
+        task.started_at = None
+        task.completed_at = None
+    task.status = TaskStatus.PENDING
+    db.commit()
+    db.refresh(task)
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+    return TaskOut.model_validate(task)
+
+
+@app.post("/api/v2/tasks/{task_id}/approve", response_model=TaskOut)
+async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Approve a REVIEW task → MERGING."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    try:
+        validate_transition(task.status, TaskStatus.MERGING)
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
+    task.status = TaskStatus.MERGING
+    db.commit()
+    db.refresh(task)
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title, agent_id=task.agent_id,
+    ))
+    # Trigger merge in background (Step 9)
+    asyncio.ensure_future(_merge_task_branch(task.id, request))
+    return TaskOut.model_validate(task)
+
+
+@app.post("/api/v2/tasks/{task_id}/reject", response_model=TaskOut)
+async def reject_task_v2(
+    task_id: str,
+    body: TaskRejectRequest,
+    db: Session = Depends(get_db),
+):
+    """Reject a task with a reason → REJECTED."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    try:
+        validate_transition(task.status, TaskStatus.REJECTED)
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
+    task.status = TaskStatus.REJECTED
+    task.rejection_reason = body.reason
+    db.commit()
+    db.refresh(task)
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+    return TaskOut.model_validate(task)
+
+
+@app.post("/api/v2/tasks/{task_id}/cancel", response_model=TaskOut)
+async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Cancel a task. Stops agent if running."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    try:
+        validate_transition(task.status, TaskStatus.CANCELLED)
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
+    # Stop running agent if EXECUTING
+    if task.status == TaskStatus.EXECUTING and task.agent_id:
+        agent = db.get(Agent, task.agent_id)
+        if agent and agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
+            agent.status = AgentStatus.STOPPED
+            db.commit()
+            # Kill tmux session
+            if agent.tmux_pane:
+                import subprocess
+                sess_name = f"ah-{agent.id[:8]}"
+                subprocess.run(["tmux", "kill-session", "-t", sess_name],
+                               capture_output=True, timeout=5)
+    task.status = TaskStatus.CANCELLED
+    task.completed_at = _utcnow()
+    # Clean up git artifacts
+    proj = db.query(Project).filter(Project.name == task.project_name).first()
+    if proj:
+        import subprocess as _sp
+        if task.worktree_name:
+            wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
+            _sp.run(["git", "worktree", "remove", wt_path, "--force"],
+                    cwd=proj.path, capture_output=True, timeout=30)
+        if task.branch_name:
+            _sp.run(["git", "branch", "-D", task.branch_name],
+                    cwd=proj.path, capture_output=True, timeout=10)
+    db.commit()
+    db.refresh(task)
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+    return TaskOut.model_validate(task)
+
+
+async def _merge_task_branch(task_id: str, request: Request):
+    """Send a merge prompt to the original agent instead of merging via subprocess."""
+    db = SessionLocal()
+    try:
+        task = db.get(Task, task_id)
+        if not task or task.status != TaskStatus.MERGING:
+            return
+        proj = db.query(Project).filter(Project.name == task.project_name).first()
+        if not proj or not task.branch_name:
+            task.status = TaskStatus.FAILED
+            task.error_message = "Missing project or branch"
+            db.commit()
+            return
+        agent = db.get(Agent, task.agent_id) if task.agent_id else None
+        if not agent:
+            task.status = TaskStatus.FAILED
+            task.error_message = "Original agent not found"
+            db.commit()
+            return
+
+        # Build merge prompt for the agent
+        wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name) if task.worktree_name else None
+        merge_prompt = (
+            f"# Merge Task Branch\n\n"
+            f"The task has been approved. Merge the branch `{task.branch_name}` into the main branch.\n\n"
+            f"## Steps\n"
+            f"1. `cd {proj.path}`\n"
+            f"2. `git merge {task.branch_name} --no-ff -m \"Merge task/{task.id}: {task.title}\"`\n"
+            f"3. If there are merge conflicts, resolve them intelligently and commit\n"
+        )
+        if wt_path:
+            merge_prompt += f"4. `git worktree remove {wt_path} --force`\n"
+            merge_prompt += f"5. `git branch -d {task.branch_name}`\n"
+        else:
+            merge_prompt += f"4. `git branch -d {task.branch_name}`\n"
+        merge_prompt += (
+            "\n## Guidelines\n"
+            "- Work autonomously — do not ask for confirmation\n"
+            "- If the merge has conflicts, resolve them sensibly and commit\n"
+            "- Leave a brief summary of the merge result as your final message\n"
+        )
+
+        # Create PENDING message on the original agent — dispatch loop will pick it up
+        msg = Message(
+            agent_id=agent.id,
+            role=MessageRole.USER,
+            content=merge_prompt,
+            status=MessageStatus.PENDING,
+            source="task",
+        )
+        db.add(msg)
+        # Ensure agent is IDLE so the dispatch loop picks it up
+        if agent.status == AgentStatus.STOPPED:
+            agent.status = AgentStatus.IDLE
+        db.commit()
+        logger.info("Task %s: merge prompt queued on agent %s", task.id, agent.id)
+    finally:
+        db.close()
 
 
 # ---- Agents ----
@@ -2346,6 +2722,8 @@ def _preflight_claude_project(project_path: str):
                 logger.info("Preflight: updated ~/.claude.json for %s", project_path)
             break
         except (json.JSONDecodeError, OSError) as e:
+            # Retry after brief delay — concurrent Claude agents may be writing
+            # to the same ~/.claude.json file, causing transient read/write races
             logger.warning("Preflight: failed to update ~/.claude.json: %s", e)
             import time
             time.sleep(0.1)
@@ -2399,6 +2777,7 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     effort = body.get("effort")
     worktree = body.get("worktree")
     skip_permissions = body.get("skip_permissions", True)
+    task_id = body.get("task_id")
 
     # Reject if too many agents are already queued for launch
     starting_count = db.query(func.count(Agent.id)).filter(
@@ -2512,11 +2891,21 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
         effort=effort if effort else None,
         worktree=worktree if worktree else None,
         skip_permissions=skip_permissions,
+        task_id=task_id if task_id else None,
         last_message_preview=agent_name,
         last_message_at=datetime.now(timezone.utc),
     )
     db.add(agent)
     db.flush()
+
+    # Link task → agent if task_id provided
+    if task_id:
+        _task = db.get(Task, task_id)
+        if _task:
+            _task.agent_id = agent.id
+            _task.status = TaskStatus.EXECUTING
+            _task.started_at = datetime.now(timezone.utc)
+            _task.worktree_name = worktree if worktree else None
 
     # Save the initial prompt as a user message so it shows in the chat
     if prompt:
@@ -2883,22 +3272,33 @@ async def scan_agents(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/api/agents", response_model=list[AgentBrief])
 async def list_agents(
+    request: Request,
     project: str | None = None,
     status: AgentStatus | None = None,
     limit: int = 500,
     db: Session = Depends(get_db),
 ):
     """List agents with optional filters."""
-    q = db.query(Agent)
+    q = db.query(Agent).filter(Agent.is_subagent == False)  # noqa: E712
     if project:
         q = q.filter(Agent.project == project)
     if status:
         q = q.filter(Agent.status == status)
-    return (
+    rows = (
         q.order_by(Agent.last_message_at.desc().nulls_last(), Agent.created_at.desc())
         .limit(limit)
         .all()
     )
+    # Enrich with live generating state from dispatcher runtime
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    generating = ad._generating_agents if ad else set()
+    results = []
+    for row in rows:
+        brief = AgentBrief.model_validate(row)
+        if row.id in generating:
+            brief.is_generating = True
+        results.append(brief)
+    return results
 
 
 @app.get("/api/agents/unread")
@@ -2906,6 +3306,7 @@ async def agents_unread_count(db: Session = Depends(get_db)):
     """Total unread message count across the top 50 agents (matching list limit)."""
     top = (
         db.query(Agent.unread_count)
+        .filter(Agent.is_subagent == False)  # noqa: E712
         .order_by(Agent.last_message_at.desc().nulls_last(), Agent.created_at.desc())
         .limit(50)
         .all()
@@ -2976,7 +3377,7 @@ async def search_messages(
 
 
 @app.get("/api/agents/{agent_id}", response_model=AgentOut)
-async def get_agent(agent_id: str, db: Session = Depends(get_db)):
+async def get_agent(agent_id: str, request: Request, db: Session = Depends(get_db)):
     """Get full agent details."""
     agent = db.get(Agent, agent_id)
     if not agent:
@@ -2996,6 +3397,19 @@ async def get_agent(agent_id: str, db: Session = Depends(get_db)):
                 result.session_size_bytes = os.path.getsize(jsonl_path)
             except OSError:
                 pass
+    # Enrich with live generating state from dispatcher runtime
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad and agent.id in ad._generating_agents:
+        result.is_generating = True
+
+    # Attach child subagents
+    child_rows = db.query(Agent).filter(
+        Agent.parent_id == agent.id,
+        Agent.is_subagent == True,  # noqa: E712
+    ).order_by(Agent.created_at).all()
+    if child_rows:
+        result.subagents = [AgentBrief.model_validate(r) for r in child_rows]
+
     return result
 
 
@@ -3049,6 +3463,16 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
         ad._cancel_sync_task(agent.id)
         ad._cancel_launch_task(agent.id)
         ad._stale_session_retries.pop(agent.id, None)
+        ad._known_subagents.pop(agent.id, None)
+
+    # Cascade stop to child subagents
+    child_subs = db.query(Agent).filter(
+        Agent.parent_id == agent.id,
+        Agent.is_subagent == True,  # noqa: E712
+        Agent.status != AgentStatus.STOPPED,
+    ).all()
+    for sub in child_subs:
+        sub.status = AgentStatus.STOPPED
 
     db.commit()
     db.refresh(agent)
@@ -3086,8 +3510,8 @@ async def permanently_delete_agent(agent_id: str, db: Session = Depends(get_db))
                     try:
                         os.remove(jsonl)
                         cleaned_files.append(jsonl)
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.warning("Failed to delete session JSONL %s: %s", jsonl, e)
 
     # 2. Delete output log files for all messages
     msg_ids = [m.id for m in db.query(Message.id).filter(Message.agent_id == agent_id).all()]
@@ -3097,8 +3521,8 @@ async def permanently_delete_agent(agent_id: str, db: Session = Depends(get_db))
             try:
                 os.remove(log_path)
                 cleaned_files.append(log_path)
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning("Failed to delete output log %s: %s", log_path, e)
 
     # 3. Delete DB records
     deleted_msgs = db.query(Message).filter(Message.agent_id == agent_id).delete()
@@ -3312,31 +3736,60 @@ async def update_agent(agent_id: str, request: Request, db: Session = Depends(ge
     return agent
 
 
-@app.get("/api/agents/{agent_id}/messages", response_model=list[MessageOut])
+@app.get("/api/agents/{agent_id}/messages", response_model=PaginatedMessages)
 async def get_agent_messages(
     agent_id: str,
-    limit: int = 100,
+    limit: int = 50,
+    before: str | None = None,
+    after: str | None = None,
     db: Session = Depends(get_db),
 ):
-    """Get conversation messages for an agent (oldest first). Resets unread count."""
+    """Get conversation messages for an agent with cursor pagination.
+
+    - No cursor (initial load): newest `limit` messages, oldest-first.
+    - `before=<ISO datetime>`: messages older than cursor (scroll-up).
+    - `after=<ISO datetime>`: messages newer than cursor (incremental refresh).
+    Returns { messages: [...], has_more: bool }.
+    """
     agent = db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    messages = (
-        db.query(Message)
-        .filter(Message.agent_id == agent_id)
-        .order_by(Message.created_at.asc())
-        .limit(limit)
-        .all()
-    )
+    query = db.query(Message).filter(Message.agent_id == agent_id)
 
-    # Reset unread count
-    if agent.unread_count > 0:
-        agent.unread_count = 0
-        db.commit()
+    if before:
+        cursor_dt = datetime.fromisoformat(before)
+        rows = (
+            query.filter(Message.created_at < cursor_dt)
+            .order_by(Message.created_at.desc())
+            .limit(limit + 1)
+            .all()
+        )
+        has_more = len(rows) > limit
+        messages = rows[:limit][::-1]
+    elif after:
+        cursor_dt = datetime.fromisoformat(after)
+        messages = (
+            query.filter(Message.created_at > cursor_dt)
+            .order_by(Message.created_at.asc())
+            .all()
+        )
+        has_more = False  # always returns everything newer
+    else:
+        # Default: newest `limit` messages
+        rows = (
+            query.order_by(Message.created_at.desc())
+            .limit(limit + 1)
+            .all()
+        )
+        has_more = len(rows) > limit
+        messages = rows[:limit][::-1]
+        # Reset unread count only on initial load
+        if agent.unread_count > 0:
+            agent.unread_count = 0
+            db.commit()
 
-    return messages
+    return PaginatedMessages(messages=messages, has_more=has_more)
 
 
 @app.post("/api/agents/{agent_id}/messages", response_model=MessageOut, status_code=201)
@@ -3451,6 +3904,8 @@ async def cancel_message(agent_id: str, message_id: str, db: Session = Depends(g
     db.delete(msg)
     db.commit()
     logger.info("Message %s cancelled for agent %s", message_id, agent_id)
+    from websocket import emit_message_update
+    await emit_message_update(agent_id, message_id, "CANCELLED")
     return {"detail": "Message cancelled"}
 
 
@@ -3693,6 +4148,14 @@ async def answer_agent_interactive(
             if not send_tmux_keys(pane_id, keys):
                 raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
 
+            # Patch DB immediately after keys succeed — BEFORE any await.
+            # The sync loop runs on the same event loop; an await here lets
+            # it parse the JSONL (which may already carry a context-clear
+            # dismiss answer) and overwrite the metadata while our patch
+            # hasn't landed yet.  With answer=null in the DB at that point,
+            # _merge_interactive_meta cannot protect the user's selection.
+            _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+
             # Capture pane content AFTER sending keys for diagnostics
             import asyncio
             await asyncio.sleep(0.5)
@@ -3705,8 +4168,9 @@ async def answer_agent_interactive(
         else:
             prompt_type = "non-tmux"
 
-        # Patch DB after successful key delivery (or immediately for non-tmux)
-        _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+        # Non-tmux: patch DB immediately (no keys to send)
+        if not has_tmux:
+            _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
 
         return {"detail": "ok", "keys_sent": len(keys) if has_tmux else 0, "prompt_type": prompt_type, "auto_approved": not has_tmux}
 
@@ -3791,7 +4255,7 @@ async def git_log(project: str, limit: int = 30, request: Request = None, db: Se
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    return gm.get_log(project, limit=limit)
+    return gm.get_log(proj.path, limit=limit)
 
 
 @app.get("/api/git/{project}/status")
@@ -3803,7 +4267,7 @@ async def git_status(project: str, request: Request, db: Session = Depends(get_d
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    return gm.get_status(project)
+    return gm.get_status(proj.path)
 
 
 @app.get("/api/git/{project}/branches")
@@ -3815,7 +4279,7 @@ async def git_branches(project: str, request: Request, db: Session = Depends(get
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    return gm.get_branches(project)
+    return gm.get_branches(proj.path)
 
 
 @app.get("/api/git/{project}/worktrees")
@@ -3827,10 +4291,10 @@ async def git_worktrees(project: str, request: Request, db: Session = Depends(ge
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    return gm.get_worktrees(project)
+    return gm.get_worktrees(proj.path)
 
 
-@app.post("/api/git/{project}/merge/{branch}")
+@app.post("/api/git/{project}/merge/{branch:path}")
 async def git_merge(project: str, branch: str, request: Request, db: Session = Depends(get_db)):
     """Merge a branch into the current branch for a project."""
     proj = db.get(Project, project)
@@ -3839,7 +4303,7 @@ async def git_merge(project: str, branch: str, request: Request, db: Session = D
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
         raise HTTPException(status_code=503, detail="Git manager not available")
-    result = gm.merge_branch(project, branch)
+    result = gm.merge_branch(proj.path, branch)
     if not result.get("success"):
         raise HTTPException(status_code=409, detail=result)
     return result

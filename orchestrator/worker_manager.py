@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import uuid
@@ -38,7 +39,7 @@ class WorkerManager:
                 "Claude CLI '%s' not found — install it or set CLAUDE_BIN",
                 CLAUDE_BIN,
             )
-        except Exception as e:
+        except (subprocess.SubprocessError, OSError) as e:
             logger.warning("Failed to verify claude CLI: %s", e)
 
     @staticmethod
@@ -53,8 +54,9 @@ class WorkerManager:
         env["AGENTHIVE_MANAGED"] = "1"
         return env
 
-    def _get_project_path(self, project_name: str) -> str:
-        """Return the absolute path for a project directory."""
+    @staticmethod
+    def _default_project_path(project_name: str) -> str:
+        """Return the default path for a new project directory (clone/init only)."""
         if PROJECTS_DIR:
             return os.path.join(PROJECTS_DIR, project_name)
         return os.path.join("/projects", project_name)
@@ -73,7 +75,7 @@ class WorkerManager:
 
     def clone_project(self, project_name: str, git_url: str):
         """Clone a git repo into the projects directory."""
-        project_path = self._get_project_path(project_name)
+        project_path = self._default_project_path(project_name)
         if os.path.isdir(project_path):
             logger.info("Project dir %s already exists, skipping clone", project_path)
             return
@@ -84,15 +86,18 @@ class WorkerManager:
             )
             logger.info("Cloned project %s from %s", project_name, git_url)
         except subprocess.CalledProcessError as e:
-            logger.warning(
-                "Git clone failed for %s: %s — creating empty directory",
+            logger.error(
+                "Git clone failed for %s: %s",
                 project_name, e.stderr.strip(),
             )
-            os.makedirs(project_path, exist_ok=True)
+            # Clean up partial/empty directory left by failed clone
+            if os.path.isdir(project_path):
+                shutil.rmtree(project_path, ignore_errors=True)
+            raise
 
     def ensure_project_dir(self, project_name: str):
-        """Ensure the project directory exists."""
-        project_path = self._get_project_path(project_name)
+        """Ensure the project directory exists (for new projects only)."""
+        project_path = self._default_project_path(project_name)
         os.makedirs(project_path, exist_ok=True)
 
     # =====================================================================

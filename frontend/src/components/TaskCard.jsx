@@ -1,9 +1,10 @@
+import { memo } from "react";
 import StatusBadge from "./StatusBadge";
 import ModeBadge from "./ModeBadge";
 import { projectBadgeColor } from "../lib/constants";
 import { relativeTime } from "../lib/formatters";
 
-export default function TaskCard({ task, isExpanded, onToggle, showProject = true }) {
+export default memo(function TaskCard({ task, isExpanded, onToggle, showProject = true }) {
   const projColor = projectBadgeColor(task.project);
   return (
     <button
@@ -54,4 +55,4 @@ export default function TaskCard({ task, isExpanded, onToggle, showProject = tru
       </div>
     </button>
   );
-}
+})

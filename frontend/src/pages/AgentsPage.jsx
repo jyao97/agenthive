@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchAgents, stopAgent, deleteAgent, scanAgents, searchMessages, markAgentRead } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
@@ -8,6 +8,7 @@ import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
 import useWebSocket from "../hooks/useWebSocket";
+import usePageVisible from "../hooks/usePageVisible";
 
 const FILTER_TABS = [
   { key: "ALL", label: "All" },
@@ -24,7 +25,8 @@ function agentBotState(status) {
   return "idle";
 }
 
-function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }) {
+const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }) {
+  const navigate = useNavigate();
   const state = agentBotState(agent.status);
   const statusDotColor = AGENT_STATUS_COLORS[agent.status] || "bg-gray-500";
   const statusTextColor = AGENT_STATUS_TEXT_COLORS[agent.status] || "text-dim";
@@ -112,15 +114,20 @@ function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }
               {modelDisplayName(agent.model)}
             </span>
           )}
-          <span className={`text-xs text-dim ${agent.model ? "" : "ml-auto"}`}>{agent.project}</span>
+          <span
+            className={`text-[10px] text-cyan-400 font-medium px-1.5 py-0.5 rounded bg-cyan-500/10 truncate cursor-pointer hover:bg-cyan-500/20 transition-colors ${agent.model ? "" : "ml-auto"}`}
+            onClick={(e) => { e.stopPropagation(); navigate(`/projects/${encodeURIComponent(agent.project)}`); }}
+            title={agent.project}
+          >{agent.project}</span>
         </div>
       </div>
     </button>
   );
-}
+});
 
 export default function AgentsPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
+  const visible = usePageVisible();
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -128,10 +135,9 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   const [search, setSearch] = useDraft("ui:agents:search", "");
   const pollRef = useRef(null);
 
-  // Track which agents are actively streaming via WebSocket
+  // Track which agents are actively streaming via WebSocket events + API is_generating
   const { lastEvent } = useWebSocket();
   const [streamingAgents, setStreamingAgents] = useState(new Set());
-  const streamTimers = useRef({});
 
   useEffect(() => {
     if (!lastEvent) return;
@@ -143,23 +149,22 @@ export default function AgentsPage({ theme, onToggleTheme }) {
         next.add(aid);
         return next;
       });
-      // Clear after 4s of no stream events for this agent
-      clearTimeout(streamTimers.current[aid]);
-      streamTimers.current[aid] = setTimeout(() => {
-        setStreamingAgents((prev) => {
-          if (!prev.has(aid)) return prev;
-          const next = new Set(prev);
-          next.delete(aid);
-          return next;
-        });
-      }, 4000);
+    }
+    // Deterministic end signal from backend
+    if (lastEvent.type === "agent_stream_end" && lastEvent.data?.agent_id) {
+      const aid = lastEvent.data.agent_id;
+      setStreamingAgents((prev) => {
+        if (!prev.has(aid)) return prev;
+        const next = new Set(prev);
+        next.delete(aid);
+        return next;
+      });
     }
     // Clear streaming on status change away from active states
     if (lastEvent.type === "agent_update" && lastEvent.data?.agent_id) {
       const aid = lastEvent.data.agent_id;
       const s = lastEvent.data.status;
       if (s !== "EXECUTING" && s !== "SYNCING") {
-        clearTimeout(streamTimers.current[aid]);
         setStreamingAgents((prev) => {
           if (!prev.has(aid)) return prev;
           const next = new Set(prev);
@@ -170,9 +175,27 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     }
   }, [lastEvent]);
 
+  // Seed streaming state from API is_generating on poll
   useEffect(() => {
-    return () => Object.values(streamTimers.current).forEach(clearTimeout);
-  }, []);
+    if (!agents.length) return;
+    setStreamingAgents((prev) => {
+      const apiGenerating = new Set(agents.filter((a) => a.is_generating).map((a) => a.id));
+      // Merge: keep WS-derived streaming that API hasn't caught yet, add API-derived
+      const next = new Set([...prev, ...apiGenerating]);
+      // Remove agents API says are not generating AND no recent WS stream
+      for (const aid of prev) {
+        if (!apiGenerating.has(aid)) {
+          // Keep if agent is still EXECUTING/SYNCING (WS might be ahead of poll)
+          const ag = agents.find((a) => a.id === aid);
+          if (!ag || (ag.status !== "EXECUTING" && ag.status !== "SYNCING")) {
+            next.delete(aid);
+          }
+        }
+      }
+      if (next.size === prev.size && [...next].every((a) => prev.has(a))) return prev;
+      return next;
+    });
+  }, [agents]);
 
   // Multi-select state
   const [selecting, setSelecting] = useState(false);
@@ -209,7 +232,8 @@ export default function AgentsPage({ theme, onToggleTheme }) {
           setSearchResults(data);
           setSearchLoading(false);
         })
-        .catch(() => {
+        .catch((err) => {
+          console.error('searchMessages failed:', err);
           setSearchResults(null);
           setSearchLoading(false);
         });
@@ -233,37 +257,42 @@ export default function AgentsPage({ theme, onToggleTheme }) {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await scanAgents(); } catch {}
+    scanAgents().catch((err) => console.error('scanAgents failed:', err));
     await load();
+    // Minimum 400ms spinner display to prevent jarring sub-frame flicker
     setTimeout(() => setRefreshing(false), 400);
   }, [load]);
 
   useEffect(() => {
+    if (!visible) return;
     load();
     pollRef.current = setInterval(load, POLL_INTERVAL);
     return () => clearInterval(pollRef.current);
-  }, [load]);
+  }, [load, visible]);
 
-  const statusFiltered =
+  const statusFiltered = useMemo(() =>
     filter === "ALL"
       ? agents
       : filter === "SYNCING"
         ? agents.filter((a) => a.status === "SYNCING")
         : filter === "ACTIVE"
           ? agents.filter((a) => a.status !== "STOPPED" && a.status !== "SYNCING")
-          : agents.filter((a) => a.status === "STOPPED");
+          : agents.filter((a) => a.status === "STOPPED"),
+    [agents, filter]);
 
-  const filtered = search.trim()
-    ? statusFiltered.filter((a) => {
-        const q = search.toLowerCase();
-        return (
-          a.id?.toLowerCase().includes(q) ||
-          a.name?.toLowerCase().includes(q) ||
-          a.project?.toLowerCase().includes(q) ||
-          a.last_message_preview?.toLowerCase().includes(q)
-        );
-      })
-    : statusFiltered;
+  const filtered = useMemo(() =>
+    search.trim()
+      ? statusFiltered.filter((a) => {
+          const q = search.toLowerCase();
+          return (
+            a.id?.toLowerCase().includes(q) ||
+            a.name?.toLowerCase().includes(q) ||
+            a.project?.toLowerCase().includes(q) ||
+            a.last_message_preview?.toLowerCase().includes(q)
+          );
+        })
+      : statusFiltered,
+    [statusFiltered, search]);
 
   const enterSelectMode = () => {
     setSelecting(true);
@@ -293,6 +322,13 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   };
 
   const allSelected = filtered.length > 0 && selected.size === filtered.length;
+
+  const filterCounts = useMemo(() => ({
+    ALL: agents.length,
+    SYNCING: agents.filter(a => a.status === "SYNCING").length,
+    ACTIVE: agents.filter(a => a.status !== "STOPPED" && a.status !== "SYNCING").length,
+    STOPPED: agents.filter(a => a.status === "STOPPED").length,
+  }), [agents]);
 
   // Count how many selected agents are stoppable (not already stopped)
   const stoppableSelected = filtered.filter(
@@ -429,12 +465,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
             tabs={FILTER_TABS}
             active={filter}
             onChange={setFilter}
-            counts={{
-              ALL: agents.length,
-              SYNCING: agents.filter(a => a.status === "SYNCING").length,
-              ACTIVE: agents.filter(a => a.status !== "STOPPED" && a.status !== "SYNCING").length,
-              STOPPED: agents.filter(a => a.status === "STOPPED").length,
-            }}
+            counts={filterCounts}
           />
         ) : (
           <div className="flex items-center justify-between px-4 pb-2">

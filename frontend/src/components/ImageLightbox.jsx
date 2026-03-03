@@ -1,5 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
+// Must match the CSS transition duration in transformStyle / container style below
+const TRANSITION_DURATION_MS = 250;
+
 /**
  * Fullscreen media viewer with gesture support:
  * - Pinch-to-zoom, pan, double-tap toggle (images and videos)
@@ -53,6 +56,11 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
   const isZoomed = scale > 1.01;
   const isCurrentVideo = media[currentIndex]?.type === "video";
 
+  // Clear animating flag when the CSS transition finishes (replaces setTimeout hacks)
+  const handleTransitionEnd = useCallback((e) => {
+    if (e.propertyName === "transform") setAnimating(false);
+  }, []);
+
   // Reset transform when switching media
   const resetTransform = useCallback((animate = true) => {
     if (animate) setAnimating(true);
@@ -60,7 +68,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     setTranslate({ x: 0, y: 0 });
     setDismissY(0);
     setDismissOpacity(1);
-    if (animate) setTimeout(() => setAnimating(false), 250);
+    if (animate) setTimeout(() => setAnimating(false), TRANSITION_DURATION_MS);
   }, []);
 
   // Navigate to a different media item
@@ -189,7 +197,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           setAnimating(true);
           setScale(1);
           setTranslate({ x: 0, y: 0 });
-          setTimeout(() => setAnimating(false), 250);
+          setTimeout(() => setAnimating(false), TRANSITION_DURATION_MS);
         }
         return;
       }
@@ -210,7 +218,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           setAnimating(true);
           setDismissY(0);
           setDismissOpacity(1);
-          setTimeout(() => setAnimating(false), 250);
+          setTimeout(() => setAnimating(false), TRANSITION_DURATION_MS);
         }
 
         // Swipe left/right to navigate
@@ -252,7 +260,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
               setScale(2);
             }
           }
-          setTimeout(() => setAnimating(false), 250);
+          setTimeout(() => setAnimating(false), TRANSITION_DURATION_MS);
         } else {
           ts.lastTapTime = now;
           ts.lastTapPos = { x: touch.clientX, y: touch.clientY };
@@ -413,7 +421,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           setAnimating(true);
           setScale(1);
           setTranslate({ x: 0, y: 0 });
-          setTimeout(() => setAnimating(false), 250);
+          setTimeout(() => setAnimating(false), TRANSITION_DURATION_MS);
         }
       }
     };
@@ -434,7 +442,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
 
   const transformStyle = {
     transform: `translate(${translate.x}px, ${translate.y + dismissY}px) scale(${scale})`,
-    transition: animating ? "transform 0.25s ease-out" : "none",
+    transition: animating ? `transform ${TRANSITION_DURATION_MS}ms ease-out` : "none",
     willChange: "transform",
   };
 
@@ -444,7 +452,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       className="fixed inset-0 z-50 flex items-center justify-center select-none"
       style={{
         backgroundColor: `rgba(0,0,0,${dismissOpacity * 0.95})`,
-        transition: animating ? "background-color 0.25s ease-out" : "none",
+        transition: animating ? `background-color ${TRANSITION_DURATION_MS}ms ease-out` : "none",
         touchAction: "none",
         cursor: isZoomed ? (dragging ? "grabbing" : "grab") : "default",
       }}
@@ -495,12 +503,15 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           ref={videoRef}
           key={current.src}
           src={current.src}
+          poster={current.src + ".thumb.jpg"}
+          preload="none"
           playsInline
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
           className="max-h-[90vh] max-w-[90vw] object-contain pointer-events-none select-none"
           style={transformStyle}
+          onTransitionEnd={handleTransitionEnd}
         />
       ) : (
         <img
@@ -510,6 +521,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           draggable={false}
           className="max-h-[90vh] max-w-[90vw] object-contain pointer-events-none select-none"
           style={transformStyle}
+          onTransitionEnd={handleTransitionEnd}
         />
       )}
 

@@ -19,7 +19,7 @@ export default function LoginPage() {
           setNeedsSetup(true);
         }
       })
-      .catch(() => {})
+      .catch((err) => console.error('authCheck failed:', err))
       .finally(() => setLoading(false));
   }, []);
 

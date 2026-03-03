@@ -9,28 +9,9 @@ import {
   fetchGitBranches,
   fetchGitStatus,
   fetchGitWorktrees,
-  mergeGitBranch,
   createAgent,
 } from "../lib/api";
-
-/** Format a date string into a human-readable relative time. */
-function relativeTime(dateStr) {
-  const now = Date.now();
-  const then = new Date(dateStr).getTime();
-  const diff = Math.max(0, now - then);
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo ago`;
-  const years = Math.floor(months / 12);
-  return `${years}y ago`;
-}
+import { relativeTime } from "../lib/formatters";
 
 /** A small toast notification component. */
 function Toast({ toast, onDismiss }) {
@@ -170,32 +151,30 @@ export default function GitPage({ theme, onToggleTheme }) {
     return () => { cancelled = true; };
   }, [selectedProject]);
 
-  // --- Merge handler ---
+  // --- Merge handler (spawns an agent) ---
   const handleMerge = useCallback(
     async (branchName) => {
       if (!selectedProject || mergingBranch) return;
       setMergingBranch(branchName);
       try {
-        const data = await mergeGitBranch(selectedProject, branchName);
-        addToast(`Merged "${branchName}" successfully.`, "success");
-        // Refresh commits, branches, and status
-        const [newCommits, newBranches, newStatus, newWt] = await Promise.all([
-          fetchGitLog(selectedProject).catch(() => []),
-          fetchGitBranches(selectedProject).catch(() => []),
-          fetchGitStatus(selectedProject).catch(() => null),
-          fetchGitWorktrees(selectedProject).catch(() => []),
-        ]);
-        setCommits(newCommits);
-        setBranches(newBranches);
-        setStatus(newStatus);
-        setWorktrees(newWt);
+        const agent = await createAgent({
+          project: selectedProject,
+          mode: "AUTO",
+          skip_permissions: true,
+          prompt:
+            `Merge the branch "${branchName}" into the current branch. ` +
+            `Steps: 1) git fetch origin, 2) git merge ${branchName} --no-edit. ` +
+            `If there are merge conflicts, resolve them intelligently by reading both versions and picking the correct resolution. ` +
+            `After resolving, stage and commit. Report the result.`,
+        });
+        navigate(`/agents/${agent.id}`);
       } catch (err) {
         addToast(`Merge error: ${err.message}`, "error");
       } finally {
         setMergingBranch(null);
       }
     },
-    [selectedProject, mergingBranch, addToast]
+    [selectedProject, mergingBranch, addToast, navigate]
   );
 
   // --- Merge All worktrees handler ---
@@ -213,10 +192,9 @@ export default function GitPage({ theme, onToggleTheme }) {
     try {
       const agent = await createAgent({
         project: selectedProject,
-        name: `merge-worktrees`,
         mode: "AUTO",
         skip_permissions: true,
-        initial_message:
+        prompt:
           `Merge all worktree branches into main and clean up. ` +
           `The branches to merge are: ${branchList}. ` +
           `For each branch: 1) checkout main, 2) git merge <branch>, ` +

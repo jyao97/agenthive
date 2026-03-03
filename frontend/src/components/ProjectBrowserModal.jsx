@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { fetchProjectTree, browseProjectFile } from "../lib/api";
+import { fetchProjectTree, browseProjectFile, authedFetch } from "../lib/api";
 import { renderMarkdown } from "../lib/formatters";
 
 /* ---- tiny helpers ---- */
@@ -20,6 +20,23 @@ function langFromExt(ext) {
     md: "markdown", mdx: "markdown",
   };
   return map[ext] || "";
+}
+
+function downloadFile(project, path, filename) {
+  const url = `/api/files/${encodeURIComponent(project)}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  authedFetch(url)
+    .then((res) => res.blob())
+    .then((blob) => {
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objUrl);
+    })
+    .catch(() => window.open(url, "_blank"));
 }
 
 /* ---- folder / file icons (inline SVG) ---- */
@@ -47,16 +64,15 @@ function FileIcon() {
 
 /* ---- recursive tree node ---- */
 
-function TreeNode({ node, depth, onFileClick, expandedDirs, toggleDir }) {
+function TreeNode({ node, depth, project, onFileClick, expandedDirs, toggleDir }) {
   const isDir = node.type === "dir";
   const isOpen = expandedDirs.has(node.path);
 
   return (
     <>
-      <button
-        type="button"
+      <div
         onClick={() => isDir ? toggleDir(node.path) : onFileClick(node)}
-        className="w-full flex items-center gap-1.5 py-1.5 px-2 rounded-lg hover:bg-input transition-colors text-left group"
+        className="w-full flex items-center gap-1.5 py-1.5 px-2 rounded-lg hover:bg-input transition-colors text-left cursor-pointer group"
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
       >
         {isDir ? <FolderIcon open={isOpen} /> : <FileIcon />}
@@ -66,12 +82,25 @@ function TreeNode({ node, depth, onFileClick, expandedDirs, toggleDir }) {
         {isDir && node.children?.length > 0 && (
           <span className="text-[10px] text-dim ml-auto shrink-0">{node.children.length}</span>
         )}
-      </button>
+        {!isDir && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); downloadFile(project, node.path, node.name); }}
+            title="Download"
+            className="ml-auto p-0.5 rounded hover:bg-hover transition-colors text-dim hover:text-label opacity-0 group-hover:opacity-100 shrink-0"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            </svg>
+          </button>
+        )}
+      </div>
       {isDir && isOpen && node.children?.map((child) => (
         <TreeNode
           key={child.path}
           node={child}
           depth={depth + 1}
+          project={project}
           onFileClick={onFileClick}
           expandedDirs={expandedDirs}
           toggleDir={toggleDir}
@@ -116,7 +145,17 @@ function FileViewer({ project, node, onClose }) {
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
         </button>
-        <span className="text-sm font-medium text-heading truncate">{node.path}</span>
+        <span className="text-sm font-medium text-heading truncate flex-1">{node.path}</span>
+        <button
+          type="button"
+          onClick={() => downloadFile(project, node.path, node.name)}
+          title="Download file"
+          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors shrink-0"
+        >
+          <svg className="w-4 h-4 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+          </svg>
+        </button>
       </div>
 
       {/* content */}
@@ -230,6 +269,7 @@ export default function ProjectBrowserModal({ project, onClose }) {
                 key={node.path}
                 node={node}
                 depth={0}
+                project={project}
                 onFileClick={setViewingFile}
                 expandedDirs={expandedDirs}
                 toggleDir={toggleDir}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, memo } from "react";
 import { useNavigate, useNavigationType } from "react-router-dom";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
@@ -9,6 +9,7 @@ import BotIcon from "../components/BotIcon";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
+import usePageVisible from "../hooks/usePageVisible";
 
 function botState(folder) {
   if (!folder.active) return "idle";
@@ -49,7 +50,7 @@ function SortableFolderCard(props) {
   );
 }
 
-function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandleProps }) {
+const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandleProps }) {
   const state = botState(folder);
 
   return (
@@ -131,7 +132,7 @@ function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandlePr
       </div>
     </button>
   );
-}
+});
 
 const SORT_OPTIONS = [
   { value: "custom", label: "Custom" },
@@ -143,6 +144,8 @@ const SORT_OPTIONS = [
 
 export default function ProjectsPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
+  const navType = useNavigationType();
+  const visible = usePageVisible();
   const [folders, setFolders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -154,7 +157,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
   const [sortMode, setSortMode] = useState(() => localStorage.getItem("projects-sort-mode") || "custom");
   const [customOrder, setCustomOrder] = useState(() => {
     try { return JSON.parse(localStorage.getItem("projects-custom-order")) || []; }
-    catch { return []; }
+    catch { return []; } // Expected: localStorage data may be corrupt or invalid JSON
   });
   const [activeDragId, setActiveDragId] = useState(null);
 
@@ -199,32 +202,20 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
   };
 
   useEffect(() => {
+    if (!visible) return;
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);
-  }, [load]);
+  }, [load, visible]);
 
-  // Auto-navigate to last-viewed project on tab switch / initial load.
-  // Skip if user swiped back (POP) or tapped back button (returnedFrom flag).
-  const navType = useNavigationType();
-  const didAutoNav = useRef(false);
+  // When user swipes back (POP) to the list, flag it so the tab bar
+  // click handler knows to show the list instead of auto-navigating
+  // back to the last-viewed project.
   useEffect(() => {
-    if (didAutoNav.current || loading || folders.length === 0) return;
-    didAutoNav.current = true;
-    // Back button sets this flag explicitly
-    if (sessionStorage.getItem("returnedFrom:projects")) {
-      sessionStorage.removeItem("returnedFrom:projects");
-      localStorage.removeItem("lastViewed:projects");
-      return;
+    if (navType === "POP") {
+      sessionStorage.setItem("returnedFrom:projects", "1");
     }
-    // Swipe-back = POP navigation; skip auto-nav but keep lastViewed
-    // (POP on fresh page load has no lastViewed yet, so it's harmless)
-    if (navType === "POP") return;
-    const last = localStorage.getItem("lastViewed:projects");
-    if (last && folders.some((f) => f.name === last && f.active)) {
-      navigate(`/projects/${encodeURIComponent(last)}`, { replace: true });
-    }
-  }, [loading, folders, navigate, navType]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync customOrder when folders load — append any new projects
   useEffect(() => {
@@ -322,6 +313,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     } catch (err) {
       setError(err.message);
     } finally {
+      // Minimum 400ms spinner display to prevent jarring sub-frame flicker
       setTimeout(() => setRefreshing(false), 400);
     }
   }, [load]);

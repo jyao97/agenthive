@@ -18,12 +18,17 @@ class AgentMode(str, enum.Enum):
 
 
 class TaskStatus(str, enum.Enum):
+    INBOX = "INBOX"
     PENDING = "PENDING"
     EXECUTING = "EXECUTING"
-    COMPLETED = "COMPLETED"
+    REVIEW = "REVIEW"
+    MERGING = "MERGING"
+    CONFLICT = "CONFLICT"
+    COMPLETE = "COMPLETE"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
-    CANCELLED = "CANCELLED"
 
 
 class AgentStatus(str, enum.Enum):
@@ -61,24 +66,42 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[str] = mapped_column(String(12), primary_key=True, default=_new_uuid)
-    project: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    mode: Mapped[AgentMode] = mapped_column(
-        Enum(AgentMode), nullable=False, default=AgentMode.AUTO
-    )
+    # New first-class fields
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_name: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)  # 0=normal, 1=high
     status: Mapped[TaskStatus] = mapped_column(
-        Enum(TaskStatus), nullable=False, default=TaskStatus.PENDING, index=True
+        Enum(TaskStatus), nullable=False, default=TaskStatus.INBOX, index=True
     )
-    container_id: Mapped[str | None] = mapped_column(String(80), nullable=True)  # stores pid_str
+    agent_id: Mapped[str | None] = mapped_column(String(12), ForeignKey("agents.id"), nullable=True)
+    worktree_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    branch_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1)
+    retry_context: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: previous failure info
+    review_artifacts: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: file paths, screenshots
+    agent_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    effort: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    skip_permissions: Mapped[bool] = mapped_column(Boolean, default=True)
+    sync_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
+    # Legacy columns (kept for old dispatcher compatibility)
+    # NOTE: existing DB has NOT NULL on these — provide defaults for v2 inserts
+    prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    project: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    mode: Mapped[AgentMode] = mapped_column(Enum(AgentMode), nullable=False, default=AgentMode.AUTO)
+    container_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     branch: Mapped[str | None] = mapped_column(String(200), nullable=True)
     retries: Mapped[int] = mapped_column(Integer, default=0)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     stream_log: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
 
 
 class Agent(Base):
@@ -108,6 +131,9 @@ class Agent(Base):
     skip_permissions: Mapped[bool] = mapped_column(Boolean, default=True)
     muted: Mapped[bool] = mapped_column(Boolean, default=False)
     parent_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    is_subagent: Mapped[bool] = mapped_column(Boolean, default=False)
+    claude_agent_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
 
 class Message(Base):

@@ -18,7 +18,10 @@ export default function useDraft(key, initialValue = "") {
       if (stored !== null) {
         return stringMode ? stored : JSON.parse(stored);
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      // Expected: localStorage may throw in private browsing, or stored value may not be valid JSON
+      console.warn("useDraft: failed to read draft from localStorage:", err);
+    }
     return initialValue;
   });
 
@@ -33,7 +36,10 @@ export default function useDraft(key, initialValue = "") {
           } else {
             localStorage.setItem(storageKey, JSON.stringify(next));
           }
-        } catch { /* ignore */ }
+        } catch (err) {
+          // Expected: localStorage may throw in private browsing or when quota is exceeded
+          console.warn("useDraft: failed to write draft to localStorage:", err);
+        }
       }
       return next;
     });
@@ -41,7 +47,12 @@ export default function useDraft(key, initialValue = "") {
 
   const clearDraft = useCallback(() => {
     if (storageKey) {
-      try { localStorage.removeItem(storageKey); } catch { /* ignore */ }
+      try {
+        localStorage.removeItem(storageKey);
+      } catch (err) {
+        // Expected: localStorage may throw in private browsing
+        console.warn("useDraft: failed to clear draft from localStorage:", err);
+      }
     }
   }, [storageKey]);
 

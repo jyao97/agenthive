@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import FileAttachments from "./FilePreview";
 
@@ -60,119 +60,29 @@ describe("ImagePreview (via FileAttachments)", () => {
 });
 
 describe("VideoPreview (via FileAttachments)", () => {
-  it("renders a video element with correct src", () => {
+  it("renders a thumbnail image with .thumb.jpg src and filename", () => {
     const attachments = [
       { path: "output/demo.mp4", resolvedUrl: "/api/files/proj/output/demo.mp4", type: "video", ext: "mp4" },
     ];
-    const { container } = render(<FileAttachments attachments={attachments} />);
-    const video = container.querySelector("video");
-    expect(video).toBeTruthy();
-    expect(video.getAttribute("src")).toBe("/api/files/proj/output/demo.mp4");
-    expect(video).toHaveAttribute("controls");
-    expect(video).toHaveAttribute("preload", "metadata");
+    render(<FileAttachments attachments={attachments} />);
+    const img = screen.getByRole("img");
+    expect(img).toHaveAttribute("src", "/api/files/proj/output/demo.mp4.thumb.jpg");
+    expect(img).toHaveAttribute("loading", "lazy");
     expect(screen.getByText("demo.mp4")).toBeInTheDocument();
   });
 
-  it("hides video on error", async () => {
+  it("shows placeholder when thumbnail fails to load", async () => {
     const attachments = [
       { path: "output/broken.mp4", resolvedUrl: "/api/files/proj/output/broken.mp4", type: "video", ext: "mp4" },
     ];
-    const { container } = render(<FileAttachments attachments={attachments} />);
-    const video = container.querySelector("video");
-    fireEvent.error(video);
-    await waitFor(() => {
-      expect(container.querySelector("video")).not.toBeInTheDocument();
-    });
-  });
-});
-
-describe("CsvPreview (via FileAttachments)", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("renders a click-to-preview button initially", () => {
-    const attachments = [
-      { path: "data/results.csv", resolvedUrl: "/api/files/proj/data/results.csv", type: "csv", ext: "csv" },
-    ];
     render(<FileAttachments attachments={attachments} />);
-    expect(screen.getByRole("button")).toHaveTextContent("results.csv");
-  });
-
-  it("fetches and renders CSV table on click", async () => {
-    const csvText = "Name,Score\nAlice,95\nBob,88\n";
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
-      ok: true,
-      text: () => Promise.resolve(csvText),
-    });
-
-    const attachments = [
-      { path: "data/results.csv", resolvedUrl: "/api/files/proj/data/results.csv", type: "csv", ext: "csv" },
-    ];
-    render(<FileAttachments attachments={attachments} />);
-    fireEvent.click(screen.getByRole("button"));
-
+    const img = screen.getByRole("img");
+    fireEvent.error(img);
     await waitFor(() => {
-      expect(screen.getByText("Name")).toBeInTheDocument();
-      expect(screen.getByText("Score")).toBeInTheDocument();
-      expect(screen.getByText("Alice")).toBeInTheDocument();
-      expect(screen.getByText("95")).toBeInTheDocument();
-      expect(screen.getByText("Bob")).toBeInTheDocument();
-      expect(screen.getByText("88")).toBeInTheDocument();
+      expect(screen.queryByRole("img")).not.toBeInTheDocument();
     });
-  });
-
-  it("shows error state on fetch failure", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({ ok: false });
-
-    const attachments = [
-      { path: "data/missing.csv", resolvedUrl: "/api/files/proj/data/missing.csv", type: "csv", ext: "csv" },
-    ];
-    render(<FileAttachments attachments={attachments} />);
-    fireEvent.click(screen.getByRole("button"));
-
-    await waitFor(() => {
-      expect(screen.getByText("Failed to load")).toBeInTheDocument();
-    });
-  });
-
-  it("shows row count when CSV has more than 20 rows", async () => {
-    const header = "id,value";
-    const rows = Array.from({ length: 30 }, (_, i) => `${i},${i * 10}`).join("\n");
-    const csvText = header + "\n" + rows + "\n";
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
-      ok: true,
-      text: () => Promise.resolve(csvText),
-    });
-
-    const attachments = [
-      { path: "data/big.csv", resolvedUrl: "/api/files/proj/data/big.csv", type: "csv", ext: "csv" },
-    ];
-    render(<FileAttachments attachments={attachments} />);
-    fireEvent.click(screen.getByRole("button"));
-
-    await waitFor(() => {
-      expect(screen.getByText("Showing 20 of 30 rows")).toBeInTheDocument();
-    });
-  });
-
-  it("handles quoted CSV fields with commas", async () => {
-    const csvText = 'Name,Description\n"Smith, John","Has a ""quote"""\n';
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
-      ok: true,
-      text: () => Promise.resolve(csvText),
-    });
-
-    const attachments = [
-      { path: "data/quoted.csv", resolvedUrl: "/api/files/proj/data/quoted.csv", type: "csv", ext: "csv" },
-    ];
-    render(<FileAttachments attachments={attachments} />);
-    fireEvent.click(screen.getByRole("button"));
-
-    await waitFor(() => {
-      expect(screen.getByText("Smith, John")).toBeInTheDocument();
-      expect(screen.getByText('Has a "quote"')).toBeInTheDocument();
-    });
+    // Filename text should still be visible
+    expect(screen.getByText("broken.mp4")).toBeInTheDocument();
   });
 });
 
@@ -181,11 +91,14 @@ describe("Mixed attachments", () => {
     const attachments = [
       { path: "output/img.png", resolvedUrl: "/api/files/proj/output/img.png", type: "image", ext: "png" },
       { path: "output/vid.mp4", resolvedUrl: "/api/files/proj/output/vid.mp4", type: "video", ext: "mp4" },
-      { path: "data/out.csv", resolvedUrl: "/api/files/proj/data/out.csv", type: "csv", ext: "csv" },
+      { path: "data/readme.txt", resolvedUrl: "/api/files/proj/data/readme.txt", type: "doc", ext: "txt" },
     ];
-    const { container } = render(<FileAttachments attachments={attachments} />);
-    expect(screen.getByRole("img")).toBeInTheDocument();
-    expect(container.querySelector("video")).toBeInTheDocument();
-    expect(screen.getByRole("button")).toHaveTextContent("out.csv");
+    render(<FileAttachments attachments={attachments} />);
+    // Image thumbnail + video thumbnail = 2 img elements
+    expect(screen.getAllByRole("img")).toHaveLength(2);
+    expect(screen.getByText("img.png")).toBeInTheDocument();
+    expect(screen.getByText("vid.mp4")).toBeInTheDocument();
+    // Doc file renders as a collapsible button
+    expect(screen.getByRole("button")).toHaveTextContent("readme.txt");
   });
 });

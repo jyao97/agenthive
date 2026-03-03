@@ -224,6 +224,89 @@ def init_db():
             conn.execute(text("ALTER TABLE agents DROP COLUMN plan"))
             conn.commit()
 
+        # Drop plan-related columns from tasks (plan mode fully removed)
+        result = conn.execute(text("PRAGMA table_info(tasks)"))
+        task_cols_pre = {row[1] for row in result}
+        if "plan_approved" in task_cols_pre:
+            conn.execute(text("ALTER TABLE tasks DROP COLUMN plan_approved"))
+            conn.commit()
+        result = conn.execute(text("PRAGMA table_info(tasks)"))
+        task_cols_pre = {row[1] for row in result}
+        if "plan" in task_cols_pre:
+            conn.execute(text("ALTER TABLE tasks DROP COLUMN plan"))
+            conn.commit()
+
+        # --- Task v2 migrations ---
+        result = conn.execute(text("PRAGMA table_info(tasks)"))
+        task_cols = {row[1] for row in result}
+
+        task_new_cols = {
+            "title": "ALTER TABLE tasks ADD COLUMN title VARCHAR(300) NOT NULL DEFAULT ''",
+            "description": "ALTER TABLE tasks ADD COLUMN description TEXT",
+            "project_name": "ALTER TABLE tasks ADD COLUMN project_name VARCHAR(100)",
+            "priority": "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            "agent_id": "ALTER TABLE tasks ADD COLUMN agent_id VARCHAR(12) REFERENCES agents(id)",
+            "worktree_name": "ALTER TABLE tasks ADD COLUMN worktree_name VARCHAR(200)",
+            "branch_name": "ALTER TABLE tasks ADD COLUMN branch_name VARCHAR(200)",
+            "attempt_number": "ALTER TABLE tasks ADD COLUMN attempt_number INTEGER NOT NULL DEFAULT 1",
+            "retry_context": "ALTER TABLE tasks ADD COLUMN retry_context TEXT",
+            "review_artifacts": "ALTER TABLE tasks ADD COLUMN review_artifacts TEXT",
+            "agent_summary": "ALTER TABLE tasks ADD COLUMN agent_summary TEXT",
+            "rejection_reason": "ALTER TABLE tasks ADD COLUMN rejection_reason TEXT",
+            "model": "ALTER TABLE tasks ADD COLUMN model VARCHAR(100)",
+            "effort": "ALTER TABLE tasks ADD COLUMN effort VARCHAR(10)",
+        }
+        for col, ddl in task_new_cols.items():
+            if col not in task_cols:
+                conn.execute(text(ddl))
+        conn.commit()
+
+        # Backfill title from prompt, project_name from project
+        conn.execute(text(
+            "UPDATE tasks SET title = COALESCE(SUBSTR(prompt, 1, 300), '') "
+            "WHERE title = '' AND prompt IS NOT NULL"
+        ))
+        conn.execute(text(
+            "UPDATE tasks SET project_name = project "
+            "WHERE project_name IS NULL AND project IS NOT NULL"
+        ))
+        # Migrate COMPLETED → COMPLETE
+        conn.execute(text(
+            "UPDATE tasks SET status = 'COMPLETE' WHERE status = 'COMPLETED'"
+        ))
+        conn.commit()
+
+        # Add skip_permissions, sync_mode, scheduled_at to tasks if missing
+        result = conn.execute(text("PRAGMA table_info(tasks)"))
+        task_cols3 = {row[1] for row in result}
+        if "skip_permissions" not in task_cols3:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN skip_permissions BOOLEAN NOT NULL DEFAULT 1"))
+        if "sync_mode" not in task_cols3:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN sync_mode BOOLEAN NOT NULL DEFAULT 0"))
+        if "scheduled_at" not in task_cols3:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN scheduled_at DATETIME"))
+        conn.commit()
+
+        # Add task_id column to agents if missing
+        result = conn.execute(text("PRAGMA table_info(agents)"))
+        agent_cols = {row[1] for row in result}
+        if "task_id" not in agent_cols:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN task_id VARCHAR(12)"
+            ))
+            conn.commit()
+
+        if "is_subagent" not in agent_cols:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN is_subagent BOOLEAN NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+        if "claude_agent_id" not in agent_cols:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN claude_agent_id VARCHAR(30)"
+            ))
+            conn.commit()
+
         # Fix invalid model names in projects and agents
         _valid_list = ", ".join(f"'{m}'" for m in VALID_MODELS)
         result = conn.execute(text(

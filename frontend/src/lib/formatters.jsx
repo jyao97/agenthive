@@ -325,10 +325,10 @@ const DOC_EXTS = /\.(py|js|ts|jsx|tsx|html|css|md|txt|pdf|sh|bash|rb|go|rs|c|cpp
 const IGNORE_EXTS = /\.(jsonl|log|csv|json|lock)$/i;
 
 // All extensions the agent path scanner should match (media + doc)
-const AGENT_EXTS = /\.(png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|py|js|ts|jsx|tsx|html|css|md|txt|pdf|sh|bash|rb|go|rs|c|cpp|h|hpp|java|kt|swift|yaml|yml|toml|xml|sql|r|lua|pl|ex|exs|zig|nim|dart|scala|clj|hs|erl|elm)$/i;
+const AGENT_EXTS = /\.(png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|py|js|ts|jsx|tsx|html|css|md|txt|pdf|sh|bash|rb|go|rs|c|cpp|h|hpp|java|kt|swift|yaml|yml|toml|xml|sql|r|lua|pl|ex|exs|zig|nim|dart|scala|clj|hs|erl|elm|ply|obj|stl|glb|gltf)$/i;
 
 // Compiled regexes for agent path detection
-const AGENT_EXT_LIST = "png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|py|js|ts|jsx|tsx|html|css|md|txt|pdf|sh|bash|rb|go|rs|c|cpp|h|hpp|java|kt|swift|yaml|yml|toml|xml|sql|r|lua|pl|ex|exs|zig|nim|dart|scala|clj|hs|erl|elm";
+const AGENT_EXT_LIST = "png|jpg|jpeg|gif|svg|webp|mp4|webm|mov|py|js|ts|jsx|tsx|html|css|md|txt|pdf|sh|bash|rb|go|rs|c|cpp|h|hpp|java|kt|swift|yaml|yml|toml|xml|sql|r|lua|pl|ex|exs|zig|nim|dart|scala|clj|hs|erl|elm|ply|obj|stl|glb|gltf";
 const RE_MD_IMAGE = new RegExp(`!\\[.*?\\]\\((\\S+?\\.(?:${AGENT_EXT_LIST}))\\)`, "gi");
 const RE_BACKTICK = new RegExp("`([^`]*/[^`]*\\.(?:" + AGENT_EXT_LIST + "))`", "gi");
 const RE_BARE_PATH = new RegExp("(?:^|[\\s(])([^\\s()\\[\\]!]*/[^\\s()\\[\\]]+\\.(?:" + AGENT_EXT_LIST + "))(?=[\\s),\\]]|$)", "gim");
@@ -381,16 +381,21 @@ export function extractFileAttachments(text, project, role) {
       const resolvedUrl = `/api/uploads/${encodeURIComponent(filename)}`;
       const ext = filename.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
       const type = classifyExt(filename);
-      results.push({ path: filename, resolvedUrl, type, ext });
+      results.push({ path: filename, resolvedUrl, type, ext, originalPath: filePath });
     }
     return results;
   }
 
   // --- AGENT messages: detect file paths in text ---
 
-  // Collect paths already rendered inline by renderMarkdown
+  // Collect paths already rendered inline by renderMarkdown.
+  // Skip lines inside fenced code blocks — renderMarkdown renders those as
+  // code text, not as inline <img>, so they must NOT be marked as "already rendered".
   const inlineRendered = new Set();
+  let inCodeBlock = false;
   for (const line of text.split("\n")) {
+    if (line.startsWith("```")) { inCodeBlock = !inCodeBlock; continue; }
+    if (inCodeBlock) continue;
     const trimmed = line.trim();
     const mdFull = trimmed.match(/^!\[.*?\]\((.+?)\)$/);
     if (mdFull) inlineRendered.add(mdFull[1]);
@@ -401,6 +406,7 @@ export function extractFileAttachments(text, project, role) {
   const addPath = (rawPath) => {
     if (!rawPath || !AGENT_EXTS.test(rawPath)) return;
     if (IGNORE_EXTS.test(rawPath)) return;
+    if (rawPath.endsWith(".thumb.jpg")) return;
     let path = cleanProjectPath(rawPath, project);
     if (seen.has(path) || inlineRendered.has(rawPath)) return;
     seen.add(path);
@@ -411,7 +417,7 @@ export function extractFileAttachments(text, project, role) {
 
     const ext = path.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
     const type = classifyExt(path);
-    results.push({ path, resolvedUrl, type, ext });
+    results.push({ path, resolvedUrl, type, ext, originalPath: rawPath });
   };
 
   let m;
@@ -423,4 +429,27 @@ export function extractFileAttachments(text, project, role) {
   while ((m = RE_BARE_PATH.exec(text)) !== null) addPath(m[1]);
 
   return results;
+}
+
+/** Format elapsed seconds as "2m 30s" or "1h 15m". */
+export function elapsedDisplay(seconds) {
+  if (seconds == null || seconds < 0) return "";
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m < 60) return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+}
+
+/** Format duration between two ISO strings as "took 5m". */
+export function durationDisplay(startIso, endIso) {
+  if (!startIso || !endIso) return "";
+  let s1 = String(startIso);
+  let s2 = String(endIso);
+  if (/^\d{4}-\d{2}-\d{2}T[\d:.]+$/.test(s1)) s1 += "Z";
+  if (/^\d{4}-\d{2}-\d{2}T[\d:.]+$/.test(s2)) s2 += "Z";
+  const seconds = Math.max(0, Math.floor((new Date(s2) - new Date(s1)) / 1000));
+  return `took ${elapsedDisplay(seconds)}`;
 }

@@ -10,12 +10,21 @@ import { fetchProjectWorktrees } from "../lib/api";
 export default function WorktreePicker({ value, onChange, project }) {
   const enabled = value !== null;
   const [worktrees, setWorktrees] = useState([]);
+  const [fetchError, setFetchError] = useState(null);
 
   useEffect(() => {
     if (!project) return;
+    let cancelled = false;
     fetchProjectWorktrees(project)
-      .then((wt) => setWorktrees(wt))
-      .catch(() => setWorktrees([]));
+      .then((wt) => { if (!cancelled) { setWorktrees(wt); setFetchError(null); } })
+      .catch((err) => {
+        if (!cancelled) {
+          console.warn("WorktreePicker: failed to fetch worktrees:", err);
+          setWorktrees([]);
+          setFetchError("Could not load worktrees");
+        }
+      });
+    return () => { cancelled = true; };
   }, [project]);
 
   const toggle = () => {
@@ -68,6 +77,9 @@ export default function WorktreePicker({ value, onChange, project }) {
               className="flex-1 min-w-0 min-h-[32px] rounded-lg bg-input border border-edge px-2 py-1 text-sm text-heading font-mono placeholder-hint focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 transition-colors"
             />
           </div>
+          {fetchError && (
+            <p className="text-xs text-red-400">{fetchError}</p>
+          )}
           {worktrees.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs text-dim">or reuse</span>

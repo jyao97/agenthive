@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
-import { createAgent, launchTmuxAgent, createProject, sendMessage, generateWorktreeName, uploadFile } from "../lib/api";
+import { useNavigate, useLocation } from "react-router-dom";
+import { createAgent, launchTmuxAgent, createProject, createTaskV2, sendMessage, generateWorktreeName, uploadFile } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
 import ProjectSelector from "../components/ProjectSelector";
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
 import SendLaterPicker from "../components/SendLaterPicker";
+import ModelSelector from "../components/ModelSelector";
+import EffortSelector from "../components/EffortSelector";
+
 import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import PageHeader from "../components/PageHeader";
@@ -31,11 +34,22 @@ const CARDS = [
       </svg>
     ),
   },
+  {
+    key: "task",
+    title: "New Task",
+    desc: "Create a dispatch-and-review task",
+    icon: (
+      <svg className="w-8 h-8" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+      </svg>
+    ),
+  },
 ];
 
 export default function NewPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
-  const [activeCard, setActiveCard] = useState(null);
+  const location = useLocation();
+  const [activeCard, setActiveCard] = useState(() => location.state?.card || null);
 
   // Shared toast
   const [toast, setToast] = useState(null);
@@ -61,7 +75,7 @@ export default function NewPage({ theme, onToggleTheme }) {
             <button
               key={card.key}
               type="button"
-              onClick={() => setActiveCard(card.key)}
+              onClick={() => card.key === "task" ? navigate("/new/task", { state: { backgroundLocation: location } }) : setActiveCard(card.key)}
               className="w-full text-left rounded-xl bg-surface shadow-card p-5 flex items-center gap-4 transition-colors active:bg-input focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 hover:ring-1 hover:ring-ring-hover"
             >
               <div className="shrink-0 text-cyan-400">{card.icon}</div>
@@ -92,8 +106,8 @@ export default function NewPage({ theme, onToggleTheme }) {
       )}
 
       {/* Back header */}
-      <div className="shrink-0 bg-page border-b border-divider px-4 pt-4 pb-2 z-10 safe-area-pt">
-        <button type="button" onClick={goBack} className="flex items-center gap-1 text-sm text-label hover:text-heading">
+      <div className="shrink-0 bg-page border-b border-divider px-2 pb-2 z-10 safe-area-pt">
+        <button type="button" onClick={goBack} className="flex items-center gap-1 text-sm text-label hover:text-heading min-h-[44px] min-w-[44px] px-2">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
@@ -109,9 +123,154 @@ export default function NewPage({ theme, onToggleTheme }) {
         {activeCard === "project" && (
           <NewProjectForm showToast={showToast} navigate={navigate} />
         )}
+        {activeCard === "task" && (
+          <NewTaskForm showToast={showToast} navigate={navigate} />
+        )}
       </div>
       </div>
     </div>
+  );
+}
+
+// ---------- New Task Form ----------
+
+function NewTaskForm({ showToast, navigate }) {
+  const [project, setProject, clearProject] = useDraft("create-task:project", "");
+  const [title, setTitle, clearTitle] = useDraft("create-task:title", "");
+  const [description, setDescription, clearDesc] = useDraft("create-task:description", "");
+  const [priority, setPriority] = useState(0);
+  const [model, setModel] = useState(MODEL_OPTIONS[0].value);
+  const [effort, setEffort] = useState("high");
+  const [autoDispatch, setAutoDispatch] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const clearAllDrafts = () => { clearProject(); clearTitle(); clearDesc(); };
+
+  const voice = useVoiceRecorder({
+    onTranscript: (text) => setDescription((prev) => (prev ? prev + " " + text : text)),
+    onError: (msg) => showToast(msg, "error"),
+  });
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!title.trim()) { showToast("Enter a title.", "error"); return; }
+    setSubmitting(true);
+    try {
+      const body = {
+        title: title.trim(),
+        description: description.trim() || undefined,
+        project_name: project || undefined,
+        priority,
+        model: model || undefined,
+        effort: effort || undefined,
+      };
+      const task = await createTaskV2(body);
+      if (autoDispatch && project && task.id) {
+        try {
+          const { dispatchTask } = await import("../lib/api");
+          await dispatchTask(task.id);
+        } catch (err) {
+          showToast("Created but dispatch failed: " + err.message, "error");
+        }
+      }
+      clearAllDrafts();
+      navigate(`/tasks/${task.id}`);
+    } catch (err) {
+      showToast("Failed: " + err.message, "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-5">
+      <h2 className="text-xl font-bold text-heading">New Task</h2>
+
+      <div className="rounded-xl bg-surface shadow-card p-4 space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-label mb-2">
+            Title <span className="text-red-400">*</span>
+          </label>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="What should be done?"
+            className="w-full min-h-[44px] rounded-lg bg-input border border-edge px-3 py-2 text-heading placeholder-hint focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-label mb-2">Project</label>
+          <ProjectSelector value={project} onChange={setProject} />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-label mb-2">Description</label>
+          <div className="flex items-end gap-2">
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Detailed requirements (optional)"
+              rows={4}
+              className="flex-1 rounded-lg bg-input border border-edge px-3 py-2 text-heading placeholder-hint resize-none focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors"
+            />
+            <VoiceRecorder
+              recording={voice.recording}
+              voiceLoading={voice.voiceLoading}
+              micError={voice.micError}
+              onToggle={voice.toggleRecording}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-[auto_auto_1fr] gap-2 items-center">
+          <ModelSelector value={model} onChange={setModel} />
+          <EffortSelector value={effort} onChange={setEffort} />
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setPriority(priority === 1 ? 0 : 1)}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                priority === 1
+                  ? "bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/30"
+                  : "bg-elevated text-dim hover:text-label"
+              }`}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+              </svg>
+              High Priority
+            </button>
+          </div>
+        </div>
+
+        {project && description.trim() && (
+          <label className="flex items-center gap-2 cursor-pointer">
+            <div
+              role="switch"
+              aria-checked={autoDispatch}
+              onClick={() => setAutoDispatch(!autoDispatch)}
+              className={`relative w-9 h-[20px] rounded-full transition-colors ${autoDispatch ? "bg-cyan-500" : "bg-elevated"}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${autoDispatch ? "translate-x-[16px]" : ""}`} />
+            </div>
+            <span className="text-sm text-label">Auto-dispatch after creation</span>
+          </label>
+        )}
+      </div>
+
+      <button
+        type="submit"
+        disabled={submitting || !title.trim()}
+        className={`w-full min-h-[48px] rounded-lg text-base font-semibold transition-colors ${
+          submitting || !title.trim()
+            ? "bg-elevated text-dim cursor-not-allowed"
+            : "bg-cyan-500 hover:bg-cyan-400 text-white shadow-md shadow-cyan-500/20"
+        }`}
+      >
+        {submitting ? "Creating Task..." : "Create Task"}
+      </button>
+    </form>
   );
 }
 
@@ -138,7 +297,8 @@ function NewAgentForm({ showToast, navigate }) {
           previewUrl: a.thumbnailUrl || null,
         }));
       }
-    } catch { /* ignore */ }
+    } catch { // Expected: localStorage data may be corrupt or invalid JSON
+    }
     return [];
   });
   const [dragOver, setDragOver] = useState(false);
@@ -183,9 +343,9 @@ function NewAgentForm({ showToast, navigate }) {
             : null
         ),
       }));
-      try { localStorage.setItem(attachmentCacheKey, JSON.stringify(toCache)); } catch { /* ignore */ }
+      try { localStorage.setItem(attachmentCacheKey, JSON.stringify(toCache)); } catch { /* Expected: localStorage quota may be exceeded */ }
     } else {
-      try { localStorage.removeItem(attachmentCacheKey); } catch { /* ignore */ }
+      try { localStorage.removeItem(attachmentCacheKey); } catch { /* Expected: localStorage may be unavailable */ }
     }
   }, [attachments]);
 
@@ -202,7 +362,7 @@ function NewAgentForm({ showToast, navigate }) {
       prev.forEach((a) => { if (a.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(a.previewUrl); });
       return [];
     });
-    try { localStorage.removeItem(attachmentCacheKey); } catch { /* ignore */ }
+    try { localStorage.removeItem(attachmentCacheKey); } catch { /* Expected: localStorage may be unavailable */ }
   };
 
   const addFiles = (files) => {
@@ -310,8 +470,7 @@ function NewAgentForm({ showToast, navigate }) {
         const agent = await createAgent({ project, prompt: fullPrompt, mode: "AUTO", model, effort, worktree, skip_permissions: skipPermissions });
         clearAllDrafts();
         clearAttachments();
-        showToast("Agent created!");
-        setTimeout(() => navigate(`/agents/${agent.id}`), 400);
+        navigate(`/agents/${agent.id}`);
       }
     } catch (err) {
       showToast("Failed: " + err.message, "error");
@@ -334,8 +493,7 @@ function NewAgentForm({ showToast, navigate }) {
       clearAllDrafts();
       clearAttachments();
       const when = new Date(scheduledAt);
-      showToast(`Scheduled for ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
-      setTimeout(() => navigate(`/agents/${agent.id}`), 400);
+      navigate(`/agents/${agent.id}`);
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     } finally {
@@ -367,7 +525,6 @@ function NewAgentForm({ showToast, navigate }) {
           onDragOver={handleDragOver}
           onDrop={handleDrop}
         >
-          {/* Drop zone overlay */}
           {dragOver && (
             <div className="absolute inset-0 z-30 rounded-[22px] bg-cyan-500/15 border-2 border-dashed border-cyan-500 flex items-center justify-center pointer-events-none">
               <span className="text-sm font-medium text-cyan-400">Drop files here</span>
@@ -383,7 +540,6 @@ function NewAgentForm({ showToast, navigate }) {
             rows={3}
             className="w-full min-h-[72px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors"
           />
-          {/* Attachment preview chips */}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-1">
               {attachments.map((att) => (
@@ -414,7 +570,6 @@ function NewAgentForm({ showToast, navigate }) {
           )}
           <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={handleFileSelect} />
           <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-1.5 items-center px-1">
-            {/* Attach button */}
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -588,8 +743,7 @@ function NewProjectForm({ showToast, navigate }) {
       if (description.trim()) body.description = description.trim();
       await createProject(body);
       clearAllDrafts();
-      showToast("Project created!");
-      setTimeout(() => navigate("/projects"), 600);
+      navigate("/projects");
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     } finally {

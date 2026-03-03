@@ -34,6 +34,7 @@ import ProjectFileModal from "../components/ProjectFileModal";
 import ProjectBrowserModal from "../components/ProjectBrowserModal";
 import ClaudeMdDiffModal from "../components/ClaudeMdDiffModal";
 import useWebSocket from "../hooks/useWebSocket";
+import usePageVisible from "../hooks/usePageVisible";
 
 const AGENT_TABS = [
   { key: "starred", label: "Starred" },
@@ -57,7 +58,7 @@ function agentBotState(status) {
   return "idle";
 }
 
-function AgentRow({ agent, onClick, starred, onToggleStar, project, isStreaming }) {
+function AgentRow({ agent, onClick, starred, onToggleStar, onError, project, isStreaming }) {
   const statusDot = AGENT_STATUS_COLORS[agent.status] || "bg-gray-500";
   const statusText = AGENT_STATUS_TEXT_COLORS[agent.status] || "text-dim";
   const [copied, setCopied] = useState(false);
@@ -83,8 +84,9 @@ function AgentRow({ agent, onClick, starred, onToggleStar, project, isStreaming 
         await starSession(project, sessionId);
       }
       if (onToggleStar) onToggleStar(sessionId, !starred);
-    } catch {
-      // silently fail
+    } catch (err) {
+      console.error("Star toggle failed:", err);
+      if (onError) onError(err.message || "Failed to update star");
     } finally {
       setStarLoading(false);
     }
@@ -199,8 +201,9 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
         await starSession(project, session.session_id);
       }
       if (onToggleStar) onToggleStar(session.session_id, !session.starred);
-    } catch {
-      // silently fail
+    } catch (err) {
+      console.error("Star toggle failed:", err);
+      if (onError) onError(err.message || "Failed to update star");
     } finally {
       setStarLoading(false);
     }
@@ -351,15 +354,19 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
 export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const { name } = useParams();
   const navigate = useNavigate();
+  const visible = usePageVisible();
 
-  // Remember last-viewed project so ProjectsPage can auto-navigate back
+  // Remember last-viewed project so the tab bar can auto-navigate back.
+  // Clear returnedFrom since the user is actively viewing a project.
   useEffect(() => {
     if (name) localStorage.setItem("lastViewed:projects", name);
+    sessionStorage.removeItem("returnedFrom:projects");
   }, [name]);
 
   const [project, setProject] = useState(null);
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [agentTab, setAgentTab] = useDraft(`ui:project:${name}:tab`, "active");
 
   // Sessions (lazy-loaded)
@@ -409,10 +416,9 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const [claudeMdReady, setClaudeMdReady] = useState(false); // completed result available
   const [diffData, setDiffData] = useState(null); // response from refresh-claudemd
 
-  // Track which agents are actively streaming via WebSocket
+  // Track which agents are actively streaming via WebSocket events + API is_generating
   const { lastEvent } = useWebSocket();
   const [streamingAgents, setStreamingAgents] = useState(new Set());
-  const streamTimers = useRef({});
 
   useEffect(() => {
     if (!lastEvent) return;
@@ -424,21 +430,21 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         next.add(aid);
         return next;
       });
-      clearTimeout(streamTimers.current[aid]);
-      streamTimers.current[aid] = setTimeout(() => {
-        setStreamingAgents((prev) => {
-          if (!prev.has(aid)) return prev;
-          const next = new Set(prev);
-          next.delete(aid);
-          return next;
-        });
-      }, 4000);
+    }
+    // Deterministic end signal from backend
+    if (lastEvent.type === "agent_stream_end" && lastEvent.data?.agent_id) {
+      const aid = lastEvent.data.agent_id;
+      setStreamingAgents((prev) => {
+        if (!prev.has(aid)) return prev;
+        const next = new Set(prev);
+        next.delete(aid);
+        return next;
+      });
     }
     if (lastEvent.type === "agent_update" && lastEvent.data?.agent_id) {
       const aid = lastEvent.data.agent_id;
       const s = lastEvent.data.status;
       if (s !== "EXECUTING" && s !== "SYNCING") {
-        clearTimeout(streamTimers.current[aid]);
         setStreamingAgents((prev) => {
           if (!prev.has(aid)) return prev;
           const next = new Set(prev);
@@ -449,9 +455,24 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     }
   }, [lastEvent]);
 
+  // Seed streaming state from API is_generating on poll
   useEffect(() => {
-    return () => Object.values(streamTimers.current).forEach(clearTimeout);
-  }, []);
+    if (!agents.length) return;
+    setStreamingAgents((prev) => {
+      const apiGenerating = new Set(agents.filter((a) => a.is_generating).map((a) => a.id));
+      const next = new Set([...prev, ...apiGenerating]);
+      for (const aid of prev) {
+        if (!apiGenerating.has(aid)) {
+          const ag = agents.find((a) => a.id === aid);
+          if (!ag || (ag.status !== "EXECUTING" && ag.status !== "SYNCING")) {
+            next.delete(aid);
+          }
+        }
+      }
+      if (next.size === prev.size && [...next].every((a) => prev.has(a))) return prev;
+      return next;
+    });
+  }, [agents]);
 
   // Rename
   const [editingName, setEditingName] = useState(false);
@@ -472,11 +493,15 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }, []);
 
+  // Auto-select name input when rename starts (useEffect runs after DOM commit)
+  useEffect(() => {
+    if (editingName) nameInputRef.current?.select();
+  }, [editingName]);
+
   // Rename handlers
   const startRename = () => {
     setNameDraft(project?.display_name || project?.name || "");
     setEditingName(true);
-    setTimeout(() => nameInputRef.current?.select(), 0);
   };
 
   const requestRename = () => {
@@ -505,6 +530,34 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       await renameProjectApi(name, slug, displayName);
       showToast("Project renamed!");
       setShowRenameConfirm(false);
+
+      // Clean up old localStorage keys that embed the project name
+      try {
+        // Draft keys from useDraft (prefixed with "draft:")
+        localStorage.removeItem(`draft:project-agent:${name}:prompt`);
+        localStorage.removeItem(`draft:project-agent:${name}:model`);
+        localStorage.removeItem(`draft:project-agent:${name}:effort`);
+        // Attachment cache (already has "draft:" prefix)
+        localStorage.removeItem(`draft:project-agent:${name}:attachments`);
+        // Tab state from useDraft
+        localStorage.removeItem(`draft:ui:project:${name}:tab`);
+        // Update lastViewed to new name
+        const lastViewed = localStorage.getItem("lastViewed:projects");
+        if (lastViewed === name) {
+          localStorage.setItem("lastViewed:projects", slug);
+        }
+        // Update custom order array
+        const orderRaw = localStorage.getItem("projects-custom-order");
+        if (orderRaw) {
+          const order = JSON.parse(orderRaw);
+          const idx = order.indexOf(name);
+          if (idx !== -1) {
+            order[idx] = slug;
+            localStorage.setItem("projects-custom-order", JSON.stringify(order));
+          }
+        }
+      } catch { /* ignore localStorage errors */ }
+
       navigate(`/projects/${encodeURIComponent(slug)}`, { replace: true });
     } catch (err) {
       showToast("Rename failed: " + err.message, "error");
@@ -541,8 +594,10 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       }
       setProject(folder);
       setAgents(agentList);
-    } catch {
-      // silently retry
+      setLoadError(null);
+    } catch (err) {
+      console.error("Failed to load project data:", err);
+      setLoadError(err.message || "Failed to load project data");
     } finally {
       setLoading(false);
     }
@@ -550,8 +605,9 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await scanAgents(); } catch {}
+    scanAgents().catch(() => {});
     await loadData();
+    // Minimum 400ms spinner display to prevent jarring sub-frame flicker
     setTimeout(() => setRefreshing(false), 400);
   }, [loadData]);
 
@@ -575,9 +631,11 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           setRefreshingClaudeMd(false);
           showToast(res.message || "Failed to analyze project — try again", "error");
         }
-      } catch {
+      } catch (err) {
+        console.error("CLAUDE.md refresh poll failed:", err);
         stopPolling();
         setRefreshingClaudeMd(false);
+        showToast("Failed to check refresh status", "error");
       }
     }, 2000);
   }, [name, stopPolling, showToast]);
@@ -619,10 +677,11 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   }, [name, showToast]);
 
   useEffect(() => {
+    if (!visible) return;
     loadData();
     const interval = setInterval(loadData, 5000);
     return () => clearInterval(interval);
-  }, [loadData]);
+  }, [loadData, visible]);
 
   // Check CLAUDE.md / PROGRESS.md existence
   useEffect(() => {
@@ -656,6 +715,20 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       .finally(() => { if (!cancelled) setSessionsLoading(false); });
     return () => { cancelled = true; };
   }, [agentTab, name, sessions]);
+
+  // Poll sessions while sessions/starred tab is visible
+  useEffect(() => {
+    if (!visible || (agentTab !== "sessions" && agentTab !== "starred")) return;
+    const timer = setInterval(() => {
+      fetchProjectSessions(name)
+        .then((data) => {
+          setSessions(data);
+          setStarredIds(new Set(data.filter((s) => s.starred).map((s) => s.session_id)));
+        })
+        .catch(() => {});
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [visible, agentTab, name]);
 
   useEffect(() => {
     return () => { if (toastTimer.current) clearTimeout(toastTimer.current); };
@@ -873,6 +946,19 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     );
   }
 
+  if (!project && loadError) {
+    return (
+      <div className="px-4 py-10">
+        <div className="bg-red-950/40 border border-red-800 rounded-xl p-4">
+          <p className="text-red-400 text-sm">Failed to load project: {loadError}</p>
+          <button type="button" onClick={loadData} className="mt-2 text-xs text-red-300 underline hover:text-red-200">
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!project) return null;
 
   return (
@@ -889,7 +975,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         <div className="max-w-2xl mx-auto">
           <button
             type="button"
-            onClick={() => { sessionStorage.setItem("returnedFrom:projects", "true"); localStorage.removeItem("lastViewed:projects"); navigate("/projects"); }}
+            onClick={() => { localStorage.removeItem("lastViewed:projects"); navigate("/projects", { replace: true }); }}
             className="flex items-center gap-1 text-sm text-label hover:text-heading mb-2"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -1276,6 +1362,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                 starred={starredIds.has(agent.session_id || agent.id)}
                 isStreaming={streamingAgents.has(agent.id)}
                 onClick={() => navigate(`/agents/${agent.id}`)}
+                onError={(msg) => showToast(msg, "error")}
                 onToggleStar={(sid, newStarred) => {
                   setStarredIds((prev) => {
                     const next = new Set(prev);

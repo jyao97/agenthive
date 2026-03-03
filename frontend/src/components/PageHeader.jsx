@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import useHealthStatus from "../hooks/useHealthStatus";
 import { restartServer, fetchHealth } from "../lib/api";
@@ -19,6 +19,16 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
   const navigate = useNavigate();
   const health = useHealthStatus();
   const [restarting, setRestarting] = useState(false);
+  const pollRef = useRef(null);
+  const abortRef = useRef(null);
+
+  // Cleanup restart polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (abortRef.current) abortRef.current.abort();
+    };
+  }, []);
 
   const isHealthy = health && health.status === "ok" && health.db === "ok" && health.claude_cli === "ok";
   const chipCls = health === null
@@ -50,6 +60,11 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
           onClick={async () => {
             if (!confirm("Restart AgentHive server?")) return;
             setRestarting(true);
+            // Clean up any previous polling
+            if (pollRef.current) clearInterval(pollRef.current);
+            if (abortRef.current) abortRef.current.abort();
+            const controller = new AbortController();
+            abortRef.current = controller;
             try {
               await restartServer();
               // Wait for old server to die before polling.
@@ -58,16 +73,22 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
               let attempts = 0;
               let sawDown = false;
               let consecutiveOk = 0;
-              const poll = setInterval(async () => {
+              pollRef.current = setInterval(async () => {
+                if (controller.signal.aborted) {
+                  clearInterval(pollRef.current);
+                  return;
+                }
                 attempts++;
                 if (attempts > 60) {
-                  clearInterval(poll);
+                  clearInterval(pollRef.current);
+                  pollRef.current = null;
                   setRestarting(false);
                   alert("Server did not restart after 60s. Check logs.");
                   return;
                 }
                 try {
                   const h = await fetchHealth();
+                  if (controller.signal.aborted) return;
                   if (!sawDown) {
                     // Still hitting old server — ignore until we see it go down
                     return;
@@ -75,12 +96,23 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
                   // Server is back — require 2 consecutive OKs to be sure
                   consecutiveOk++;
                   if (consecutiveOk >= 2 && h?.status === "ok") {
-                    clearInterval(poll);
+                    clearInterval(pollRef.current);
+                    pollRef.current = null;
                     window.location.reload();
                   }
-                } catch {
-                  sawDown = true;
-                  consecutiveOk = 0;
+                } catch (err) {
+                  if (controller.signal.aborted) return;
+                  // Network errors (TypeError) or 5xx indicate server is down
+                  if (err instanceof TypeError || (err.message && /^HTTP 5\d\d/.test(err.message))) {
+                    sawDown = true;
+                    consecutiveOk = 0;
+                  } else {
+                    // Non-network error (e.g. 4xx, CORS) — still mark as down during restart
+                    // but log for visibility
+                    console.warn("Restart poll unexpected error:", err);
+                    sawDown = true;
+                    consecutiveOk = 0;
+                  }
                 }
               }, 1000);
             } catch (e) {

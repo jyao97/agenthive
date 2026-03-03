@@ -90,7 +90,7 @@ def verify_token(token: str, jwt_secret: str) -> bool:
             return False
 
         return True
-    except Exception:
+    except (ValueError, KeyError, json.JSONDecodeError, base64.binascii.Error, UnicodeDecodeError):
         return False
 
 

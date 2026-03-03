@@ -25,8 +25,9 @@ export default function useHealthStatus() {
           healthyRef.current = ok;
           schedule(ok ? 15000 : 3000);
         }
-      } catch {
+      } catch (err) {
         if (cancelled) return;
+        console.warn("useHealthStatus: health check failed:", err);
         setHealth({ status: "error", db: "unknown", claude_cli: "unknown" });
         if (healthyRef.current) {
           healthyRef.current = false;

@@ -42,8 +42,10 @@ def _send_telegram(title: str, body: str, url: str = "/") -> None:
             },
             timeout=5,
         )
-    except Exception:
+    except _requests.exceptions.RequestException:
         logger.debug("Telegram send failed", exc_info=True)
+    except Exception:
+        logger.error("Telegram send unexpected error", exc_info=True)
 
 
 def _send_webpush(title: str, body: str, url: str = "/") -> None:
@@ -104,7 +106,9 @@ def _send_webpush(title: str, body: str, url: str = "/") -> None:
             ).delete(synchronize_session=False)
             db.commit()
             logger.info("Removed %d expired push subscriptions", len(expired_ids))
+    except _requests.exceptions.RequestException:
+        logger.debug("Push notification batch failed (network)", exc_info=True)
     except Exception:
-        logger.debug("Push notification batch failed", exc_info=True)
+        logger.error("Push notification batch failed", exc_info=True)
     finally:
         db.close()

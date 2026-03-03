@@ -1,65 +1,141 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { authedFetch } from "../lib/api";
 import ImageLightbox from "./ImageLightbox";
 
+// --- Shared action buttons (download + copy path) ---
+
+function ActionButtons({ src, filename, originalPath }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleDownload = async (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    try {
+      const res = await authedFetch(src);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      window.open(src, "_blank");
+    }
+  };
+
+  const handleCopyPath = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    navigator.clipboard.writeText(originalPath || filename);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <span className="inline-flex gap-0.5 shrink-0">
+      <button
+        type="button"
+        onClick={handleDownload}
+        title="Download file"
+        className="p-0.5 rounded hover:bg-hover transition-colors text-dim hover:text-label"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        onClick={handleCopyPath}
+        title={copied ? "Copied!" : "Copy file path"}
+        className="p-0.5 rounded hover:bg-hover transition-colors text-dim hover:text-label"
+      >
+        {copied ? (
+          <svg className="w-3.5 h-3.5 text-green-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+          </svg>
+        ) : (
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <rect x="8" y="8" width="12" height="12" rx="2" />
+            <path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2" />
+          </svg>
+        )}
+      </button>
+    </span>
+  );
+}
+
 // --- Image Preview (compact thumbnail, tappable fullscreen) ---
 
-function ImagePreview({ src, filename, onOpen }) {
+function ImagePreview({ src, filename, originalPath, onOpen }) {
   const [error, setError] = useState(false);
 
   if (error) return null;
 
   return (
-    <div className="group cursor-pointer" onClick={onOpen}>
-      <img
-        src={src}
-        alt={filename}
-        loading="lazy"
-        onError={() => setError(true)}
-        className="max-h-[120px] max-w-full rounded-lg border border-divider object-contain"
-      />
-      <p className="text-xs text-dim mt-1 truncate max-w-[200px]">{filename}</p>
+    <div>
+      <div className="cursor-pointer" onClick={onOpen}>
+        <img
+          src={src}
+          alt={filename}
+          loading="lazy"
+          onError={() => setError(true)}
+          className="max-h-[120px] max-w-full rounded-lg border border-divider object-contain"
+        />
+      </div>
+      <div className="flex items-center gap-1 mt-1">
+        <p className="text-xs text-dim truncate max-w-[200px]">{filename}</p>
+        <ActionButtons src={src} filename={filename} originalPath={originalPath} />
+      </div>
     </div>
   );
 }
 
 // --- Video Preview (thumbnail, tappable to open in lightbox) ---
 
-function VideoPreview({ src, filename, onOpen }) {
-  const [error, setError] = useState(false);
-  const vidRef = useRef(null);
-
-  if (error) return null;
+function VideoPreview({ src, filename, originalPath, onOpen }) {
+  const [thumbError, setThumbError] = useState(false);
+  const thumbUrl = src + ".thumb.jpg";
 
   return (
-    <div className="group cursor-pointer" onClick={onOpen}>
-      <div className="relative inline-block">
-        <video
-          ref={vidRef}
-          src={src}
-          preload="metadata"
-          muted
-          onLoadedData={() => { if (vidRef.current) vidRef.current.currentTime = 0.1; }}
-          onError={() => setError(true)}
-          className="max-h-[120px] max-w-full rounded-lg border border-divider object-contain block"
-        />
-        {/* Play icon overlay — scoped to video area only */}
-        <div className="absolute inset-0 flex items-center justify-center rounded-lg">
-          <div className="w-8 h-8 rounded-full bg-black/50 flex items-center justify-center">
-            <svg className="w-4 h-4 ml-0.5 text-white" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
+    <div>
+      <div className="cursor-pointer" onClick={onOpen}>
+        <div className="relative inline-block">
+          {thumbError ? (
+            /* Fallback: gray placeholder when no thumbnail available */
+            <div className="w-[160px] h-[90px] rounded-lg border border-divider bg-elevated flex items-center justify-center" />
+          ) : (
+            <img
+              src={thumbUrl}
+              alt={filename}
+              loading="lazy"
+              onError={() => setThumbError(true)}
+              className="max-h-[120px] max-w-full rounded-lg border border-divider object-contain block"
+            />
+          )}
+          {/* Play icon overlay */}
+          <div className="absolute inset-0 flex items-center justify-center rounded-lg">
+            <div className="w-8 h-8 rounded-full bg-black/50 flex items-center justify-center">
+              <svg className="w-4 h-4 ml-0.5 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </div>
           </div>
         </div>
       </div>
-      <p className="text-xs text-dim mt-1 truncate max-w-[200px]">{filename}</p>
+      <div className="flex items-center gap-1 mt-1">
+        <p className="text-xs text-dim truncate max-w-[200px]">{filename}</p>
+        <ActionButtons src={src} filename={filename} originalPath={originalPath} />
+      </div>
     </div>
   );
 }
 
 // --- Doc/Code File Preview (collapsible card) ---
 
-function DocFilePreview({ src, filename, ext }) {
+function DocFilePreview({ src, filename, ext, originalPath }) {
   const [expanded, setExpanded] = useState(false);
   const [content, setContent] = useState(null);
   const [loadState, setLoadState] = useState("idle"); // idle | loading | loaded | error
@@ -87,20 +163,20 @@ function DocFilePreview({ src, filename, ext }) {
 
   return (
     <div className="rounded-lg bg-elevated overflow-hidden max-w-[280px]">
-      <button
-        type="button"
+      <div
         onClick={handleToggle}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-hover transition-colors text-left"
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-hover transition-colors text-left cursor-pointer"
       >
         <svg className="w-4 h-4 text-cyan-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
         </svg>
         <span className="text-xs text-label truncate flex-1 min-w-0">{filename}</span>
         <span className="text-[10px] text-dim uppercase shrink-0">{ext}</span>
+        <ActionButtons src={src} filename={filename} originalPath={originalPath} />
         <svg className={`w-3 h-3 text-dim shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
           <path strokeLinecap="round" d="m19 9-7 7-7-7" />
         </svg>
-      </button>
+      </div>
       {expanded && (
         <div className="border-t border-divider">
           {loadState === "loading" && (
@@ -132,19 +208,15 @@ function DocFilePreview({ src, filename, ext }) {
 
 // --- Generic File Card (non-media, non-doc — fallback for user uploads) ---
 
-function GenericFilePreview({ src, filename }) {
+function GenericFilePreview({ src, filename, originalPath }) {
   return (
-    <a
-      href={src}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-elevated hover:bg-hover transition-colors max-w-[240px]"
-    >
+    <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-elevated max-w-[240px]">
       <svg className="w-4 h-4 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
       </svg>
       <span className="text-xs text-label truncate flex-1 min-w-0">{filename}</span>
-    </a>
+      <ActionButtons src={src} filename={filename} originalPath={originalPath} />
+    </div>
   );
 }
 
@@ -173,11 +245,8 @@ function DocGroupCard({ docs }) {
           {docs.map((att) => {
             const filename = att.path.split("/").pop();
             return (
-              <a
+              <div
                 key={att.path}
-                href={att.resolvedUrl}
-                target="_blank"
-                rel="noopener noreferrer"
                 className="flex items-center gap-2 px-3 py-1.5 hover:bg-hover transition-colors text-left"
               >
                 <svg className="w-3.5 h-3.5 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
@@ -185,7 +254,8 @@ function DocGroupCard({ docs }) {
                 </svg>
                 <span className="text-xs text-label truncate flex-1 min-w-0">{filename}</span>
                 <span className="text-[10px] text-dim uppercase shrink-0">{att.ext}</span>
-              </a>
+                <ActionButtons src={att.resolvedUrl} filename={filename} originalPath={att.originalPath} />
+              </div>
             );
           })}
         </div>
@@ -233,20 +303,21 @@ export default function FileAttachments({ attachments }) {
               key={att.path}
               src={att.resolvedUrl}
               filename={filename}
+              originalPath={att.originalPath}
               onOpen={() => openLightbox(idx)}
             />
           );
         }
-        return <VideoPreview key={att.path} src={att.resolvedUrl} filename={filename} onOpen={() => openLightbox(idx)} />;
+        return <VideoPreview key={att.path} src={att.resolvedUrl} filename={filename} originalPath={att.originalPath} onOpen={() => openLightbox(idx)} />;
       })}
       {/* Doc files: single card if 1, grouped card if 2+ */}
       {docs.length === 1 && (
-        <DocFilePreview src={docs[0].resolvedUrl} filename={docs[0].path.split("/").pop()} ext={docs[0].ext} />
+        <DocFilePreview src={docs[0].resolvedUrl} filename={docs[0].path.split("/").pop()} ext={docs[0].ext} originalPath={docs[0].originalPath} />
       )}
       {docs.length >= 2 && <DocGroupCard docs={docs} />}
       {/* Generic fallback for non-media, non-doc */}
       {other.map((att) => (
-        <GenericFilePreview key={att.path} src={att.resolvedUrl} filename={att.path.split("/").pop()} />
+        <GenericFilePreview key={att.path} src={att.resolvedUrl} filename={att.path.split("/").pop()} originalPath={att.originalPath} />
       ))}
 
       {/* Lightbox for media gallery */}

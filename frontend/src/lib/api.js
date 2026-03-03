@@ -48,7 +48,11 @@ async function request(url, opts = {}) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `HTTP ${res.status}`);
+    const detail = body?.detail;
+    const msg = typeof detail === "string" ? detail
+      : Array.isArray(detail) ? detail.map(e => e.msg || JSON.stringify(e)).join("; ")
+      : `HTTP ${res.status}`;
+    throw new Error(msg);
   }
   return res.json();
 }
@@ -119,6 +123,23 @@ export const fetchTasks = (params = "") =>
   request(`/api/tasks${params ? `?${params}` : ""}`);
 export const fetchTask = (id) => request(`/api/tasks/${id}`);
 
+// --- Tasks v2 (first-class Task entity) ---
+export const fetchTasksV2 = (params = "") =>
+  request(`/api/v2/tasks${params ? `?${params}` : ""}`);
+export const fetchTaskV2 = (id) => request(`/api/v2/tasks/${id}`);
+export const createTaskV2 = (data) =>
+  request("/api/v2/tasks", { method: "POST", body: JSON.stringify(data) });
+export const updateTaskV2 = (id, data) =>
+  request(`/api/v2/tasks/${id}`, { method: "PUT", body: JSON.stringify(data) });
+export const dispatchTask = (id) =>
+  request(`/api/v2/tasks/${id}/dispatch`, { method: "POST" });
+export const approveTask = (id) =>
+  request(`/api/v2/tasks/${id}/approve`, { method: "POST" });
+export const rejectTask = (id, reason) =>
+  request(`/api/v2/tasks/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+export const cancelTask = (id) =>
+  request(`/api/v2/tasks/${id}/cancel`, { method: "POST" });
+
 // --- Agents ---
 export const fetchAgents = (params = "") =>
   request(`/api/agents${params ? `?${params}` : ""}`);
@@ -143,8 +164,12 @@ export const resumeAgent = (id, body = null) =>
     method: "POST",
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
-export const fetchMessages = (agentId, limit = 100) =>
-  request(`/api/agents/${agentId}/messages?limit=${limit}`);
+export const fetchMessages = (agentId, { limit = 50, before, after } = {}) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (before) params.set("before", before);
+  if (after) params.set("after", after);
+  return request(`/api/agents/${agentId}/messages?${params}`);
+};
 export const sendMessage = (agentId, content, { queue = false, scheduled_at = null } = {}) =>
   request(`/api/agents/${agentId}/messages`, {
     method: "POST",
@@ -191,15 +216,38 @@ export const fetchGitStatus = (project) =>
   request(`/api/git/${e(project)}/status`);
 export const fetchGitWorktrees = (project) =>
   request(`/api/git/${e(project)}/worktrees`);
-export const mergeGitBranch = (project, branch) =>
-  request(`/api/git/${e(project)}/merge/${e(branch)}`, { method: "POST" });
-
 // --- System ---
 export const fetchSystemStats = () => request("/api/system/stats");
 export const fetchStorageStats = () => request("/api/system/storage");
 export const fetchTokenUsage = () => request("/api/system/token-usage");
 export const restartServer = () => request("/api/system/restart", { method: "POST" });
 export const fetchProcesses = () => request("/api/processes");
+
+// --- FormData helper (shared by voice + upload) ---
+async function formDataRequest(url, formData, errorLabel = "Request") {
+  const headers = {};
+  const token = getAuthToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(`${BASE}${url}`, {
+    method: "POST",
+    body: formData,
+    headers,
+  });
+  if (res.status === 401) {
+    clearAuthToken();
+    if (window.location.pathname !== "/login") {
+      window.dispatchEvent(new Event("auth-expired"));
+    }
+    throw new Error("Not authenticated");
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || `${errorLabel} (${res.status})`);
+  }
+  return res.json();
+}
 
 // --- Voice ---
 export async function transcribeVoice(audioBlob, mimeType) {
@@ -209,55 +257,13 @@ export async function transcribeVoice(audioBlob, mimeType) {
     : "webm";
   const formData = new FormData();
   formData.append("file", audioBlob, `recording.${ext}`);
-  const headers = {};
-  const token = getAuthToken();
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-  const res = await fetch(`${BASE}/api/voice`, {
-    method: "POST",
-    body: formData,
-    headers,
-  });
-  if (res.status === 401) {
-    clearAuthToken();
-    if (window.location.pathname !== "/login") {
-      window.dispatchEvent(new Event("auth-expired"));
-    }
-    throw new Error("Not authenticated");
-  }
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `Voice API error (${res.status})`);
-  }
-  return res.json();
+  return formDataRequest("/api/voice", formData, "Voice API error");
 }
 
 export async function uploadFile(file) {
   const formData = new FormData();
   formData.append("file", file);
-  const headers = {};
-  const token = getAuthToken();
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-  const res = await fetch(`${BASE}/api/upload`, {
-    method: "POST",
-    body: formData,
-    headers,
-  });
-  if (res.status === 401) {
-    clearAuthToken();
-    if (window.location.pathname !== "/login") {
-      window.dispatchEvent(new Event("auth-expired"));
-    }
-    throw new Error("Not authenticated");
-  }
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `Upload failed (${res.status})`);
-  }
-  return res.json();
+  return formDataRequest("/api/upload", formData, "Upload failed");
 }
 
 export async function generateWorktreeName(prompt) {

@@ -17,7 +17,6 @@ vi.mock("../lib/api", () => ({
   fetchGitBranches: vi.fn(),
   fetchGitStatus: vi.fn(),
   fetchGitWorktrees: vi.fn(),
-  mergeGitBranch: vi.fn(),
   createAgent: vi.fn(),
 }));
 
@@ -27,7 +26,6 @@ import {
   fetchGitBranches,
   fetchGitStatus,
   fetchGitWorktrees,
-  mergeGitBranch,
   createAgent,
 } from "../lib/api";
 
@@ -73,7 +71,6 @@ function setupMocks({ worktrees = MOCK_WORKTREES_SINGLE } = {}) {
   fetchGitStatus.mockResolvedValue(MOCK_STATUS_CLEAN);
   fetchGitWorktrees.mockResolvedValue(worktrees);
   createAgent.mockResolvedValue({ id: "agent-123" });
-  mergeGitBranch.mockResolvedValue({ success: true });
 }
 
 beforeEach(() => {
@@ -176,8 +173,8 @@ describe("Merge All button behavior", () => {
     expect(call.project).toBe("my-project");
     expect(call.mode).toBe("AUTO");
     expect(call.skip_permissions).toBe(true);
-    expect(call.initial_message).toContain("feat-a");
-    expect(call.initial_message).toContain("feat-b");
+    expect(call.prompt).toContain("feat-a");
+    expect(call.prompt).toContain("feat-b");
   });
 
   it("navigates to agent chat page after creating agent", async () => {
@@ -259,7 +256,7 @@ describe("Merge All button behavior", () => {
       expect(createAgent).toHaveBeenCalledTimes(1);
     });
 
-    const msg = createAgent.mock.calls[0][0].initial_message;
+    const msg = createAgent.mock.calls[0][0].prompt;
     // The branch list should be "feat-a, feat-b" — not include "main"
     expect(msg).toMatch(/branches to merge are: feat-a, feat-b/);
   });
@@ -305,13 +302,11 @@ describe("Worktree rendering", () => {
 });
 
 // =============================================================================
-// Branch merge (existing functionality)
+// Branch merge (spawns agent)
 // =============================================================================
 describe("Branch merge", () => {
-  it("calls mergeGitBranch on branch merge button click", async () => {
+  it("spawns an agent to merge branch on button click", async () => {
     setupMocks();
-    // After merge we need to return fresh data
-    mergeGitBranch.mockResolvedValue({ success: true });
     renderGitPage();
 
     await waitFor(() => {
@@ -325,8 +320,14 @@ describe("Branch merge", () => {
     fireEvent.click(mergeBtn);
 
     await waitFor(() => {
-      expect(mergeGitBranch).toHaveBeenCalledWith("my-project", "feature-x");
+      expect(createAgent).toHaveBeenCalledTimes(1);
     });
+
+    const call = createAgent.mock.calls[0][0];
+    expect(call.project).toBe("my-project");
+    expect(call.mode).toBe("AUTO");
+    expect(call.prompt).toContain("feature-x");
+    expect(mockNavigate).toHaveBeenCalledWith("/agents/agent-123");
   });
 });
 
