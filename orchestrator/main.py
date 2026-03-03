@@ -37,6 +37,8 @@ from models import (
     MessageStatus,
     Project,
     StarredSession,
+    Task,
+    TaskStatus,
 )
 from schemas import (
     AgentBrief,
@@ -812,20 +814,19 @@ async def list_projects(db: Session = Depends(get_db)):
     projects = db.query(Project).filter(Project.archived == False).order_by(Project.name).all()
     results = []
     for proj in projects:
-        # Task stats (derived from agent USER messages)
+        # Task stats (from first-class Task table)
         task_row = (
             db.query(
-                func.count(Message.id).label("total"),
-                func.count(case((Message.status == MessageStatus.COMPLETED, 1))).label("completed"),
+                func.count(Task.id).label("total"),
+                func.count(case((Task.status == TaskStatus.COMPLETED, 1))).label("completed"),
                 func.count(
-                    case((Message.status.in_([MessageStatus.FAILED, MessageStatus.TIMEOUT]), 1))
+                    case((Task.status.in_([TaskStatus.FAILED, TaskStatus.TIMEOUT]), 1))
                 ).label("failed"),
                 func.count(
-                    case((Message.status.in_([MessageStatus.PENDING, MessageStatus.EXECUTING]), 1))
+                    case((Task.status.in_([TaskStatus.PENDING, TaskStatus.EXECUTING]), 1))
                 ).label("running"),
             )
-            .join(Agent, Message.agent_id == Agent.id)
-            .filter(Agent.project == proj.name, Message.role == MessageRole.USER)
+            .filter(Task.project == proj.name)
             .one()
         )
 
@@ -929,9 +930,8 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
                 .scalar()
             )
             task_total = (
-                db.query(func.count(Message.id))
-                .join(Agent, Message.agent_id == Agent.id)
-                .filter(Agent.project == dirname, Message.role == MessageRole.USER)
+                db.query(func.count(Task.id))
+                .filter(Task.project == dirname)
                 .scalar()
             )
             entry["agent_active"] = agent_active_count
