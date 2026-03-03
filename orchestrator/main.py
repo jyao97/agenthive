@@ -2170,21 +2170,39 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
 
 # ---- Tasks v2 (first-class Task entity) ----
 
-from task_state_machine import can_transition, validate_transition
+from task_state_machine import can_transition, validate_transition, InvalidTransitionError
 from websocket import emit_task_update
 
 
 @app.post("/api/v2/tasks", response_model=TaskOut, status_code=201)
 async def create_task_v2(body: TaskCreate, db: Session = Depends(get_db)):
-    """Create a new task. Starts as INBOX unless project+description present."""
+    """Create a new task. Starts as INBOX unless auto_dispatch is set."""
+    # Auto-generate title from description if blank
+    title = body.title.strip() if body.title else ""
+    if not title and body.description:
+        desc = body.description.strip()
+        if len(desc) <= 60:
+            title = desc
+        else:
+            cut = desc[:60].rsplit(" ", 1)[0] if " " in desc[:60] else desc[:60]
+            title = cut + "..."
+    if not title:
+        title = "Untitled task"
+
     initial_status = TaskStatus.INBOX
+    if body.auto_dispatch and body.project_name:
+        initial_status = TaskStatus.PENDING
+
     task = Task(
-        title=body.title,
+        title=title,
         description=body.description,
         project_name=body.project_name,
         priority=body.priority,
         model=body.model,
         effort=body.effort,
+        skip_permissions=body.skip_permissions,
+        sync_mode=body.sync_mode,
+        scheduled_at=body.scheduled_at,
         status=initial_status,
     )
     db.add(task)
@@ -2200,13 +2218,26 @@ async def create_task_v2(body: TaskCreate, db: Session = Depends(get_db)):
 @app.get("/api/v2/tasks", response_model=list[TaskOut])
 async def list_tasks_v2(
     status: str | None = None,
+    statuses: str | None = None,
     project: str | None = None,
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
     """List v2 tasks with optional filters."""
     q = db.query(Task)
-    if status:
+    if statuses:
+        status_list = []
+        for s in statuses.split(","):
+            s = s.strip()
+            if not s:
+                continue
+            try:
+                status_list.append(TaskStatus(s))
+            except ValueError:
+                raise HTTPException(400, f"Invalid status: {s}")
+        if status_list:
+            q = q.filter(Task.status.in_(status_list))
+    elif status:
         try:
             q = q.filter(Task.status == TaskStatus(status))
         except ValueError:
@@ -2214,7 +2245,27 @@ async def list_tasks_v2(
     if project:
         q = q.filter(Task.project_name == project)
     tasks = q.order_by(Task.created_at.desc()).limit(limit).all()
-    return [TaskOut.model_validate(t) for t in tasks]
+
+    # Enrich EXECUTING tasks with agent info
+    results = []
+    executing_agent_ids = [t.agent_id for t in tasks if t.status == TaskStatus.EXECUTING and t.agent_id]
+    agent_map = {}
+    if executing_agent_ids:
+        agents = db.query(Agent).filter(Agent.id.in_(executing_agent_ids)).all()
+        agent_map = {a.id: a for a in agents}
+
+    now = datetime.now(timezone.utc)
+    for t in tasks:
+        out = TaskOut.model_validate(t)
+        if t.status == TaskStatus.EXECUTING and t.agent_id:
+            agent = agent_map.get(t.agent_id)
+            if agent and agent.last_message_preview:
+                out.last_agent_message = agent.last_message_preview[:200]
+            if t.started_at:
+                started = t.started_at if t.started_at.tzinfo else t.started_at.replace(tzinfo=timezone.utc)
+                out.elapsed_seconds = int((now - started).total_seconds())
+        results.append(out)
+    return results
 
 
 @app.get("/api/v2/tasks/{task_id}", response_model=TaskDetailOut)
@@ -2271,7 +2322,19 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
         raise HTTPException(400, "Task requires a project_name before dispatch")
     if not task.title:
         raise HTTPException(400, "Task requires a title before dispatch")
-    validate_transition(task.status, TaskStatus.PENDING)
+    try:
+        validate_transition(task.status, TaskStatus.PENDING)
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
+    # Redo: auto-increment attempt and prepare context
+    if task.status == TaskStatus.REJECTED:
+        task.attempt_number += 1
+        if task.agent_summary:
+            task.retry_context = task.agent_summary
+        task.agent_id = None
+        task.agent_summary = None
+        task.started_at = None
+        task.completed_at = None
     task.status = TaskStatus.PENDING
     db.commit()
     db.refresh(task)
@@ -2288,7 +2351,10 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    validate_transition(task.status, TaskStatus.MERGING)
+    try:
+        validate_transition(task.status, TaskStatus.MERGING)
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
     task.status = TaskStatus.MERGING
     db.commit()
     db.refresh(task)
@@ -2311,7 +2377,10 @@ async def reject_task_v2(
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    validate_transition(task.status, TaskStatus.REJECTED)
+    try:
+        validate_transition(task.status, TaskStatus.REJECTED)
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
     task.status = TaskStatus.REJECTED
     task.rejection_reason = body.reason
     db.commit()
@@ -2329,7 +2398,10 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    validate_transition(task.status, TaskStatus.CANCELLED)
+    try:
+        validate_transition(task.status, TaskStatus.CANCELLED)
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
     # Stop running agent if EXECUTING
     if task.status == TaskStatus.EXECUTING and task.agent_id:
         agent = db.get(Agent, task.agent_id)
@@ -2344,6 +2416,17 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
                                capture_output=True, timeout=5)
     task.status = TaskStatus.CANCELLED
     task.completed_at = _utcnow()
+    # Clean up git artifacts
+    proj = db.query(Project).filter(Project.name == task.project_name).first()
+    if proj:
+        import subprocess as _sp
+        if task.worktree_name:
+            wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
+            _sp.run(["git", "worktree", "remove", wt_path, "--force"],
+                    cwd=proj.path, capture_output=True, timeout=30)
+        if task.branch_name:
+            _sp.run(["git", "branch", "-D", task.branch_name],
+                    cwd=proj.path, capture_output=True, timeout=10)
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
@@ -2354,8 +2437,7 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
 
 
 async def _merge_task_branch(task_id: str, request: Request):
-    """Background: merge task branch into project main branch."""
-    import subprocess
+    """Send a merge prompt to the original agent instead of merging via subprocess."""
     db = SessionLocal()
     try:
         task = db.get(Task, task_id)
@@ -2367,30 +2449,49 @@ async def _merge_task_branch(task_id: str, request: Request):
             task.error_message = "Missing project or branch"
             db.commit()
             return
-        try:
-            result = subprocess.run(
-                ["git", "merge", task.branch_name, "--no-ff",
-                 "-m", f"Merge task/{task.id}: {task.title}"],
-                cwd=proj.path,
-                capture_output=True, text=True, timeout=60,
-            )
-            if result.returncode == 0:
-                task.status = TaskStatus.COMPLETE
-                task.completed_at = _utcnow()
-            else:
-                # Conflict — abort merge
-                subprocess.run(["git", "merge", "--abort"],
-                               cwd=proj.path, capture_output=True, timeout=10)
-                task.status = TaskStatus.CONFLICT
-                task.error_message = result.stderr[:1000] if result.stderr else "Merge conflict"
-        except subprocess.TimeoutExpired:
+        agent = db.get(Agent, task.agent_id) if task.agent_id else None
+        if not agent:
             task.status = TaskStatus.FAILED
-            task.error_message = "Merge timed out"
+            task.error_message = "Original agent not found"
+            db.commit()
+            return
+
+        # Build merge prompt for the agent
+        wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name) if task.worktree_name else None
+        merge_prompt = (
+            f"# Merge Task Branch\n\n"
+            f"The task has been approved. Merge the branch `{task.branch_name}` into the main branch.\n\n"
+            f"## Steps\n"
+            f"1. `cd {proj.path}`\n"
+            f"2. `git merge {task.branch_name} --no-ff -m \"Merge task/{task.id}: {task.title}\"`\n"
+            f"3. If there are merge conflicts, resolve them intelligently and commit\n"
+        )
+        if wt_path:
+            merge_prompt += f"4. `git worktree remove {wt_path} --force`\n"
+            merge_prompt += f"5. `git branch -d {task.branch_name}`\n"
+        else:
+            merge_prompt += f"4. `git branch -d {task.branch_name}`\n"
+        merge_prompt += (
+            "\n## Guidelines\n"
+            "- Work autonomously — do not ask for confirmation\n"
+            "- If the merge has conflicts, resolve them sensibly and commit\n"
+            "- Leave a brief summary of the merge result as your final message\n"
+        )
+
+        # Create PENDING message on the original agent — dispatch loop will pick it up
+        msg = Message(
+            agent_id=agent.id,
+            role=MessageRole.USER,
+            content=merge_prompt,
+            status=MessageStatus.PENDING,
+            source="task",
+        )
+        db.add(msg)
+        # Ensure agent is IDLE so the dispatch loop picks it up
+        if agent.status == AgentStatus.STOPPED:
+            agent.status = AgentStatus.IDLE
         db.commit()
-        asyncio.ensure_future(emit_task_update(
-            task.id, task.status.value, task.project_name or "",
-            title=task.title,
-        ))
+        logger.info("Task %s: merge prompt queued on agent %s", task.id, agent.id)
     finally:
         db.close()
 
@@ -2665,6 +2766,7 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     effort = body.get("effort")
     worktree = body.get("worktree")
     skip_permissions = body.get("skip_permissions", True)
+    task_id = body.get("task_id")
 
     # Reject if too many agents are already queued for launch
     starting_count = db.query(func.count(Agent.id)).filter(
@@ -2774,11 +2876,21 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
         effort=effort if effort else None,
         worktree=worktree if worktree else None,
         skip_permissions=skip_permissions,
+        task_id=task_id if task_id else None,
         last_message_preview=agent_name,
         last_message_at=datetime.now(timezone.utc),
     )
     db.add(agent)
     db.flush()
+
+    # Link task → agent if task_id provided
+    if task_id:
+        _task = db.get(Task, task_id)
+        if _task:
+            _task.agent_id = agent.id
+            _task.status = TaskStatus.EXECUTING
+            _task.started_at = datetime.now(timezone.utc)
+            _task.worktree_name = worktree if worktree else None
 
     # Save the initial prompt as a user message so it shows in the chat
     if prompt:
@@ -3152,7 +3264,7 @@ async def list_agents(
     db: Session = Depends(get_db),
 ):
     """List agents with optional filters."""
-    q = db.query(Agent)
+    q = db.query(Agent).filter(Agent.is_subagent == False)  # noqa: E712
     if project:
         q = q.filter(Agent.project == project)
     if status:
@@ -3179,6 +3291,7 @@ async def agents_unread_count(db: Session = Depends(get_db)):
     """Total unread message count across the top 50 agents (matching list limit)."""
     top = (
         db.query(Agent.unread_count)
+        .filter(Agent.is_subagent == False)  # noqa: E712
         .order_by(Agent.last_message_at.desc().nulls_last(), Agent.created_at.desc())
         .limit(50)
         .all()
@@ -3273,6 +3386,15 @@ async def get_agent(agent_id: str, request: Request, db: Session = Depends(get_d
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if ad and agent.id in ad._generating_agents:
         result.is_generating = True
+
+    # Attach child subagents
+    child_rows = db.query(Agent).filter(
+        Agent.parent_id == agent.id,
+        Agent.is_subagent == True,  # noqa: E712
+    ).order_by(Agent.created_at).all()
+    if child_rows:
+        result.subagents = [AgentBrief.model_validate(r) for r in child_rows]
+
     return result
 
 
@@ -3326,6 +3448,16 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
         ad._cancel_sync_task(agent.id)
         ad._cancel_launch_task(agent.id)
         ad._stale_session_retries.pop(agent.id, None)
+        ad._known_subagents.pop(agent.id, None)
+
+    # Cascade stop to child subagents
+    child_subs = db.query(Agent).filter(
+        Agent.parent_id == agent.id,
+        Agent.is_subagent == True,  # noqa: E712
+        Agent.status != AgentStatus.STOPPED,
+    ).all()
+    for sub in child_subs:
+        sub.status = AgentStatus.STOPPED
 
     db.commit()
     db.refresh(agent)

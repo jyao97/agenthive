@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from config import CLAUDE_HOME, MAX_CONCURRENT_WORKERS
+from config import CC_MODEL, CLAUDE_HOME, MAX_CONCURRENT_WORKERS
 from database import SessionLocal
 from log_config import save_worker_log
 from models import (
@@ -643,6 +643,87 @@ def _infer_worktree_from_session(
     except OSError:
         pass
     return None
+
+
+def _scan_subagents(
+    session_id: str,
+    project_path: str,
+    worktree: str | None = None,
+) -> list[dict]:
+    """Scan for Claude Code subagent JSONL files spawned by a parent session.
+
+    Returns a list of dicts with keys:
+      claude_agent_id, slug, prompt, model, jsonl_path, size, mtime
+    """
+    # Resolve the session dir from the parent's JSONL path
+    parent_jsonl = _resolve_session_jsonl(session_id, project_path, worktree)
+    session_dir = os.path.dirname(parent_jsonl)
+    subagents_dir = os.path.join(session_dir, session_id, "subagents")
+    if not os.path.isdir(subagents_dir):
+        return []
+
+    results = []
+    try:
+        for fname in os.listdir(subagents_dir):
+            if not fname.startswith("agent-") or not fname.endswith(".jsonl"):
+                continue
+            if "compact" in fname:
+                continue
+            fpath = os.path.join(subagents_dir, fname)
+            try:
+                stat = os.stat(fpath)
+            except OSError:
+                continue
+
+            # Extract claude_agent_id from filename: agent-{id}.jsonl
+            claude_agent_id = fname[len("agent-"):-len(".jsonl")]
+
+            # Parse first two entries for prompt, slug, model
+            prompt = ""
+            slug = ""
+            model = ""
+            try:
+                with open(fpath, "r", errors="replace") as f:
+                    for i, line in enumerate(f):
+                        if i >= 2:
+                            break
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if i == 0:
+                            slug = entry.get("slug", "")
+                            msg = entry.get("message", {})
+                            content = msg.get("content", "")
+                            if isinstance(content, str):
+                                prompt = content[:300]
+                            elif isinstance(content, list):
+                                for block in content:
+                                    if isinstance(block, dict) and block.get("type") == "text":
+                                        prompt = block["text"][:300]
+                                        break
+                        elif i == 1:
+                            msg = entry.get("message", {})
+                            model = msg.get("model", "")
+            except OSError:
+                pass
+
+            results.append({
+                "claude_agent_id": claude_agent_id,
+                "slug": slug,
+                "prompt": prompt,
+                "model": model,
+                "jsonl_path": fpath,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+            })
+    except OSError:
+        pass
+
+    return results
 
 
 def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
@@ -1426,6 +1507,10 @@ class AgentDispatcher:
         # N+1 subprocesses multiple times per tick.
         self._tmux_map_cache: dict[str, dict] | None = None
 
+        # Track known subagent claude_agent_ids per parent agent
+        # parent_agent_id -> {claude_agent_id: {agent_id, last_size, idle_polls}}
+        self._known_subagents: dict[str, dict[str, dict]] = {}
+
     def _get_tmux_map(self) -> dict[str, dict]:
         """Get the per-tick cached tmux pane→claude map.
 
@@ -1579,9 +1664,11 @@ class AgentDispatcher:
         import secrets
         import subprocess
 
+        from sqlalchemy import or_
         tasks = (
             db.query(Task)
             .filter(Task.status == TaskStatus.PENDING)
+            .filter(or_(Task.scheduled_at == None, Task.scheduled_at <= _utcnow()))  # noqa: E711
             .order_by(Task.priority.desc(), Task.created_at.asc())
             .limit(5)
             .all()
@@ -1595,11 +1682,11 @@ class AgentDispatcher:
                 logger.warning("Task %s: project %s not found, skipping", task.id, task.project_name)
                 continue
 
-            # Check project capacity
+            # Check project capacity (only count agents actively running)
             active = (
                 db.query(Agent)
                 .filter(Agent.project == proj.name)
-                .filter(Agent.status.in_([AgentStatus.EXECUTING, AgentStatus.STARTING, AgentStatus.IDLE]))
+                .filter(Agent.status.in_([AgentStatus.EXECUTING, AgentStatus.STARTING]))
                 .count()
             )
             if active >= proj.max_concurrent:
@@ -1622,14 +1709,17 @@ class AgentDispatcher:
                 logger.exception("Failed to dispatch task %s", task.id)
 
     def _create_task_agent(self, db: Session, task: Task, proj: Project) -> str | None:
-        """Create a tmux agent for a v2 task. Returns agent_id or None."""
+        """Create an agent for a v2 task. Reuses the standard IDLE→dispatch flow.
+
+        Creates Agent(IDLE) + Message(PENDING), then the existing
+        _dispatch_pending_messages loop picks it up on the next tick
+        and runs it through worker_mgr.exec_claude_in_agent().
+        """
         import secrets
-        import subprocess
 
         # Generate unique agent ID
         for _ in range(20):
             agent_hex = secrets.token_hex(6)
-            tmux_session = f"ah-{agent_hex[:8]}"
             if db.get(Agent, agent_hex) is None:
                 break
         else:
@@ -1641,44 +1731,20 @@ class AgentDispatcher:
         branch = f"task/{task.id}/{wt_name}"
         task.branch_name = branch
 
-        model = task.model or proj.default_model
-
-        # Create tmux session
-        try:
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", tmux_session, "-c", proj.path],
-                check=True, capture_output=True, timeout=10,
-            )
-        except Exception:
-            logger.exception("Failed to create tmux session for task %s", task.id)
-            return None
-
-        # Get pane ID
-        try:
-            result = subprocess.run(
-                ["tmux", "list-panes", "-t", tmux_session, "-F", "#{pane_id}"],
-                capture_output=True, text=True, timeout=5,
-            )
-            pane_id = result.stdout.strip().split("\n")[0] if result.returncode == 0 else None
-        except Exception:
-            pane_id = None
-
-        # Build prompt
+        model = task.model or proj.default_model or CC_MODEL
         prompt = self._build_task_prompt(task)
 
-        # Create agent record
+        # Create agent record — IDLE so _dispatch_pending_messages picks it up
         agent = Agent(
             id=agent_hex,
             project=proj.name,
             name=f"Task: {task.title[:80]}",
             mode=AgentMode.AUTO,
-            status=AgentStatus.STARTING,
+            status=AgentStatus.IDLE,
             model=model,
-            cli_sync=True,
-            tmux_pane=pane_id,
             effort=task.effort or "high",
             worktree=wt_name,
-            skip_permissions=True,
+            skip_permissions=getattr(task, 'skip_permissions', True),
             task_id=task.id,
             last_message_preview=f"Task: {task.title[:80]}",
             last_message_at=_utcnow(),
@@ -1686,42 +1752,16 @@ class AgentDispatcher:
         db.add(agent)
         db.flush()
 
-        # Save initial message
+        # Save initial message as PENDING — dispatch loop will execute it
         msg = Message(
             agent_id=agent.id,
             role=MessageRole.USER,
             content=prompt,
-            status=MessageStatus.COMPLETED,
+            status=MessageStatus.PENDING,
             source="task",
-            completed_at=_utcnow(),
         )
         db.add(msg)
         db.commit()
-
-        # Build claude command — write prompt to file to avoid shell escaping issues
-        import tempfile
-        prompt_file = os.path.join(tempfile.gettempdir(), f"ah-task-{task.id}.txt")
-        with open(prompt_file, "w") as f:
-            f.write(prompt)
-
-        cmd_parts = ["claude", "--dangerously-skip-permissions"]
-        if wt_name:
-            cmd_parts += ["--worktree", wt_name]
-        cmd_parts += ["--model", model]
-        if task.effort:
-            cmd_parts += ["--effort", task.effort]
-        # Use $(cat ...) to safely pass multi-line prompt
-        cmd_parts += ["-p", f'"$(cat {prompt_file})"']
-
-        cmd_str = " ".join(cmd_parts)
-
-        try:
-            subprocess.run(
-                ["tmux", "send-keys", "-t", tmux_session, cmd_str, "Enter"],
-                check=True, capture_output=True, timeout=10,
-            )
-        except Exception:
-            logger.exception("Failed to send claude command for task %s", task.id)
 
         from websocket import emit_agent_update
         self._emit(emit_agent_update(agent.id, agent.status.value, proj.name))
@@ -1739,7 +1779,16 @@ class AgentDispatcher:
         if task.rejection_reason:
             parts.append(f"\n## Rejection Reason from Previous Attempt")
             parts.append(task.rejection_reason)
-        parts.append("\n## Output Requirements")
+        if task.attempt_number > 1:
+            parts.append(f"\n## Redo Context")
+            parts.append(
+                f"This is attempt #{task.attempt_number}. Before starting, briefly summarize why the previous "
+                "attempt didn't fully satisfy the requirements and append it to PROGRESS.md "
+                "in the project root. Then proceed with the task."
+            )
+        parts.append("\n## Guidelines")
+        parts.append("- Work autonomously — do not ask for confirmation, interviews, or permissions")
+        parts.append("- Avoid dangerous/destructive operations (force push, drop tables, rm -rf, etc.)")
         parts.append("- Commit all changes with descriptive messages")
         parts.append("- Leave a summary of what was done as your final message")
         return "\n".join(parts)
@@ -1757,6 +1806,14 @@ class AgentDispatcher:
             if not agent:
                 continue
             if agent.status in (AgentStatus.IDLE, AgentStatus.STOPPED):
+                # Skip agents that haven't executed yet (still waiting for dispatch)
+                has_pending = (
+                    db.query(Message)
+                    .filter(Message.agent_id == agent.id, Message.status == MessageStatus.PENDING)
+                    .count()
+                )
+                if has_pending and agent.status == AgentStatus.IDLE:
+                    continue
                 # Agent finished — extract summary from last message
                 last_msg = (
                     db.query(Message)
@@ -1805,6 +1862,58 @@ class AgentDispatcher:
                     task.id, task.status.value, task.project_name or "",
                     title=task.title,
                 ))
+
+        # --- MERGING tasks: agent performs the merge, harvest completion ---
+        merging_tasks = (
+            db.query(Task)
+            .filter(Task.status == TaskStatus.MERGING)
+            .filter(Task.agent_id.isnot(None))
+            .all()
+        )
+        for task in merging_tasks:
+            agent = db.get(Agent, task.agent_id)
+            if not agent:
+                continue
+            if agent.status in (AgentStatus.IDLE, AgentStatus.STOPPED):
+                # Skip if agent still has a pending message (hasn't started yet)
+                has_pending = (
+                    db.query(Message)
+                    .filter(Message.agent_id == agent.id, Message.status == MessageStatus.PENDING)
+                    .count()
+                )
+                if has_pending and agent.status == AgentStatus.IDLE:
+                    continue
+                # Agent finished the merge
+                last_msg = (
+                    db.query(Message)
+                    .filter(Message.agent_id == agent.id, Message.role == MessageRole.AGENT)
+                    .order_by(Message.created_at.desc())
+                    .first()
+                )
+                if last_msg:
+                    task.status = TaskStatus.COMPLETE
+                    task.completed_at = _utcnow()
+                    task.agent_summary = last_msg.content[:2000] if last_msg.content else None
+                else:
+                    task.status = TaskStatus.FAILED
+                    task.error_message = "Merge agent stopped without producing output"
+                db.commit()
+                from websocket import emit_task_update
+                self._emit(emit_task_update(
+                    task.id, task.status.value, task.project_name or "",
+                    title=task.title,
+                ))
+                logger.info("Task %s merge %s (agent %s)", task.id, task.status.value, agent.id)
+            elif agent.status == AgentStatus.ERROR:
+                task.status = TaskStatus.FAILED
+                task.error_message = "Merge agent encountered an error"
+                db.commit()
+                from websocket import emit_task_update
+                self._emit(emit_task_update(
+                    task.id, task.status.value, task.project_name or "",
+                    title=task.title,
+                ))
+                logger.info("Task %s merge FAILED (agent %s error)", task.id, agent.id)
 
     def _tick(self, db: Session):
         # Invalidate per-tick tmux map cache
@@ -3277,6 +3386,149 @@ class AgentDispatcher:
         self._sync_tasks[agent_id] = task
         logger.info("Started sync task for agent %s (session %s)", agent_id, session_id)
 
+    def _process_subagents(
+        self, agent_id: str, session_id: str, project_path: str,
+        worktree: str | None, agent_name: str, project_name: str,
+    ):
+        """Scan for subagent JSONLs and create/update Agent records."""
+        from websocket import emit_agent_update, emit_new_message
+
+        subs = _scan_subagents(session_id, project_path, worktree)
+        if not subs:
+            return
+
+        known = self._known_subagents.setdefault(agent_id, {})
+
+        db = SessionLocal()
+        try:
+            for sub in subs:
+                cid = sub["claude_agent_id"]
+                if cid in known:
+                    # Already tracked — check if JSONL grew
+                    info = known[cid]
+                    if sub["size"] > info["last_size"]:
+                        info["last_size"] = sub["size"]
+                        info["idle_polls"] = 0
+                        # Update messages from JSONL
+                        sub_agent_id = info["agent_id"]
+                        turns = _parse_session_turns(sub["jsonl_path"])
+                        existing_count = db.query(Message).filter(
+                            Message.agent_id == sub_agent_id,
+                        ).count()
+                        if len(turns) > existing_count:
+                            # Import new turns
+                            for role, content, *rest in turns[existing_count:]:
+                                meta = rest[0] if rest else None
+                                meta_json = json.dumps(meta) if meta else None
+                                if role == "user":
+                                    db.add(Message(
+                                        agent_id=sub_agent_id,
+                                        role=MessageRole.USER,
+                                        content=content,
+                                        status=MessageStatus.COMPLETED,
+                                        source="cli",
+                                        completed_at=_utcnow(),
+                                    ))
+                                elif role == "assistant":
+                                    db.add(Message(
+                                        agent_id=sub_agent_id,
+                                        role=MessageRole.AGENT,
+                                        content=content,
+                                        status=MessageStatus.COMPLETED,
+                                        source="cli",
+                                        meta_json=meta_json,
+                                        completed_at=_utcnow(),
+                                    ))
+                            sub_ag = db.get(Agent, sub_agent_id)
+                            if sub_ag:
+                                last_turn = turns[-1] if turns else None
+                                if last_turn:
+                                    sub_ag.last_message_preview = (last_turn[1] or "")[:200]
+                                    sub_ag.last_message_at = _utcnow()
+                                db.commit()
+                                self._emit(emit_new_message(
+                                    sub_agent_id, "sync",
+                                    sub_ag.name, project_name,
+                                ))
+                    else:
+                        info["idle_polls"] = info.get("idle_polls", 0) + 1
+                        # If idle for 3+ polls, mark STOPPED
+                        if info["idle_polls"] >= 3:
+                            sub_ag = db.get(Agent, info["agent_id"])
+                            if sub_ag and sub_ag.status == AgentStatus.SYNCING:
+                                sub_ag.status = AgentStatus.STOPPED
+                                db.commit()
+                                self._emit(emit_agent_update(
+                                    sub_ag.id, "STOPPED", project_name,
+                                ))
+                else:
+                    # New subagent — create Agent record and import turns
+                    name = sub["slug"] or f"subagent-{cid[:8]}"
+                    sub_agent = Agent(
+                        project=project_name,
+                        name=name,
+                        mode=AgentMode.AUTO,
+                        status=AgentStatus.SYNCING,
+                        cli_sync=True,
+                        parent_id=agent_id,
+                        is_subagent=True,
+                        claude_agent_id=cid,
+                        model=sub["model"] or None,
+                    )
+                    db.add(sub_agent)
+                    db.flush()  # get the generated id
+
+                    # Import turns from JSONL
+                    turns = _parse_session_turns(sub["jsonl_path"])
+                    for role, content, *rest in turns:
+                        meta = rest[0] if rest else None
+                        meta_json = json.dumps(meta) if meta else None
+                        if role == "user":
+                            db.add(Message(
+                                agent_id=sub_agent.id,
+                                role=MessageRole.USER,
+                                content=content,
+                                status=MessageStatus.COMPLETED,
+                                source="cli",
+                                completed_at=_utcnow(),
+                            ))
+                        elif role == "assistant":
+                            db.add(Message(
+                                agent_id=sub_agent.id,
+                                role=MessageRole.AGENT,
+                                content=content,
+                                status=MessageStatus.COMPLETED,
+                                source="cli",
+                                meta_json=meta_json,
+                                completed_at=_utcnow(),
+                            ))
+
+                    if turns:
+                        last_turn = turns[-1]
+                        sub_agent.last_message_preview = (last_turn[1] or "")[:200]
+                        sub_agent.last_message_at = _utcnow()
+
+                    db.commit()
+                    known[cid] = {
+                        "agent_id": sub_agent.id,
+                        "last_size": sub["size"],
+                        "idle_polls": 0,
+                    }
+                    logger.info(
+                        "Created subagent %s (%s) for parent %s — %d turns",
+                        sub_agent.id, name, agent_id, len(turns),
+                    )
+                    self._emit(emit_agent_update(
+                        sub_agent.id, "SYNCING", project_name,
+                    ))
+        except Exception:
+            logger.warning(
+                "Error processing subagents for agent %s",
+                agent_id, exc_info=True,
+            )
+        finally:
+            db.close()
+
     def _cancel_sync_task(self, agent_id: str):
         """Cancel and clean up a sync task."""
         task = self._sync_tasks.pop(agent_id, None)
@@ -3558,6 +3810,20 @@ class AgentDispatcher:
             # Ensure generating state is cleaned up on any exit path
             if agent_id in self._generating_agents:
                 self._stop_generating(agent_id)
+            # Stop any tracked subagents when parent sync exits
+            known_subs = self._known_subagents.pop(agent_id, {})
+            if known_subs:
+                db_sub = SessionLocal()
+                try:
+                    for cid, info in known_subs.items():
+                        sub_ag = db_sub.get(Agent, info["agent_id"])
+                        if sub_ag and sub_ag.status == AgentStatus.SYNCING:
+                            sub_ag.status = AgentStatus.STOPPED
+                    db_sub.commit()
+                except Exception:
+                    logger.warning("Error stopping subagents for %s", agent_id, exc_info=True)
+                finally:
+                    db_sub.close()
 
     async def _sync_session_loop_inner(
         self, agent_id: str, session_id: str, project_path: str
@@ -4241,6 +4507,12 @@ class AgentDispatcher:
                     )
             finally:
                 db.close()
+
+            # Scan for subagent JSONLs spawned by this session
+            self._process_subagents(
+                agent_id, session_id, project_path,
+                _worktree, _sync_agent_name, _sync_project,
+            )
 
             # Check if the CLI session has ended by looking for a 'result' event
             if self._session_has_ended(jsonl_path):

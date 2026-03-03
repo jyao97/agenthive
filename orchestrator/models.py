@@ -84,6 +84,9 @@ class Task(Base):
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     effort: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    skip_permissions: Mapped[bool] = mapped_column(Boolean, default=True)
+    sync_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -129,6 +132,8 @@ class Agent(Base):
     muted: Mapped[bool] = mapped_column(Boolean, default=False)
     parent_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    is_subagent: Mapped[bool] = mapped_column(Boolean, default=False)
+    claude_agent_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
 
 class Message(Base):

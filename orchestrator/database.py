@@ -276,12 +276,34 @@ def init_db():
         ))
         conn.commit()
 
+        # Add skip_permissions, sync_mode, scheduled_at to tasks if missing
+        result = conn.execute(text("PRAGMA table_info(tasks)"))
+        task_cols3 = {row[1] for row in result}
+        if "skip_permissions" not in task_cols3:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN skip_permissions BOOLEAN NOT NULL DEFAULT 1"))
+        if "sync_mode" not in task_cols3:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN sync_mode BOOLEAN NOT NULL DEFAULT 0"))
+        if "scheduled_at" not in task_cols3:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN scheduled_at DATETIME"))
+        conn.commit()
+
         # Add task_id column to agents if missing
         result = conn.execute(text("PRAGMA table_info(agents)"))
         agent_cols = {row[1] for row in result}
         if "task_id" not in agent_cols:
             conn.execute(text(
                 "ALTER TABLE agents ADD COLUMN task_id VARCHAR(12)"
+            ))
+            conn.commit()
+
+        if "is_subagent" not in agent_cols:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN is_subagent BOOLEAN NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+        if "claude_agent_id" not in agent_cols:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN claude_agent_id VARCHAR(30)"
             ))
             conn.commit()
 
