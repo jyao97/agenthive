@@ -1042,6 +1042,10 @@ def _get_session_pid(session_id: str) -> int | None:
        the process successfully acquires the version lock (first launch).
     2. ``Writing to temp file: .../.claude.json.tmp.{PID}.{timestamp}``
        — always present regardless of lock acquisition.
+    3. ``Writing to temp file: .../{file}.tmp.{PID}.{timestamp}``
+       — broader fallback for any file write by Claude (needed when
+       /clear creates a new session that doesn't write .claude.json
+       early enough).
 
     Fallback (2) is needed because concurrent claude processes report
     "Cannot acquire lock" instead of "Acquired PID lock".
@@ -1049,6 +1053,7 @@ def _get_session_pid(session_id: str) -> int | None:
     debug_file = os.path.join(_CLAUDE_DEBUG_DIR, f"{session_id}.txt")
     try:
         fallback_pid = None
+        broad_fallback_pid = None
         with open(debug_file, "r") as f:
             for line in f:
                 if "Acquired PID lock" in line:
@@ -1058,14 +1063,22 @@ def _get_session_pid(session_id: str) -> int | None:
                         if os.path.exists(f"/proc/{pid}"):
                             return pid
                         return None
-                elif fallback_pid is None and ".claude.json.tmp." in line:
-                    # Pattern: .claude.json.tmp.{PID}.{timestamp}
-                    m = re.search(r"\.claude\.json\.tmp\.(\d+)\.", line)
-                    if m:
-                        fallback_pid = int(m.group(1))
-        # Use fallback PID if primary wasn't found
+                elif ".tmp." in line and "Writing to temp file:" in line:
+                    # Prefer .claude.json.tmp.{PID} (most specific)
+                    if fallback_pid is None and ".claude.json.tmp." in line:
+                        m = re.search(r"\.claude\.json\.tmp\.(\d+)\.", line)
+                        if m:
+                            fallback_pid = int(m.group(1))
+                    # Broad fallback: any {file}.tmp.{PID}.{timestamp}
+                    if broad_fallback_pid is None:
+                        m = re.search(r"\.tmp\.(\d+)\.\d+$", line)
+                        if m:
+                            broad_fallback_pid = int(m.group(1))
+        # Use most specific fallback first
         if fallback_pid is not None and os.path.exists(f"/proc/{fallback_pid}"):
             return fallback_pid
+        if broad_fallback_pid is not None and os.path.exists(f"/proc/{broad_fallback_pid}"):
+            return broad_fallback_pid
     except OSError as e:
         logger.debug("_get_session_pid: failed to read debug file for session %s: %s", session_id, e)
     return None
