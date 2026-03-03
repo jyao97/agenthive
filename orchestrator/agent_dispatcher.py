@@ -1097,7 +1097,7 @@ def _get_session_slug(jsonl_path: str) -> str | None:
     try:
         with open(jsonl_path, "r") as f:
             for i, line in enumerate(f):
-                if i >= 5:
+                if i >= 20:
                     break
                 if '"slug"' not in line:
                     continue
