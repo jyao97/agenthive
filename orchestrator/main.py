@@ -842,7 +842,7 @@ async def list_projects(db: Session = Depends(get_db)):
         task_row = (
             db.query(
                 func.count(Task.id).label("total"),
-                func.count(case((Task.status == TaskStatus.COMPLETED, 1))).label("completed"),
+                func.count(case((Task.status == TaskStatus.COMPLETE, 1))).label("completed"),
                 func.count(
                     case((Task.status.in_([TaskStatus.FAILED, TaskStatus.TIMEOUT]), 1))
                 ).label("failed"),
@@ -953,13 +953,17 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
                 )
                 .scalar()
             )
-            task_total = (
-                db.query(func.count(Task.id))
-                .filter(Task.project == dirname)
-                .scalar()
+            task_row = (
+                db.query(
+                    func.count(Task.id).label("total"),
+                    func.count(case((Task.status == TaskStatus.COMPLETE, 1))).label("completed"),
+                )
+                .filter(Task.project_name == dirname)
+                .one()
             )
             entry["agent_active"] = agent_active_count
-            entry["task_total"] = task_total
+            entry["task_total"] = task_row.total
+            entry["task_completed"] = task_row.completed
 
         results.append(entry)
 

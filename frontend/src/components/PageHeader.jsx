@@ -16,7 +16,7 @@ const MoonIcon = (
   </svg>
 );
 
-export default function PageHeader({ title, theme, onToggleTheme, actions, selectAction, children }) {
+export default function PageHeader({ title, theme, onToggleTheme, actions, selectAction, showTaskRing, children }) {
   const navigate = useNavigate();
   const health = useHealthStatus();
   const { taskStats } = useMonitor();
@@ -41,27 +41,35 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
   const dotColor = health === null ? "bg-gray-400" : isHealthy ? "bg-green-500" : "bg-red-500";
   const chipLabel = health === null ? "..." : isHealthy ? "OK" : "Error";
 
-  // Weekly task stats
+  // Weekly task stats — Apple Watch ring (only shown when parent passes showTaskRing)
   const wTotal = taskStats?.weekly_total ?? 0;
   const wPct = taskStats?.weekly_success_pct ?? 0;
-  const pctColor = wTotal === 0 ? "text-dim" : wPct >= 80 ? "text-green-500" : wPct >= 50 ? "text-yellow-500" : "text-red-400";
+  const ringR = 10, ringStroke = 2.5, ringC = 2 * Math.PI * ringR;
+  const ringOffset = ringC * (1 - wPct / 100);
+  const ringColor = wTotal === 0 ? "#9ca3af" : wPct >= 80 ? "#22c55e" : wPct >= 50 ? "#eab308" : "#f87171";
 
   return (
     <div className="shrink-0 bg-page border-b border-divider z-10">
       <div className="flex items-center gap-3 px-4 pb-2" style={{ paddingTop: "max(1rem, env(safe-area-inset-top, 1rem))" }}>
         <h1 className="text-xl font-bold text-heading flex-1 shrink-0">{title}</h1>
         {actions}
-        {taskStats && wTotal > 0 && (
+        {showTaskRing && taskStats && wTotal > 0 && (
           <button
             type="button"
             onClick={() => navigate("/tasks")}
-            title={`This week: ${wTotal} tasks processed, ${wPct}% success`}
-            className="shrink-0 inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-card/60 text-dim hover:opacity-80 transition-colors"
+            title={`This week: ${wTotal} tasks, ${wPct}% success`}
+            className="shrink-0 flex items-center justify-center w-8 h-8 hover:opacity-80 transition-opacity"
           >
-            <span className="text-body">{wTotal}</span>
-            <span className="text-[10px] text-dim">tasks</span>
-            <span className="mx-0.5 text-dim/40">|</span>
-            <span className={pctColor}>{wPct}%</span>
+            <svg width="26" height="26" viewBox="0 0 26 26">
+              <circle cx="13" cy="13" r={ringR} fill="transparent" stroke={ringColor} strokeWidth={ringStroke} opacity={0.18} />
+              <circle cx="13" cy="13" r={ringR} fill="transparent" stroke={ringColor} strokeWidth={ringStroke}
+                strokeLinecap="round" strokeDasharray={ringC} strokeDashoffset={ringOffset}
+                transform="rotate(-90 13 13)" style={{ transition: "stroke-dashoffset 0.6s ease" }} />
+              <text x="13" y="13" textAnchor="middle" dominantBaseline="central"
+                fill={ringColor} style={{ fontSize: "8px", fontWeight: 700 }}>
+                {wPct}
+              </text>
+            </svg>
           </button>
         )}
         <button
