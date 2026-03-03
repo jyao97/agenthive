@@ -50,6 +50,27 @@ function SortableFolderCard(props) {
   );
 }
 
+function TaskRing({ total, completed, size = 22 }) {
+  if (!total) return null;
+  const pct = Math.round(completed / total * 100);
+  const r = (size - 4) / 2, c = 2 * Math.PI * r;
+  const offset = c * (1 - pct / 100);
+  const color = pct >= 80 ? "#22c55e" : pct >= 50 ? "#eab308" : "#f87171";
+  const half = size / 2;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+      <circle cx={half} cy={half} r={r} fill="transparent" stroke={color} strokeWidth={2} opacity={0.18} />
+      <circle cx={half} cy={half} r={r} fill="transparent" stroke={color} strokeWidth={2}
+        strokeLinecap="round" strokeDasharray={c} strokeDashoffset={offset}
+        transform={`rotate(-90 ${half} ${half})`} style={{ transition: "stroke-dashoffset 0.6s ease" }} />
+      <text x={half} y={half} textAnchor="middle" dominantBaseline="central"
+        fill={color} style={{ fontSize: `${size * 0.32}px`, fontWeight: 700 }}>
+        {pct}
+      </text>
+    </svg>
+  );
+}
+
 const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandleProps }) {
   const state = botState(folder);
 
@@ -78,6 +99,11 @@ const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArc
             )}
             {folder.process_running && (
               <span className="shrink-0 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Processes active" />
+            )}
+            {(folder.task_total || 0) > 0 && (
+              <span className="ml-auto">
+                <TaskRing total={folder.task_total} completed={folder.task_completed || 0} />
+              </span>
             )}
           </div>
           {folder.git_remote && (

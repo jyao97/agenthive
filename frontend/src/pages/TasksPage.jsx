@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { fetchTasksV2 } from "../lib/api";
+import { fetchTasksV2, fetchTaskCounts } from "../lib/api";
 import { TASK_PERSPECTIVE_TABS } from "../lib/constants";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
@@ -38,18 +38,17 @@ export default function TasksPage({ theme, onToggleTheme }) {
   const visible = usePageVisible();
   const { lastEvent } = useWebSocket();
 
-  // Fetch counts for all perspectives (lightweight)
+  // Fetch counts for all perspectives (server-side)
   const loadCounts = useCallback(async () => {
     try {
-      const all = await fetchTasksV2();
-      const arr = Array.isArray(all) ? all : [];
+      const data = await fetchTaskCounts();
       setCounts({
-        INBOX: arr.filter((t) => t.status === "INBOX").length,
-        QUEUE: arr.filter((t) => t.status === "PENDING").length,
-        ACTIVE: arr.filter((t) => t.status === "EXECUTING").length,
-        REVIEW: arr.filter((t) => ["REVIEW", "MERGING", "CONFLICT"].includes(t.status)).length,
-        DONE: arr.filter((t) => ["COMPLETE", "CANCELLED", "REJECTED", "FAILED", "TIMEOUT"].includes(t.status)).length,
-        DONE_COMPLETED: arr.filter((t) => t.status === "COMPLETE").length,
+        INBOX: data.INBOX ?? 0,
+        QUEUE: data.QUEUE ?? 0,
+        ACTIVE: data.ACTIVE ?? 0,
+        REVIEW: data.REVIEW ?? 0,
+        DONE: data.DONE ?? 0,
+        DONE_COMPLETED: data.DONE_COMPLETED ?? 0,
       });
     } catch {
       // silently fail count refresh
@@ -107,7 +106,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
 
   return (
     <div className="h-full flex flex-col">
-      <PageHeader title="Tasks" theme={theme} onToggleTheme={onToggleTheme}>
+      <PageHeader title="Tasks" theme={theme} onToggleTheme={onToggleTheme} showTaskRing>
         <FilterTabs
           tabs={TASK_PERSPECTIVE_TABS}
           active={perspective}
