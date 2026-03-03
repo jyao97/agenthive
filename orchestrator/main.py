@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from config import (
     AUTH_TIMEOUT_MINUTES, BACKUP_DIR, CC_MODEL, CLAUDE_HOME, DB_PATH,
     LOG_DIR, OPENAI_API_KEY, PROJECT_CONFIGS_PATH, UPLOADS_DIR,
+    VALID_MODELS,
 )
 from database import SessionLocal, get_db, init_db
 from log_config import setup_logging
@@ -137,6 +138,15 @@ def load_registry(db: Session):
         if not pname or not _valid_name.match(pname) or "/" in pname or "\\" in pname:
             logger.warning("Skipping project with invalid name: %r", pname)
             continue
+        # Validate model name — fall back to global default if invalid
+        raw_model = p.get("default_model", CC_MODEL)
+        if raw_model not in VALID_MODELS:
+            logger.warning(
+                "Project %r has invalid default_model %r, using %s",
+                pname, raw_model, CC_MODEL,
+            )
+            raw_model = CC_MODEL
+
         existing = db.get(Project, p["name"])
         if existing:
             existing.display_name = p.get("display_name", p["name"])
@@ -144,7 +154,7 @@ def load_registry(db: Session):
             existing.git_remote = p.get("git_remote")
             existing.description = p.get("description")
             existing.max_concurrent = p.get("max_concurrent", 2)
-            existing.default_model = p.get("default_model", "claude-sonnet-4-5-20250514")
+            existing.default_model = raw_model
         else:
             db.add(Project(
                 name=p["name"],
@@ -153,7 +163,7 @@ def load_registry(db: Session):
                 git_remote=p.get("git_remote"),
                 description=p.get("description"),
                 max_concurrent=p.get("max_concurrent", 2),
-                default_model=p.get("default_model", "claude-sonnet-4-5-20250514"),
+                default_model=raw_model,
             ))
     db.commit()
     logger.info("Loaded %d projects from registry.yaml", len(projects))
@@ -1854,6 +1864,9 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
 
     # Resolve model: explicit > project default > global default
     agent_model = body.model or project.default_model or CC_MODEL
+    if agent_model not in VALID_MODELS:
+        logger.warning("Invalid model %r for agent, falling back to %s", agent_model, CC_MODEL)
+        agent_model = CC_MODEL
 
     # Determine initial status: SYNCING if importing CLI session
     is_sync = body.sync_session and body.resume_session_id
@@ -2157,13 +2170,17 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
 
     # Create Agent record immediately so the frontend can navigate to it.
     agent_name = (prompt or "CLI session")[:80]
+    resolved_model = model or proj.default_model
+    if resolved_model not in VALID_MODELS:
+        logger.warning("Invalid model %r for tmux agent, falling back to %s", resolved_model, CC_MODEL)
+        resolved_model = CC_MODEL
     agent = Agent(
         id=agent_hex,
         project=project_name,
         name=agent_name,
         mode=AgentMode.AUTO,
         status=AgentStatus.STARTING,
-        model=model or proj.default_model,
+        model=resolved_model,
         cli_sync=True,
         tmux_pane=pane_id,
         effort=effort if effort else None,

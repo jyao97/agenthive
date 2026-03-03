@@ -5,7 +5,7 @@ import os
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
-from config import DB_PATH
+from config import CC_MODEL, DB_PATH, VALID_MODELS
 
 # Ensure directory exists
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -222,6 +222,21 @@ def init_db():
         columns = {row[1] for row in result}
         if "plan" in columns:
             conn.execute(text("ALTER TABLE agents DROP COLUMN plan"))
+            conn.commit()
+
+        # Fix invalid model names in projects and agents
+        _valid_list = ", ".join(f"'{m}'" for m in VALID_MODELS)
+        result = conn.execute(text(
+            f"UPDATE projects SET default_model = :fallback "
+            f"WHERE default_model NOT IN ({_valid_list})"
+        ), {"fallback": CC_MODEL})
+        if result.rowcount:
+            conn.commit()
+        result = conn.execute(text(
+            f"UPDATE agents SET model = :fallback "
+            f"WHERE model IS NOT NULL AND model NOT IN ({_valid_list})"
+        ), {"fallback": CC_MODEL})
+        if result.rowcount:
             conn.commit()
 
     # Ensure jwt_secret exists in SystemConfig
