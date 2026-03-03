@@ -31,50 +31,142 @@ export function setAgentMuted(agentId, muted) {
 /** Tracks which agents have already shown a notification.
  *  Cleared when the user navigates to that agent's chat page. */
 const _notifiedAgents = new Set();
+/** Agents currently streaming a response. */
+const _streamingAgents = new Set();
+/** Deferred message notifications, flushed on stream end. */
+const _pendingMessageNotifications = new Map();
+/** Fallback timers in case stream_end is missed (e.g., reconnect). */
+const _pendingMessageTimers = new Map();
+const PENDING_FLUSH_DELAY_MS = 12000;
+const PENDING_FLUSH_RETRY_MS = 5000;
+const PENDING_FLUSH_MAX_WAIT_MS = 45000;
 
 /** Call this when the user views an agent's chat to allow future notifications. */
 export function clearAgentNotified(agentId) {
   _notifiedAgents.delete(agentId);
+  clearPendingNotification(agentId);
 }
 
-/** Show a browser notification for relevant WebSocket events.
- *  Suppressed if the agent is muted, the user is viewing that agent's
- *  chat, or has already been notified for that agent (until they view it). */
-function showBrowserNotification(event) {
-  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+function shouldSuppressNotification(agentId, allowRepeat = false) {
+  if (!agentId) return false;
+  if (window.location.pathname === `/agents/${agentId}`) return true;
+  if (isAgentMuted(agentId)) return true;
+  if (!allowRepeat && _notifiedAgents.has(agentId)) return true;
+  return false;
+}
 
-  const d = event.data || {};
-  let title, body;
-
-  if (event.type === "new_message") {
-    if (d.agent_id && window.location.pathname === `/agents/${d.agent_id}`) return;
-    if (d.agent_id && isAgentMuted(d.agent_id)) return;
-    if (d.agent_id && _notifiedAgents.has(d.agent_id)) return;
-    title = d.agent_name || `Agent ${d.agent_id?.slice(0, 8)}`;
-    body = d.project ? `New message (${d.project})` : "New message";
-  } else if (event.type === "agent_update") {
-    if (d.agent_id && window.location.pathname === `/agents/${d.agent_id}`) return;
-    if (d.agent_id && isAgentMuted(d.agent_id)) return;
-    const s = d.status;
-    // Always notify for IDLE/ERROR even if previously notified
-    if (s === "IDLE") { title = "Agent done"; body = d.agent_name || d.agent_id?.slice(0, 8); }
-    else if (s === "ERROR") { title = "Agent error"; body = d.agent_name || d.agent_id?.slice(0, 8); }
-    else return;
-    _notifiedAgents.delete(d.agent_id); // allow re-notification after status change
-  } else {
-    return;
-  }
-
-  if (d.agent_id) _notifiedAgents.add(d.agent_id);
+function showNativeNotification(eventType, agentId, title, body, allowRepeat = false) {
+  if (shouldSuppressNotification(agentId, allowRepeat)) return;
+  if (agentId) _notifiedAgents.add(agentId);
 
   try {
-    const tag = `${event.type}-${d.agent_id}`;
+    const tag = `${eventType}-${agentId || "unknown"}`;
     const n = new Notification(title, { body, tag, renotify: true });
     n.onclick = () => { window.focus(); n.close(); };
     setTimeout(() => n.close(), 8000);
   } catch (err) {
     // Expected: Notification constructor can throw if permissions change mid-session
     console.warn("showBrowserNotification: failed to create notification:", err);
+  }
+}
+
+function clearPendingNotification(agentId) {
+  _pendingMessageNotifications.delete(agentId);
+  const timer = _pendingMessageTimers.get(agentId);
+  if (timer) {
+    clearTimeout(timer);
+    _pendingMessageTimers.delete(agentId);
+  }
+}
+
+function flushPendingNotification(agentId) {
+  const pending = _pendingMessageNotifications.get(agentId);
+  if (!pending) return;
+  clearPendingNotification(agentId);
+  showNativeNotification("new_message", agentId, pending.title, pending.body);
+}
+
+function schedulePendingFlush(agentId, delayMs) {
+  const prevTimer = _pendingMessageTimers.get(agentId);
+  if (prevTimer) clearTimeout(prevTimer);
+  const timer = setTimeout(() => {
+    _pendingMessageTimers.delete(agentId);
+    const pending = _pendingMessageNotifications.get(agentId);
+    if (!pending) return;
+    const elapsed = Date.now() - (pending.deferredAt || Date.now());
+    if (_streamingAgents.has(agentId) && elapsed < PENDING_FLUSH_MAX_WAIT_MS) {
+      schedulePendingFlush(agentId, PENDING_FLUSH_RETRY_MS);
+      return;
+    }
+    _streamingAgents.delete(agentId);
+    flushPendingNotification(agentId);
+  }, delayMs);
+  _pendingMessageTimers.set(agentId, timer);
+}
+
+function deferPendingNotification(agentId, payload) {
+  const existing = _pendingMessageNotifications.get(agentId);
+  _pendingMessageNotifications.set(agentId, {
+    ...payload,
+    deferredAt: existing?.deferredAt || Date.now(),
+  });
+  schedulePendingFlush(agentId, PENDING_FLUSH_DELAY_MS);
+}
+
+/** Show a browser notification for relevant WebSocket events.
+ *  Suppressed if the agent is muted, the user is viewing that agent's
+ *  chat, or has already been notified for that agent (until they view it).
+ *  New-message events are deferred while an agent is still streaming and
+ *  shown only when stream end is observed. */
+function showBrowserNotification(event) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+
+  const d = event.data || {};
+  const agentId = d.agent_id;
+
+  // Seed streaming set on (re)connect so deferred notifications work
+  // even if we missed earlier agent_stream events.
+  if (event.type === "generating_agents") {
+    const ids = d.agent_ids || [];
+    for (const id of ids) _streamingAgents.add(id);
+    return;
+  }
+
+  if (event.type === "agent_stream") {
+    if (agentId) _streamingAgents.add(agentId);
+    return;
+  }
+
+  if (event.type === "agent_stream_end") {
+    if (!agentId) return;
+    _streamingAgents.delete(agentId);
+    flushPendingNotification(agentId);
+    return;
+  }
+
+  if (event.type === "new_message") {
+    if (shouldSuppressNotification(agentId)) return;
+    const title = d.agent_name || `Agent ${agentId?.slice(0, 8)}`;
+    const body = d.project ? `New message (${d.project})` : "New message";
+    if (agentId && _streamingAgents.has(agentId)) {
+      deferPendingNotification(agentId, { title, body });
+      return;
+    }
+    showNativeNotification(event.type, agentId, title, body);
+    return;
+  }
+
+  if (event.type === "agent_update" && d.status === "ERROR") {
+    // Always surface errors even if we already notified for a prior message.
+    if (agentId) {
+      _streamingAgents.delete(agentId);
+      clearPendingNotification(agentId);
+      _notifiedAgents.delete(agentId);
+    }
+    const title = "Agent error";
+    const body = d.agent_name || agentId?.slice(0, 8);
+    showNativeNotification(event.type, agentId, title, body, true);
+    return;
   }
 }
 

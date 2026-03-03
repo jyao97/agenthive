@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { createAgent, launchTmuxAgent, createProject, createTaskV2, sendMessage, generateWorktreeName, uploadFile } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
 import ProjectSelector from "../components/ProjectSelector";
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
 import SendLaterPicker from "../components/SendLaterPicker";
+import ModelSelector from "../components/ModelSelector";
+import EffortSelector from "../components/EffortSelector";
+
 import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import PageHeader from "../components/PageHeader";
@@ -45,7 +48,8 @@ const CARDS = [
 
 export default function NewPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
-  const [activeCard, setActiveCard] = useState(null);
+  const location = useLocation();
+  const [activeCard, setActiveCard] = useState(() => location.state?.card || null);
 
   // Shared toast
   const [toast, setToast] = useState(null);
@@ -71,7 +75,7 @@ export default function NewPage({ theme, onToggleTheme }) {
             <button
               key={card.key}
               type="button"
-              onClick={() => setActiveCard(card.key)}
+              onClick={() => card.key === "task" ? navigate("/new/task", { state: { backgroundLocation: location } }) : setActiveCard(card.key)}
               className="w-full text-left rounded-xl bg-surface shadow-card p-5 flex items-center gap-4 transition-colors active:bg-input focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 hover:ring-1 hover:ring-ring-hover"
             >
               <div className="shrink-0 text-cyan-400">{card.icon}</div>
@@ -102,8 +106,8 @@ export default function NewPage({ theme, onToggleTheme }) {
       )}
 
       {/* Back header */}
-      <div className="shrink-0 bg-page border-b border-divider px-4 pt-4 pb-2 z-10 safe-area-pt">
-        <button type="button" onClick={goBack} className="flex items-center gap-1 text-sm text-label hover:text-heading">
+      <div className="shrink-0 bg-page border-b border-divider px-2 pb-2 z-10 safe-area-pt">
+        <button type="button" onClick={goBack} className="flex items-center gap-1 text-sm text-label hover:text-heading min-h-[44px] min-w-[44px] px-2">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
@@ -220,38 +224,8 @@ function NewTaskForm({ showToast, navigate }) {
         </div>
 
         <div className="grid grid-cols-[auto_auto_1fr] gap-2 items-center">
-          <div className="flex rounded-lg bg-elevated p-0.5">
-            {MODEL_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setModel(opt.value)}
-                className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                  model === opt.value
-                    ? "bg-cyan-600 text-white shadow-sm"
-                    : "text-body hover:text-heading"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          <div className="flex rounded-lg bg-elevated p-0.5">
-            {[["low", "L"], ["medium", "M"], ["high", "H"]].map(([lvl, label]) => (
-              <button
-                key={lvl}
-                type="button"
-                onClick={() => setEffort(lvl)}
-                className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                  effort === lvl
-                    ? "bg-cyan-600 text-white shadow-sm"
-                    : "text-body hover:text-heading"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <ModelSelector value={model} onChange={setModel} />
+          <EffortSelector value={effort} onChange={setEffort} />
           <div className="flex justify-end">
             <button
               type="button"
@@ -551,7 +525,6 @@ function NewAgentForm({ showToast, navigate }) {
           onDragOver={handleDragOver}
           onDrop={handleDrop}
         >
-          {/* Drop zone overlay */}
           {dragOver && (
             <div className="absolute inset-0 z-30 rounded-[22px] bg-cyan-500/15 border-2 border-dashed border-cyan-500 flex items-center justify-center pointer-events-none">
               <span className="text-sm font-medium text-cyan-400">Drop files here</span>
@@ -567,7 +540,6 @@ function NewAgentForm({ showToast, navigate }) {
             rows={3}
             className="w-full min-h-[72px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors"
           />
-          {/* Attachment preview chips */}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-1">
               {attachments.map((att) => (
@@ -598,7 +570,6 @@ function NewAgentForm({ showToast, navigate }) {
           )}
           <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={handleFileSelect} />
           <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-1.5 items-center px-1">
-            {/* Attach button */}
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}

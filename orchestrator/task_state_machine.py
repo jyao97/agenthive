@@ -2,16 +2,22 @@
 
 from models import TaskStatus
 
+
+class InvalidTransitionError(Exception):
+    """Raised when a task state transition is not allowed."""
+    pass
+
+
 VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.INBOX: {TaskStatus.PENDING, TaskStatus.CANCELLED},
-    TaskStatus.PENDING: {TaskStatus.EXECUTING, TaskStatus.CANCELLED},
-    TaskStatus.EXECUTING: {TaskStatus.REVIEW, TaskStatus.FAILED, TaskStatus.TIMEOUT, TaskStatus.CANCELLED},
+    TaskStatus.PENDING: {TaskStatus.EXECUTING, TaskStatus.FAILED, TaskStatus.CANCELLED},
+    TaskStatus.EXECUTING: {TaskStatus.REVIEW, TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT, TaskStatus.CANCELLED},
     TaskStatus.REVIEW: {TaskStatus.MERGING, TaskStatus.REJECTED, TaskStatus.CANCELLED},
-    TaskStatus.MERGING: {TaskStatus.COMPLETE, TaskStatus.CONFLICT},
+    TaskStatus.MERGING: {TaskStatus.COMPLETE, TaskStatus.CONFLICT, TaskStatus.FAILED, TaskStatus.CANCELLED},
     TaskStatus.CONFLICT: {TaskStatus.MERGING, TaskStatus.CANCELLED},
-    TaskStatus.REJECTED: {TaskStatus.PENDING},
-    TaskStatus.FAILED: {TaskStatus.PENDING},
-    TaskStatus.TIMEOUT: {TaskStatus.PENDING},
+    TaskStatus.REJECTED: {TaskStatus.PENDING, TaskStatus.CANCELLED},
+    TaskStatus.FAILED: {TaskStatus.PENDING, TaskStatus.CANCELLED},
+    TaskStatus.TIMEOUT: {TaskStatus.PENDING, TaskStatus.CANCELLED},
     TaskStatus.COMPLETE: set(),
     TaskStatus.CANCELLED: set(),
 }
@@ -25,8 +31,8 @@ def can_transition(from_status: TaskStatus, to_status: TaskStatus) -> bool:
 
 
 def validate_transition(from_status: TaskStatus, to_status: TaskStatus) -> None:
-    """Raise ValueError if the transition is invalid."""
+    """Raise InvalidTransitionError if the transition is invalid."""
     if not can_transition(from_status, to_status):
-        raise ValueError(
+        raise InvalidTransitionError(
             f"Invalid task transition: {from_status.value} -> {to_status.value}"
         )

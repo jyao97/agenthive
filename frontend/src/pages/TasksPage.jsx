@@ -38,13 +38,6 @@ export default function TasksPage({ theme, onToggleTheme }) {
   const visible = usePageVisible();
   const { lastEvent } = useWebSocket();
 
-  // Refresh on task_update WebSocket events
-  useEffect(() => {
-    if (!lastEvent || lastEvent.type !== "task_update") return;
-    loadTasks();
-    loadCounts();
-  }, [lastEvent, loadTasks, loadCounts]);
-
   // Fetch counts for all perspectives (lightweight)
   const loadCounts = useCallback(async () => {
     try {
@@ -56,6 +49,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
         ACTIVE: arr.filter((t) => t.status === "EXECUTING").length,
         REVIEW: arr.filter((t) => ["REVIEW", "MERGING", "CONFLICT"].includes(t.status)).length,
         DONE: arr.filter((t) => ["COMPLETE", "CANCELLED", "REJECTED", "FAILED", "TIMEOUT"].includes(t.status)).length,
+        DONE_COMPLETED: arr.filter((t) => t.status === "COMPLETE").length,
       });
     } catch {
       // silently fail count refresh
@@ -75,6 +69,13 @@ export default function TasksPage({ theme, onToggleTheme }) {
       setLoading(false);
     }
   }, [perspective]);
+
+  // Refresh on task_update WebSocket events
+  useEffect(() => {
+    if (!lastEvent || lastEvent.type !== "task_update") return;
+    loadTasks();
+    loadCounts();
+  }, [lastEvent, loadTasks, loadCounts]);
 
   // Load on mount + poll
   useEffect(() => {
@@ -111,7 +112,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
           tabs={TASK_PERSPECTIVE_TABS}
           active={perspective}
           onChange={setPerspective}
-          counts={{ ...counts, DONE: undefined }}
+          counts={counts}
         />
       </PageHeader>
 

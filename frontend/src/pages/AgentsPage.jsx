@@ -26,6 +26,7 @@ function agentBotState(status) {
 }
 
 const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }) {
+  const navigate = useNavigate();
   const state = agentBotState(agent.status);
   const statusDotColor = AGENT_STATUS_COLORS[agent.status] || "bg-gray-500";
   const statusTextColor = AGENT_STATUS_TEXT_COLORS[agent.status] || "text-dim";
@@ -113,7 +114,11 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
               {modelDisplayName(agent.model)}
             </span>
           )}
-          <span className={`text-xs text-dim ${agent.model ? "" : "ml-auto"}`}>{agent.project}</span>
+          <span
+            className={`text-[10px] text-cyan-400 font-medium px-1.5 py-0.5 rounded bg-cyan-500/10 truncate cursor-pointer hover:bg-cyan-500/20 transition-colors ${agent.model ? "" : "ml-auto"}`}
+            onClick={(e) => { e.stopPropagation(); navigate(`/projects/${encodeURIComponent(agent.project)}`); }}
+            title={agent.project}
+          >{agent.project}</span>
         </div>
       </div>
     </button>

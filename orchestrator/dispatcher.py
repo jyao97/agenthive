@@ -215,6 +215,10 @@ class TaskDispatcher:
             if total_active >= MAX_CONCURRENT_WORKERS:
                 break
 
+            # Skip v2 tasks (dispatched by agent_dispatcher, not this worker loop)
+            if task.project_name and not task.project:
+                continue
+
             project = db.get(Project, task.project)
             if not project:
                 task.status = TaskStatus.FAILED
@@ -330,6 +334,14 @@ class TaskDispatcher:
             if stale:
                 db.commit()
                 logger.info("Recovered %d stale tasks", len(stale))
+                # Emit WebSocket events so frontend reflects recovery
+                from websocket import emit_task_update
+                for task in stale:
+                    proj_name = task.project_name or task.project or ""
+                    self._emit(emit_task_update(
+                        task.id, task.status.value, proj_name,
+                        title=task.title,
+                    ))
         finally:
             db.close()
 

@@ -1,5 +1,6 @@
-import { useState, useEffect, lazy, Suspense } from "react";
+import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { Routes, Route, NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
+import useLongPress from "./hooks/useLongPress";
 import LoginPage from "./pages/LoginPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 
@@ -13,6 +14,7 @@ const NewPage = lazy(() => import("./pages/NewPage"));
 const MonitorPage = lazy(() => import("./pages/MonitorPage"));
 const GitPage = lazy(() => import("./pages/GitPage"));
 const TaskDetailPage = lazy(() => import("./pages/TaskDetailPage"));
+const NewTaskPage = lazy(() => import("./pages/NewTaskPage"));
 import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchUnreadCount, fetchClaudeMdPending, getAuthToken } from "./lib/api";
 import { isPushSupported, setupPushNotifications } from "./lib/pushNotifications";
@@ -187,6 +189,73 @@ function AuthGuard({ children }) {
   return authed ? children : null;
 }
 
+function CenterFab({ tab }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isActive = location.pathname === tab.to;
+  const longPressedRef = useRef(false);
+
+  const handlers = useLongPress(
+    // Long press → navigate to voice-first NewTaskPage (overlay)
+    () => {
+      longPressedRef.current = true;
+      if (navigator.vibrate) navigator.vibrate(30);
+      navigate("/new/task", { state: { backgroundLocation: location } });
+    },
+    // Normal tap → navigate to the /new landing page (all creation options)
+    () => {
+      navigate("/new", { replace: true });
+    },
+    500,
+  );
+
+  return (
+    <button
+      type="button"
+      {...handlers}
+      className={`flex items-center justify-center mx-auto -mt-4 w-13 h-13 rounded-full transition-colors shadow-lg shadow-cyan-500/20 select-none touch-none ${
+        isActive
+          ? "bg-cyan-500 text-white"
+          : "bg-cyan-600 text-white hover:bg-cyan-500"
+      }`}
+    >
+      {tab.icon}
+    </button>
+  );
+}
+
+function AppRoutes({ themeProps }) {
+  const location = useLocation();
+  const bgLocation = location.state?.backgroundLocation;
+
+  return (
+    <>
+      {/* Render background page when overlay is active, otherwise normal routes */}
+      <Routes location={bgLocation || location}>
+        <Route path="/" element={<Navigate to="/projects" replace />} />
+        <Route path="/projects" element={<ProjectsPage {...themeProps} />} />
+        <Route path="/projects/trash" element={<TrashPage {...themeProps} />} />
+        <Route path="/projects/:name" element={<ProjectDetailPage {...themeProps} />} />
+        <Route path="/agents" element={<AgentsPage {...themeProps} />} />
+        <Route path="/agents/:id" element={<AgentChatPage {...themeProps} />} />
+        <Route path="/tasks" element={<TasksPage {...themeProps} />} />
+        <Route path="/tasks/:id" element={<TaskDetailPage {...themeProps} />} />
+        {/* Only render as a standalone page if no background location */}
+        {!bgLocation && <Route path="/new/task" element={<NewTaskPage />} />}
+        <Route path="/new" element={<NewPage {...themeProps} />} />
+        <Route path="/monitor" element={<MonitorPage {...themeProps} />} />
+        <Route path="/git" element={<GitPage {...themeProps} />} />
+      </Routes>
+      {/* Overlay: NewTaskPage sheet rendered on top of background page */}
+      {bgLocation && (
+        <Routes>
+          <Route path="/new/task" element={<NewTaskPage />} />
+        </Routes>
+      )}
+    </>
+  );
+}
+
 export default function App() {
   const { theme, toggle } = useTheme();
   const themeProps = { theme, onToggleTheme: toggle };
@@ -272,19 +341,7 @@ export default function App() {
                 <MonitorProvider>
                 <ErrorBoundary>
                   <Suspense fallback={<div/>}>
-                  <Routes>
-                    <Route path="/" element={<Navigate to="/projects" replace />} />
-                    <Route path="/projects" element={<ProjectsPage {...themeProps} />} />
-                    <Route path="/projects/trash" element={<TrashPage {...themeProps} />} />
-                    <Route path="/projects/:name" element={<ProjectDetailPage {...themeProps} />} />
-                    <Route path="/agents" element={<AgentsPage {...themeProps} />} />
-                    <Route path="/agents/:id" element={<AgentChatPage {...themeProps} />} />
-                    <Route path="/tasks" element={<TasksPage {...themeProps} />} />
-                    <Route path="/tasks/:id" element={<TaskDetailPage {...themeProps} />} />
-                    <Route path="/new" element={<NewPage {...themeProps} />} />
-                    <Route path="/monitor" element={<MonitorPage {...themeProps} />} />
-                    <Route path="/git" element={<GitPage {...themeProps} />} />
-                  </Routes>
+                  <AppRoutes themeProps={themeProps} />
                   </Suspense>
                 </ErrorBoundary>
                 </MonitorProvider>
@@ -300,20 +357,7 @@ export default function App() {
           <div className="glass-bar-nav rounded-[28px] grid grid-cols-5 items-center w-full" style={{ maxWidth: "24rem" }}>
             {tabs.map((tab) =>
               tab.isCenter ? (
-                <NavLink
-                  key={tab.to}
-                  to={tab.to}
-                  replace
-                  className={({ isActive }) =>
-                    `flex items-center justify-center mx-auto -mt-4 w-13 h-13 rounded-full transition-colors shadow-lg shadow-cyan-500/20 ${
-                      isActive
-                        ? "bg-cyan-500 text-white"
-                        : "bg-cyan-600 text-white hover:bg-cyan-500"
-                    }`
-                  }
-                >
-                  {tab.icon}
-                </NavLink>
+                <CenterFab key={tab.to} tab={tab} />
               ) : (
                 <NavLink
                   key={tab.to}

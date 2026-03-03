@@ -1,0 +1,20 @@
+export default function EffortSelector({ value, onChange }) {
+  return (
+    <div className="flex rounded-lg bg-elevated p-0.5">
+      {[["low", "L"], ["medium", "M"], ["high", "H"]].map(([lvl, label]) => (
+        <button
+          key={lvl}
+          type="button"
+          onClick={() => onChange(lvl)}
+          className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
+            value === lvl
+              ? "bg-cyan-600 text-white shadow-sm"
+              : "text-body hover:text-heading"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
