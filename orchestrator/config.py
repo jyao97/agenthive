@@ -32,6 +32,13 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 MAX_IDLE_AGENTS = int(os.getenv("MAX_IDLE_AGENTS", "20"))
 CC_MODEL = os.getenv("CC_MODEL", "claude-opus-4-6")
 
+# Valid model names — keep in sync with frontend MODEL_OPTIONS
+VALID_MODELS = {
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+}
+
 # Claude CLI binary
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
 
