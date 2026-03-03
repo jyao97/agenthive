@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import useHealthStatus from "../hooks/useHealthStatus";
+import { useMonitor } from "../contexts/MonitorContext";
 import { restartServer, fetchHealth } from "../lib/api";
 
 const SunIcon = (
@@ -18,6 +19,7 @@ const MoonIcon = (
 export default function PageHeader({ title, theme, onToggleTheme, actions, selectAction, children }) {
   const navigate = useNavigate();
   const health = useHealthStatus();
+  const { taskStats } = useMonitor();
   const [restarting, setRestarting] = useState(false);
   const pollRef = useRef(null);
   const abortRef = useRef(null);
@@ -39,11 +41,29 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
   const dotColor = health === null ? "bg-gray-400" : isHealthy ? "bg-green-500" : "bg-red-500";
   const chipLabel = health === null ? "..." : isHealthy ? "OK" : "Error";
 
+  // Weekly task stats
+  const wTotal = taskStats?.weekly_total ?? 0;
+  const wPct = taskStats?.weekly_success_pct ?? 0;
+  const pctColor = wTotal === 0 ? "text-dim" : wPct >= 80 ? "text-green-500" : wPct >= 50 ? "text-yellow-500" : "text-red-400";
+
   return (
     <div className="shrink-0 bg-page border-b border-divider z-10">
       <div className="flex items-center gap-3 px-4 pb-2" style={{ paddingTop: "max(1rem, env(safe-area-inset-top, 1rem))" }}>
         <h1 className="text-xl font-bold text-heading flex-1 shrink-0">{title}</h1>
         {actions}
+        {taskStats && wTotal > 0 && (
+          <button
+            type="button"
+            onClick={() => navigate("/tasks")}
+            title={`This week: ${wTotal} tasks processed, ${wPct}% success`}
+            className="shrink-0 inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-card/60 text-dim hover:opacity-80 transition-colors"
+          >
+            <span className="text-body">{wTotal}</span>
+            <span className="text-[10px] text-dim">tasks</span>
+            <span className="mx-0.5 text-dim/40">|</span>
+            <span className={pctColor}>{wPct}%</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={() => navigate("/monitor")}
