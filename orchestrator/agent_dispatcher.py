@@ -1911,12 +1911,14 @@ class AgentDispatcher:
                     task.status = TaskStatus.FAILED
                     task.error_message = "Merge agent stopped without producing output"
                 db.commit()
-                from websocket import emit_task_update
+                from websocket import emit_task_update, emit_agent_update
                 self._emit(emit_task_update(
                     task.id, task.status.value, task.project_name or "",
                     title=task.title,
                 ))
                 logger.info("Task %s merge %s (agent %s)", task.id, task.status.value, agent.id)
+                # Stop the agent after merge — its job is done
+                self._stop_merge_agent(agent, db)
             elif agent.status == AgentStatus.ERROR:
                 task.status = TaskStatus.FAILED
                 task.error_message = "Merge agent encountered an error"
@@ -1927,6 +1929,31 @@ class AgentDispatcher:
                     title=task.title,
                 ))
                 logger.info("Task %s merge FAILED (agent %s error)", task.id, agent.id)
+                # Stop the agent after failed merge too
+                self._stop_merge_agent(agent, db)
+
+    def _stop_merge_agent(self, agent: Agent, db: Session):
+        """Stop an agent after it finishes a merge task."""
+        if agent.status == AgentStatus.STOPPED:
+            return  # Already stopped
+        from websocket import emit_agent_update
+        # Kill tmux pane if present
+        if agent.cli_sync and agent.tmux_pane:
+            import subprocess as _sp
+            try:
+                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=3)
+                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=3)
+                _sp.run(["tmux", "kill-pane", "-t", agent.tmux_pane], capture_output=True, timeout=3)
+            except Exception:
+                logger.warning("Failed to kill tmux pane %s for merge agent %s", agent.tmux_pane, agent.id)
+        agent.status = AgentStatus.STOPPED
+        agent.tmux_pane = None
+        self._cancel_sync_task(agent.id)
+        self._cancel_launch_task(agent.id)
+        self._stale_session_retries.pop(agent.id, None)
+        db.commit()
+        self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
+        logger.info("Merge agent %s stopped after task completion", agent.id)
 
     def _tick(self, db: Session):
         # Invalidate per-tick tmux map cache
