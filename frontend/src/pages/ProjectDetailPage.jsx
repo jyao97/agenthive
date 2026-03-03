@@ -965,18 +965,18 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     <div className="h-full flex flex-col">
       {/* Toast */}
       {toast && (
-        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
+        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium pointer-events-none safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
           {toast.message}
         </div>
       )}
 
       {/* Fixed Header */}
-      <div className="shrink-0 bg-page border-b border-divider px-4 pt-3 pb-3 z-10 safe-area-pt">
+      <div className="shrink-0 bg-page border-b border-divider px-4 pt-3 pb-3 relative z-10 safe-area-pt">
         <div className="max-w-2xl mx-auto">
           <button
             type="button"
             onClick={() => { localStorage.removeItem("lastViewed:projects"); navigate("/projects", { replace: true }); }}
-            className="flex items-center gap-1 text-sm text-label hover:text-heading mb-2"
+            className="flex items-center gap-1 min-h-[44px] text-sm text-label hover:text-heading active:text-heading mb-2"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />

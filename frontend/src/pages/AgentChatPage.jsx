@@ -1952,13 +1952,13 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     <div className="flex flex-col h-full relative">
       {/* Toast */}
       {toast && (
-        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
+        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium pointer-events-none safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
           {toast.message}
         </div>
       )}
 
       {/* Header */}
-      <div className="shrink-0 bg-surface border-b border-divider px-4 py-2 safe-area-pt z-10">
+      <div className="shrink-0 bg-surface border-b border-divider px-4 py-2 safe-area-pt relative z-10">
         <div className="max-w-2xl mx-auto space-y-1.5">
           {/* Row 1: Back + name | project + icon buttons */}
           <div className="flex items-center gap-2">

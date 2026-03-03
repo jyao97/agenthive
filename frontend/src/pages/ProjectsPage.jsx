@@ -379,7 +379,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
       </PageHeader>
       {/* Scan result toast */}
       {scanResult && (
-        <div className="fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium safe-area-toast bg-cyan-600 text-white">
+        <div className="fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium pointer-events-none safe-area-toast bg-cyan-600 text-white">
           {scanResult.added.length > 0
             ? `Added ${scanResult.added.length} project${scanResult.added.length !== 1 ? "s" : ""}: ${scanResult.added.join(", ")}`
             : `Scanned ${scanResult.scanned} folders — no new projects`}
