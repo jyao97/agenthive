@@ -33,7 +33,7 @@ function TaskStatsPopover({ taskStats, onClose, containerRef }) {
   ].filter(r => r.count > 0);
 
   return (
-    <div ref={popRef} className="absolute right-0 top-full mt-2 z-50" style={{ minWidth: 220 }}>
+    <div className="absolute right-0 top-full mt-2 z-50" style={{ minWidth: 260 }}>
       {/* Arrow */}
       <div className="absolute -top-1.5 right-3"
         style={{ width: 12, height: 12, transform: "rotate(45deg)", background: "var(--color-surface)", borderTop: "1px solid var(--color-edge)", borderLeft: "1px solid var(--color-edge)" }} />
@@ -90,6 +90,81 @@ function TaskStatsPopover({ taskStats, onClose, containerRef }) {
             </div>
           </div>
         )}
+
+        {/* Daily success rate sparkline */}
+        {(() => {
+          const daily = taskStats?.daily;
+          if (!daily || daily.length === 0) return null;
+          // Only show if there's at least one day with data
+          const hasData = daily.some(d => d.total > 0);
+          if (!hasData) return null;
+
+          const W = 228, H = 68, PX = 8, PY = 10;
+          const plotW = W - PX * 2, plotH = H - PY * 2;
+          // Points with data
+          const points = daily.map((d, i) => ({
+            x: PX + (i / Math.max(daily.length - 1, 1)) * plotW,
+            pct: d.success_pct,
+            total: d.total,
+            date: d.date,
+          }));
+          // Build line path (skip null points)
+          const validPts = points.filter(p => p.pct != null);
+          const yOf = (pct) => PY + plotH - (pct / 100) * plotH;
+          const linePath = validPts.map((p, i) =>
+            `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${yOf(p.pct).toFixed(1)}`
+          ).join(" ");
+          // Gradient fill path
+          const fillPath = validPts.length >= 2
+            ? `${linePath} L${validPts[validPts.length - 1].x.toFixed(1)},${H - PY} L${validPts[0].x.toFixed(1)},${H - PY} Z`
+            : "";
+          // Day labels (weekday abbreviation)
+          const dayLabels = daily.map(d => {
+            const dt = new Date(d.date + "T00:00:00");
+            return ["S","M","T","W","T","F","S"][dt.getDay()];
+          });
+
+          return (
+            <div className="border-t border-divider px-4 py-2.5">
+              <div className="text-faint text-[10px] uppercase tracking-wider font-medium mb-1.5">Daily Success Rate</div>
+              <svg width={W} height={H + 14} viewBox={`0 0 ${W} ${H + 14}`} className="w-full" style={{ maxWidth: W }}>
+                <defs>
+                  <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#22c55e" stopOpacity="0.25" />
+                    <stop offset="100%" stopColor="#22c55e" stopOpacity="0.02" />
+                  </linearGradient>
+                </defs>
+                {/* Grid lines at 0%, 50%, 100% */}
+                {[0, 50, 100].map(pct => (
+                  <line key={pct} x1={PX} x2={W - PX} y1={yOf(pct)} y2={yOf(pct)}
+                    stroke="var(--color-edge)" strokeWidth="0.5" strokeDasharray={pct === 50 ? "2,2" : "none"} opacity={0.5} />
+                ))}
+                {/* Fill area */}
+                {fillPath && <path d={fillPath} fill="url(#sparkFill)" />}
+                {/* Line */}
+                {validPts.length >= 2 && <path d={linePath} fill="none" stroke="#22c55e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />}
+                {/* Dots */}
+                {validPts.map((p, i) => (
+                  <circle key={i} cx={p.x} cy={yOf(p.pct)} r="2.5" fill="#22c55e" stroke="var(--color-surface)" strokeWidth="1" />
+                ))}
+                {/* Percentage labels on dots */}
+                {validPts.map((p, i) => (
+                  <text key={`lbl${i}`} x={p.x} y={yOf(p.pct) - 5} textAnchor="middle" fill="var(--color-heading)"
+                    style={{ fontSize: "9px", fontWeight: 600 }}>{p.pct}%</text>
+                ))}
+                {/* Day labels */}
+                {points.map((p, i) => (
+                  <text key={`day${i}`} x={p.x} y={H + 10} textAnchor="middle" fill="var(--color-dim)"
+                    style={{ fontSize: "9px" }}>{dayLabels[i]}</text>
+                ))}
+                {/* No-data markers */}
+                {points.filter(p => p.pct == null).map((p, i) => (
+                  <circle key={`empty${i}`} cx={p.x} cy={PY + plotH / 2} r="1.5" fill="var(--color-edge)" opacity="0.5" />
+                ))}
+              </svg>
+            </div>
+          );
+        })()}
 
         {/* Perspective counts */}
         <div className="border-t border-divider px-4 py-2.5">

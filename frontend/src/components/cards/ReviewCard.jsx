@@ -25,7 +25,9 @@ export default memo(function ReviewCard({ task, merging, onApprove, onReject, on
 
   return (
     <div
+      data-review-task={task.id}
       onClick={() => !rejecting && navigate(`/tasks/${task.id}`)}
+      onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && !rejecting) { e.preventDefault(); navigate(`/tasks/${task.id}`); } }}
       role="button"
       tabIndex={0}
       className="w-full text-left rounded-xl bg-surface shadow-card p-4 transition-colors active:bg-input focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 hover:ring-1 hover:ring-ring-hover cursor-pointer"

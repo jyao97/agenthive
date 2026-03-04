@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { projectBadgeColor, modelDisplayName } from "../../lib/constants";
 import { relativeTime } from "../../lib/formatters";
 
-export default memo(function InboxCard({ task, onDispatch, onEdit, onDelete }) {
+export default memo(function InboxCard({ task, onDispatch, onEdit, onDelete, loading }) {
   const navigate = useNavigate();
   const projColor = task.project_name ? projectBadgeColor(task.project_name) : "";
 
@@ -39,8 +39,9 @@ export default memo(function InboxCard({ task, onDispatch, onEdit, onDelete }) {
         <div className="flex items-center gap-1.5 ml-auto">
           <button
             type="button"
+            disabled={loading}
             onClick={(e) => { e.stopPropagation(); if (confirm("Delete this task?")) onDelete?.(task); }}
-            className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
+            className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 disabled:opacity-50 transition-colors"
           >
             Delete
           </button>
@@ -54,8 +55,9 @@ export default memo(function InboxCard({ task, onDispatch, onEdit, onDelete }) {
           {task.project_name && (
             <button
               type="button"
+              disabled={loading}
               onClick={(e) => { e.stopPropagation(); onDispatch?.(task); }}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 transition-colors"
+              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 disabled:opacity-50 transition-colors"
             >
               Dispatch
             </button>

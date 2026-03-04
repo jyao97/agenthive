@@ -65,15 +65,6 @@ export function modelDisplayName(modelId) {
     .join(" ");
 }
 
-export const STATUS_TABS = [
-  { key: "ALL", label: "All" },
-  { key: "PENDING", label: "Pending" },
-  { key: "SYNCING", label: "Syncing" },
-  { key: "EXECUTING", label: "Executing" },
-  { key: "COMPLETED", label: "Completed" },
-  { key: "FAILED", label: "Failed" },
-];
-
 /** Deterministic color palette for project badges. */
 const PROJECT_PALETTE = [
   "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
@@ -172,15 +163,6 @@ export const TASK_STATUS_TEXT_COLORS = {
   FAILED: "text-red-400",
   TIMEOUT: "text-orange-400",
 };
-
-export const TASK_STATUS_TABS = [
-  { key: "ALL", label: "All" },
-  { key: "INBOX", label: "Inbox" },
-  { key: "PENDING", label: "Pending" },
-  { key: "ACTIVE", label: "Active" },
-  { key: "REVIEW", label: "Review" },
-  { key: "DONE", label: "Done" },
-];
 
 export const TASK_PERSPECTIVE_TABS = [
   { key: "INBOX", label: "Inbox" },
