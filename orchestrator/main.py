@@ -23,8 +23,8 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from config import (
-    AUTH_TIMEOUT_MINUTES, BACKUP_DIR, CC_MODEL, CLAUDE_HOME, DB_PATH,
-    LOG_DIR, OPENAI_API_KEY, PROJECT_CONFIGS_PATH, UPLOADS_DIR,
+    AUTH_TIMEOUT_MINUTES, BACKUP_DIR, CC_MODEL, CLAUDE_HOME, CORS_ORIGINS,
+    DB_PATH, LOG_DIR, OPENAI_API_KEY, PROJECT_CONFIGS_PATH, UPLOADS_DIR,
     VALID_MODELS,
 )
 from database import SessionLocal, get_db, init_db
@@ -283,8 +283,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
