@@ -2201,6 +2201,10 @@ Here are today's completed tasks:
                 .first()
             )
 
+            # Skip IDLE agents that haven't been dispatched yet (no messages)
+            if agent.status == AgentStatus.IDLE and not last_msg:
+                continue
+
             if agent.status == AgentStatus.ERROR or not last_msg:
                 artifacts["verify_status"] = "error"
                 artifacts["verify_result"] = "Verification agent failed without output"
