@@ -168,7 +168,8 @@ class GitManager:
         """Get diff for a ref."""
         return self._run_git(project_path, ["diff", ref])
 
-    def merge_branch(self, project_path: str, branch: str) -> dict:
+    def merge_branch(self, project_path: str, branch: str, *,
+                     no_ff: bool = False, message: str | None = None) -> dict:
         """Merge a branch into the current branch. Returns result dict."""
         current = self._run_git(project_path, ["branch", "--show-current"])
         if current.startswith("ERROR:"):
@@ -177,7 +178,14 @@ class GitManager:
         self._run_git(project_path, ["config", "user.name", "AgentHive"])
         self._run_git(project_path, ["config", "user.email", "agenthive@localhost"])
 
-        result = self._run_git(project_path, ["merge", branch, "--no-edit"])
+        merge_args = ["merge", branch]
+        if no_ff:
+            merge_args.append("--no-ff")
+        if message:
+            merge_args += ["-m", message]
+        else:
+            merge_args.append("--no-edit")
+        result = self._run_git(project_path, merge_args)
 
         if result.startswith("ERROR:"):
             if "CONFLICT" in result or "conflict" in result:
@@ -197,3 +205,23 @@ class GitManager:
             "current_branch": current,
             "merged_branch": branch,
         }
+
+    def get_main_branch(self, project_path: str) -> str:
+        """Detect the main branch name (main, master, etc.)."""
+        ref = self._run_git(project_path, ["symbolic-ref", "refs/remotes/origin/HEAD"])
+        if not ref.startswith("ERROR:"):
+            return ref.replace("refs/remotes/origin/", "").strip()
+        # Fallback: check if main or master exists
+        for name in ("main", "master"):
+            result = self._run_git(project_path, ["rev-parse", "--verify", name])
+            if not result.startswith("ERROR:"):
+                return name
+        return "main"  # last resort default
+
+    def remove_worktree(self, project_path: str, worktree_path: str) -> str:
+        """Remove a git worktree (force)."""
+        return self._run_git(project_path, ["worktree", "remove", worktree_path, "--force"])
+
+    def delete_branch(self, project_path: str, branch: str) -> str:
+        """Delete a local branch (-d)."""
+        return self._run_git(project_path, ["branch", "-d", branch])
