@@ -2148,30 +2148,31 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
                   </svg>
                 </button>
               )}
-              {/* Resume — always visible, disabled when not stopped */}
-              <button
-                type="button"
-                onClick={() => handleResume()}
-                disabled={!(isStopped || isError) || resuming}
-                className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium bg-cyan-600 text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-cyan-500"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
-                </svg>
-                {resuming ? "..." : "Resume"}
-              </button>
-              {/* Stop — always visible, disabled when already stopped */}
-              <button
-                type="button"
-                onClick={() => setShowStopConfirm(true)}
-                disabled={isStopped || isError}
-                className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium text-red-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed enabled:hover:bg-red-600/20"
-              >
-                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                  <rect x="6" y="6" width="12" height="12" rx="2" />
-                </svg>
-                Stop
-              </button>
+              {/* Resume / Stop — show one at a time */}
+              {(isStopped || isError) ? (
+                <button
+                  type="button"
+                  onClick={() => handleResume()}
+                  disabled={resuming}
+                  className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium bg-cyan-600 text-white transition-colors disabled:opacity-50 enabled:hover:bg-cyan-500"
+                >
+                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 4l14 8-14 8V4z" />
+                  </svg>
+                  {resuming ? "..." : "Resume"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowStopConfirm(true)}
+                  className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium bg-red-600 text-white transition-colors hover:bg-red-500"
+                >
+                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
+                  Stop
+                </button>
+              )}
 
               <button
                 type="button"
