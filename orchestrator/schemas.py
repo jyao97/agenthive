@@ -75,6 +75,7 @@ class TaskOut(BaseModel):
     skip_permissions: bool = True
     sync_mode: bool = False
     use_worktree: bool = True
+    try_base_commit: str | None = None
     scheduled_at: datetime | None = None
     created_at: datetime
     started_at: datetime | None = None
