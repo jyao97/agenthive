@@ -1,4 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import {
+  SWIPE_THRESHOLD, DISMISS_THRESHOLD,
+  LIGHTBOX_DOUBLE_TAP_WINDOW, LIGHTBOX_DOUBLE_TAP_DIST,
+  MAX_ZOOM_SCALE,
+} from "../lib/constants";
 
 // Must match the CSS transition duration in transformStyle / container style below
 const TRANSITION_DURATION_MS = 250;
@@ -157,7 +162,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       if (ts.isPinching && e.touches.length === 2) {
         const newDist = fingerDist(e.touches[0], e.touches[1]);
         const ratio = newDist / ts.initialPinchDist;
-        const newScale = Math.max(1, Math.min(5, ts.initialScale * ratio));
+        const newScale = Math.max(1, Math.min(MAX_ZOOM_SCALE, ts.initialScale * ratio));
 
         const mid = midpoint(e.touches[0], e.touches[1]);
         const container = containerRef.current;
@@ -208,7 +213,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         const dy = touch.clientY - ts.swipeStartY;
 
         // Swipe down to dismiss
-        if (dy > 100 && Math.abs(dx) < dy) {
+        if (dy > DISMISS_THRESHOLD && Math.abs(dx) < dy) {
           onClose();
           return;
         }
@@ -222,9 +227,9 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         }
 
         // Swipe left/right to navigate
-        if (media.length > 1 && Math.abs(dx) > 80 && Math.abs(dy) < 80) {
-          if (dx < -80) goTo(currentIndexRef.current + 1);
-          else if (dx > 80) goTo(currentIndexRef.current - 1);
+        if (media.length > 1 && Math.abs(dx) > SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) {
+          if (dx < -SWIPE_THRESHOLD) goTo(currentIndexRef.current + 1);
+          else if (dx > SWIPE_THRESHOLD) goTo(currentIndexRef.current - 1);
           return;
         }
       }
@@ -239,7 +244,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           touch.clientY - ts.lastTapPos.y
         );
 
-        if (dt < 300 && tapDist < 30) {
+        if (dt < LIGHTBOX_DOUBLE_TAP_WINDOW && tapDist < LIGHTBOX_DOUBLE_TAP_DIST) {
           ts.lastTapTime = 0;
           setAnimating(true);
           if (isZoomedRef.current) {
@@ -292,7 +297,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       // Ctrl+wheel / Cmd+wheel = trackpad pinch = zoom
       if (e.ctrlKey || e.metaKey) {
         const oldScale = scaleRef.current;
-        const newScale = Math.max(1, Math.min(5, oldScale * Math.pow(2, -e.deltaY / 100)));
+        const newScale = Math.max(1, Math.min(MAX_ZOOM_SCALE, oldScale * Math.pow(2, -e.deltaY / 100)));
         const container = containerRef.current;
         if (!container) return;
         const rect = container.getBoundingClientRect();
@@ -318,17 +323,17 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       if (media.length > 1 && !swipeAccum.locked && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
         swipeAccum.x += e.deltaX;
         clearTimeout(swipeAccum.timer);
-        swipeAccum.timer = setTimeout(() => { swipeAccum.x = 0; }, 300);
-        if (swipeAccum.x > 80) {
+        swipeAccum.timer = setTimeout(() => { swipeAccum.x = 0; }, LIGHTBOX_DOUBLE_TAP_WINDOW);
+        if (swipeAccum.x > SWIPE_THRESHOLD) {
           goTo(currentIndexRef.current + 1);
           swipeAccum.x = 0;
           swipeAccum.locked = true;
-          setTimeout(() => { swipeAccum.locked = false; }, 300);
-        } else if (swipeAccum.x < -80) {
+          setTimeout(() => { swipeAccum.locked = false; }, LIGHTBOX_DOUBLE_TAP_WINDOW);
+        } else if (swipeAccum.x < -SWIPE_THRESHOLD) {
           goTo(currentIndexRef.current - 1);
           swipeAccum.x = 0;
           swipeAccum.locked = true;
-          setTimeout(() => { swipeAccum.locked = false; }, 300);
+          setTimeout(() => { swipeAccum.locked = false; }, LIGHTBOX_DOUBLE_TAP_WINDOW);
         }
       }
     };
@@ -403,7 +408,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       if (e.metaKey || e.ctrlKey) {
         if (e.key === "=" || e.key === "+") {
           e.preventDefault();
-          const newScale = Math.min(5, scaleRef.current * 1.25);
+          const newScale = Math.min(MAX_ZOOM_SCALE, scaleRef.current * 1.25);
           setScale(newScale);
           setTranslate(clampTranslate(translateRef.current.x, translateRef.current.y, newScale));
         } else if (e.key === "-") {

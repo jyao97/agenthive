@@ -45,7 +45,13 @@ class SafeMarkdown extends Component {
 }
 import FileAttachments from "../components/FilePreview";
 import ImageLightbox from "../components/ImageLightbox";
-import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, modelDisplayName } from "../lib/constants";
+import {
+  AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, modelDisplayName,
+  POLL_ACTIVE_INTERVAL, POLL_IDLE_INTERVAL, STREAM_TIMEOUT,
+  COPY_TOAST_DURATION, ERROR_TOAST_DURATION, TOAST_DURATION,
+  ESCAPE_COOLDOWN, LONG_PRESS_DELAY, DOUBLE_TAP_WINDOW,
+  SCROLL_SAVE_DEBOUNCE,
+} from "../lib/constants";
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
 import useDraft from "../hooks/useDraft";
@@ -587,7 +593,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     if (!canModify) return;
     longPressTimer.current = setTimeout(() => {
       setShowActions(true);
-    }, 500);
+    }, LONG_PRESS_DELAY);
   };
   const handleLongPressEnd = () => {
     if (longPressTimer.current) {
@@ -597,7 +603,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     // Double-tap detection for touch (copy content)
     if (!canModify) {
       const now = Date.now();
-      if (now - lastTapRef.current < 350) {
+      if (now - lastTapRef.current < DOUBLE_TAP_WINDOW) {
         handleDoubleClick();
       }
       lastTapRef.current = now;
@@ -610,7 +616,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     }
     navigator.clipboard.writeText(message.content || "").then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      setTimeout(() => setCopied(false), COPY_TOAST_DURATION);
     });
   };
 
@@ -964,14 +970,14 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const [voiceError, setVoiceError] = useState(null);
   useEffect(() => {
     if (voiceError) {
-      const t = setTimeout(() => setVoiceError(null), 4000);
+      const t = setTimeout(() => setVoiceError(null), ERROR_TOAST_DURATION);
       return () => clearTimeout(t);
     }
   }, [voiceError]);
 
   useEffect(() => {
     if (uploadError) {
-      const t = setTimeout(() => setUploadError(null), 4000);
+      const t = setTimeout(() => setUploadError(null), ERROR_TOAST_DURATION);
       return () => clearTimeout(t);
     }
   }, [uploadError]);
@@ -1174,8 +1180,8 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
     try {
       await onEscape();
     } finally {
-      // 2.5s cooldown on the frontend to match backend rate limit
-      setTimeout(() => setEscCooldown(false), 2500);
+      // Cooldown on the frontend to match backend rate limit
+      setTimeout(() => setEscCooldown(false), ESCAPE_COOLDOWN);
     }
   };
 
@@ -1372,7 +1378,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const showToast = useCallback((message, type = "success") => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast({ message, type });
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_DURATION);
   }, []);
 
   // Load agent + messages with AbortController support.
@@ -1509,7 +1515,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   useEffect(() => {
     if (!visible) return;
     const isActive = agent?.status === "EXECUTING" || agent?.status === "SYNCING";
-    const interval = isActive ? 3000 : 10000;
+    const interval = isActive ? POLL_ACTIVE_INTERVAL : POLL_IDLE_INTERVAL;
     const timer = setInterval(refreshMessages, interval);
     return () => clearInterval(timer);
   }, [refreshMessages, agent?.status, visible]);
@@ -1600,7 +1606,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     clearTimeout(scrollSaveTimer.current);
     scrollSaveTimer.current = setTimeout(() => {
       try { sessionStorage.setItem(scrollKey, String(el.scrollTop)); } catch { /* ignore */ }
-    }, 200);
+    }, SCROLL_SAVE_DEBOUNCE);
   }, [scrollKey, hasMore, loadingMore, loadOlderMessages]);
 
   // Save scroll position on unmount
@@ -1698,7 +1704,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       streamTimeoutRef.current = setTimeout(() => {
         setStreamingContent(null);
         setActiveTool(null);
-      }, 6000);
+      }, STREAM_TIMEOUT);
       return;
     }
 
