@@ -4,6 +4,8 @@ import json as _json
 import logging
 from datetime import datetime, timezone
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 from models import AgentMode, AgentStatus, MessageRole, MessageStatus, TaskStatus
@@ -35,16 +37,26 @@ class AgentTaskDetail(AgentTaskBrief):
 
 class TaskCreate(BaseModel):
     title: str = Field("", max_length=300)
-    description: str | None = None
+    description: str | None = Field(None, max_length=50000)
     project_name: str | None = None
     priority: int = Field(0, ge=0, le=1)  # 0=normal, 1=high
     model: str | None = None
-    effort: str | None = None
+    effort: Literal["low", "medium", "high"] | None = None
     skip_permissions: bool = True
     sync_mode: bool = False
     use_worktree: bool = True
     scheduled_at: datetime | None = None
     auto_dispatch: bool = False
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def validate_model(cls, v):
+        if v is None:
+            return v
+        from config import VALID_MODELS
+        if v not in VALID_MODELS:
+            raise ValueError(f"Invalid model: {v}. Must be one of: {', '.join(sorted(VALID_MODELS))}")
+        return v
 
 
 class TaskUpdate(BaseModel):
@@ -70,6 +82,7 @@ class TaskOut(BaseModel):
     agent_summary: str | None = None
     rejection_reason: str | None = None
     error_message: str | None = None
+    merge_agent_id: str | None = None
     model: str | None = None
     effort: str | None = None
     skip_permissions: bool = True

@@ -15,7 +15,7 @@ os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
 import yaml
 from pydantic import BaseModel
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.responses import JSONResponse
@@ -135,9 +135,10 @@ def _effective_task_status(msg: Message, agent: Agent) -> str:
 
 
 def _compute_successor_id(agent_id: str, db: Session) -> str | None:
-    """Return the ID of the most recent successor agent, if any."""
+    """Return the ID of the most recent successor (non-subagent) agent, if any."""
     successor = db.query(Agent).filter(
         Agent.parent_id == agent_id,
+        Agent.is_subagent == False,
     ).order_by(Agent.created_at.desc()).first()
     return successor.id if successor else None
 
@@ -2257,6 +2258,9 @@ async def create_task_v2(body: TaskCreate, db: Session = Depends(get_db)):
 
     initial_status = TaskStatus.INBOX
     if body.auto_dispatch and body.project_name:
+        proj = db.query(Project).filter(Project.name == body.project_name).first()
+        if not proj:
+            raise HTTPException(400, f"Project not found: {body.project_name}")
         initial_status = TaskStatus.PENDING
 
     task = Task(
@@ -2320,6 +2324,33 @@ async def task_counts(db: Session = Depends(get_db)):
     weekly_completed = weekly_by.get("COMPLETE", 0)
     weekly_pct = round(weekly_completed / weekly_total * 100) if weekly_total else 0
 
+    # Daily breakdown for the last 7 days (for sparkline chart)
+    daily_rows = db.query(
+        func.date(Task.completed_at).label("day"),
+        Task.status,
+        func.count(Task.id),
+    ).filter(
+        Task.status.in_(terminal),
+        Task.completed_at >= week_ago,
+    ).group_by("day", Task.status).all()
+
+    daily_map: dict[str, dict] = {}
+    for day_val, status, cnt in daily_rows:
+        d = str(day_val)
+        if d not in daily_map:
+            daily_map[d] = {"date": d, "total": 0, "completed": 0}
+        daily_map[d]["total"] += cnt
+        if status == TaskStatus.COMPLETE:
+            daily_map[d]["completed"] += cnt
+
+    # Fill missing days and compute success_pct
+    daily = []
+    for i in range(7):
+        d = (now - timedelta(days=6 - i)).strftime("%Y-%m-%d")
+        entry = daily_map.get(d, {"date": d, "total": 0, "completed": 0})
+        entry["success_pct"] = round(entry["completed"] / entry["total"] * 100) if entry["total"] else None
+        daily.append(entry)
+
     return {
         **counts,
         "weekly_total": weekly_total,
@@ -2329,6 +2360,7 @@ async def task_counts(db: Session = Depends(get_db)):
         "weekly_timeout": weekly_by.get("TIMEOUT", 0),
         "weekly_cancelled": weekly_by.get("CANCELLED", 0),
         "weekly_rejected": weekly_by.get("REJECTED", 0),
+        "daily": daily,
     }
 
 
@@ -2337,7 +2369,7 @@ async def list_tasks_v2(
     status: str | None = None,
     statuses: str | None = None,
     project: str | None = None,
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
     """List v2 tasks with optional filters."""
@@ -2410,11 +2442,11 @@ async def get_task_v2(task_id: str, db: Session = Depends(get_db)):
 
 @app.put("/api/v2/tasks/{task_id}", response_model=TaskOut)
 async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(get_db)):
-    """Update task fields. Only allowed for INBOX/PENDING tasks."""
+    """Update task fields. Only allowed for INBOX tasks."""
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    if task.status not in (TaskStatus.INBOX, TaskStatus.PENDING):
+    if task.status != TaskStatus.INBOX:
         raise HTTPException(400, f"Cannot edit task in {task.status.value} status")
     for field in ("title", "description", "project_name", "priority", "model", "effort"):
         val = getattr(body, field, None)
@@ -2464,11 +2496,10 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/v2/tasks/{task_id}/approve", response_model=TaskOut)
 async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(get_db)):
-    """Approve a REVIEW task → perform merge directly (no agent needed).
+    """Approve a REVIEW task → transition to MERGING (agent-based merge).
 
-    Merges the task branch into the main branch using git_manager,
-    cleans up the worktree/branch, and marks the task COMPLETE.
-    Falls back to CONFLICT or FAILED on errors.
+    For tasks with a branch, sets status to MERGING and lets the dispatcher
+    create a merge agent. For no-branch tasks, completes immediately.
     """
     task = db.get(Task, task_id)
     if not task:
@@ -2479,26 +2510,21 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
         raise HTTPException(409, str(e))
 
     proj = db.query(Project).filter(Project.name == task.project_name).first()
-    agent = db.get(Agent, task.agent_id) if task.agent_id else None
     if not proj:
         raise HTTPException(400, "Missing project for merge")
 
-    # Helper: stop the linked agent after merge (its job is done)
-    def _stop_agent():
-        if not agent or agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
-            return
-        import subprocess as _sp
-        agent.status = AgentStatus.STOPPED
-        if agent.tmux_pane:
-            sess_name = f"ah-{agent.id[:8]}"
-            _sp.run(["tmux", "kill-session", "-t", sess_name],
-                    capture_output=True, timeout=5)
-            agent.tmux_pane = None
-        asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
-
     # No branch to merge (use_worktree=False) — skip merge, go straight to COMPLETE
     if not task.branch_name:
-        _stop_agent()
+        agent = db.get(Agent, task.agent_id) if task.agent_id else None
+        if agent and agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
+            import subprocess as _sp
+            agent.status = AgentStatus.STOPPED
+            if agent.tmux_pane:
+                sess_name = f"ah-{agent.id[:8]}"
+                _sp.run(["tmux", "kill-session", "-t", sess_name],
+                        capture_output=True, timeout=5)
+                agent.tmux_pane = None
+            asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
         task.status = TaskStatus.COMPLETE
         task.completed_at = _utcnow()
         db.commit()
@@ -2509,79 +2535,17 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
         ))
         return TaskOut.model_validate(task)
 
-    # --- Direct merge (no agent) ---
-    gm = getattr(request.app.state, "git_manager", None)
-    if not gm:
-        raise HTTPException(503, "Git manager not available")
-
-    # Detect and checkout the main branch
-    main_branch = gm.get_main_branch(proj.path)
-    current_branch = gm.get_current_branch(proj.path)
-    if current_branch != main_branch:
-        co_result = gm.checkout(proj.path, main_branch)
-        if co_result.startswith("ERROR:"):
-            raise HTTPException(500, f"Cannot checkout {main_branch}: {co_result}")
-
-    # Perform the merge
-    safe_title = task.title.replace('"', "'").replace("\\", "")[:80] if task.title else ""
-    merge_msg = f"Merge task/{task.id}: {safe_title}"
-    result = gm.merge_branch(proj.path, task.branch_name, no_ff=True, message=merge_msg)
-
-    if not result.get("success"):
-        error_detail = result.get("error", "unknown error")
-        is_conflict = "conflict" in error_detail.lower()
-        task.status = TaskStatus.CONFLICT if is_conflict else TaskStatus.FAILED
-        task.error_message = error_detail[:500]
-        task.try_base_commit = None
-        db.commit()
-        db.refresh(task)
-        asyncio.ensure_future(emit_task_update(
-            task.id, task.status.value, task.project_name or "",
-            title=task.title,
-        ))
-        logger.info("Task %s merge %s: %s", task.id, task.status.value, error_detail)
-        return TaskOut.model_validate(task)
-
-    # Merge succeeded — clean up worktree and branch
-    wt_path = (
-        os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
-        if task.worktree_name else None
-    )
-    if wt_path:
-        wt_result = gm.remove_worktree(proj.path, wt_path)
-        if wt_result.startswith("ERROR:"):
-            logger.warning("Worktree cleanup failed for task %s: %s", task.id, wt_result)
-    # Delete the merged branch (ignore errors — may already be deleted)
-    del_result = gm.delete_branch(proj.path, task.branch_name)
-    if del_result.startswith("ERROR:"):
-        logger.debug("Branch cleanup for task %s: %s", task.id, del_result)
-
-    # Stop the agent — merge is done
-    _stop_agent()
-
-    task.status = TaskStatus.COMPLETE
-    task.completed_at = _utcnow()
-    task.try_base_commit = None
-    task.agent_summary = f"Merged {task.branch_name} into {main_branch}"
+    # Has branch — transition to MERGING, dispatcher will create merge agent
+    task.status = TaskStatus.MERGING
+    task.merge_agent_id = None
+    task.error_message = None
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
         task.id, task.status.value, task.project_name or "",
         title=task.title,
     ))
-    # Push notification
-    try:
-        from push import send_push_notification, is_notification_enabled
-        if is_notification_enabled("tasks"):
-            send_push_notification(
-                title="\u2705 Task merged",
-                body=(task.title or task.id)[:100],
-                url=f"/tasks/{task.id}",
-            )
-    except Exception:
-        logger.debug("Push notification failed for task %s", task.id)
-
-    logger.info("Task %s: merged %s into %s (direct)", task.id, task.branch_name, main_branch)
+    logger.info("Task %s: approved, transitioning to MERGING", task.id)
     return TaskOut.model_validate(task)
 
 
@@ -2609,6 +2573,7 @@ async def reject_task_v2(
                 sess_name = f"ah-{agent.id[:8]}"
                 subprocess.run(["tmux", "kill-session", "-t", sess_name],
                                capture_output=True, timeout=5)
+                agent.tmux_pane = None
     task.status = TaskStatus.REJECTED
     task.rejection_reason = body.reason
     task.try_base_commit = None  # Clear try state on reject
@@ -2647,6 +2612,12 @@ async def try_task_changes(task_id: str, request: Request, db: Session = Depends
     current_branch = gm.get_current_branch(proj.path)
     if not current_branch:
         raise HTTPException(500, "Cannot determine current branch")
+
+    main_branch = gm.get_main_branch(proj.path)
+    if current_branch != main_branch:
+        co_result = gm.checkout(proj.path, main_branch)
+        if co_result.startswith("ERROR:"):
+            raise HTTPException(500, f"Cannot checkout {main_branch}: {co_result}")
 
     # Save current HEAD before merge
     head_before = gm.get_head(proj.path)
@@ -2699,6 +2670,15 @@ async def revert_task_try(task_id: str, request: Request, db: Session = Depends(
             cwd=proj.path, capture_output=True, timeout=10,
         )
         task.branch_name = backup_branch
+
+    # Validate commit exists before resetting
+    import subprocess as _sp_verify
+    verify = _sp_verify.run(
+        ["git", "rev-parse", "--verify", task.try_base_commit],
+        cwd=proj.path, capture_output=True, timeout=10,
+    )
+    if verify.returncode != 0:
+        raise HTTPException(400, f"Invalid commit SHA: {task.try_base_commit}")
 
     # Reset to the pre-merge commit
     result = gm.reset_hard(proj.path, task.try_base_commit)
@@ -3800,9 +3780,10 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
     if agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
         raise HTTPException(status_code=400, detail="Agent is already running")
 
-    # Block resume if this agent was superseded by a successor
+    # Block resume if this agent was superseded by a successor (not subagents)
     successor = db.query(Agent).filter(
         Agent.parent_id == agent.id,
+        Agent.is_subagent == False,
     ).order_by(Agent.created_at.desc()).first()
     if successor:
         raise HTTPException(
