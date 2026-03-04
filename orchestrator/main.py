@@ -2734,17 +2734,27 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
         validate_transition(task.status, TaskStatus.PENDING)
     except InvalidTransitionError as e:
         raise HTTPException(409, str(e))
+    # Build atomic update dict — prevents TOCTOU race on concurrent dispatches
+    expected_status = task.status
+    update_dict: dict = {"status": TaskStatus.PENDING}
     # Redo: auto-increment attempt and prepare context
-    if task.status in (TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.TIMEOUT):
-        task.attempt_number += 1
+    if expected_status in (TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.TIMEOUT):
+        update_dict["attempt_number"] = task.attempt_number + 1
         if task.agent_summary:
-            task.retry_context = task.agent_summary
-        task.agent_id = None
-        task.agent_summary = None
-        task.started_at = None
-        task.completed_at = None
-        task.review_artifacts = None  # Clear stale verify data from previous attempt
-    task.status = TaskStatus.PENDING
+            update_dict["retry_context"] = task.agent_summary
+        update_dict["agent_id"] = None
+        update_dict["agent_summary"] = None
+        update_dict["started_at"] = None
+        update_dict["completed_at"] = None
+        update_dict["review_artifacts"] = None  # Clear stale verify data
+    # Atomic CAS: only update if status hasn't changed since we read it
+    rows = (
+        db.query(Task)
+        .filter(Task.id == task_id, Task.status == expected_status)
+        .update(update_dict, synchronize_session="fetch")
+    )
+    if rows == 0:
+        raise HTTPException(409, "Task status changed concurrently")
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
