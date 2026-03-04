@@ -9,6 +9,7 @@ import { isPushSupported, setupPushNotifications } from "./lib/pushNotifications
 import useIdleLock from "./hooks/useIdleLock";
 import usePageVisible from "./hooks/usePageVisible";
 import { MonitorProvider } from "./contexts/MonitorContext";
+import { ToastProvider } from "./contexts/ToastContext";
 
 const MODULE_IMPORT_ERROR_PATTERNS = [
   "Importing a module script failed",
@@ -166,9 +167,6 @@ function AuthGuard({ children }) {
           } else if (r.authenticated) {
             setAuthed(true);
             setServerDown(false);
-            if (typeof Notification !== "undefined" && Notification.permission === "default") {
-              Notification.requestPermission().catch(() => {});
-            }
             if (isPushSupported()) {
               setupPushNotifications().catch((err) => {
                 console.warn("Push notification setup failed:", err);
@@ -412,6 +410,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
+    <ToastProvider>
     <div className="flex flex-col h-screen bg-page text-heading min-w-[320px] overflow-x-hidden">
       {/* Main content area */}
       <main className="flex-1 min-h-0 overflow-hidden">
@@ -450,6 +449,19 @@ export default function App() {
                     handleNavDoubleTap(tab.key, e);
                   } : tab.key === "projects" ? (e) => {
                     e.preventDefault();
+                    // Double-tap detection for projects
+                    const now = Date.now();
+                    const prev = lastTapRef.current.projects || 0;
+                    lastTapRef.current.projects = now;
+                    if (now - prev <= 350) {
+                      lastTapRef.current.projects = 0;
+                      // If not already on projects list, navigate there first
+                      if (!location.pathname.startsWith("/projects") || location.pathname !== "/projects") {
+                        navigate("/projects", { replace: true });
+                      }
+                      window.dispatchEvent(new CustomEvent("nav-scroll-to-unread", { detail: { tab: "projects" } }));
+                      return;
+                    }
                     // Already on a /projects route → go to list
                     if (location.pathname.startsWith("/projects")) {
                       navigate("/projects", { replace: true });
@@ -504,6 +516,7 @@ export default function App() {
       )}
 
     </div>
+    </ToastProvider>
     </ErrorBoundary>
   );
 }

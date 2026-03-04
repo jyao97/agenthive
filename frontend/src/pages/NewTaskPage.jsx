@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { createTaskV2, launchTmuxAgent, uploadFile, generateWorktreeName } from "../lib/api";
+import { createTaskV2, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
 import ProjectSelector from "../components/ProjectSelector";
 import VoiceRecorder from "../components/VoiceRecorder";
@@ -8,6 +8,7 @@ import WaveformVisualizer from "../components/WaveformVisualizer";
 import SendLaterPicker from "../components/SendLaterPicker";
 import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
+import { useToast } from "../contexts/ToastContext";
 
 function deriveTitle(description) {
   if (!description) return "";
@@ -29,9 +30,6 @@ export default function NewTaskPage() {
   const [model, setModel, clearModel] = useDraft("new-task:model", MODEL_OPTIONS[0].value);
   const [effort, setEffort, clearEffort] = useDraft("new-task:effort", "high");
   const [priority, setPriority] = useState(0);
-  const [autoDispatch, setAutoDispatch] = useState(() => {
-    try { return localStorage.getItem("pref:autoDispatch") !== "false"; } catch { return true; }
-  });
   const [skipPermissions, setSkipPermissions] = useState(() => {
     try { return localStorage.getItem("pref:skipPermissions") !== "false"; } catch { return true; }
   });
@@ -43,8 +41,6 @@ export default function NewTaskPage() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [showSchedulePicker, setShowSchedulePicker] = useState(false);
-  const [toast, setToast] = useState(null);
-  const toastTimer = useRef(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const voiceAutoStarted = useRef(false);
@@ -78,12 +74,8 @@ export default function NewTaskPage() {
 
   const clearAllDrafts = () => { clearTitle(); clearDesc(); clearProject(); clearModel(); clearEffort(); };
 
-  const showToast = useCallback((message, type = "success") => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast({ message, type });
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
-  }, []);
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  const toast = useToast();
+  const showToast = (message, type = "success") => type === "error" ? toast.error(message) : toast.success(message);
 
   const voice = useVoiceRecorder({
     onTranscript: (text) => setDescription((prev) => (prev ? prev + " " + text : text)),
@@ -219,8 +211,15 @@ export default function NewTaskPage() {
     setTimeout(() => navigate(-1), 250);
   };
 
-  // ---- Submit (send button / enter) → create & dispatch ----
-  const doCreateAndDispatch = async (scheduledAt) => {
+  // ---- Submit (enter key) → save to inbox ----
+  const handleSubmit = async (e) => {
+    if (e) e.preventDefault();
+    await dismiss();
+  };
+
+  // ---- Schedule → create INBOX with scheduled_at ----
+  const handleSchedule = async (scheduledAt) => {
+    setShowSchedulePicker(false);
     if (!description.trim() && !title.trim() && attachments.length === 0) { showToast("Enter a description.", "error"); return; }
     if (anyUploading) { showToast("Uploads still in progress...", "error"); return; }
     const uploaded = attachments.filter((a) => a.uploadedPath);
@@ -230,11 +229,7 @@ export default function NewTaskPage() {
     try {
       let finalTitle = title.trim() || deriveTitle(description);
       if (!finalTitle && uploaded.length > 0) finalTitle = "Untitled task";
-      const wtName = worktree === "auto" && description.trim()
-        ? await generateWorktreeName(description).catch(() => null) || "auto"
-        : worktree;
-      const isTmuxDispatch = syncMode && autoDispatch && project;
-      const body = {
+      await createTaskV2({
         title: finalTitle,
         description: fullDescription || undefined,
         project_name: project || undefined,
@@ -244,52 +239,20 @@ export default function NewTaskPage() {
         skip_permissions: skipPermissions,
         sync_mode: syncMode,
         use_worktree: !!worktree,
-        scheduled_at: scheduledAt || undefined,
-        auto_dispatch: !isTmuxDispatch && autoDispatch && !!project && !scheduledAt,
-      };
-      if (scheduledAt && autoDispatch && project) {
-        body.auto_dispatch = true;
-      }
-      const task = await createTaskV2(body);
-
-      if (isTmuxDispatch && !scheduledAt) {
-        const agent = await launchTmuxAgent({
-          project, prompt: fullDescription, model, effort,
-          worktree: wtName || undefined,
-          skip_permissions: skipPermissions,
-          task_id: task.id,
-        });
-        clearAllDrafts();
-        clearAttachments();
-        setIsClosing(true);
-        setTimeout(() => navigate(`/agents/${agent.id}`, { replace: true }), 250);
-      } else if (autoDispatch && project) {
-        clearAllDrafts();
-        clearAttachments();
-        setIsClosing(true);
-        setTimeout(() => navigate("/tasks", { replace: true }), 250);
-      } else {
-        clearAllDrafts();
-        clearAttachments();
-        setIsClosing(true);
-        setTimeout(() => navigate(`/tasks/${task.id}`, { replace: true }), 250);
-      }
+        scheduled_at: scheduledAt,
+        auto_dispatch: false,
+      });
+      clearAllDrafts();
+      clearAttachments();
+      showToast("Scheduled");
+      setIsClosing(true);
+      setTimeout(() => navigate(-1), 250);
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     } finally {
       setSubmitting(false);
       submittingRef.current = false;
     }
-  };
-
-  const handleSubmit = async (e) => {
-    if (e) e.preventDefault();
-    await doCreateAndDispatch(null);
-  };
-
-  const handleSchedule = async (scheduledAt) => {
-    setShowSchedulePicker(false);
-    await doCreateAndDispatch(scheduledAt);
   };
 
   const hasContent = description.trim() || title.trim() || attachments.some((a) => a.uploadedPath);
@@ -321,13 +284,6 @@ export default function NewTaskPage() {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
-      {/* Toast */}
-      {toast && (
-        <div className={`fixed left-1/2 -translate-x-1/2 top-12 z-[60] px-5 py-3 rounded-lg shadow-lg text-sm font-medium ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
-          {toast.message}
-        </div>
-      )}
-
       {/* Backdrop */}
       <div
         className="absolute inset-0 transition-opacity duration-300"
@@ -424,7 +380,7 @@ export default function NewTaskPage() {
                   </div>
                 )}
                 <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={handleFileSelect} />
-                <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-1.5 items-center px-1">
+                <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-1.5 items-center px-1">
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
@@ -469,19 +425,6 @@ export default function NewTaskPage() {
                       />
                     )}
                   </div>
-                  <button
-                    type="submit"
-                    disabled={!canSubmit}
-                    className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                      !canSubmit
-                        ? "bg-elevated text-dim cursor-not-allowed"
-                        : "bg-cyan-500 hover:bg-cyan-400 text-white"
-                    }`}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-                    </svg>
-                  </button>
                   <button
                     type="button"
                     onClick={() => dismiss()}
@@ -590,18 +533,7 @@ export default function NewTaskPage() {
                   </div>
                   <span className="text-sm text-label">Tmux</span>
                 </label>
-                <label className="col-span-2 flex items-center gap-2 cursor-pointer mt-1">
-                  <div
-                    role="switch"
-                    aria-checked={autoDispatch}
-                    onClick={() => { const next = !autoDispatch; setAutoDispatch(next); try { localStorage.setItem("pref:autoDispatch", String(next)); } catch {} }}
-                    className={`relative w-9 h-[20px] rounded-full transition-colors ${autoDispatch ? "bg-cyan-500" : "bg-elevated"}`}
-                  >
-                    <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${autoDispatch ? "translate-x-[16px]" : ""}`} />
-                  </div>
-                  <span className="text-sm text-label">Auto-dispatch</span>
-                </label>
-                <label className="col-span-2 flex items-center gap-2 cursor-pointer mt-1 justify-end">
+                <label className="col-span-4 flex items-center gap-2 cursor-pointer mt-1 justify-end">
                   <div
                     role="switch"
                     aria-checked={autoVoice}

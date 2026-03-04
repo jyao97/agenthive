@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, Component } from "react";
+import { Bell, BellOff } from "lucide-react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   fetchAgent,
@@ -2040,14 +2041,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
                 className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
               >
                 {muted ? (
-                  <svg className="w-3.5 h-3.5 text-dim hover:text-cyan-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 17H5l1.405-1.405A2.032 2.032 0 007 14.158V11a5.002 5.002 0 014-4.9V6a1 1 0 112 0v.1a5 5 0 014 4.9v3.159c0 .538.214 1.055.595 1.436L19 17h-4m-4 0v1a2 2 0 004 0v-1" />
-                    <line x1="3" y1="3" x2="21" y2="21" strokeLinecap="round" />
-                  </svg>
+                  <BellOff className="w-3.5 h-3.5 text-dim hover:text-cyan-400 transition-colors" />
                 ) : (
-                  <svg className="w-3.5 h-3.5 text-cyan-400" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 002 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
-                  </svg>
+                  <Bell className="w-3.5 h-3.5 text-cyan-400" />
                 )}
               </button>
 

@@ -46,8 +46,8 @@ class WorkerManager:
     def _clean_env() -> dict[str, str]:
         """Return os.environ without CLAUDECODE vars so spawned claude
         processes don't think they're nested inside another session.
-        Sets AGENTHIVE_MANAGED=1 so the orchestrator can distinguish its
-        own subprocesses from tmux-launched CLI sessions."""
+        Sets AGENTHIVE_MANAGED=1 for general orchestrator context.
+        Note: process distinction uses -p flag check, not this env var."""
         env = os.environ.copy()
         env.pop("CLAUDECODE", None)
         env.pop("CLAUDE_CODE_ENTRYPOINT", None)

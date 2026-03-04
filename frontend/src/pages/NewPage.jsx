@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { createAgent, launchTmuxAgent, createProject, createTaskV2, sendMessage, generateWorktreeName, uploadFile, dispatchTask } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
@@ -12,6 +12,7 @@ import EffortSelector from "../components/EffortSelector";
 import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import PageHeader from "../components/PageHeader";
+import { useToast } from "../contexts/ToastContext";
 
 const CARDS = [
   {
@@ -51,15 +52,8 @@ export default function NewPage({ theme, onToggleTheme }) {
   const location = useLocation();
   const [activeCard, setActiveCard] = useState(() => location.state?.card || null);
 
-  // Shared toast
-  const [toast, setToast] = useState(null);
-  const toastTimer = useRef(null);
-  const showToast = useCallback((message, type = "success") => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast({ message, type });
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
-  }, []);
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  const toast = useToast();
+  const showToast = (message, type = "success") => type === "error" ? toast.error(message) : toast.success(message);
 
   const goBack = () => setActiveCard(null);
 
@@ -98,13 +92,6 @@ export default function NewPage({ theme, onToggleTheme }) {
   // ---------- Forms ----------
   return (
     <div className="h-full flex flex-col">
-      {/* Toast */}
-      {toast && (
-        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium pointer-events-none safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
-          {toast.message}
-        </div>
-      )}
-
       {/* Back header */}
       <div className="shrink-0 bg-page border-b border-divider px-2 pb-2 z-10 safe-area-pt">
         <button type="button" onClick={goBack} className="flex items-center gap-1 min-h-[44px] min-w-[44px] px-2 text-sm text-label hover:text-heading active:text-heading">

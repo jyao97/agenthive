@@ -12,41 +12,7 @@ import {
   createAgent,
 } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
-
-/** A small toast notification component. */
-function Toast({ toast, onDismiss }) {
-  useEffect(() => {
-    const timer = setTimeout(() => onDismiss(toast.id), 4000);
-    return () => clearTimeout(timer);
-  }, [toast.id, onDismiss]);
-
-  const bgColor =
-    toast.type === "success"
-      ? "bg-green-600/90 border-green-500"
-      : "bg-red-600/90 border-red-500";
-
-  return (
-    <div
-      className={`${bgColor} border rounded-lg px-4 py-3 text-sm text-white shadow-lg backdrop-blur-sm animate-slide-in`}
-    >
-      <div className="flex items-start gap-2">
-        <span className="shrink-0 mt-0.5">
-          {toast.type === "success" ? (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-          ) : (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          )}
-        </span>
-        <span className="leading-snug">{toast.message}</span>
-      </div>
-    </div>
-  );
-}
-
+import { useToast } from "../contexts/ToastContext";
 export default function GitPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
 
@@ -64,19 +30,9 @@ export default function GitPage({ theme, onToggleTheme }) {
   const [loadingWorktrees, setLoadingWorktrees] = useState(false);
   const [mergingBranch, setMergingBranch] = useState(null);
   const [mergingAll, setMergingAll] = useState(false);
-  const [toasts, setToasts] = useState([]);
   const [error, setError] = useState(null);
-  const toastIdRef = useRef(0);
-
-  // --- Toast helpers ---
-  const addToast = useCallback((message, type) => {
-    const id = ++toastIdRef.current;
-    setToasts((prev) => [...prev, { id, message, type }]);
-  }, []);
-
-  const dismissToast = useCallback((id) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+  const toast = useToast();
+  const addToast = useCallback((message, type) => type === "error" ? toast.error(message) : toast.success(message), [toast]);
 
   // --- Fetch projects ---
   useEffect(() => {
@@ -568,18 +524,7 @@ export default function GitPage({ theme, onToggleTheme }) {
         </div>
       )}
 
-      {/* Toast container */}
-      {toasts.length > 0 && (
-        <div className="fixed right-4 left-4 sm:left-auto sm:w-80 z-50 space-y-2 pointer-events-none safe-area-toast">
-          {toasts.map((toast) => (
-            <div key={toast.id} className="pointer-events-auto">
-              <Toast toast={toast} onDismiss={dismissToast} />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Inline style for scrollbar hiding and toast animation */}
+      {/* Inline style for scrollbar hiding */}
       <style>{`
         .scrollbar-none::-webkit-scrollbar { display: none; }
         .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
@@ -587,11 +532,6 @@ export default function GitPage({ theme, onToggleTheme }) {
         .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
         .scrollbar-thin::-webkit-scrollbar-thumb { background: var(--color-elevated); border-radius: 2px; }
         .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: var(--color-hover); }
-        @keyframes slide-in {
-          from { opacity: 0; transform: translateY(-8px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .animate-slide-in { animation: slide-in 0.2s ease-out; }
       `}</style>
       </div>
       </div>

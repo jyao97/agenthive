@@ -2326,6 +2326,7 @@ async def task_counts(db: Session = Depends(get_db)):
 
     counts = {
         "INBOX": by_status.get("INBOX", 0),
+        "PLANNING": by_status.get("PLANNING", 0),
         "QUEUE": by_status.get("PENDING", 0),
         "ACTIVE": by_status.get("EXECUTING", 0),
         "REVIEW": sum(by_status.get(s, 0) for s in review_statuses),
@@ -2468,16 +2469,44 @@ async def get_task_v2(task_id: str, db: Session = Depends(get_db)):
 
 @app.put("/api/v2/tasks/{task_id}", response_model=TaskOut)
 async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(get_db)):
-    """Update task fields. Only allowed for INBOX tasks."""
+    """Update task fields. Only allowed for INBOX/PLANNING tasks."""
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    if task.status != TaskStatus.INBOX:
+    if task.status not in (TaskStatus.INBOX, TaskStatus.PLANNING):
         raise HTTPException(400, f"Cannot edit task in {task.status.value} status")
+    # Support status transitions (e.g. PLANNING → INBOX)
+    if hasattr(body, "status") and body.status is not None:
+        try:
+            new_status = TaskStatus(body.status)
+            validate_transition(task.status, new_status)
+            task.status = new_status
+        except (ValueError, InvalidTransitionError) as exc:
+            raise HTTPException(409, str(exc))
     for field in ("title", "description", "project_name", "priority", "model", "effort"):
         val = getattr(body, field, None)
         if val is not None:
             setattr(task, field, val)
+    db.commit()
+    db.refresh(task)
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+    return TaskOut.model_validate(task)
+
+
+@app.post("/api/v2/tasks/{task_id}/plan", response_model=TaskOut)
+async def plan_task_v2(task_id: str, db: Session = Depends(get_db)):
+    """Move task from INBOX to PLANNING."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    try:
+        validate_transition(task.status, TaskStatus.PLANNING)
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
+    task.status = TaskStatus.PLANNING
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
@@ -2539,8 +2568,8 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
     if not proj:
         raise HTTPException(400, "Missing project for merge")
 
-    # No branch to merge (use_worktree=False) — skip merge, go straight to COMPLETE
-    if not task.branch_name:
+    # Helper: stop linked agent if still running
+    def _stop_linked_agent():
         agent = db.get(Agent, task.agent_id) if task.agent_id else None
         if agent and agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
             import subprocess as _sp
@@ -2551,7 +2580,12 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
                         capture_output=True, timeout=5)
                 agent.tmux_pane = None
             asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
+
+    # No branch to merge (use_worktree=False) — skip merge, go straight to COMPLETE
+    if not task.branch_name:
+        _stop_linked_agent()
         task.status = TaskStatus.COMPLETE
+        task.try_base_commit = None
         task.completed_at = _utcnow()
         db.commit()
         db.refresh(task)
@@ -2561,7 +2595,28 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
         ))
         return TaskOut.model_validate(task)
 
-    # Has branch — transition to MERGING, dispatcher will create merge agent
+    # Has branch + already tried (merge already applied) — skip MERGING, complete directly
+    if task.try_base_commit:
+        _stop_linked_agent()
+        # Merge was already done via Try — clean up worktree & branch
+        gm = getattr(request.app.state, "git_manager", None)
+        if gm and task.worktree_name:
+            wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
+            gm.remove_worktree(proj.path, wt_path)
+            gm.delete_branch(proj.path, task.branch_name)
+        task.status = TaskStatus.COMPLETE
+        task.try_base_commit = None
+        task.completed_at = _utcnow()
+        db.commit()
+        db.refresh(task)
+        asyncio.ensure_future(emit_task_update(
+            task.id, task.status.value, task.project_name or "",
+            title=task.title,
+        ))
+        logger.info("Task %s: approved (already tried), completing directly", task.id)
+        return TaskOut.model_validate(task)
+
+    # Has branch, not tried — transition to MERGING, dispatcher will handle merge
     task.status = TaskStatus.MERGING
     task.merge_agent_id = None
     task.error_message = None
@@ -2629,6 +2684,21 @@ async def try_task_changes(task_id: str, request: Request, db: Session = Depends
     proj = db.query(Project).filter(Project.name == task.project_name).first()
     if not proj:
         raise HTTPException(400, "Project not found")
+
+    # Guard: only one task per project can be "tried" at a time
+    other_tried = (
+        db.query(Task)
+        .filter(Task.project_name == task.project_name)
+        .filter(Task.id != task.id)
+        .filter(Task.try_base_commit.isnot(None))
+        .filter(Task.status == TaskStatus.REVIEW)
+        .first()
+    )
+    if other_tried:
+        raise HTTPException(
+            409,
+            f"Another task is already being tried: \"{other_tried.title}\" — revert it first",
+        )
 
     gm = getattr(request.app.state, "git_manager", None)
     if not gm:
@@ -3121,10 +3191,9 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
 
     # Clear environment vars in the tmux session:
     # - CLAUDECODE / CLAUDE_CODE_ENTRYPOINT: prevents nesting detection
-    # - AGENTHIVE_MANAGED: prevents _is_orchestrator_process() from
-    #   misidentifying this tmux-launched claude as an orchestrator subprocess
-    #   (the server's systemd unit sets AGENTHIVE_MANAGED=1 which gets
-    #   inherited by tmux sessions spawned from subprocess.run)
+    # - AGENTHIVE_MANAGED: clean up inherited env from systemd service
+    # Note: _is_orchestrator_process() distinguishes orchestrator subprocesses
+    # from tmux agents by checking for the -p flag in /proc/pid/cmdline.
     subprocess.run(
         ["tmux", "send-keys", "-t", pane_id,
          "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED", "Enter"],

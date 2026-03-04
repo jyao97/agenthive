@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchTaskV2, updateTaskV2, dispatchTask, approveTask, rejectTask, cancelTask, tryTaskChanges, revertTaskChanges } from "../lib/api";
+import { fetchTaskV2, updateTaskV2, planTask, dispatchTask, approveTask, rejectTask, cancelTask, tryTaskChanges, revertTaskChanges } from "../lib/api";
 import { TASK_STATUS_COLORS, TASK_STATUS_TEXT_COLORS, projectBadgeColor, POLL_INTERVAL } from "../lib/constants";
 import { relativeTime, renderMarkdown } from "../lib/formatters";
 import ProjectSelector from "../components/ProjectSelector";
 import usePageVisible from "../hooks/usePageVisible";
 import useWebSocket from "../hooks/useWebSocket";
+import { useToast } from "../contexts/ToastContext";
 
 export default function TaskDetailPage({ theme, onToggleTheme }) {
   const { id } = useParams();
@@ -61,13 +62,14 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
     if (lastEvent.data?.task_id === id) load();
   }, [lastEvent, id, load]);
 
+  const toast = useToast();
   const doAction = async (fn, ...args) => {
     setActionLoading(true);
     try {
       await fn(...args);
       await load();
     } catch (err) {
-      setError(err.message);
+      toast.error(err.message);
     } finally {
       setActionLoading(false);
     }
@@ -79,7 +81,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
       await cancelTask(id);
       navigate("/tasks", { replace: true });
     } catch (err) {
-      setError(err.message);
+      toast.error(err.message);
       setActionLoading(false);
     }
   };
@@ -126,7 +128,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
   const dotColor = TASK_STATUS_COLORS[task.status] || "bg-gray-500";
   const textColor = TASK_STATUS_TEXT_COLORS[task.status] || "text-dim";
   const projColor = task.project_name ? projectBadgeColor(task.project_name) : "";
-  const canEdit = task.status === "INBOX";
+  const canEdit = task.status === "INBOX" || task.status === "PLANNING";
 
   return (
     <div className="h-full flex flex-col">
@@ -161,7 +163,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
       {/* Body */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="max-w-2xl mx-auto w-full pb-20 p-4 space-y-4">
-          {error && (
+          {error && !task && (
             <div className="bg-red-950/40 border border-red-800 rounded-xl p-3">
               <p className="text-red-400 text-sm">{error}</p>
             </div>
@@ -288,9 +290,18 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
 
           {/* MERGING */}
           {task.status === "MERGING" && (
-            <div className="rounded-xl bg-surface shadow-card p-4 flex items-center gap-2">
+            <div className="rounded-xl bg-surface shadow-card p-4 flex items-center gap-3">
               <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
               <span className="text-sm text-label">Merging branch...</span>
+              {task.merge_agent_id && (
+                <a
+                  href={`/agents/${task.merge_agent_id}`}
+                  className="text-xs text-accent hover:underline ml-auto"
+                  onClick={(e) => { e.preventDefault(); navigate(`/agents/${task.merge_agent_id}`); }}
+                >
+                  View merge agent
+                </a>
+              )}
             </div>
           )}
 
@@ -384,8 +395,30 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
 
       {/* Action bar */}
       <div className="shrink-0 border-t border-divider bg-page px-4 py-3 safe-area-pb flex flex-wrap gap-2 justify-center">
-        {/* INBOX → Dispatch + Delete */}
+        {/* INBOX → Plan + Delete */}
         {task.status === "INBOX" && (
+          <>
+            <button
+              type="button"
+              onClick={() => doAction(planTask, id)}
+              disabled={actionLoading}
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-500 disabled:opacity-50 transition-colors"
+            >
+              Plan
+            </button>
+            <button
+              type="button"
+              onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
+              disabled={actionLoading}
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+            >
+              Delete
+            </button>
+          </>
+        )}
+
+        {/* PLANNING → Dispatch + Back to Inbox + Delete */}
+        {task.status === "PLANNING" && (
           <>
             <button
               type="button"
@@ -394,6 +427,14 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               className="whitespace-nowrap px-4 py-2 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
             >
               Dispatch
+            </button>
+            <button
+              type="button"
+              onClick={() => doAction((taskId) => updateTaskV2(taskId, { status: "INBOX" }), id)}
+              disabled={actionLoading}
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-elevated text-label text-sm font-medium hover:text-heading disabled:opacity-50 transition-colors"
+            >
+              Back to Inbox
             </button>
             <button
               type="button"
@@ -450,7 +491,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
                 disabled={actionLoading}
                 className="whitespace-nowrap px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:bg-orange-500 transition-colors"
               >
-                Revert
+                {task.branch_name ? "Revert" : "Rollback"}
               </button>
             )}
             <button

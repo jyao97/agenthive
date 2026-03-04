@@ -138,6 +138,7 @@ export const MAX_ZOOM_SCALE = 5;
 
 export const TASK_STATUS_COLORS = {
   INBOX: "bg-blue-500",
+  PLANNING: "bg-violet-500",
   PENDING: "bg-gray-500",
   EXECUTING: "bg-cyan-500 animate-pulse",
   REVIEW: "bg-amber-500",
@@ -152,6 +153,7 @@ export const TASK_STATUS_COLORS = {
 
 export const TASK_STATUS_TEXT_COLORS = {
   INBOX: "text-blue-400",
+  PLANNING: "text-violet-400",
   PENDING: "text-dim",
   EXECUTING: "text-cyan-400",
   REVIEW: "text-amber-400",
@@ -166,6 +168,7 @@ export const TASK_STATUS_TEXT_COLORS = {
 
 export const TASK_PERSPECTIVE_TABS = [
   { key: "INBOX", label: "Inbox" },
+  { key: "PLANNING", label: "Planning" },
   { key: "EXECUTING", label: "Executing" },
   { key: "REVIEW", label: "Review" },
   { key: "DONE", label: "Done" },

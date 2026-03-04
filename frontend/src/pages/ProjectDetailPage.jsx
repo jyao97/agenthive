@@ -36,6 +36,7 @@ import ProjectBrowserModal from "../components/ProjectBrowserModal";
 import ClaudeMdDiffModal from "../components/ClaudeMdDiffModal";
 import useWebSocket from "../hooks/useWebSocket";
 import usePageVisible from "../hooks/usePageVisible";
+import { GitBranch, Star, Clock, RefreshCw, ChevronLeft, Folder, FileText, X, Plus, Send } from "lucide-react";
 
 const AGENT_TABS = [
   { key: "starred", label: "Starred" },
@@ -127,9 +128,7 @@ function AgentRow({ agent, onClick, starred, onToggleStar, onError, project, isS
           )}
           {agent.branch && (
             <span className="inline-flex items-center gap-1 text-xs text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded font-mono">
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
-              </svg>
+              <GitBranch className="w-3 h-3" />
               {agent.branch}
             </span>
           )}
@@ -148,13 +147,9 @@ function AgentRow({ agent, onClick, starred, onToggleStar, onError, project, isS
         title={starred ? "Unstar" : "Star"}
       >
         {starred ? (
-          <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-          </svg>
+          <Star className="w-5 h-5 text-amber-400" fill="currentColor" />
         ) : (
-          <svg className="w-5 h-5 text-label hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-          </svg>
+          <Star className="w-5 h-5 text-label hover:text-amber-400 transition-colors" strokeWidth={1.5} />
         )}
       </div>
     </button>
@@ -272,10 +267,7 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
         title={`Copy session ID: ${session.session_id}`}
       >
         {/* Clock icon */}
-        <svg className="w-9 h-9 text-label" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="9" />
-          <path strokeLinecap="round" d="M12 7v5l3 3" />
-        </svg>
+        <Clock className="w-9 h-9 text-label" strokeWidth={1.5} />
         {copied && (
           <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[10px] text-cyan-400 font-medium whitespace-nowrap">
             Copied!
@@ -322,9 +314,7 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
                 className="inline-flex items-center gap-1 text-xs text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded font-medium hover:bg-violet-500/20 transition-colors"
                 title="Import CLI history and live-sync"
               >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
+                <RefreshCw className="w-3 h-3" />
                 Sync
               </button>
             </>
@@ -339,13 +329,9 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
         title={session.starred ? "Unstar session" : "Star session"}
       >
         {session.starred ? (
-          <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-          </svg>
+          <Star className="w-5 h-5 text-amber-400" fill="currentColor" />
         ) : (
-          <svg className="w-5 h-5 text-label hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-          </svg>
+          <Star className="w-5 h-5 text-label hover:text-amber-400 transition-colors" strokeWidth={1.5} />
         )}
       </button>
     </button>
@@ -979,9 +965,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             onClick={() => { localStorage.removeItem("lastViewed:projects"); navigate("/projects", { replace: true }); }}
             className="flex items-center gap-1 min-h-[44px] text-sm text-label hover:text-heading active:text-heading mb-2"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-            </svg>
+            <ChevronLeft className="w-4 h-4" />
             Projects
           </button>
           <div className="flex items-center gap-3">
@@ -1045,9 +1029,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                     title="Browse files"
                     className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-300 hover:bg-white/5 transition-colors"
                   >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                    </svg>
+                    <Folder className="w-4 h-4" strokeWidth={1.75} />
                   </button>
                   <button
                     type="button"
@@ -1055,9 +1037,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                     title="Refresh"
                     className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-white/5 transition-colors"
                   >
-                    <svg className={`w-4 h-4 text-label ${refreshing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
+                    <RefreshCw className={`w-4 h-4 text-label ${refreshing ? "animate-spin" : ""}`} />
                   </button>
                 </div>
               </div>
@@ -1136,9 +1116,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                   {att.previewUrl ? (
                     <img src={att.previewUrl} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
                   ) : (
-                    <svg className="w-4 h-4 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                    </svg>
+                    <FileText className="w-4 h-4 text-dim shrink-0" strokeWidth={1.5} />
                   )}
                   <span className="truncate text-label flex-1 min-w-0">{att.originalName}</span>
                   {att.uploading ? (
@@ -1148,9 +1126,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                     </svg>
                   ) : (
                     <button type="button" onClick={() => removeAttachment(att.id)} className="text-dim hover:text-heading shrink-0">
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
+                      <X className="w-3.5 h-3.5" />
                     </button>
                   )}
                 </div>
@@ -1165,9 +1141,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
               title="Attach files"
               className="shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors bg-elevated hover:bg-hover text-label"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-              </svg>
+              <Plus className="w-5 h-5" />
             </button>
             <div className="min-w-0">
               {voice.recording && voice.analyserNode && (
@@ -1192,9 +1166,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                 }`}
                 title="Send later"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
-                </svg>
+                <Clock className="w-5 h-5" />
               </button>
               {showSchedulePicker && (
                 <SendLaterPicker
@@ -1212,9 +1184,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                   : "bg-cyan-500 hover:bg-cyan-400 text-white"
               }`}
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-              </svg>
+              <Send className="w-5 h-5" />
             </button>
           </div>
         </div>
@@ -1279,9 +1249,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
               }`}
               title={worktree ? "Disable worktree" : "Enable worktree"}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
-              </svg>
+              <GitBranch className="w-4 h-4" />
               Worktree
             </button>
             {worktree && (
@@ -1416,7 +1384,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                 </>
               ) : (
                 <>
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
+                  <RefreshCw className="w-3.5 h-3.5" />
                   Refresh CLAUDE.md
                 </>
               )}

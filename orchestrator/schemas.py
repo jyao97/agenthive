@@ -66,6 +66,7 @@ class TaskUpdate(BaseModel):
     priority: int | None = Field(None, ge=0, le=1)
     model: str | None = None
     effort: str | None = None
+    status: str | None = None
 
 
 class TaskOut(BaseModel):

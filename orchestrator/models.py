@@ -19,6 +19,7 @@ class AgentMode(str, enum.Enum):
 
 class TaskStatus(str, enum.Enum):
     INBOX = "INBOX"
+    PLANNING = "PLANNING"
     PENDING = "PENDING"
     EXECUTING = "EXECUTING"
     REVIEW = "REVIEW"

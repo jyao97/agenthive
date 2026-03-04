@@ -3,7 +3,7 @@ import { useNavigate, useNavigationType } from "react-router-dom";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { fetchAllFolders, fetchTrashFolders, createProject, archiveProject, scanProjects } from "../lib/api";
+import { fetchAllFolders, fetchTrashFolders, createProject, archiveProject, scanProjects, fetchClaudeMdPending } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import FolderIcon from "../components/FolderIcon";
 import PageHeader from "../components/PageHeader";
@@ -71,15 +71,23 @@ function TaskRing({ total, completed, size = 22 }) {
   );
 }
 
-const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandleProps }) {
+const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArchive, busy, dragHandleProps, hasPendingClaudeMd }) {
   const state = botState(folder);
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className="w-full text-left rounded-xl bg-surface shadow-card p-5 transition-colors active:bg-input focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 hover:ring-1 hover:ring-ring-hover"
+      data-project-name={folder.name}
+      data-claudemd-pending={hasPendingClaudeMd ? "1" : undefined}
+      className="relative w-full text-left rounded-xl bg-surface shadow-card p-5 transition-colors active:bg-input focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 hover:ring-1 hover:ring-ring-hover"
     >
+      {hasPendingClaudeMd && (
+        <span className="absolute top-2.5 right-2.5 flex h-5 w-5 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold text-white shadow">
+          <span className="absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-50 animate-ping" />
+          <span className="relative">!</span>
+        </span>
+      )}
       <div className="flex items-start gap-4">
         {dragHandleProps && <DragHandle {...dragHandleProps} />}
         <FolderIcon state={state} className="w-10 h-10 shrink-0" />
@@ -186,6 +194,30 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     catch { return []; } // Expected: localStorage data may be corrupt or invalid JSON
   });
   const [activeDragId, setActiveDragId] = useState(null);
+  const [pendingProjects, setPendingProjects] = useState([]);
+
+  // Poll claudemd-pending projects
+  useEffect(() => {
+    if (!visible) return;
+    const poll = () => fetchClaudeMdPending().then((r) => setPendingProjects(r.projects || [])).catch(() => {});
+    poll();
+    const id = setInterval(poll, 30000);
+    return () => clearInterval(id);
+  }, [visible]);
+
+  // Double-tap nav: scroll to first project with pending CLAUDE.md review
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.detail?.tab !== "projects") return;
+      const el = document.querySelector("[data-claudemd-pending='1']");
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("ring-2", "ring-amber-400");
+      setTimeout(() => el.classList.remove("ring-2", "ring-amber-400"), 1500);
+    };
+    window.addEventListener("nav-scroll-to-unread", handler);
+    return () => window.removeEventListener("nav-scroll-to-unread", handler);
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -461,6 +493,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
                   onActivate={handleActivate}
                   onArchive={handleArchive}
                   busy={busy === folder.name}
+                  hasPendingClaudeMd={pendingProjects.includes(folder.name)}
                 />
               ))}
             </div>
@@ -489,6 +522,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
               onActivate={handleActivate}
               onArchive={handleArchive}
               busy={busy === folder.name}
+              hasPendingClaudeMd={pendingProjects.includes(folder.name)}
             />
           ))}
         </div>

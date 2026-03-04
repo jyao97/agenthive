@@ -9,7 +9,8 @@ class InvalidTransitionError(Exception):
 
 
 VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-    TaskStatus.INBOX: {TaskStatus.PENDING, TaskStatus.CANCELLED},
+    TaskStatus.INBOX: {TaskStatus.PLANNING, TaskStatus.CANCELLED},
+    TaskStatus.PLANNING: {TaskStatus.PENDING, TaskStatus.INBOX, TaskStatus.CANCELLED},
     TaskStatus.PENDING: {TaskStatus.EXECUTING, TaskStatus.FAILED, TaskStatus.CANCELLED},
     TaskStatus.EXECUTING: {TaskStatus.REVIEW, TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT, TaskStatus.CANCELLED},
     TaskStatus.REVIEW: {TaskStatus.MERGING, TaskStatus.REJECTED, TaskStatus.CANCELLED},
