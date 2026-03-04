@@ -1,0 +1,516 @@
+{
+  "timestamp": "2026-03-04T08:26:57.107136+00:00",
+  "server": "http://localhost:8080",
+  "total": 89,
+  "passed": 88,
+  "failed": 1,
+  "results": [
+    {
+      "name": "1.1 Create basic task \u2192 INBOX status",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.2 Create with auto_dispatch \u2192 PENDING status",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.3 Auto-dispatch without project_name \u2192 INBOX",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.4 Auto-title from short description (<=60 chars)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.5 Auto-title from long description (truncated + ...)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.6 No title or description \u2192 'Untitled task'",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.7 Create with all optional fields",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.8 Title exceeding 300 chars \u2192 422 validation error",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.9 Priority > 1 \u2192 422 validation error",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.10 created_at is set automatically",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "1.11 Whitespace-only title auto-generates from description",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.1 List all tasks (no filter)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.2 Filter by single status=INBOX",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.3 Filter by statuses=INBOX,PENDING",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.4 Filter by project=cc-orchestrator",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.5 Combined filter status=INBOX&project=cc-orchestrator",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.6 Limit parameter (limit=2)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.7 Invalid status=BOGUS \u2192 400",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.8 Invalid status in statuses=INBOX,BOGUS \u2192 400",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.9 Tasks ordered by created_at descending",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "2.10 Non-existent project returns empty list",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "3.1 Counts endpoint returns all expected keys",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "3.2 All counts are non-negative integers",
+      "status": "FAIL",
+      "detail": "daily is not int: <class 'list'>"
+    },
+    {
+      "name": "3.3 weekly_success_pct is between 0 and 100",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "3.4 INBOX count matches filtered list length",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "4.1 Get task detail returns TaskDetailOut fields",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "4.2 Non-existent task_id \u2192 404",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "4.3 New task has empty conversation",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "5.1 Update title",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "5.2 Update description",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "5.3 Update priority to 1",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "5.4 Update model and effort",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "5.5 Update project_name",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "5.6 Update non-existent task \u2192 404",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "5.7 Update with empty title \u2192 422 (min_length=1)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "5.8 Cannot update task after dispatch (not INBOX/PENDING)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "5.9 Partial update preserves other fields",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "6.1 Dispatch INBOX task \u2192 PENDING",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "6.2 Dispatch without project_name \u2192 400",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "6.3 Dispatch task requiring title validation",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "6.4 Dispatch non-existent task \u2192 404",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "6.5 Double dispatch (PENDING \u2192 PENDING) \u2192 409",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "6.6 Dispatch CANCELLED task \u2192 409",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "7.1 Cancel INBOX task \u2192 CANCELLED",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "7.2 Cancel PENDING task \u2192 CANCELLED",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "7.3 Double cancel \u2192 409",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "7.4 Cancel non-existent task \u2192 404",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "8.1 Reject INBOX task \u2192 409 (invalid transition)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "8.2 Reject PENDING task \u2192 409",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "8.3 Reject non-existent task \u2192 404",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "8.4 Reject without reason body \u2192 422",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "8.5 Reject with empty reason \u2192 422",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "9.1 Approve INBOX task \u2192 409",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "9.2 Approve PENDING task \u2192 409",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "9.3 Approve non-existent task \u2192 404",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "9.4 Approve CANCELLED task \u2192 409",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "10.1 Try changes on INBOX task \u2192 409",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "10.2 Revert when no changes tried \u2192 409",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "10.3 Try changes non-existent task \u2192 404",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "10.4 Revert non-existent task \u2192 404",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "11.1 INBOX \u2192 PENDING via dispatch \u2713",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "11.2 INBOX \u2192 CANCELLED via cancel \u2713",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "11.3 PENDING \u2192 CANCELLED via cancel \u2713",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "11.4 COMPLETE is terminal (cancel fails)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "11.5 CANCELLED is terminal (dispatch fails)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "12.1 Rapid creation of 10 tasks (multi-user)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "12.2 All test task IDs are unique",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "12.3 Create \u2192 dispatch \u2192 cancel rapid sequence",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "12.4 Counts consistent after bulk operations",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "13.1 Unicode in title and description",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "13.2 Very long description (10KB)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "13.3 Special characters in title (quotes, backslashes)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "13.4 Null/missing description is valid",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "13.5 Empty JSON body creates untitled task",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "13.6 Extra/unknown fields in body are ignored",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "13.7 Negative priority \u2192 422",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "13.8 Task ID is 12 hex chars",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "13.9 Scheduled_at accepts ISO datetime",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "14.1 GET /api/tasks returns list",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "14.2 GET /api/tasks/{id} non-existent \u2192 404",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "15.1 Create \u2192 immediate read back matches",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "15.2 Update \u2192 read back matches",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "15.3 Cancel sets completed_at timestamp",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "15.4 Dispatch to PENDING: started_at still null",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "15.5 Task appears in correct status filter after state change",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "16.1 TaskOut response has all required fields",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "16.2 TaskDetailOut has conversation, retry_context, review_artifacts",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "16.3 Counts has INBOX, QUEUE, ACTIVE, REVIEW, DONE keys",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "16.4 List response is array with TaskOut objects",
+      "status": "PASS",
+      "detail": ""
+    }
+  ],
+  "test_task_ids": [
+    "dcb10c7537a2",
+    "f8039d7f771e",
+    "0e065120df32",
+    "a766fb67b37b",
+    "74cf4a68636b",
+    "90566d90824b",
+    "97ceb8bc2d13",
+    "a633a84b0534",
+    "ab2cec2dd38b",
+    "3c9eb72f6c1c",
+    "3b0fe772a4da",
+    "45ab2d3b8116",
+    "c804c4831365",
+    "df5b329e5a36",
+    "8187b51623e2",
+    "bd6683d18d9e",
+    "9417a2e29603",
+    "420048dd4178",
+    "eb30383943ad",
+    "916dcb23a4aa",
+    "31aed489b2f3",
+    "13ade747c7a1",
+    "4679c3762f29",
+    "7d119fc4d2f8",
+    "c37b2e7fce14",
+    "36dbc3e68a3b",
+    "b4b8cd39a34c",
+    "50daeaeb6e8c",
+    "2df1419e698a",
+    "cd2e6424ccfd",
+    "5bba10df5ba0",
+    "b98f58b84761",
+    "05c6f40ea480",
+    "21b27c1999e3",
+    "258a15eb48ed",
+    "c4f0077a098d",
+    "ca863e456b60",
+    "fe8be869b954",
+    "8c907eff25fa",
+    "a357b42285ea",
+    "7711d614db65",
+    "77a99ae4d457",
+    "1a160962b77e",
+    "71f50ae373b4",
+    "1e324ce1316b",
+    "bc04883967e9",
+    "00451e56c83d",
+    "aa826692d3bf",
+    "b9045dc86323",
+    "6aecf3aee232",
+    "f1daca015169",
+    "a8e4ff10fb6c",
+    "22d85b4fc2ea",
+    "e574bec2eb85",
+    "5436c28b3472",
+    "e77c7fa51d16",
+    "71a3a355ce3a",
+    "4f64882755dc",
+    "74cafafeff44",
+    "8119767d0405"
+  ]
+}
