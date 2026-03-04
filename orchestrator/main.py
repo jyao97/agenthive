@@ -2271,6 +2271,10 @@ async def task_counts(db: Session = Depends(get_db)):
         "weekly_total": weekly_total,
         "weekly_completed": weekly_completed,
         "weekly_success_pct": weekly_pct,
+        "weekly_failed": weekly_by.get("FAILED", 0),
+        "weekly_timeout": weekly_by.get("TIMEOUT", 0),
+        "weekly_cancelled": weekly_by.get("CANCELLED", 0),
+        "weekly_rejected": weekly_by.get("REJECTED", 0),
     }
 
 
