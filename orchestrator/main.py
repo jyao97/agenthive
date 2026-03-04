@@ -1461,6 +1461,19 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
         ))
     stopped_count = len(active_agents)
 
+    # Cancel all non-terminal tasks for this project
+    from models import Task
+    from task_state_machine import TERMINAL_STATES
+    orphan_tasks = (
+        db.query(Task)
+        .filter(Task.project_name == name, Task.status.notin_(TERMINAL_STATES))
+        .all()
+    )
+    for t in orphan_tasks:
+        t.status = TaskStatus.CANCELLED
+        t.completed_at = _utcnow()
+    cancelled_count = len(orphan_tasks)
+
     # Stop all running subprocess workers for this project
     wm = getattr(request.app.state, "worker_manager", None)
     if wm:
@@ -1472,8 +1485,8 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
     proj.archived = True
     db.commit()
     _remove_from_registry(name)
-    logger.info("Project '%s' archived (stopped %d agents)", name, stopped_count)
-    return {"detail": f"Project '{name}' archived — {stopped_count} agent(s) stopped"}
+    logger.info("Project '%s' archived (stopped %d agents, cancelled %d tasks)", name, stopped_count, cancelled_count)
+    return {"detail": f"Project '{name}' archived — {stopped_count} agent(s) stopped, {cancelled_count} task(s) cancelled"}
 
 
 @app.delete("/api/projects/{name}", status_code=200)
