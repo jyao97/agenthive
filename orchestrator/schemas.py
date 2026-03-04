@@ -118,7 +118,8 @@ class AgentCreate(BaseModel):
     skip_permissions: bool = True  # --dangerously-skip-permissions
 
 
-class AgentOut(BaseModel):
+class _AgentBase(BaseModel):
+    """Shared fields between AgentOut and AgentBrief."""
     id: str
     project: str
     name: str
@@ -127,7 +128,6 @@ class AgentOut(BaseModel):
     branch: str | None = None
     worktree: str | None = None
     session_id: str | None = None
-    cli_sync: bool = False
     tmux_pane: str | None = None
     model: str | None = None
     effort: str | None = None
@@ -135,47 +135,28 @@ class AgentOut(BaseModel):
     last_message_at: datetime | None = None
     unread_count: int = 0
     created_at: datetime
-    timeout_seconds: int = 1800
     skip_permissions: bool = True
     muted: bool = False
     parent_id: str | None = None
     task_id: str | None = None
     is_subagent: bool = False
     claude_agent_id: str | None = None
+    is_generating: bool = False
+
+    model_config = {"from_attributes": True}
+
+
+class AgentOut(_AgentBase):
+    cli_sync: bool = False
+    timeout_seconds: int = 1800
     successor_id: str | None = None
     session_size_bytes: int | None = None
-    is_generating: bool = False
     subagents: list["AgentBrief"] | None = None
 
-    model_config = {"from_attributes": True}
 
-
-class AgentBrief(BaseModel):
+class AgentBrief(_AgentBase):
     """Compact agent representation for list views."""
-    id: str
-    project: str
-    name: str
-    mode: AgentMode
-    status: AgentStatus
-    branch: str | None = None
-    worktree: str | None = None
-    session_id: str | None = None
-    tmux_pane: str | None = None
-    model: str | None = None
-    effort: str | None = None
-    last_message_preview: str | None = None
-    last_message_at: datetime | None = None
-    unread_count: int = 0
-    created_at: datetime
-    skip_permissions: bool = True
-    muted: bool = False
-    parent_id: str | None = None
-    task_id: str | None = None
-    is_subagent: bool = False
-    claude_agent_id: str | None = None
-    is_generating: bool = False
-
-    model_config = {"from_attributes": True}
+    pass
 
 
 class MessageOut(BaseModel):
