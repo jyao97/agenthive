@@ -2888,7 +2888,18 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
     if task.worktree_name:
         wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
         gm.remove_worktree(proj.path, wt_path)
-        gm.delete_branch(proj.path, task.branch_name)
+        del_result = gm.delete_branch(proj.path, task.branch_name)
+        # delete_branch uses -d which fails if branch is not merged — treat as merge failure
+        if del_result.startswith("ERROR:") and "not yet merged" in del_result:
+            task.status = TaskStatus.CONFLICT
+            task.error_message = "Merge appeared to succeed but branch was not actually merged. Please retry."
+            db.commit()
+            db.refresh(task)
+            asyncio.ensure_future(emit_task_update(
+                task.id, task.status.value, task.project_name or "", title=task.title,
+            ))
+            logger.warning("Task %s: merge succeeded but branch not merged (phantom merge)", task.id)
+            return TaskOut.model_validate(task)
     task.status = TaskStatus.COMPLETE
     task.completed_at = _utcnow()
     db.commit()
