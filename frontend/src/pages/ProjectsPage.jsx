@@ -5,7 +5,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } 
 import { CSS } from "@dnd-kit/utilities";
 import { fetchAllFolders, fetchTrashFolders, createProject, archiveProject, scanProjects } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
-import BotIcon from "../components/BotIcon";
+import FolderIcon from "../components/FolderIcon";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
@@ -82,7 +82,7 @@ const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArc
     >
       <div className="flex items-start gap-4">
         {dragHandleProps && <DragHandle {...dragHandleProps} />}
-        <BotIcon state={state} className="w-10 h-10 shrink-0" />
+        <FolderIcon state={state} className="w-10 h-10 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h3 className="text-base font-semibold text-heading truncate">

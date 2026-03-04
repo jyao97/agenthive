@@ -379,7 +379,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
       </div>
 
       {/* Action bar */}
-      <div className="shrink-0 border-t border-divider bg-page px-4 py-3 safe-area-pb flex gap-2 justify-center">
+      <div className="shrink-0 border-t border-divider bg-page px-4 py-3 safe-area-pb flex flex-wrap gap-2 justify-center">
         {/* INBOX → Dispatch + Delete */}
         {task.status === "INBOX" && (
           <>
@@ -387,7 +387,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => doAction(dispatchTask, id)}
               disabled={actionLoading || !task.project_name}
-              className="px-5 py-2.5 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
             >
               Dispatch
             </button>
@@ -395,7 +395,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
             >
               Delete
             </button>
@@ -408,7 +408,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
             type="button"
             onClick={() => { if (confirm("Cancel this task?")) doDelete(); }}
             disabled={actionLoading}
-            className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+            className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
           >
             Cancel
           </button>
@@ -420,7 +420,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
             type="button"
             onClick={() => { if (confirm("Cancel this task?")) doDelete(); }}
             disabled={actionLoading}
-            className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+            className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
           >
             Cancel
           </button>
@@ -434,9 +434,9 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
                 type="button"
                 onClick={() => doAction(tryTaskChanges, id)}
                 disabled={actionLoading}
-                className="px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 transition-colors"
+                className="whitespace-nowrap px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 transition-colors"
               >
-                Try it
+                Try
               </button>
             )}
             {task.try_base_commit && (
@@ -444,16 +444,16 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
                 type="button"
                 onClick={() => doAction(revertTaskChanges, id)}
                 disabled={actionLoading}
-                className="px-5 py-2.5 rounded-lg bg-orange-600 text-white text-sm font-medium hover:bg-orange-500 transition-colors"
+                className="whitespace-nowrap px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:bg-orange-500 transition-colors"
               >
-                Revert it
+                Revert
               </button>
             )}
             <button
               type="button"
               onClick={() => doAction(approveTask, id)}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-500 transition-colors"
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-500 transition-colors"
             >
               Approve & Merge
             </button>
@@ -461,7 +461,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => setRejectOpen(true)}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-500 transition-colors"
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-500 transition-colors"
             >
               Reject
             </button>
@@ -469,7 +469,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
             >
               Delete
             </button>
@@ -483,7 +483,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => doAction(approveTask, id)}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
             >
               Retry Merge
             </button>
@@ -491,7 +491,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
             >
               Delete
             </button>
@@ -505,7 +505,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => doAction(dispatchTask, id)}
               disabled={actionLoading || !task.project_name}
-              className="px-5 py-2.5 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 disabled:opacity-50 transition-colors"
             >
               Retry
             </button>
@@ -513,7 +513,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+              className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
             >
               Delete
             </button>

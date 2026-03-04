@@ -1,20 +1,25 @@
 import { memo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-export default memo(function ReviewCard({ task, onApprove, onReject, onRetryMerge, onCancel }) {
+export default memo(function ReviewCard({ task, merging, onApprove, onReject, onRetryMerge, onCancel }) {
   const navigate = useNavigate();
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
 
-  const statusDot = task.status === "REVIEW" ? "bg-amber-500"
+  const isMerging = merging || task.status === "MERGING";
+
+  const statusDot = isMerging ? "bg-purple-500 animate-pulse"
+    : task.status === "REVIEW" ? "bg-amber-500"
     : task.status === "CONFLICT" ? "bg-red-500"
     : "bg-purple-500 animate-pulse";
 
-  const statusLabel = task.status === "REVIEW" ? "Needs Review"
+  const statusLabel = isMerging ? "Merging..."
+    : task.status === "REVIEW" ? "Needs Review"
     : task.status === "CONFLICT" ? "Conflict"
     : "Merging...";
 
-  const statusColor = task.status === "REVIEW" ? "text-amber-400"
+  const statusColor = isMerging ? "text-purple-400"
+    : task.status === "REVIEW" ? "text-amber-400"
     : task.status === "CONFLICT" ? "text-red-400"
     : "text-purple-400";
 
@@ -45,7 +50,10 @@ export default memo(function ReviewCard({ task, onApprove, onReject, onRetryMerg
 
       {/* Action buttons */}
       <div className="flex items-center gap-2 mt-2">
-        {task.status === "REVIEW" && !rejecting && (
+        {isMerging && (
+          <span className="text-xs text-purple-400 font-medium">Merging branch...</span>
+        )}
+        {task.status === "REVIEW" && !rejecting && !isMerging && (
           <>
             <button
               type="button"

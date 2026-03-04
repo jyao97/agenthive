@@ -311,7 +311,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -2464,11 +2464,11 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/v2/tasks/{task_id}/approve", response_model=TaskOut)
 async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(get_db)):
-    """Approve a REVIEW task → MERGING.
+    """Approve a REVIEW task → perform merge directly (no agent needed).
 
-    Creates the merge PENDING message synchronously (same transaction)
-    so the dispatcher tick cannot harvest the MERGING task before the
-    message exists — eliminates a race that caused premature COMPLETE.
+    Merges the task branch into the main branch using git_manager,
+    cleans up the worktree/branch, and marks the task COMPLETE.
+    Falls back to CONFLICT or FAILED on errors.
     """
     task = db.get(Task, task_id)
     if not task:
@@ -2478,23 +2478,27 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
     except InvalidTransitionError as e:
         raise HTTPException(409, str(e))
 
-    # Look up project + agent for merge prompt
     proj = db.query(Project).filter(Project.name == task.project_name).first()
     agent = db.get(Agent, task.agent_id) if task.agent_id else None
-    if not proj or not agent:
-        raise HTTPException(400, "Missing project or agent for merge")
+    if not proj:
+        raise HTTPException(400, "Missing project for merge")
+
+    # Helper: stop the linked agent after merge (its job is done)
+    def _stop_agent():
+        if not agent or agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
+            return
+        import subprocess as _sp
+        agent.status = AgentStatus.STOPPED
+        if agent.tmux_pane:
+            sess_name = f"ah-{agent.id[:8]}"
+            _sp.run(["tmux", "kill-session", "-t", sess_name],
+                    capture_output=True, timeout=5)
+            agent.tmux_pane = None
+        asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
 
     # No branch to merge (use_worktree=False) — skip merge, go straight to COMPLETE
     if not task.branch_name:
-        # Stop the linked agent — its job is done
-        if agent and agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
-            agent.status = AgentStatus.STOPPED
-            if agent.tmux_pane:
-                import subprocess
-                sess_name = f"ah-{agent.id[:8]}"
-                subprocess.run(["tmux", "kill-session", "-t", sess_name],
-                               capture_output=True, timeout=5)
-                agent.tmux_pane = None
+        _stop_agent()
         task.status = TaskStatus.COMPLETE
         task.completed_at = _utcnow()
         db.commit()
@@ -2503,69 +2507,81 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
             task.id, task.status.value, task.project_name or "",
             title=task.title,
         ))
-        if agent:
-            asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
         return TaskOut.model_validate(task)
 
-    # Sanitize title for use in git commit message (strip quotes/backslashes)
-    safe_title = task.title.replace('"', "'").replace("\\", "")[:80] if task.title else ""
+    # --- Direct merge (no agent) ---
+    gm = getattr(request.app.state, "git_manager", None)
+    if not gm:
+        raise HTTPException(503, "Git manager not available")
 
-    # Build merge prompt
+    # Detect and checkout the main branch
+    main_branch = gm.get_main_branch(proj.path)
+    current_branch = gm.get_current_branch(proj.path)
+    if current_branch != main_branch:
+        co_result = gm.checkout(proj.path, main_branch)
+        if co_result.startswith("ERROR:"):
+            raise HTTPException(500, f"Cannot checkout {main_branch}: {co_result}")
+
+    # Perform the merge
+    safe_title = task.title.replace('"', "'").replace("\\", "")[:80] if task.title else ""
+    merge_msg = f"Merge task/{task.id}: {safe_title}"
+    result = gm.merge_branch(proj.path, task.branch_name, no_ff=True, message=merge_msg)
+
+    if not result.get("success"):
+        error_detail = result.get("error", "unknown error")
+        is_conflict = "conflict" in error_detail.lower()
+        task.status = TaskStatus.CONFLICT if is_conflict else TaskStatus.FAILED
+        task.error_message = error_detail[:500]
+        task.try_base_commit = None
+        db.commit()
+        db.refresh(task)
+        asyncio.ensure_future(emit_task_update(
+            task.id, task.status.value, task.project_name or "",
+            title=task.title,
+        ))
+        logger.info("Task %s merge %s: %s", task.id, task.status.value, error_detail)
+        return TaskOut.model_validate(task)
+
+    # Merge succeeded — clean up worktree and branch
     wt_path = (
         os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
         if task.worktree_name else None
     )
-    merge_prompt = (
-        f"# Merge Task Branch\n\n"
-        f"The task has been approved. Merge the branch `{task.branch_name}` into the main branch.\n\n"
-        f"## Steps\n"
-        f"1. `cd {proj.path}`\n"
-        f"2. Determine the main branch: `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@refs/remotes/origin/@@'` (fallback to `main` or `master`)\n"
-        f"3. `git checkout <main-branch>`\n"
-        f"4. `git merge {task.branch_name} --no-ff -m \"Merge task/{task.id}: {safe_title}\"`\n"
-        f"5. If there are merge conflicts, resolve them intelligently and commit\n"
-    )
-    step = 6
     if wt_path:
-        merge_prompt += f"{step}. `git worktree remove {wt_path} --force`\n"
-        step += 1
-        merge_prompt += f"{step}. `git branch -d {task.branch_name}`\n"
-    else:
-        merge_prompt += f"{step}. `git branch -d {task.branch_name}`\n"
-    merge_prompt += (
-        "\n## Guidelines\n"
-        "- Work autonomously — do not ask for confirmation\n"
-        "- If the merge has conflicts, resolve them sensibly and commit\n"
-        "- Leave a brief summary of the merge result as your final message\n"
-    )
+        wt_result = gm.remove_worktree(proj.path, wt_path)
+        if wt_result.startswith("ERROR:"):
+            logger.warning("Worktree cleanup failed for task %s: %s", task.id, wt_result)
+    # Delete the merged branch (ignore errors — may already be deleted)
+    del_result = gm.delete_branch(proj.path, task.branch_name)
+    if del_result.startswith("ERROR:"):
+        logger.debug("Branch cleanup for task %s: %s", task.id, del_result)
 
-    # Create PENDING message on the agent — dispatch loop picks it up
-    msg = Message(
-        agent_id=agent.id,
-        role=MessageRole.USER,
-        content=merge_prompt,
-        status=MessageStatus.PENDING,
-        source="task",
-    )
-    db.add(msg)
+    # Stop the agent — merge is done
+    _stop_agent()
 
-    # Clear worktree + session so the merge exec runs from the main project
-    # directory without --worktree or --resume (avoids worktree conflicts)
-    agent.worktree = None
-    agent.session_id = None
-    # Ensure agent is IDLE so the dispatch loop picks it up
-    if agent.status in (AgentStatus.STOPPED, AgentStatus.SYNCING, AgentStatus.ERROR):
-        agent.status = AgentStatus.IDLE
-
-    task.status = TaskStatus.MERGING
-    task.try_base_commit = None  # Clear try state on approve
+    task.status = TaskStatus.COMPLETE
+    task.completed_at = _utcnow()
+    task.try_base_commit = None
+    task.agent_summary = f"Merged {task.branch_name} into {main_branch}"
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
         task.id, task.status.value, task.project_name or "",
-        title=task.title, agent_id=task.agent_id,
+        title=task.title,
     ))
-    logger.info("Task %s: merge prompt queued on agent %s", task.id, agent.id)
+    # Push notification
+    try:
+        from push import send_push_notification, is_notification_enabled
+        if is_notification_enabled("tasks"):
+            send_push_notification(
+                title="\u2705 Task merged",
+                body=(task.title or task.id)[:100],
+                url=f"/tasks/{task.id}",
+            )
+    except Exception:
+        logger.debug("Push notification failed for task %s", task.id)
+
+    logger.info("Task %s: merged %s into %s (direct)", task.id, task.branch_name, main_branch)
     return TaskOut.model_validate(task)
 
 
