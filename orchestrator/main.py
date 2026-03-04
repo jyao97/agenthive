@@ -2522,6 +2522,7 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
         agent.status = AgentStatus.IDLE
 
     task.status = TaskStatus.MERGING
+    task.try_base_commit = None  # Clear try state on approve
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
@@ -2558,7 +2559,88 @@ async def reject_task_v2(
                                capture_output=True, timeout=5)
     task.status = TaskStatus.REJECTED
     task.rejection_reason = body.reason
+    task.try_base_commit = None  # Clear try state on reject
     task.completed_at = _utcnow()
+    db.commit()
+    db.refresh(task)
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+    return TaskOut.model_validate(task)
+
+
+@app.post("/api/v2/tasks/{task_id}/try-changes", response_model=TaskOut)
+async def try_task_changes(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Merge task branch into main so user can test locally. Records pre-merge HEAD for revert."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status != TaskStatus.REVIEW:
+        raise HTTPException(409, "Task must be in REVIEW status to try changes")
+    if not task.branch_name:
+        raise HTTPException(400, "Task has no branch to try")
+    if task.try_base_commit:
+        raise HTTPException(409, "Changes already applied — revert first")
+
+    proj = db.query(Project).filter(Project.name == task.project_name).first()
+    if not proj:
+        raise HTTPException(400, "Project not found")
+
+    gm = getattr(request.app.state, "git_manager", None)
+    if not gm:
+        raise HTTPException(503, "Git manager not available")
+
+    # Ensure we're on the main branch
+    current_branch = gm.get_current_branch(proj.path)
+    if not current_branch:
+        raise HTTPException(500, "Cannot determine current branch")
+
+    # Save current HEAD before merge
+    head_before = gm.get_head(proj.path)
+    if not head_before:
+        raise HTTPException(500, "Cannot determine current HEAD")
+
+    # Merge the task branch
+    result = gm.merge_branch(proj.path, task.branch_name)
+    if not result.get("success"):
+        raise HTTPException(409, f"Merge failed: {result.get('error', 'unknown error')}")
+
+    # Record pre-merge commit for revert
+    task.try_base_commit = head_before
+    db.commit()
+    db.refresh(task)
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+    return TaskOut.model_validate(task)
+
+
+@app.post("/api/v2/tasks/{task_id}/revert-try", response_model=TaskOut)
+async def revert_task_try(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Revert a previously tried merge — reset main to pre-merge HEAD."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if not task.try_base_commit:
+        raise HTTPException(409, "No tried changes to revert")
+
+    proj = db.query(Project).filter(Project.name == task.project_name).first()
+    if not proj:
+        raise HTTPException(400, "Project not found")
+
+    gm = getattr(request.app.state, "git_manager", None)
+    if not gm:
+        raise HTTPException(503, "Git manager not available")
+
+    # Reset to the pre-merge commit
+    result = gm.reset_hard(proj.path, task.try_base_commit)
+    if result.startswith("ERROR:"):
+        raise HTTPException(500, f"Reset failed: {result}")
+
+    # Clear the try state
+    task.try_base_commit = None
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(

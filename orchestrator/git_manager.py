@@ -142,6 +142,28 @@ class GitManager:
             worktrees.append(current)
         return worktrees
 
+    def get_head(self, project_path: str) -> str | None:
+        """Get current HEAD commit hash."""
+        result = self._run_git(project_path, ["rev-parse", "HEAD"])
+        if result.startswith("ERROR:"):
+            return None
+        return result.strip()
+
+    def get_current_branch(self, project_path: str) -> str | None:
+        """Get the current branch name."""
+        result = self._run_git(project_path, ["branch", "--show-current"])
+        if result.startswith("ERROR:"):
+            return None
+        return result.strip() or None
+
+    def checkout(self, project_path: str, ref: str) -> str:
+        """Checkout a branch or commit."""
+        return self._run_git(project_path, ["checkout", ref])
+
+    def reset_hard(self, project_path: str, commit: str) -> str:
+        """Reset current branch to a specific commit."""
+        return self._run_git(project_path, ["reset", "--hard", commit])
+
     def get_diff(self, project_path: str, ref: str = "HEAD") -> str:
         """Get diff for a ref."""
         return self._run_git(project_path, ["diff", ref])

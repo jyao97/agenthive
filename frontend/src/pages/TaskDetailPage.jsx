@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchTaskV2, updateTaskV2, dispatchTask, approveTask, rejectTask, cancelTask } from "../lib/api";
+import { fetchTaskV2, updateTaskV2, dispatchTask, approveTask, rejectTask, cancelTask, tryTaskChanges, revertTaskChanges } from "../lib/api";
 import { TASK_STATUS_COLORS, TASK_STATUS_TEXT_COLORS, projectBadgeColor, POLL_INTERVAL } from "../lib/constants";
 import { relativeTime, renderMarkdown } from "../lib/formatters";
 import ProjectSelector from "../components/ProjectSelector";
@@ -22,7 +22,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
   const [editProject, setEditProject] = useState("");
   const pollRef = useRef(null);
   const visible = usePageVisible();
-  const { lastEvent } = useWebSocket();
+  const { lastEvent, sendWsMessage } = useWebSocket();
 
   const load = useCallback(async () => {
     try {
@@ -42,6 +42,14 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
     pollRef.current = setInterval(load, POLL_INTERVAL);
     return () => clearInterval(pollRef.current);
   }, [load, visible]);
+
+  // Suppress notifications for the agent executing this task
+  const agentId = task?.agent_id;
+  useEffect(() => {
+    if (!agentId) return;
+    sendWsMessage({ type: "viewing", agent_id: agentId });
+    return () => sendWsMessage({ type: "viewing", agent_id: null });
+  }, [agentId, sendWsMessage]);
 
   // Refresh on WebSocket task_update for this task
   useEffect(() => {
@@ -418,9 +426,29 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
           </button>
         )}
 
-        {/* REVIEW → Approve + Reject + Delete */}
+        {/* REVIEW → Try/Revert + Approve + Reject + Delete */}
         {task.status === "REVIEW" && !rejectOpen && (
           <>
+            {task.branch_name && !task.try_base_commit && (
+              <button
+                type="button"
+                onClick={() => doAction(tryTaskChanges, id)}
+                disabled={actionLoading}
+                className="px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 transition-colors"
+              >
+                Try it
+              </button>
+            )}
+            {task.try_base_commit && (
+              <button
+                type="button"
+                onClick={() => doAction(revertTaskChanges, id)}
+                disabled={actionLoading}
+                className="px-5 py-2.5 rounded-lg bg-orange-600 text-white text-sm font-medium hover:bg-orange-500 transition-colors"
+              >
+                Revert it
+              </button>
+            )}
             <button
               type="button"
               onClick={() => doAction(approveTask, id)}
@@ -441,7 +469,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               type="button"
               onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
               disabled={actionLoading}
-              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 transition-colors"
+              className="px-5 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
             >
               Delete
             </button>

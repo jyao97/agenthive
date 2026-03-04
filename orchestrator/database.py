@@ -23,6 +23,7 @@ def _set_sqlite_pragma(dbapi_conn, connection_record):
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
 
 
@@ -323,6 +324,12 @@ def init_db():
             conn.commit()
 
         task_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)")).fetchall()}
+        if "try_base_commit" not in task_cols:
+            conn.execute(text(
+                "ALTER TABLE tasks ADD COLUMN try_base_commit VARCHAR(50)"
+            ))
+            conn.commit()
+
         if "use_worktree" not in task_cols:
             conn.execute(text(
                 "ALTER TABLE tasks ADD COLUMN use_worktree BOOLEAN NOT NULL DEFAULT 1"
