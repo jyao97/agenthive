@@ -35,6 +35,11 @@ from worker_manager import WorkerManager
 
 logger = logging.getLogger("orchestrator.agent_dispatcher")
 
+# Session file stale threshold (seconds) — 30 minutes without writes
+# means the CLI session has ended.  Used in _reap_dead_agents and
+# startup recovery to decide whether a session is still active.
+_STALE_SESSION_THRESHOLD = 1800
+
 
 def _utcnow():
     return datetime.now(timezone.utc)
@@ -544,21 +549,8 @@ def _parse_session_model(jsonl_path: str) -> str | None:
     return None
 
 
-def _detect_session_model(jsonl_path: str) -> str | None:
-    """Extract the model ID from a session JSONL (from assistant messages)."""
-    try:
-        with open(jsonl_path) as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                model = entry.get("message", {}).get("model")
-                if model:
-                    return model
-    except OSError as e:
-        logger.debug("_detect_session_model: failed to read %s: %s", jsonl_path, e)
-    return None
+# Backward-compat alias — _detect_session_model was identical to _parse_session_model.
+_detect_session_model = _parse_session_model
 
 
 import re as _re
@@ -2092,7 +2084,6 @@ class AgentDispatcher:
         self._cli_detect_counter += 1
         if self._cli_detect_counter >= self._cli_detect_interval:
             self._cli_detect_counter = 0
-            # self._auto_detect_cli_sessions(db)
             self._dedup_pane_agents(db)
             self._reap_dead_agents(db)
 
@@ -2859,357 +2850,6 @@ class AgentDispatcher:
         lines.append("--- End of history ---\n")
         return "\n".join(lines)
 
-    # ---- Auto-detect running CLI sessions ----
-
-    def _auto_detect_cli_sessions(self, db: Session):
-        """Detect interactive claude processes in tmux and sync them.
-
-        Scans tmux panes for non-orchestrator claude processes whose CWD
-        matches a registered project.  For each match, finds the most
-        recently modified session JSONL and creates (or revives) a
-        SYNCING agent.
-        """
-        from websocket import emit_agent_update
-
-        # Get all registered (non-archived) projects, keyed by realpath
-        projects = db.query(Project).filter(Project.archived == False).all()
-        if not projects:
-            return
-        proj_by_path: dict[str, Project] = {
-            os.path.realpath(p.path): p for p in projects
-        }
-
-        # Expire cached ORM state so we see commits from other DB sessions
-        # (e.g. successor spawns that run in their own SessionLocal).
-        db.expire_all()
-
-        # Collect session IDs / tmux panes already owned by active agents
-        active_session_ids: set[str] = set()
-        active_tmux_panes: set[str] = set()
-        stopped_session_agents: dict[str, Agent] = {}
-        # Track ALL session_ids (including stopped) so we can prevent
-        # reassigning a session that another agent already owns (Bug 4 fix).
-        all_agent_session_ids: set[str] = set()
-        for a in db.query(Agent).filter(Agent.session_id.is_not(None)).all():
-            all_agent_session_ids.add(a.session_id)
-            if a.status == AgentStatus.STOPPED:
-                stopped_session_agents[a.session_id] = a
-            else:
-                active_session_ids.add(a.session_id)
-                if a.tmux_pane:
-                    active_tmux_panes.add(a.tmux_pane)
-
-        # Build map of tmux panes → interactive claude processes (cached per tick)
-        pane_map = self._get_tmux_map()
-        agents_to_sync: list[tuple[str, str, str]] = []
-
-        # Group untracked panes by project path, keyed by PID for matching
-        panes_per_project: dict[str, list[tuple[str, int, str]]] = {}  # realpath -> [(pane_id, pid, session_name)]
-        for pane_id, info in pane_map.items():
-            if info["is_orchestrator"] or pane_id in active_tmux_panes:
-                continue
-            cwd = info["cwd"]
-            # Exact match first, then check if CWD is a subdirectory of a
-            # project (handles worktree agents whose CWD is inside
-            # .claude/worktrees/<name> under the project root).
-            matched_proj_path = None
-            if cwd in proj_by_path:
-                matched_proj_path = cwd
-            else:
-                for pp in proj_by_path:
-                    if cwd.startswith(pp + "/"):
-                        matched_proj_path = pp
-                        break
-            if matched_proj_path:
-                panes_per_project.setdefault(matched_proj_path, []).append(
-                    (pane_id, info["pid"], info.get("session_name", ""))
-                )
-
-        for proj_path, pane_entries in panes_per_project.items():
-            proj = proj_by_path[proj_path]
-            session_dir = session_source_dir(proj.path)
-
-            # Collect session dirs to scan: project root + any worktree dirs
-            # (worktree agents store sessions in separate Claude project dirs)
-            session_dirs_to_scan = []
-            if os.path.isdir(session_dir):
-                session_dirs_to_scan.append(session_dir)
-            # Also scan worktree session dirs for panes with worktree CWDs
-            for _pane_id, _pane_pid, _tmux_sname in pane_entries:
-                pinfo = pane_map.get(_pane_id)
-                if pinfo:
-                    pcwd = pinfo["cwd"]
-                    if pcwd != proj_path and pcwd.startswith(proj_path + "/"):
-                        wt_sdir = session_source_dir(pcwd)
-                        if os.path.isdir(wt_sdir) and wt_sdir not in session_dirs_to_scan:
-                            session_dirs_to_scan.append(wt_sdir)
-            if not session_dirs_to_scan:
-                continue
-
-            # Collect available session JSONLs sorted by mtime descending
-            candidates: list[tuple[str, str, float]] = []  # (sid, fpath, mtime)
-            seen_sids: set[str] = set()
-            for sdir in session_dirs_to_scan:
-                try:
-                    for fname in os.listdir(sdir):
-                        if not fname.endswith(".jsonl"):
-                            continue
-                        fpath = os.path.join(sdir, fname)
-                        if not os.path.isfile(fpath):
-                            continue
-                        sid = fname.replace(".jsonl", "")
-                        if sid in all_agent_session_ids or sid in seen_sids:
-                            continue
-                        seen_sids.add(sid)
-                        candidates.append((sid, fpath, os.path.getmtime(fpath)))
-                except OSError as e:
-                    logger.warning(
-                        "_auto_detect_cli_sessions: failed to scan session dir %s: %s",
-                        sdir, e,
-                    )
-                    continue
-            candidates.sort(key=lambda x: x[2], reverse=True)
-
-            # Build PID→session map from debug logs for deterministic matching.
-            # ONLY PID-verified sessions are used — no mtime fallback.
-            # This prevents stale session files from being incorrectly
-            # matched to unrelated tmux panes (e.g. after tmux kill-server).
-            pid_to_session: dict[int, tuple[str, str]] = {}  # pid -> (sid, fpath)
-            for sid, fpath, mtime in candidates:
-                session_pid = _get_session_pid(sid)
-                if session_pid and session_pid not in pid_to_session:
-                    # Keep the first (newest) session for each PID since
-                    # candidates are sorted newest-first.
-                    pid_to_session[session_pid] = (sid, fpath)
-
-            # Assign sessions to panes: Tier 0 (session name) + Tier 1 (PID match) only
-            for pane_id, pane_pid, tmux_session_name in pane_entries:
-                # --- Tier 0: tmux session name → agent ID match ---
-                # If the tmux session is named `ah-{agent_id[:8]}`, we can
-                # definitively identify the owning agent and revive it.
-                if tmux_session_name.startswith("ah-"):
-                    agent_prefix = tmux_session_name[3:]  # e.g. "1dcbf617"
-                    named_agent = db.query(Agent).filter(
-                        Agent.id.like(f"{agent_prefix}%"),
-                        Agent.status == AgentStatus.STOPPED,
-                        Agent.cli_sync == True,
-                    ).first()
-                    if named_agent:
-                        # Find this agent's session JSONL — check project root
-                        # first, then worktree session dir if the agent has one.
-                        agent_sid = named_agent.session_id
-                        if agent_sid:
-                            jsonl_path = os.path.join(
-                                session_dir, f"{agent_sid}.jsonl"
-                            )
-                            if not os.path.isfile(jsonl_path) and named_agent.worktree:
-                                wt_path = os.path.join(
-                                    proj.path, ".claude", "worktrees", named_agent.worktree
-                                )
-                                wt_jsonl = os.path.join(
-                                    session_source_dir(wt_path), f"{agent_sid}.jsonl"
-                                )
-                                if os.path.isfile(wt_jsonl):
-                                    jsonl_path = wt_jsonl
-                            if os.path.isfile(jsonl_path):
-                                named_agent.status = AgentStatus.SYNCING
-                                named_agent.tmux_pane = pane_id
-                                named_agent.last_message_at = _utcnow()
-                                db.flush()
-                                active_session_ids.add(agent_sid)
-                                all_agent_session_ids.add(agent_sid)
-                                active_tmux_panes.add(pane_id)
-                                logger.info(
-                                    "Revived agent %s by tmux session name %s (tmux=%s)",
-                                    named_agent.id, tmux_session_name, pane_id,
-                                )
-                                agents_to_sync.append((named_agent.id, agent_sid, proj.path))
-                                self._emit(emit_agent_update(named_agent.id, "SYNCING", proj.name))
-                                continue
-
-                best_sid, best_fpath = None, None
-
-                # Tier 1: exact PID match via debug log — only reliable method
-                if pane_pid in pid_to_session:
-                    best_sid, best_fpath = pid_to_session.pop(pane_pid)
-                # No mtime fallback — if PID doesn't match, skip this pane.
-                # This prevents stale sessions from being assigned to wrong panes.
-
-                if not best_sid:
-                    continue
-
-                active_session_ids.add(best_sid)
-                all_agent_session_ids.add(best_sid)
-                active_tmux_panes.add(pane_id)
-
-                # --- Try to revive a stopped agent that owns this session ---
-                stopped_agent = stopped_session_agents.get(best_sid)
-                if stopped_agent:
-                    # Guard: skip if another active agent already owns this pane
-                    existing_owner = _get_pane_owner(pane_id, exclude_agent_id=stopped_agent.id)
-                    if existing_owner:
-                        logger.warning(
-                            "Skipping revive of %s — pane %s already owned by %s",
-                            stopped_agent.id, pane_id, existing_owner.id,
-                        )
-                        continue
-                    stopped_agent.status = AgentStatus.SYNCING
-                    stopped_agent.tmux_pane = pane_id
-                    stopped_agent.last_message_at = _utcnow()
-                    db.flush()
-                    logger.info(
-                        "Revived stopped agent %s for session %s (tmux=%s)",
-                        stopped_agent.id, best_sid[:12], pane_id,
-                    )
-                    agents_to_sync.append((stopped_agent.id, best_sid, proj.path))
-                    self._emit(emit_agent_update(stopped_agent.id, "SYNCING", proj.name))
-                    continue
-
-                # NOTE: Removed "recently stopped" revive that used to assign
-                # a NEW session to an unrelated old agent.  This caused
-                # cross-contamination: an old stopped agent would get a
-                # completely different session's messages.  Instead, just
-                # fall through to create a new agent for the new session.
-
-                # --- Session change on existing SYNCING pane → spawn successor ---
-                # Only treat as a successor if the tmux session name matches
-                # the existing agent (ah-{id[:8]}), confirming it's the same
-                # tmux session that simply started a new Claude conversation.
-                # If the session name doesn't match, it's an unrelated session
-                # on the same pane — create a fresh agent instead.
-                existing_pane_agent = db.query(Agent).filter(
-                    Agent.status == AgentStatus.SYNCING,
-                    Agent.tmux_pane == pane_id,
-                    Agent.cli_sync == True,
-                ).first()
-                if existing_pane_agent:
-                    expected_session = f"ah-{existing_pane_agent.id[:8]}"
-                    if tmux_session_name == expected_session:
-                        db.commit()  # commit pending changes before spawn
-                        self._spawn_successor_agent(
-                            existing_pane_agent.id, best_sid, proj.path,
-                            worktree=existing_pane_agent.worktree,
-                        )
-                        continue
-                    else:
-                        # Different tmux session — stop old agent, fall through
-                        # to create a fresh unrelated agent below.
-                        logger.info(
-                            "Pane %s session name %r != expected %r — "
-                            "stopping old agent %s, creating fresh agent",
-                            pane_id, tmux_session_name, expected_session,
-                            existing_pane_agent.id,
-                        )
-                        self._cancel_sync_task(existing_pane_agent.id)
-                        existing_pane_agent.status = AgentStatus.STOPPED
-                        existing_pane_agent.tmux_pane = None
-                        db.flush()
-                        self._emit(emit_agent_update(
-                            existing_pane_agent.id, "STOPPED", proj.name,
-                        ))
-
-                # --- Create new SYNCING agent ---
-                agent_name = "CLI session"
-                detected_model = None
-                turns = []
-                if best_fpath:
-                    turns = _parse_session_turns(best_fpath)
-                    for role, content, *_rest in turns:
-                        if role == "user" and content:
-                            agent_name = (content or "")[:80]
-                            break
-                    detected_model = _detect_session_model(best_fpath)
-
-                # Detect worktree name from pane CWD if applicable.
-                # Pattern: {project}/.claude/worktrees/{name}[/...]
-                detected_worktree = None
-                pane_info = pane_map.get(pane_id)
-                if pane_info:
-                    pcwd = pane_info["cwd"]
-                    wt_prefix = os.path.join(proj_path, ".claude", "worktrees") + "/"
-                    if pcwd.startswith(wt_prefix):
-                        # Extract the worktree name (first path component after prefix)
-                        remainder = pcwd[len(wt_prefix):]
-                        detected_worktree = remainder.split("/")[0] or None
-
-                logger.info(
-                    "Auto-detected tmux CLI session %s in project %s (pane %s, worktree=%s)",
-                    best_sid[:12], proj.name, pane_id, detected_worktree,
-                )
-
-                agent = Agent(
-                    project=proj.name,
-                    name=agent_name,
-                    mode=AgentMode.AUTO,
-                    status=AgentStatus.SYNCING,
-                    model=detected_model,
-                    session_id=best_sid,
-                    cli_sync=True,
-                    tmux_pane=pane_id,
-                    worktree=detected_worktree,
-                    last_message_preview=agent_name,
-                    last_message_at=_utcnow(),
-                )
-                db.add(agent)
-                db.flush()
-
-                # Rename tmux session to short ah-{id} format
-                try:
-                    res = _sp.run(
-                        ["tmux", "display-message", "-t", pane_id,
-                         "-p", "#{session_name}"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    if res.returncode == 0 and res.stdout.strip():
-                        rename_res = _sp.run(
-                            ["tmux", "rename-session", "-t",
-                             res.stdout.strip(), f"ah-{agent.id[:8]}"],
-                            capture_output=True, text=True, timeout=5,
-                        )
-                        if rename_res.returncode != 0:
-                            logger.warning(
-                                "Failed to rename tmux session for agent %s: %s",
-                                agent.id, rename_res.stderr.strip(),
-                            )
-                except (_sp.TimeoutExpired, OSError) as e:
-                    logger.warning(
-                        "tmux rename failed for agent %s: %s", agent.id, e,
-                    )
-
-                # Import existing turns as messages
-                for role, content, *rest in turns:
-                    meta = rest[0] if rest else None
-                    meta_json = json.dumps(meta) if meta else None
-                    if role == "user":
-                        msg = Message(
-                            agent_id=agent.id,
-                            role=MessageRole.USER,
-                            content=content,
-                            status=MessageStatus.COMPLETED,
-                            source="cli",
-                            completed_at=_utcnow(),
-                        )
-                    elif role == "assistant":
-                        msg = Message(
-                            agent_id=agent.id,
-                            role=MessageRole.AGENT,
-                            content=content,
-                            status=MessageStatus.COMPLETED,
-                            source="cli",
-                            meta_json=meta_json,
-                            completed_at=_utcnow(),
-                        )
-                    else:
-                        continue
-                    db.add(msg)
-
-                db.commit()
-                agents_to_sync.append((agent.id, best_sid, proj.path))
-                self._emit(emit_agent_update(agent.id, agent.status.value, proj.name))
-
-        # Start sync tasks (after commit)
-        for aid, sid, ppath in agents_to_sync:
-            self.start_session_sync(aid, sid, ppath)
 
     def _reap_dead_agents(self, db: Session):
         """Stop agents whose underlying process is dead.
@@ -3223,7 +2863,7 @@ class AgentDispatcher:
         import time
         from websocket import emit_agent_update
 
-        stale_threshold = 1800  # 30 minutes without writes → session is done
+        stale_threshold = _STALE_SESSION_THRESHOLD
 
         # Include STARTING so launched tmux agents that never got a
         # session_id are still reaped when their process dies.
@@ -5013,7 +4653,7 @@ class AgentDispatcher:
                                 # non-tmux terminals or panes we can't match)
                                 try:
                                     age = _time.time() - os.path.getmtime(jsonl_path)
-                                    session_active = age < 1800  # 30 min
+                                    session_active = age < _STALE_SESSION_THRESHOLD
                                 except OSError:
                                     pass
 
@@ -5073,7 +4713,7 @@ class AgentDispatcher:
                         )
                         try:
                             age = _time.time() - os.path.getmtime(jsonl_path)
-                            alive = age < 1800
+                            alive = age < _STALE_SESSION_THRESHOLD
                         except OSError:
                             alive = False
 
