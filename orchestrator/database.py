@@ -39,6 +39,12 @@ def get_db():
         db.close()
 
 
+def _table_columns(conn, table_name: str) -> set[str]:
+    """Return the set of column names for a SQLite table."""
+    result = conn.execute(text(f"PRAGMA table_info({table_name})"))
+    return {row[1] for row in result}
+
+
 def init_db():
     """Create all tables if they don't exist, and run lightweight migrations."""
     from models import Base
@@ -47,36 +53,31 @@ def init_db():
     # Lightweight migrations for existing databases
     with engine.connect() as conn:
         # Add description column to projects if missing
-        result = conn.execute(text("PRAGMA table_info(projects)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "projects")
         if "description" not in columns:
             conn.execute(text("ALTER TABLE projects ADD COLUMN description TEXT"))
             conn.commit()
 
         # Add session_id column to agents if missing
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "session_id" not in columns:
             conn.execute(text("ALTER TABLE agents ADD COLUMN session_id VARCHAR(100)"))
             conn.commit()
 
         # Add worktree column to agents if missing
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "worktree" not in columns:
             conn.execute(text("ALTER TABLE agents ADD COLUMN worktree VARCHAR(200)"))
             conn.commit()
 
         # Add effort column to agents if missing
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "effort" not in columns:
             conn.execute(text("ALTER TABLE agents ADD COLUMN effort VARCHAR(10)"))
             conn.commit()
 
         # Migrate priority → mode column on agents table
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "mode" not in columns:
             # Add mode column with default AUTO
             conn.execute(text(
@@ -92,8 +93,7 @@ def init_db():
             conn.commit()
 
         # Same migration for tasks table
-        result = conn.execute(text("PRAGMA table_info(tasks)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "tasks")
         if "mode" not in columns:
             conn.execute(text(
                 "ALTER TABLE tasks ADD COLUMN mode VARCHAR(9) NOT NULL DEFAULT 'AUTO'"
@@ -107,8 +107,7 @@ def init_db():
             conn.commit()
 
         # Add archived column to projects if missing
-        result = conn.execute(text("PRAGMA table_info(projects)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "projects")
         if "archived" not in columns:
             conn.execute(text(
                 "ALTER TABLE projects ADD COLUMN archived BOOLEAN NOT NULL DEFAULT 0"
@@ -116,8 +115,7 @@ def init_db():
             conn.commit()
 
         # Add cli_sync column to agents if missing
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "cli_sync" not in columns:
             conn.execute(text(
                 "ALTER TABLE agents ADD COLUMN cli_sync BOOLEAN NOT NULL DEFAULT 0"
@@ -125,8 +123,7 @@ def init_db():
             conn.commit()
 
         # Add model column to agents if missing
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "model" not in columns:
             conn.execute(text(
                 "ALTER TABLE agents ADD COLUMN model VARCHAR(100)"
@@ -134,8 +131,7 @@ def init_db():
             conn.commit()
 
         # Add default_model column to projects if missing
-        result = conn.execute(text("PRAGMA table_info(projects)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "projects")
         if "default_model" not in columns:
             conn.execute(text(
                 "ALTER TABLE projects ADD COLUMN default_model VARCHAR(100) NOT NULL DEFAULT 'claude-opus-4-6'"
@@ -143,8 +139,7 @@ def init_db():
             conn.commit()
 
         # Add tmux_pane column to agents if missing
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "tmux_pane" not in columns:
             conn.execute(text(
                 "ALTER TABLE agents ADD COLUMN tmux_pane VARCHAR(100)"
@@ -152,8 +147,7 @@ def init_db():
             conn.commit()
 
         # Add scheduled_at column to messages if missing
-        result = conn.execute(text("PRAGMA table_info(messages)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "messages")
         if "scheduled_at" not in columns:
             conn.execute(text(
                 "ALTER TABLE messages ADD COLUMN scheduled_at DATETIME"
@@ -161,8 +155,7 @@ def init_db():
             conn.commit()
 
         # Add source column to messages if missing
-        result = conn.execute(text("PRAGMA table_info(messages)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "messages")
         if "source" not in columns:
             conn.execute(text(
                 "ALTER TABLE messages ADD COLUMN source VARCHAR(20)"
@@ -170,8 +163,7 @@ def init_db():
             conn.commit()
 
         # Add metadata column to messages if missing
-        result = conn.execute(text("PRAGMA table_info(messages)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "messages")
         if "metadata" not in columns:
             conn.execute(text(
                 "ALTER TABLE messages ADD COLUMN metadata TEXT"
@@ -179,8 +171,7 @@ def init_db():
             conn.commit()
 
         # Add skip_permissions column to agents if missing
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "skip_permissions" not in columns:
             conn.execute(text(
                 "ALTER TABLE agents ADD COLUMN skip_permissions BOOLEAN NOT NULL DEFAULT 1"
@@ -200,46 +191,39 @@ def init_db():
             conn.commit()
 
         # Drop old priority column now that mode has been migrated
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "priority" in columns and "mode" in columns:
             conn.execute(text("ALTER TABLE agents DROP COLUMN priority"))
             conn.commit()
 
-        result = conn.execute(text("PRAGMA table_info(tasks)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "tasks")
         if "priority" in columns and "mode" in columns:
             conn.execute(text("ALTER TABLE tasks DROP COLUMN priority"))
             conn.commit()
 
         # Drop plan-related columns (plan mode fully removed)
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "plan_approved" in columns:
             conn.execute(text("ALTER TABLE agents DROP COLUMN plan_approved"))
             conn.commit()
         # Re-read columns after potential drop
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        columns = {row[1] for row in result}
+        columns = _table_columns(conn, "agents")
         if "plan" in columns:
             conn.execute(text("ALTER TABLE agents DROP COLUMN plan"))
             conn.commit()
 
         # Drop plan-related columns from tasks (plan mode fully removed)
-        result = conn.execute(text("PRAGMA table_info(tasks)"))
-        task_cols_pre = {row[1] for row in result}
+        task_cols_pre = _table_columns(conn, "tasks")
         if "plan_approved" in task_cols_pre:
             conn.execute(text("ALTER TABLE tasks DROP COLUMN plan_approved"))
             conn.commit()
-        result = conn.execute(text("PRAGMA table_info(tasks)"))
-        task_cols_pre = {row[1] for row in result}
+        task_cols_pre = _table_columns(conn, "tasks")
         if "plan" in task_cols_pre:
             conn.execute(text("ALTER TABLE tasks DROP COLUMN plan"))
             conn.commit()
 
         # --- Task v2 migrations ---
-        result = conn.execute(text("PRAGMA table_info(tasks)"))
-        task_cols = {row[1] for row in result}
+        task_cols = _table_columns(conn, "tasks")
 
         task_new_cols = {
             "title": "ALTER TABLE tasks ADD COLUMN title VARCHAR(300) NOT NULL DEFAULT ''",
@@ -278,8 +262,7 @@ def init_db():
         conn.commit()
 
         # Add skip_permissions, sync_mode, scheduled_at to tasks if missing
-        result = conn.execute(text("PRAGMA table_info(tasks)"))
-        task_cols3 = {row[1] for row in result}
+        task_cols3 = _table_columns(conn, "tasks")
         if "skip_permissions" not in task_cols3:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN skip_permissions BOOLEAN NOT NULL DEFAULT 1"))
         if "sync_mode" not in task_cols3:
@@ -289,8 +272,7 @@ def init_db():
         conn.commit()
 
         # Add task_id column to agents if missing
-        result = conn.execute(text("PRAGMA table_info(agents)"))
-        agent_cols = {row[1] for row in result}
+        agent_cols = _table_columns(conn, "agents")
         if "task_id" not in agent_cols:
             conn.execute(text(
                 "ALTER TABLE agents ADD COLUMN task_id VARCHAR(12)"
@@ -323,7 +305,7 @@ def init_db():
         if result.rowcount:
             conn.commit()
 
-        task_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)")).fetchall()}
+        task_cols = _table_columns(conn, "tasks")
         if "try_base_commit" not in task_cols:
             conn.execute(text(
                 "ALTER TABLE tasks ADD COLUMN try_base_commit VARCHAR(50)"
