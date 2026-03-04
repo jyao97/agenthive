@@ -2836,17 +2836,69 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
         logger.info("Task %s: approved (already tried), completing directly", task.id)
         return TaskOut.model_validate(task)
 
-    # Has branch, not tried — transition to MERGING, dispatcher will handle merge
+    # Has branch, not tried — perform merge synchronously
+    _stop_linked_agent()
     task.status = TaskStatus.MERGING
-    task.merge_agent_id = None
     task.error_message = None
+    db.commit()
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+    logger.info("Task %s: approved, merging branch %s", task.id, task.branch_name)
+
+    gm = getattr(request.app.state, "git_manager", None)
+    if not gm:
+        task.status = TaskStatus.CONFLICT
+        task.error_message = "Git manager not available"
+        db.commit()
+        db.refresh(task)
+        asyncio.ensure_future(emit_task_update(
+            task.id, task.status.value, task.project_name or "", title=task.title,
+        ))
+        return TaskOut.model_validate(task)
+
+    # Ensure on main branch
+    main_branch = gm.get_main_branch(proj.path)
+    current_branch = gm.get_current_branch(proj.path)
+    if current_branch != main_branch:
+        co_result = gm.checkout(proj.path, main_branch)
+        if co_result.startswith("ERROR:"):
+            task.status = TaskStatus.CONFLICT
+            task.error_message = f"Cannot checkout {main_branch}: {co_result}"
+            db.commit()
+            db.refresh(task)
+            asyncio.ensure_future(emit_task_update(
+                task.id, task.status.value, task.project_name or "", title=task.title,
+            ))
+            return TaskOut.model_validate(task)
+
+    # Merge
+    result = gm.merge_branch(proj.path, task.branch_name)
+    if not result.get("success"):
+        task.status = TaskStatus.CONFLICT
+        task.error_message = f"Merge failed: {result.get('error', 'unknown')}"
+        db.commit()
+        db.refresh(task)
+        asyncio.ensure_future(emit_task_update(
+            task.id, task.status.value, task.project_name or "", title=task.title,
+        ))
+        return TaskOut.model_validate(task)
+
+    # Merge succeeded — clean up worktree & branch, mark COMPLETE
+    if task.worktree_name:
+        wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
+        gm.remove_worktree(proj.path, wt_path)
+        gm.delete_branch(proj.path, task.branch_name)
+    task.status = TaskStatus.COMPLETE
+    task.completed_at = _utcnow()
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
         task.id, task.status.value, task.project_name or "",
         title=task.title,
     ))
-    logger.info("Task %s: approved, transitioning to MERGING", task.id)
+    logger.info("Task %s: merge complete", task.id)
     return TaskOut.model_validate(task)
 
 
