@@ -156,6 +156,8 @@ export const tryTaskChanges = (id) =>
   request(`/api/v2/tasks/${id}/try-changes`, { method: "POST" });
 export const revertTaskChanges = (id) =>
   request(`/api/v2/tasks/${id}/revert-try`, { method: "POST" });
+export const verifyTask = (id) =>
+  request(`/api/v2/tasks/${id}/verify`, { method: "POST" });
 
 // --- Agents ---
 export const fetchAgents = (params = "") =>

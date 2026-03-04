@@ -1,6 +1,6 @@
 import { useState } from "react";
 import ReviewCard from "../../components/cards/ReviewCard";
-import { approveTask, rejectTask, cancelTask } from "../../lib/api";
+import { approveTask, rejectTask, cancelTask, verifyTask } from "../../lib/api";
 
 const STATUS_ORDER = { REVIEW: 0, CONFLICT: 1, MERGING: 2 };
 
@@ -54,6 +54,16 @@ export default function ReviewView({ tasks, loading, onRefresh }) {
     }
   };
 
+  const handleVerify = async (task) => {
+    setError(null);
+    try {
+      await verifyTask(task.id);
+      onRefresh?.();
+    } catch (err) {
+      setError(err.message || "Verify failed");
+    }
+  };
+
   if (!loading && sorted.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-faint">
@@ -84,6 +94,7 @@ export default function ReviewView({ tasks, loading, onRefresh }) {
           onReject={handleReject}
           onRetryMerge={handleApprove}
           onCancel={handleCancel}
+          onVerify={handleVerify}
         />
       ))}
     </div>

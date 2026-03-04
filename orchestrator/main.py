@@ -2872,6 +2872,145 @@ async def reject_task_v2(
     return TaskOut.model_validate(task)
 
 
+@app.post("/api/v2/tasks/{task_id}/verify")
+async def verify_task(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Spawn a verification sub-agent to check the task's output (tests, build, etc.)."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status != TaskStatus.REVIEW:
+        raise HTTPException(409, f"Task must be in REVIEW state (currently {task.status.value})")
+    if not task.agent_id:
+        raise HTTPException(409, "Task has no agent — nothing to verify")
+    if not task.project_name:
+        raise HTTPException(409, "Task has no project assigned")
+
+    # Check if a verification agent is already running for this task
+    existing_verify = (
+        db.query(Agent)
+        .filter(
+            Agent.task_id == task.id,
+            Agent.is_subagent == True,
+            Agent.name.like("Verify:%"),
+            Agent.status.in_([AgentStatus.IDLE, AgentStatus.STARTING, AgentStatus.EXECUTING]),
+        )
+        .first()
+    )
+    if existing_verify:
+        raise HTTPException(409, "A verification agent is already running for this task")
+
+    proj = db.get(Project, task.project_name)
+    if not proj:
+        raise HTTPException(404, f"Project '{task.project_name}' not found")
+
+    original_agent = db.get(Agent, task.agent_id)
+    if not original_agent:
+        raise HTTPException(404, "Original agent not found")
+
+    # Build verification prompt
+    context_parts = [
+        f"# Verification Task",
+        f"You are a **verification agent**. Your job is to independently check whether a completed coding task was done correctly.",
+        f"",
+        f"## Original Task",
+        f"**Title:** {task.title}",
+    ]
+    if task.description:
+        context_parts.append(f"**Description:** {task.description}")
+    if task.agent_summary:
+        context_parts.append(f"\n## Agent's Summary of What Was Done")
+        context_parts.append(task.agent_summary)
+
+    # If worktree task, tell the agent which branch to check
+    if task.branch_name:
+        context_parts.append(f"\n## Branch")
+        context_parts.append(f"The changes are on branch `{task.branch_name}`.")
+        context_parts.append(f"Use `git diff main...{task.branch_name}` to see the full diff.")
+
+    context_parts.append(f"\n## Your Verification Checklist")
+    context_parts.append("1. Read the diff / changed files to understand what was modified")
+    context_parts.append("2. Check if the changes match the task requirements")
+    context_parts.append("3. Run the project's test suite (if any) — look for test commands in CLAUDE.md, package.json, Makefile, etc.")
+    context_parts.append("4. Run the build (if applicable) to check for compilation/bundling errors")
+    context_parts.append("5. Look for obvious issues: missing imports, unused variables, broken logic, security problems")
+    context_parts.append("")
+    context_parts.append("## Output Format")
+    context_parts.append("End your response with a structured verdict:")
+    context_parts.append("```")
+    context_parts.append("VERDICT: PASS | FAIL | WARN")
+    context_parts.append("ISSUES: (list any issues found, or 'none')")
+    context_parts.append("TESTS: (test results summary, or 'no tests found')")
+    context_parts.append("BUILD: (build result, or 'not applicable')")
+    context_parts.append("```")
+    context_parts.append("")
+    context_parts.append("Be thorough but concise. Focus on correctness, not style.")
+
+    verify_prompt = "\n".join(context_parts)
+
+    # Create the verification agent — runs in the same project dir (not a worktree)
+    import secrets
+    for _ in range(20):
+        agent_hex = secrets.token_hex(6)
+        if db.get(Agent, agent_hex) is None:
+            break
+    else:
+        raise HTTPException(500, "Failed to generate agent ID")
+
+    agent = Agent(
+        id=agent_hex,
+        project=proj.name,
+        name=f"Verify: {task.title[:70]}",
+        mode=AgentMode.AUTO,
+        status=AgentStatus.IDLE,
+        model=task.model or proj.default_model or CC_MODEL,
+        effort="low",  # Verification is lightweight
+        skip_permissions=True,
+        task_id=task.id,
+        parent_id=task.agent_id,
+        is_subagent=True,
+        last_message_preview=f"Verifying: {task.title[:70]}",
+        last_message_at=_utcnow(),
+    )
+    db.add(agent)
+    db.flush()
+
+    msg = Message(
+        agent_id=agent.id,
+        role=MessageRole.USER,
+        content=verify_prompt,
+        status=MessageStatus.PENDING,
+        source="verify",
+    )
+    db.add(msg)
+
+    # Store verification agent ID in review_artifacts
+    import json as _json
+    artifacts = {}
+    if task.review_artifacts:
+        try:
+            artifacts = _json.loads(task.review_artifacts)
+        except Exception:
+            artifacts = {}
+    artifacts["verify_agent_id"] = agent.id
+    artifacts["verify_status"] = "running"
+    task.review_artifacts = _json.dumps(artifacts)
+
+    db.commit()
+
+    from websocket import emit_agent_update, emit_task_update
+    asyncio.ensure_future(emit_agent_update(agent.id, agent.status.value, proj.name))
+    asyncio.ensure_future(emit_task_update(
+        task.id, task.status.value, task.project_name or "",
+        title=task.title,
+    ))
+
+    return {
+        "status": "started",
+        "verify_agent_id": agent.id,
+        "task_id": task.id,
+    }
+
+
 @app.post("/api/v2/tasks/{task_id}/try-changes", response_model=TaskOut)
 async def try_task_changes(task_id: str, request: Request, db: Session = Depends(get_db)):
     """Merge task branch into main so user can test locally. Records pre-merge HEAD for revert."""

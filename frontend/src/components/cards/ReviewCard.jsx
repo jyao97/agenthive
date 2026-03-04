@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-export default memo(function ReviewCard({ task, merging, onApprove, onReject, onRetryMerge, onCancel }) {
+export default memo(function ReviewCard({ task, merging, onApprove, onReject, onRetryMerge, onCancel, onVerify }) {
   const navigate = useNavigate();
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
@@ -55,31 +55,55 @@ export default memo(function ReviewCard({ task, merging, onApprove, onReject, on
         {isMerging && (
           <span className="text-xs text-purple-400 font-medium">Merging branch...</span>
         )}
-        {task.status === "REVIEW" && !rejecting && !isMerging && (
-          <>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onApprove?.(task); }}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400 hover:bg-green-500/25 transition-colors"
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setRejecting(true); }}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors"
-            >
-              Reject
-            </button>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); if (confirm("Delete this task?")) onCancel?.(task); }}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
-            >
-              Delete
-            </button>
-          </>
-        )}
+        {task.status === "REVIEW" && !rejecting && !isMerging && (() => {
+          const arts = task.review_artifacts ? (() => { try { return JSON.parse(task.review_artifacts); } catch { return {}; } })() : {};
+          const vs = arts.verify_status;
+          return (
+            <>
+              {vs === "running" ? (
+                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 flex items-center gap-1">
+                  <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
+                  Verifying
+                </span>
+              ) : vs === "pass" ? (
+                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400">Verified</span>
+              ) : vs === "fail" ? (
+                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Failed</span>
+              ) : vs === "warn" ? (
+                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400">Verify Warn</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onVerify?.(task); }}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 transition-colors"
+                >
+                  Verify
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onApprove?.(task); }}
+                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400 hover:bg-green-500/25 transition-colors"
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setRejecting(true); }}
+                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors"
+              >
+                Reject
+              </button>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); if (confirm("Delete this task?")) onCancel?.(task); }}
+                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
+              >
+                Delete
+              </button>
+            </>
+          );
+        })()}
         {task.status === "CONFLICT" && (
           <>
             <button

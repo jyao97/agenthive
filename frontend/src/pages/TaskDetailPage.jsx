@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchTaskV2, updateTaskV2, planTask, dispatchTask, approveTask, rejectTask, cancelTask, tryTaskChanges, revertTaskChanges } from "../lib/api";
+import { fetchTaskV2, updateTaskV2, planTask, dispatchTask, approveTask, rejectTask, cancelTask, tryTaskChanges, revertTaskChanges, verifyTask } from "../lib/api";
 import { TASK_STATUS_COLORS, TASK_STATUS_TEXT_COLORS, projectBadgeColor, POLL_INTERVAL } from "../lib/constants";
 import { relativeTime, renderMarkdown } from "../lib/formatters";
 import ProjectSelector from "../components/ProjectSelector";
@@ -285,6 +285,31 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
                   View agent conversation
                 </button>
               )}
+              {(() => {
+                const arts = task.review_artifacts ? (() => { try { return JSON.parse(task.review_artifacts); } catch { return {}; } })() : {};
+                if (!arts.verify_status || arts.verify_status === "running") return null;
+                const colors = { pass: "text-green-400 bg-green-500/10", fail: "text-red-400 bg-red-500/10", warn: "text-amber-400 bg-amber-500/10", done: "text-cyan-400 bg-cyan-500/10", error: "text-red-400 bg-red-500/10" };
+                const labels = { pass: "Verification Passed", fail: "Verification Failed", warn: "Verification Warning", done: "Verification Complete", error: "Verification Error" };
+                return (
+                  <div className="space-y-2">
+                    <h4 className={`text-xs font-medium ${(colors[arts.verify_status] || "text-dim").split(" ")[0]}`}>{labels[arts.verify_status] || "Verification"}</h4>
+                    {arts.verify_result && (
+                      <div className={`text-xs rounded-lg p-3 max-h-[300px] overflow-y-auto ${colors[arts.verify_status] || "bg-inset text-body"}`}>
+                        <pre className="whitespace-pre-wrap font-mono">{arts.verify_result}</pre>
+                      </div>
+                    )}
+                    {arts.verify_agent_id && (
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/agents/${arts.verify_agent_id}`)}
+                        className="inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300"
+                      >
+                        View verification agent
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -471,55 +496,89 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
           </button>
         )}
 
-        {/* REVIEW → Try/Revert + Approve + Reject + Delete */}
-        {task.status === "REVIEW" && !rejectOpen && (
-          <>
-            {task.branch_name && !task.try_base_commit && (
+        {/* REVIEW → Verify + Try/Revert + Approve + Reject + Delete */}
+        {task.status === "REVIEW" && !rejectOpen && (() => {
+          const artifacts = task.review_artifacts ? (() => { try { return JSON.parse(task.review_artifacts); } catch { return {}; } })() : {};
+          const vs = artifacts.verify_status;
+          return (
+            <>
+              {vs === "running" ? (
+                <span className="whitespace-nowrap px-4 py-2 rounded-lg bg-cyan-600/20 text-cyan-400 text-sm font-medium flex items-center gap-1.5">
+                  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
+                  Verifying...
+                </span>
+              ) : vs === "pass" ? (
+                <span className="whitespace-nowrap px-4 py-2 rounded-lg bg-green-600/20 text-green-400 text-sm font-medium">Verified</span>
+              ) : vs === "fail" ? (
+                <span className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600/20 text-red-400 text-sm font-medium">Verify Failed</span>
+              ) : vs === "warn" ? (
+                <span className="whitespace-nowrap px-4 py-2 rounded-lg bg-amber-600/20 text-amber-400 text-sm font-medium">Verify Warning</span>
+              ) : vs === "error" ? (
+                <button
+                  type="button"
+                  onClick={() => doAction(verifyTask, id)}
+                  disabled={actionLoading}
+                  className="whitespace-nowrap px-4 py-2 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 transition-colors"
+                >
+                  Retry Verify
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => doAction(verifyTask, id)}
+                  disabled={actionLoading}
+                  className="whitespace-nowrap px-4 py-2 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-500 transition-colors"
+                >
+                  Verify
+                </button>
+              )}
+              {task.branch_name && !task.try_base_commit && (
+                <button
+                  type="button"
+                  onClick={() => doAction(tryTaskChanges, id)}
+                  disabled={actionLoading}
+                  className="whitespace-nowrap px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 transition-colors"
+                >
+                  Try
+                </button>
+              )}
+              {task.try_base_commit && (
+                <button
+                  type="button"
+                  onClick={() => doAction(revertTaskChanges, id)}
+                  disabled={actionLoading}
+                  className="whitespace-nowrap px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:bg-orange-500 transition-colors"
+                >
+                  {task.branch_name ? "Revert" : "Rollback"}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => doAction(tryTaskChanges, id)}
+                onClick={() => doAction(approveTask, id)}
                 disabled={actionLoading}
-                className="whitespace-nowrap px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 transition-colors"
+                className="whitespace-nowrap px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-500 transition-colors"
               >
-                Try
+                Approve & Merge
               </button>
-            )}
-            {task.try_base_commit && (
               <button
                 type="button"
-                onClick={() => doAction(revertTaskChanges, id)}
+                onClick={() => setRejectOpen(true)}
                 disabled={actionLoading}
-                className="whitespace-nowrap px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:bg-orange-500 transition-colors"
+                className="whitespace-nowrap px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-500 transition-colors"
               >
-                {task.branch_name ? "Revert" : "Rollback"}
+                Reject
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => doAction(approveTask, id)}
-              disabled={actionLoading}
-              className="whitespace-nowrap px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-500 transition-colors"
-            >
-              Approve & Merge
-            </button>
-            <button
-              type="button"
-              onClick={() => setRejectOpen(true)}
-              disabled={actionLoading}
-              className="whitespace-nowrap px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-500 transition-colors"
-            >
-              Reject
-            </button>
-            <button
-              type="button"
-              onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
-              disabled={actionLoading}
-              className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
-            >
-              Delete
-            </button>
-          </>
-        )}
+              <button
+                type="button"
+                onClick={() => { if (confirm("Delete this task?")) doDelete(); }}
+                disabled={actionLoading}
+                className="whitespace-nowrap px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+              >
+                Delete
+              </button>
+            </>
+          );
+        })()}
 
         {/* CONFLICT → Retry + Delete */}
         {task.status === "CONFLICT" && (

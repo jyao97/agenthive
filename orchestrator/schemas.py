@@ -90,6 +90,7 @@ class TaskOut(BaseModel):
     sync_mode: bool = False
     use_worktree: bool = True
     try_base_commit: str | None = None
+    review_artifacts: str | None = None
     scheduled_at: datetime | None = None
     created_at: datetime
     started_at: datetime | None = None
@@ -109,7 +110,6 @@ class TaskOut(BaseModel):
 
 class TaskDetailOut(TaskOut):
     retry_context: str | None = None
-    review_artifacts: str | None = None
     conversation: list["MessageOut"] = []
 
 

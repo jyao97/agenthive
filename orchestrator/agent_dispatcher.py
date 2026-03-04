@@ -2158,6 +2158,79 @@ Here are today's completed tasks:
             ))
             logger.info("Task %s: failed stale MERGING task", task.id)
 
+    def _harvest_verify_completions(self, db: Session):
+        """Check verification sub-agents — when done, update task review_artifacts."""
+        verify_agents = (
+            db.query(Agent)
+            .filter(
+                Agent.is_subagent == True,
+                Agent.name.like("Verify:%"),
+                Agent.task_id.isnot(None),
+                Agent.status.in_([AgentStatus.IDLE, AgentStatus.STOPPED, AgentStatus.ERROR]),
+            )
+            .all()
+        )
+        for agent in verify_agents:
+            task = db.get(Task, agent.task_id)
+            if not task:
+                continue
+
+            # Parse current review_artifacts
+            import json as _json
+            artifacts = {}
+            if task.review_artifacts:
+                try:
+                    artifacts = _json.loads(task.review_artifacts)
+                except Exception:
+                    artifacts = {}
+
+            # Skip if already harvested
+            if artifacts.get("verify_status") != "running":
+                continue
+            if artifacts.get("verify_agent_id") != agent.id:
+                continue
+
+            # Get the agent's last message (verification result)
+            last_msg = (
+                db.query(Message)
+                .filter(Message.agent_id == agent.id, Message.role == MessageRole.AGENT)
+                .order_by(Message.created_at.desc())
+                .first()
+            )
+
+            if agent.status == AgentStatus.ERROR or not last_msg:
+                artifacts["verify_status"] = "error"
+                artifacts["verify_result"] = "Verification agent failed without output"
+            else:
+                content = last_msg.content or ""
+                # Parse verdict from output
+                verdict = "UNKNOWN"
+                for line in content.split("\n"):
+                    stripped = line.strip()
+                    if stripped.startswith("VERDICT:"):
+                        verdict = stripped.split(":", 1)[1].strip().upper()
+                        break
+
+                if "PASS" in verdict:
+                    artifacts["verify_status"] = "pass"
+                elif "FAIL" in verdict:
+                    artifacts["verify_status"] = "fail"
+                elif "WARN" in verdict:
+                    artifacts["verify_status"] = "warn"
+                else:
+                    artifacts["verify_status"] = "done"
+                artifacts["verify_result"] = content[:3000]
+
+            task.review_artifacts = _json.dumps(artifacts)
+            db.commit()
+
+            from websocket import emit_task_update
+            self._emit(emit_task_update(
+                task.id, task.status.value, task.project_name or "",
+                title=task.title,
+            ))
+            logger.info("Task %s: verification %s (agent %s)", task.id, artifacts["verify_status"], agent.id)
+
     def _tick(self, db: Session):
         # Invalidate per-tick tmux map cache
         self._tmux_map_cache = None
@@ -2173,6 +2246,9 @@ Here are today's completed tasks:
 
         # 0b. Harvest v2 task completions (agent done → REVIEW)
         self._harvest_task_completions(db)
+
+        # 0c. Harvest verification agent completions
+        self._harvest_verify_completions(db)
 
         # 0. Early session_id assignment — grab session_id from output init
         #    event as soon as Claude starts, so auto-detect can see it.
