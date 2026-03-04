@@ -224,6 +224,11 @@ export const fetchTokenUsage = () => request("/api/system/token-usage");
 export const restartServer = () => request("/api/system/restart", { method: "POST" });
 export const fetchProcesses = () => request("/api/processes");
 
+// --- Notification Settings ---
+export const fetchNotificationSettings = () => request("/api/settings/notifications");
+export const updateNotificationSettings = (data) =>
+  request("/api/settings/notifications", { method: "PUT", body: JSON.stringify(data) });
+
 // --- FormData helper (shared by voice + upload) ---
 async function formDataRequest(url, formData, errorLabel = "Request") {
   const headers = {};

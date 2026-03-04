@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchAgents, stopAgent, deleteAgent, scanAgents, searchMessages, markAgentRead } from "../lib/api";
+import { fetchAgents, stopAgent, deleteAgent, scanAgents, searchMessages, markAgentRead, updateNotificationSettings } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, POLL_INTERVAL, modelDisplayName } from "../lib/constants";
 import BotIcon from "../components/BotIcon";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
-import useWebSocket from "../hooks/useWebSocket";
+import useWebSocket, { isAgentNotificationsEnabled, setAgentNotificationsEnabled } from "../hooks/useWebSocket";
 import usePageVisible from "../hooks/usePageVisible";
 
 const FILTER_TABS = [
@@ -211,6 +211,17 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   }, []);
 
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+
+  // Notification toggle
+  const [agentNotifsOn, setAgentNotifsOn] = useState(() => isAgentNotificationsEnabled());
+
+  const handleToggleAgentNotifs = useCallback(() => {
+    const next = !agentNotifsOn;
+    setAgentNotifsOn(next);
+    setAgentNotificationsEnabled(next);
+    updateNotificationSettings({ agents_enabled: next }).catch(() => {});
+    showToast(next ? "Agent notifications enabled" : "Agent notifications disabled");
+  }, [agentNotifsOn, showToast]);
 
   // Message content search
   const [searchResults, setSearchResults] = useState(null);
@@ -435,6 +446,22 @@ export default function AgentsPage({ theme, onToggleTheme }) {
         onToggleTheme={onToggleTheme}
         actions={!selecting ? (
           <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={handleToggleAgentNotifs}
+              title={agentNotifsOn ? "Mute all agent notifications" : "Unmute all agent notifications"}
+              className={`w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${agentNotifsOn ? "text-cyan-400" : "text-dim"}`}
+            >
+              {agentNotifsOn ? (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.143 17.082a24.248 24.248 0 003.718.17M3.1 9.05A6 6 0 0112 3c1.075 0 2.09.283 2.965.78M17.982 13.5A8.97 8.97 0 0018 9.75V9M3.53 3.53l16.97 16.97M6.268 6.268A5.973 5.973 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m.857 0a3 3 0 005.714 0" />
+                </svg>
+              )}
+            </button>
             <button
               type="button"
               onClick={handleRefresh}

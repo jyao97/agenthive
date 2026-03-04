@@ -21,6 +21,21 @@ from config import (
 logger = logging.getLogger("orchestrator.push")
 
 
+def is_notification_enabled(category: str) -> bool:
+    """Check if notifications are globally enabled for a category ('agents' or 'tasks')."""
+    try:
+        from database import SessionLocal
+        from models import SystemConfig
+        db = SessionLocal()
+        try:
+            row = db.get(SystemConfig, f"notifications_{category}_enabled")
+            return row.value != "0" if row else True
+        finally:
+            db.close()
+    except Exception:
+        return True  # default to enabled on error
+
+
 def send_push_notification(title: str, body: str, url: str = "/") -> None:
     """Send a push notification via all configured backends."""
     _send_telegram(title, body, url)

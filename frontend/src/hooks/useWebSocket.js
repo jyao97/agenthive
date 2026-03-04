@@ -2,6 +2,8 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { getAuthToken } from "../lib/api";
 
 const MUTED_KEY = "agenthive-muted-agents";
+const AGENTS_NOTIF_KEY = "agenthive-agents-notifications-enabled";
+const TASKS_NOTIF_KEY = "agenthive-tasks-notifications-enabled";
 
 /** Get the set of muted agent IDs from localStorage. */
 function getMutedAgents() {
@@ -28,6 +30,28 @@ export function setAgentMuted(agentId, muted) {
   localStorage.setItem(MUTED_KEY, JSON.stringify([...set]));
 }
 
+/** Check if agent notifications are globally enabled. */
+export function isAgentNotificationsEnabled() {
+  const v = localStorage.getItem(AGENTS_NOTIF_KEY);
+  return v !== "0";
+}
+
+/** Set global agent notifications enabled state. */
+export function setAgentNotificationsEnabled(enabled) {
+  localStorage.setItem(AGENTS_NOTIF_KEY, enabled ? "1" : "0");
+}
+
+/** Check if task notifications are globally enabled. */
+export function isTaskNotificationsEnabled() {
+  const v = localStorage.getItem(TASKS_NOTIF_KEY);
+  return v !== "0";
+}
+
+/** Set global task notifications enabled state. */
+export function setTaskNotificationsEnabled(enabled) {
+  localStorage.setItem(TASKS_NOTIF_KEY, enabled ? "1" : "0");
+}
+
 /** Tracks which agents have already shown a notification.
  *  Cleared when the user navigates to that agent's chat page. */
 const _notifiedAgents = new Set();
@@ -49,7 +73,8 @@ export function clearAgentNotified(agentId) {
 
 function shouldSuppressNotification(agentId, allowRepeat = false) {
   if (!agentId) return false;
-  if (window.location.pathname === `/agents/${agentId}`) return true;
+  // Only suppress if user is actively viewing (tab visible + on agent page)
+  if (window.location.pathname === `/agents/${agentId}` && document.visibilityState === "visible") return true;
   if (isAgentMuted(agentId)) return true;
   if (!allowRepeat && _notifiedAgents.has(agentId)) return true;
   return false;
@@ -145,6 +170,7 @@ function showBrowserNotification(event) {
   }
 
   if (event.type === "new_message") {
+    if (!isAgentNotificationsEnabled()) return;
     if (shouldSuppressNotification(agentId)) return;
     const title = d.agent_name || `Agent ${agentId?.slice(0, 8)}`;
     const body = d.project ? `New message (${d.project})` : "New message";
@@ -157,6 +183,7 @@ function showBrowserNotification(event) {
   }
 
   if (event.type === "agent_update" && d.status === "ERROR") {
+    if (!isAgentNotificationsEnabled()) return;
     // Always surface errors even if we already notified for a prior message.
     if (agentId) {
       _streamingAgents.delete(agentId);
@@ -166,6 +193,26 @@ function showBrowserNotification(event) {
     const title = "Agent error";
     const body = d.agent_name || agentId?.slice(0, 8);
     showNativeNotification(event.type, agentId, title, body, true);
+    return;
+  }
+
+  if (event.type === "task_update") {
+    if (!isTaskNotificationsEnabled()) return;
+    const status = d.status;
+    if (!status || !["COMPLETE", "FAILED", "TIMEOUT"].includes(status)) return;
+    // Suppress if user is currently on the tasks page and tab is visible
+    if (window.location.pathname.startsWith("/tasks") && document.visibilityState === "visible") return;
+    const emoji = status === "COMPLETE" ? "\u2705" : "\u274c";
+    const title = `${emoji} Task ${status.charAt(0) + status.slice(1).toLowerCase()}`;
+    const body = d.title || d.task_id?.slice(0, 8) || "Task update";
+    try {
+      const tag = `task_update-${d.task_id || "unknown"}`;
+      const n = new Notification(title, { body, tag, renotify: true });
+      n.onclick = () => { window.focus(); n.close(); };
+      setTimeout(() => n.close(), 8000);
+    } catch (err) {
+      console.warn("showBrowserNotification: failed to create task notification:", err);
+    }
     return;
   }
 }
@@ -183,6 +230,8 @@ export default function useWebSocket() {
   const [lastEvent, setLastEvent] = useState(null);
   const reconnectTimer = useRef(null);
   const reconnectDelay = useRef(1000);
+  // Track which agent the user has navigated to (survives reconnects + visibility changes)
+  const viewingAgentRef = useRef(null);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -201,6 +250,10 @@ export default function useWebSocket() {
       ws.onopen = () => {
         setConnected(true);
         reconnectDelay.current = 1000; // Reset backoff
+        // Replay viewing state on (re)connect — visibility-gated
+        if (viewingAgentRef.current && document.visibilityState === "visible") {
+          ws.send(JSON.stringify({ type: "viewing", agent_id: viewingAgentRef.current }));
+        }
       };
 
       ws.onmessage = (e) => {
@@ -245,9 +298,21 @@ export default function useWebSocket() {
       }
     }, 30000);
 
+    // Toggle backend viewing state when tab visibility changes
+    const onVisibilityChange = () => {
+      const agentId = viewingAgentRef.current;
+      if (agentId == null) return;
+      const effective = document.visibilityState === "visible" ? agentId : null;
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "viewing", agent_id: effective }));
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     return () => {
       clearInterval(pingInterval);
       clearTimeout(reconnectTimer.current);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -255,6 +320,16 @@ export default function useWebSocket() {
   }, [connect]);
 
   const sendWsMessage = useCallback((data) => {
+    // Track navigation-level viewing state (for reconnect replay)
+    if (typeof data === "object" && data.type === "viewing") {
+      viewingAgentRef.current = data.agent_id;
+      // Gate by tab visibility: only tell backend we're viewing if tab is visible
+      const effective = data.agent_id && document.visibilityState === "visible" ? data.agent_id : null;
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "viewing", agent_id: effective }));
+      }
+      return;
+    }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(typeof data === "string" ? data : JSON.stringify(data));
     }

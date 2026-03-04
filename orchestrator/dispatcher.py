@@ -101,6 +101,8 @@ class TaskDispatcher:
             db.query(Task)
             .filter(Task.status == TaskStatus.EXECUTING)
             .filter(Task.container_id.is_not(None))  # pid_str stored in container_id column
+            # Skip v2 tasks — managed by AgentDispatcher
+            .filter(Task.project != "")
             .all()
         )
         for task in executing:
@@ -128,7 +130,20 @@ class TaskDispatcher:
 
             save_worker_log(task.id, logs)
             from websocket import emit_task_update
-            self._emit(emit_task_update(task.id, task.status.value, task.project))
+            self._emit(emit_task_update(task.id, task.status.value, task.project, title=task.title))
+
+            # Send push notification for task completion
+            try:
+                from push import send_push_notification, is_notification_enabled
+                if is_notification_enabled("tasks"):
+                    status_emoji = "\u2705" if task.status == TaskStatus.COMPLETE else "\u274c"
+                    send_push_notification(
+                        title=f"{status_emoji} Task {task.status.value}",
+                        body=(task.title or task.prompt or task.id)[:100],
+                        url=f"/tasks/{task.id}",
+                    )
+            except Exception:
+                logger.debug("Push notification failed for task %s", task.id)
 
             # Clean up process tracking
             self.worker_mgr._processes.pop(task.container_id, None)
@@ -141,6 +156,8 @@ class TaskDispatcher:
             db.query(Task)
             .filter(Task.status == TaskStatus.EXECUTING)
             .filter(Task.started_at.is_not(None))
+            # Skip v2 tasks — managed by AgentDispatcher
+            .filter(Task.project != "")
             .all()
         )
         now = _utcnow()
@@ -173,6 +190,8 @@ class TaskDispatcher:
             db.query(Task)
             .filter(Task.status.in_([TaskStatus.FAILED, TaskStatus.TIMEOUT]))
             .filter(Task.retries < MAX_RETRIES)
+            # Skip v2 tasks — managed by AgentDispatcher
+            .filter(Task.project != "")
             .all()
         )
         for task in retriable:
@@ -195,7 +214,10 @@ class TaskDispatcher:
     def _assign_tasks(self, db: Session):
         """Assign pending tasks to worker processes."""
         active_statuses = [TaskStatus.EXECUTING]
-        active_tasks = db.query(Task).filter(Task.status.in_(active_statuses)).all()
+        # Only count v1 tasks — v2 tasks have their own concurrency management
+        active_tasks = db.query(Task).filter(
+            Task.status.in_(active_statuses), Task.project != "",
+        ).all()
         total_active = len(active_tasks)
         project_counts: dict[str, int] = {}
         for t in active_tasks:
@@ -304,9 +326,12 @@ class TaskDispatcher:
                 known_pids.add(t.container_id)
 
             # Clean up exited processes not associated with active tasks
+            # Only clean v1 worker processes — v2 agent processes are managed by AgentDispatcher
             for pid_str, info in list(self.worker_mgr._processes.items()):
                 if pid_str in known_pids:
                     continue
+                if info.get("type") == "agent":
+                    continue  # Skip v2 agent processes
                 if info["process"].poll() is not None:
                     logger.info("Removing orphan process tracking: PID %s", pid_str)
                     self.worker_mgr._processes.pop(pid_str, None)
@@ -322,6 +347,8 @@ class TaskDispatcher:
             stale = (
                 db.query(Task)
                 .filter(Task.status == TaskStatus.EXECUTING)
+                # Skip v2 tasks — managed by AgentDispatcher
+                .filter(Task.project != "")
                 .all()
             )
             for task in stale:

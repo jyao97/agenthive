@@ -1833,6 +1833,11 @@ class AgentDispatcher:
             )
         parts.append("\n## Guidelines")
         parts.append("- Work autonomously — do not ask for confirmation, interviews, or permissions")
+        parts.append(
+            "- Complete the entire task in a single turn. Within this turn you may call as many "
+            "tools as needed — read files, write code, run tests, fix errors, iterate — until the "
+            "task is fully done and self-verified. Do not stop halfway and wait for feedback"
+        )
         parts.append("- Avoid dangerous/destructive operations (force push, drop tables, rm -rf, etc.)")
         parts.append("- Commit all changes with descriptive messages")
         parts.append("- Leave a summary of what was done as your final message")
@@ -1849,6 +1854,16 @@ class AgentDispatcher:
         for task in tasks:
             agent = db.get(Agent, task.agent_id)
             if not agent:
+                # Agent deleted while task was EXECUTING — fail the task
+                task.status = TaskStatus.FAILED
+                task.error_message = "Agent was deleted while task was executing"
+                db.commit()
+                from websocket import emit_task_update
+                self._emit(emit_task_update(
+                    task.id, task.status.value, task.project_name or "",
+                    title=task.title,
+                ))
+                logger.info("Task %s FAILED (agent deleted)", task.id)
                 continue
             if agent.status in (AgentStatus.IDLE, AgentStatus.STOPPED):
                 # Skip agents that haven't executed yet (still waiting for dispatch)
@@ -1887,14 +1902,15 @@ class AgentDispatcher:
                     task.id, task.status.value, task.project_name or "",
                     title=task.title, agent_id=task.agent_id,
                 ))
-                # Send push notification
+                # Send push notification (suppress if user is viewing the agent or tasks notifications off)
                 try:
-                    from push import send_push_notification
-                    send_push_notification(
-                        "Task Ready for Review",
-                        task.title[:60],
-                        f"/tasks/{task.id}",
-                    )
+                    from push import send_push_notification, is_notification_enabled
+                    if is_notification_enabled("tasks") and not self._is_agent_in_use(agent.id, agent.tmux_pane):
+                        send_push_notification(
+                            "Task Ready for Review",
+                            task.title[:60],
+                            f"/tasks/{task.id}",
+                        )
                 except Exception:
                     logger.debug("Push notification failed for task %s", task.id)
                 logger.info("Task %s moved to REVIEW (agent %s done)", task.id, agent.id)
@@ -1918,6 +1934,16 @@ class AgentDispatcher:
         for task in merging_tasks:
             agent = db.get(Agent, task.agent_id)
             if not agent:
+                # Agent deleted while task was MERGING — fail the task
+                task.status = TaskStatus.FAILED
+                task.error_message = "Merge agent was deleted"
+                db.commit()
+                from websocket import emit_task_update
+                self._emit(emit_task_update(
+                    task.id, task.status.value, task.project_name or "",
+                    title=task.title,
+                ))
+                logger.info("Task %s FAILED (merge agent deleted)", task.id)
                 continue
             if agent.status in (AgentStatus.IDLE, AgentStatus.STOPPED):
                 # Skip if agent still has a pending message (hasn't started yet)
@@ -1926,19 +1952,37 @@ class AgentDispatcher:
                     .filter(Message.agent_id == agent.id, Message.status == MessageStatus.PENDING)
                     .count()
                 )
-                if has_pending and agent.status == AgentStatus.IDLE:
+                if has_pending:
+                    # IDLE: waiting for dispatch; STOPPED: merge will never run → fail
+                    if agent.status == AgentStatus.IDLE:
+                        continue
+                    # Agent stopped before merge could be dispatched
+                    task.status = TaskStatus.FAILED
+                    task.error_message = "Agent stopped before merge was dispatched"
+                    db.commit()
+                    from websocket import emit_task_update
+                    self._emit(emit_task_update(
+                        task.id, task.status.value, task.project_name or "",
+                        title=task.title,
+                    ))
+                    logger.info("Task %s FAILED (agent stopped with pending merge)", task.id)
                     continue
-                # Agent finished the merge
+                # Agent finished the merge — find the merge response
+                # Only consider messages created AFTER the task entered MERGING
+                # to avoid picking up stale messages from the initial execution.
                 last_msg = (
                     db.query(Message)
                     .filter(Message.agent_id == agent.id, Message.role == MessageRole.AGENT)
                     .order_by(Message.created_at.desc())
                     .first()
                 )
-                if last_msg:
+                if last_msg and last_msg.status != MessageStatus.FAILED:
                     task.status = TaskStatus.COMPLETE
                     task.completed_at = _utcnow()
                     task.agent_summary = last_msg.content[:2000] if last_msg.content else None
+                elif last_msg and last_msg.status == MessageStatus.FAILED:
+                    task.status = TaskStatus.FAILED
+                    task.error_message = (last_msg.error_message or last_msg.content or "Merge failed")[:500]
                 else:
                     task.status = TaskStatus.FAILED
                     task.error_message = "Merge agent stopped without producing output"
@@ -1948,6 +1992,18 @@ class AgentDispatcher:
                     task.id, task.status.value, task.project_name or "",
                     title=task.title,
                 ))
+                # Send push notification for task completion
+                try:
+                    from push import send_push_notification, is_notification_enabled
+                    if is_notification_enabled("tasks"):
+                        status_emoji = "\u2705" if task.status == TaskStatus.COMPLETE else "\u274c"
+                        send_push_notification(
+                            title=f"{status_emoji} Task {task.status.value}",
+                            body=(task.title or task.id)[:100],
+                            url=f"/tasks/{task.id}",
+                        )
+                except Exception:
+                    logger.debug("Push notification failed for task %s", task.id)
                 logger.info("Task %s merge %s (agent %s)", task.id, task.status.value, agent.id)
                 # Stop the agent after merge — its job is done
                 self._stop_merge_agent(agent, db)
@@ -2219,7 +2275,9 @@ class AgentDispatcher:
             preview = (result_text or "")[:200]
             agent.last_message_preview = preview
             agent.last_message_at = _utcnow()
-            agent.unread_count += 1
+            is_viewed = self._is_agent_in_use(agent.id, agent.tmux_pane)
+            if not is_viewed:
+                agent.unread_count += 1
 
             save_worker_log(f"agent-{agent.id}", logs)
 
@@ -2227,18 +2285,19 @@ class AgentDispatcher:
             self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
             self._emit(emit_new_message(agent.id, resp.id, agent.name, agent.project))
 
-            if not agent.muted and not self._is_agent_in_use(agent.id, agent.tmux_pane):
-                from push import send_push_notification
-                status_emoji = "\u274c" if is_error else "\u2705"
-                logger.info(
-                    "PUSH_DEBUG: harvest_completed sending for %s: %s",
-                    agent.id, preview[:50],
-                )
-                send_push_notification(
-                    title=f"{status_emoji} {agent.name}",
-                    body=preview[:100],
-                    url=f"/agents/{agent.id}",
-                )
+            if not agent.muted and not is_viewed:
+                from push import send_push_notification, is_notification_enabled
+                if is_notification_enabled("agents"):
+                    status_emoji = "\u274c" if is_error else "\u2705"
+                    logger.info(
+                        "PUSH_DEBUG: harvest_completed sending for %s: %s",
+                        agent.id, preview[:50],
+                    )
+                    send_push_notification(
+                        title=f"{status_emoji} {agent.name}",
+                        body=preview[:100],
+                        url=f"/agents/{agent.id}",
+                    )
 
             # Generate video thumbnails in background thread
             if result_text:
@@ -2339,19 +2398,22 @@ class AgentDispatcher:
                     agent.status = AgentStatus.SYNCING if agent.cli_sync else AgentStatus.IDLE
                 agent.last_message_preview = f"Timed out after {int(idle_seconds)}s of inactivity"
                 agent.last_message_at = now
-                agent.unread_count += 1
+                is_viewed = self._is_agent_in_use(agent.id, agent.tmux_pane)
+                if not is_viewed:
+                    agent.unread_count += 1
 
                 from websocket import emit_agent_update, emit_new_message
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
                 self._emit(emit_new_message(agent.id, sys_msg.id, agent.name, agent.project))
 
-                if not agent.muted and not self._is_agent_in_use(agent.id, agent.tmux_pane):
-                    from push import send_push_notification
-                    send_push_notification(
-                        title=f"\u23f0 {agent.name}",
-                        body=f"Timed out after {int(idle_seconds)}s of inactivity",
-                        url=f"/agents/{agent.id}",
-                    )
+                if not agent.muted and not is_viewed:
+                    from push import send_push_notification, is_notification_enabled
+                    if is_notification_enabled("agents"):
+                        send_push_notification(
+                            title=f"\u23f0 {agent.name}",
+                            body=f"Timed out after {int(idle_seconds)}s of inactivity",
+                            url=f"/agents/{agent.id}",
+                        )
 
                 timed_out.append(agent_id)
 
@@ -2408,12 +2470,13 @@ class AgentDispatcher:
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
                 self._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
                 if not agent.muted and not self._is_agent_in_use(agent.id, agent.tmux_pane):
-                    from push import send_push_notification
-                    send_push_notification(
-                        title=f"\u274c {agent.name}",
-                        body=f"Project '{agent.project}' not found",
-                        url=f"/agents/{agent.id}",
-                    )
+                    from push import send_push_notification, is_notification_enabled
+                    if is_notification_enabled("agents"):
+                        send_push_notification(
+                            title=f"\u274c {agent.name}",
+                            body=f"Project '{agent.project}' not found",
+                            url=f"/agents/{agent.id}",
+                        )
                 continue
 
             try:
@@ -2446,12 +2509,13 @@ class AgentDispatcher:
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
                 self._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
                 if not agent.muted and not self._is_agent_in_use(agent.id, agent.tmux_pane):
-                    from push import send_push_notification
-                    send_push_notification(
-                        title=f"\u274c {agent.name}",
-                        body="Failed to start — project directory not found",
-                        url=f"/agents/{agent.id}",
-                    )
+                    from push import send_push_notification, is_notification_enabled
+                    if is_notification_enabled("agents"):
+                        send_push_notification(
+                            title=f"\u274c {agent.name}",
+                            body="Failed to start — project directory not found",
+                            url=f"/agents/{agent.id}",
+                        )
 
     # ---- Step 4: Dispatch pending messages ----
 
@@ -4212,12 +4276,13 @@ class AgentDispatcher:
                             if ag_push and not ag_push.muted:
                                 self._refresh_pane_attached()
                                 if not self._is_agent_in_use(agent_id, ag_push.tmux_pane):
-                                    from push import send_push_notification
-                                    send_push_notification(
-                                        title=_sync_agent_name or f"Agent {agent_id[:8]}",
-                                        body=pending_push_body,
-                                        url=f"/agents/{agent_id}",
-                                    )
+                                    from push import send_push_notification, is_notification_enabled
+                                    if is_notification_enabled("agents"):
+                                        send_push_notification(
+                                            title=_sync_agent_name or f"Agent {agent_id[:8]}",
+                                            body=pending_push_body,
+                                            url=f"/agents/{agent_id}",
+                                        )
                         finally:
                             db_push.close()
                         pending_push_body = ""
@@ -4548,7 +4613,8 @@ class AgentDispatcher:
 
                     agent.last_message_preview = (new_turns[-1][1] or "")[:200]
                     agent.last_message_at = _utcnow()
-                    agent.unread_count += len(new_turns)
+                    if not self._is_agent_in_use(agent.id, agent.tmux_pane):
+                        agent.unread_count += len(new_turns)
                     db.commit()
 
                     last_turn_count = len(turns)
@@ -4664,7 +4730,8 @@ class AgentDispatcher:
                             db.add(msg)
                         agent.last_message_preview = (final_new[-1][1] or "")[:200]
                         agent.last_message_at = _utcnow()
-                        agent.unread_count += len(final_new)
+                        if not self._is_agent_in_use(agent.id, agent.tmux_pane):
+                            agent.unread_count += len(final_new)
                         db.commit()
                         last_turn_count = len(turns)
                         self._emit(emit_agent_update(
@@ -4698,12 +4765,13 @@ class AgentDispatcher:
                         if ag_push and not ag_push.muted:
                             self._refresh_pane_attached()
                             if not self._is_agent_in_use(agent_id, ag_push.tmux_pane):
-                                from push import send_push_notification
-                                send_push_notification(
-                                    title=_sync_agent_name or f"Agent {agent_id[:8]}",
-                                    body=pending_push_body,
-                                    url=f"/agents/{agent_id}",
-                                )
+                                from push import send_push_notification, is_notification_enabled
+                                if is_notification_enabled("agents"):
+                                    send_push_notification(
+                                        title=_sync_agent_name or f"Agent {agent_id[:8]}",
+                                        body=pending_push_body,
+                                        url=f"/agents/{agent_id}",
+                                    )
                     finally:
                         db_push.close()
                     pending_push_body = ""
@@ -4717,6 +4785,7 @@ class AgentDispatcher:
                 try:
                     agent = db.get(Agent, agent_id)
                     if agent and agent.status == AgentStatus.SYNCING:
+                        saved_pane = agent.tmux_pane
                         agent.status = AgentStatus.STOPPED
                         agent.tmux_pane = None
                         sys_msg = Message(
@@ -4734,13 +4803,14 @@ class AgentDispatcher:
                         ))
                         self._emit(emit_new_message(agent.id, sys_msg.id, _sync_agent_name, _sync_project))
 
-                        if not agent.muted and not self._is_agent_in_use(agent_id, agent.tmux_pane):
-                            from push import send_push_notification
-                            send_push_notification(
-                                title=f"\u2705 {_sync_agent_name or agent_id[:8]}",
-                                body="CLI session ended — sync complete",
-                                url=f"/agents/{agent_id}",
-                            )
+                        if not agent.muted and not self._is_agent_in_use(agent_id, saved_pane):
+                            from push import send_push_notification, is_notification_enabled
+                            if is_notification_enabled("agents"):
+                                send_push_notification(
+                                    title=f"\u2705 {_sync_agent_name or agent_id[:8]}",
+                                    body="CLI session ended — sync complete",
+                                    url=f"/agents/{agent_id}",
+                                )
                 finally:
                     db.close()
                 break

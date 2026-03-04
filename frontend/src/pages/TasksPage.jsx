@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { fetchTasksV2, fetchTaskCounts } from "../lib/api";
+import { fetchTasksV2, fetchTaskCounts, updateNotificationSettings } from "../lib/api";
 import { TASK_PERSPECTIVE_TABS } from "../lib/constants";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
 import usePageVisible from "../hooks/usePageVisible";
-import useWebSocket from "../hooks/useWebSocket";
+import useWebSocket, { isTaskNotificationsEnabled, setTaskNotificationsEnabled } from "../hooks/useWebSocket";
 import InboxView from "./tasks/InboxView";
 import ExecutingView from "./tasks/ExecutingView";
 import ReviewView from "./tasks/ReviewView";
@@ -95,6 +95,27 @@ export default function TasksPage({ theme, onToggleTheme }) {
     loadCounts();
   }, [loadTasks, loadCounts]);
 
+  // Notification toggle
+  const [taskNotifsOn, setTaskNotifsOn] = useState(() => isTaskNotificationsEnabled());
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+
+  const showToast = useCallback((message, type = "success") => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ message, type });
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+
+  const handleToggleTaskNotifs = useCallback(() => {
+    const next = !taskNotifsOn;
+    setTaskNotifsOn(next);
+    setTaskNotificationsEnabled(next);
+    updateNotificationSettings({ tasks_enabled: next }).catch(() => {});
+    showToast(next ? "Task notifications enabled" : "Task notifications disabled");
+  }, [taskNotifsOn, showToast]);
+
   const ViewComponent = {
     INBOX: InboxView,
     EXECUTING: ExecutingView,
@@ -104,7 +125,39 @@ export default function TasksPage({ theme, onToggleTheme }) {
 
   return (
     <div className="h-full flex flex-col">
-      <PageHeader title="Tasks" theme={theme} onToggleTheme={onToggleTheme} showTaskRing>
+      {/* Toast */}
+      {toast && (
+        <div className={`fixed left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-lg shadow-lg text-sm font-medium pointer-events-none safe-area-toast ${toast.type === "error" ? "bg-red-600 text-white" : "bg-cyan-600 text-white"}`}>
+          {toast.message}
+        </div>
+      )}
+
+      <PageHeader
+        title="Tasks"
+        theme={theme}
+        onToggleTheme={onToggleTheme}
+        showTaskRing
+        actions={
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={handleToggleTaskNotifs}
+              title={taskNotifsOn ? "Mute all task notifications" : "Unmute all task notifications"}
+              className={`w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${taskNotifsOn ? "text-cyan-400" : "text-dim"}`}
+            >
+              {taskNotifsOn ? (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.143 17.082a24.248 24.248 0 003.718.17M3.1 9.05A6 6 0 0112 3c1.075 0 2.09.283 2.965.78M17.982 13.5A8.97 8.97 0 0018 9.75V9M3.53 3.53l16.97 16.97M6.268 6.268A5.973 5.973 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m.857 0a3 3 0 005.714 0" />
+                </svg>
+              )}
+            </button>
+          </div>
+        }
+      >
         <FilterTabs
           tabs={TASK_PERSPECTIVE_TABS}
           active={perspective}

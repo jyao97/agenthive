@@ -38,6 +38,7 @@ from models import (
     MessageStatus,
     Project,
     StarredSession,
+    SystemConfig,
     Task,
     TaskStatus,
 )
@@ -831,6 +832,34 @@ async def token_usage():
 
 
 # ---- Projects ----
+
+@app.get("/api/settings/notifications")
+async def get_notification_settings(db: Session = Depends(get_db)):
+    """Get global notification toggle settings."""
+    agents_row = db.get(SystemConfig, "notifications_agents_enabled")
+    tasks_row = db.get(SystemConfig, "notifications_tasks_enabled")
+    return {
+        "agents_enabled": agents_row.value != "0" if agents_row else True,
+        "tasks_enabled": tasks_row.value != "0" if tasks_row else True,
+    }
+
+
+@app.put("/api/settings/notifications")
+async def update_notification_settings(request: Request, db: Session = Depends(get_db)):
+    """Update global notification toggle settings."""
+    body = await request.json()
+    for key in ("agents_enabled", "tasks_enabled"):
+        if key in body:
+            db_key = f"notifications_{key}"
+            row = db.get(SystemConfig, db_key)
+            val = "1" if body[key] else "0"
+            if row:
+                row.value = val
+            else:
+                db.add(SystemConfig(key=db_key, value=val))
+    db.commit()
+    return await get_notification_settings(db)
+
 
 @app.get("/api/projects", response_model=list[ProjectWithStats])
 async def list_projects(db: Session = Depends(get_db)):
@@ -2390,7 +2419,7 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
     except InvalidTransitionError as e:
         raise HTTPException(409, str(e))
     # Redo: auto-increment attempt and prepare context
-    if task.status == TaskStatus.REJECTED:
+    if task.status in (TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.TIMEOUT):
         task.attempt_number += 1
         if task.agent_summary:
             task.retry_context = task.agent_summary
@@ -2410,7 +2439,12 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/v2/tasks/{task_id}/approve", response_model=TaskOut)
 async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(get_db)):
-    """Approve a REVIEW task → MERGING."""
+    """Approve a REVIEW task → MERGING.
+
+    Creates the merge PENDING message synchronously (same transaction)
+    so the dispatcher tick cannot harvest the MERGING task before the
+    message exists — eliminates a race that caused premature COMPLETE.
+    """
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
@@ -2418,6 +2452,75 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
         validate_transition(task.status, TaskStatus.MERGING)
     except InvalidTransitionError as e:
         raise HTTPException(409, str(e))
+
+    # Look up project + agent for merge prompt
+    proj = db.query(Project).filter(Project.name == task.project_name).first()
+    agent = db.get(Agent, task.agent_id) if task.agent_id else None
+    if not proj or not agent:
+        raise HTTPException(400, "Missing project or agent for merge")
+
+    # No branch to merge (use_worktree=False) — skip merge, go straight to COMPLETE
+    if not task.branch_name:
+        task.status = TaskStatus.COMPLETE
+        task.completed_at = _utcnow()
+        db.commit()
+        db.refresh(task)
+        asyncio.ensure_future(emit_task_update(
+            task.id, task.status.value, task.project_name or "",
+            title=task.title,
+        ))
+        return TaskOut.model_validate(task)
+
+    # Sanitize title for use in git commit message (strip quotes/backslashes)
+    safe_title = task.title.replace('"', "'").replace("\\", "")[:80] if task.title else ""
+
+    # Build merge prompt
+    wt_path = (
+        os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
+        if task.worktree_name else None
+    )
+    merge_prompt = (
+        f"# Merge Task Branch\n\n"
+        f"The task has been approved. Merge the branch `{task.branch_name}` into the main branch.\n\n"
+        f"## Steps\n"
+        f"1. `cd {proj.path}`\n"
+        f"2. Determine the main branch: `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@refs/remotes/origin/@@'` (fallback to `main` or `master`)\n"
+        f"3. `git checkout <main-branch>`\n"
+        f"4. `git merge {task.branch_name} --no-ff -m \"Merge task/{task.id}: {safe_title}\"`\n"
+        f"5. If there are merge conflicts, resolve them intelligently and commit\n"
+    )
+    step = 6
+    if wt_path:
+        merge_prompt += f"{step}. `git worktree remove {wt_path} --force`\n"
+        step += 1
+        merge_prompt += f"{step}. `git branch -d {task.branch_name}`\n"
+    else:
+        merge_prompt += f"{step}. `git branch -d {task.branch_name}`\n"
+    merge_prompt += (
+        "\n## Guidelines\n"
+        "- Work autonomously — do not ask for confirmation\n"
+        "- If the merge has conflicts, resolve them sensibly and commit\n"
+        "- Leave a brief summary of the merge result as your final message\n"
+    )
+
+    # Create PENDING message on the agent — dispatch loop picks it up
+    msg = Message(
+        agent_id=agent.id,
+        role=MessageRole.USER,
+        content=merge_prompt,
+        status=MessageStatus.PENDING,
+        source="task",
+    )
+    db.add(msg)
+
+    # Clear worktree + session so the merge exec runs from the main project
+    # directory without --worktree or --resume (avoids worktree conflicts)
+    agent.worktree = None
+    agent.session_id = None
+    # Ensure agent is IDLE so the dispatch loop picks it up
+    if agent.status in (AgentStatus.STOPPED, AgentStatus.SYNCING, AgentStatus.ERROR):
+        agent.status = AgentStatus.IDLE
+
     task.status = TaskStatus.MERGING
     db.commit()
     db.refresh(task)
@@ -2425,8 +2528,7 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
         task.id, task.status.value, task.project_name or "",
         title=task.title, agent_id=task.agent_id,
     ))
-    # Trigger merge in background (Step 9)
-    asyncio.ensure_future(_merge_task_branch(task.id, request))
+    logger.info("Task %s: merge prompt queued on agent %s", task.id, agent.id)
     return TaskOut.model_validate(task)
 
 
@@ -2449,7 +2551,6 @@ async def reject_task_v2(
         agent = db.get(Agent, task.agent_id)
         if agent and agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
             agent.status = AgentStatus.STOPPED
-            db.commit()
             if agent.tmux_pane:
                 import subprocess
                 sess_name = f"ah-{agent.id[:8]}"
@@ -2457,6 +2558,7 @@ async def reject_task_v2(
                                capture_output=True, timeout=5)
     task.status = TaskStatus.REJECTED
     task.rejection_reason = body.reason
+    task.completed_at = _utcnow()
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
@@ -2476,12 +2578,11 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
         validate_transition(task.status, TaskStatus.CANCELLED)
     except InvalidTransitionError as e:
         raise HTTPException(409, str(e))
-    # Stop running agent if EXECUTING
-    if task.status == TaskStatus.EXECUTING and task.agent_id:
+    # Stop running agent if EXECUTING or MERGING
+    if task.status in (TaskStatus.EXECUTING, TaskStatus.MERGING) and task.agent_id:
         agent = db.get(Agent, task.agent_id)
         if agent and agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
             agent.status = AgentStatus.STOPPED
-            db.commit()
             # Kill tmux session
             if agent.tmux_pane:
                 import subprocess
@@ -2508,66 +2609,6 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
         title=task.title,
     ))
     return TaskOut.model_validate(task)
-
-
-async def _merge_task_branch(task_id: str, request: Request):
-    """Send a merge prompt to the original agent instead of merging via subprocess."""
-    db = SessionLocal()
-    try:
-        task = db.get(Task, task_id)
-        if not task or task.status != TaskStatus.MERGING:
-            return
-        proj = db.query(Project).filter(Project.name == task.project_name).first()
-        if not proj or not task.branch_name:
-            task.status = TaskStatus.FAILED
-            task.error_message = "Missing project or branch"
-            db.commit()
-            return
-        agent = db.get(Agent, task.agent_id) if task.agent_id else None
-        if not agent:
-            task.status = TaskStatus.FAILED
-            task.error_message = "Original agent not found"
-            db.commit()
-            return
-
-        # Build merge prompt for the agent
-        wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name) if task.worktree_name else None
-        merge_prompt = (
-            f"# Merge Task Branch\n\n"
-            f"The task has been approved. Merge the branch `{task.branch_name}` into the main branch.\n\n"
-            f"## Steps\n"
-            f"1. `cd {proj.path}`\n"
-            f"2. `git merge {task.branch_name} --no-ff -m \"Merge task/{task.id}: {task.title}\"`\n"
-            f"3. If there are merge conflicts, resolve them intelligently and commit\n"
-        )
-        if wt_path:
-            merge_prompt += f"4. `git worktree remove {wt_path} --force`\n"
-            merge_prompt += f"5. `git branch -d {task.branch_name}`\n"
-        else:
-            merge_prompt += f"4. `git branch -d {task.branch_name}`\n"
-        merge_prompt += (
-            "\n## Guidelines\n"
-            "- Work autonomously — do not ask for confirmation\n"
-            "- If the merge has conflicts, resolve them sensibly and commit\n"
-            "- Leave a brief summary of the merge result as your final message\n"
-        )
-
-        # Create PENDING message on the original agent — dispatch loop will pick it up
-        msg = Message(
-            agent_id=agent.id,
-            role=MessageRole.USER,
-            content=merge_prompt,
-            status=MessageStatus.PENDING,
-            source="task",
-        )
-        db.add(msg)
-        # Ensure agent is IDLE so the dispatch loop picks it up
-        if agent.status == AgentStatus.STOPPED:
-            agent.status = AgentStatus.IDLE
-        db.commit()
-        logger.info("Task %s: merge prompt queued on agent %s", task.id, agent.id)
-    finally:
-        db.close()
 
 
 # ---- Agents ----
@@ -2967,11 +3008,13 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     # Link task → agent if task_id provided
     if task_id:
         _task = db.get(Task, task_id)
-        if _task:
+        if _task and can_transition(_task.status, TaskStatus.EXECUTING):
             _task.agent_id = agent.id
             _task.status = TaskStatus.EXECUTING
             _task.started_at = datetime.now(timezone.utc)
             _task.worktree_name = worktree if worktree else None
+            if worktree:
+                _task.branch_name = _task.branch_name or f"task/{_task.id}/{worktree}"
 
     # Save the initial prompt as a user message so it shows in the chat
     if prompt:
