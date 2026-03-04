@@ -90,3 +90,10 @@ UPLOADS_DIR = os.path.expanduser(os.getenv("UPLOADS_DIR", "~/.agenthive/uploads"
 # Telegram Bot
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# CORS
+CORS_ORIGINS = [
+    o.strip() for o in
+    os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080").split(",")
+    if o.strip()
+]
