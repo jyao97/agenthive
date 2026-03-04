@@ -98,7 +98,7 @@ describe("Mixed attachments", () => {
     expect(screen.getAllByRole("img")).toHaveLength(2);
     expect(screen.getByText("img.png")).toBeInTheDocument();
     expect(screen.getByText("vid.mp4")).toBeInTheDocument();
-    // Doc file renders as a collapsible button
-    expect(screen.getByRole("button")).toHaveTextContent("readme.txt");
+    // Doc file renders as a collapsible card with filename text
+    expect(screen.getByText("readme.txt")).toBeInTheDocument();
   });
 });
