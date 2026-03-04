@@ -1654,8 +1654,7 @@ class AgentDispatcher:
                     self._tick(db)
 
                     # Daily PROGRESS.md summary auto-trigger (once per day)
-                    from datetime import date
-                    today_str = date.today().isoformat()
+                    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                     if _last_summary_date != today_str:
                         _last_summary_date = today_str
                         self._trigger_daily_progress_summaries(db)
@@ -1700,9 +1699,8 @@ class AgentDispatcher:
             if existing:
                 continue
 
-            # Gather today's completed tasks
-            from datetime import date
-            today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
+            # Gather today's completed tasks (use UTC date to match UTC completed_at)
+            today_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time()).replace(tzinfo=timezone.utc)
             completed_tasks = (
                 db.query(Task)
                 .filter(
@@ -1863,6 +1861,11 @@ Here are today's completed tasks:
                 if task.project_name and can_transition(task.status, TaskStatus.PENDING):
                     task.status = TaskStatus.PENDING
                     task.scheduled_at = None
+                    from websocket import emit_task_update
+                    self._emit(emit_task_update(
+                        task.id, task.status.value, task.project_name or "",
+                        title=task.title,
+                    ))
                     try:
                         from push import send_push_notification, is_notification_enabled
                         if is_notification_enabled("tasks"):
@@ -2166,7 +2169,7 @@ Here are today's completed tasks:
                 Agent.is_subagent == True,
                 Agent.name.like("Verify:%"),
                 Agent.task_id.isnot(None),
-                Agent.status.in_([AgentStatus.IDLE, AgentStatus.STOPPED, AgentStatus.ERROR]),
+                Agent.status.in_([AgentStatus.STOPPED, AgentStatus.ERROR]),
             )
             .all()
         )
@@ -2211,11 +2214,11 @@ Here are today's completed tasks:
                         verdict = stripped.split(":", 1)[1].strip().upper()
                         break
 
-                if "PASS" in verdict:
+                if verdict.startswith("PASS"):
                     artifacts["verify_status"] = "pass"
-                elif "FAIL" in verdict:
+                elif verdict.startswith("FAIL"):
                     artifacts["verify_status"] = "fail"
-                elif "WARN" in verdict:
+                elif verdict.startswith("WARN"):
                     artifacts["verify_status"] = "warn"
                 else:
                     artifacts["verify_status"] = "done"

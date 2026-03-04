@@ -2743,6 +2743,7 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
         task.agent_summary = None
         task.started_at = None
         task.completed_at = None
+        task.review_artifacts = None  # Clear stale verify data from previous attempt
     task.status = TaskStatus.PENDING
     db.commit()
     db.refresh(task)
@@ -2784,6 +2785,21 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
                         capture_output=True, timeout=5)
                 agent.tmux_pane = None
             asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
+        # Also stop any running verify sub-agents for this task
+        verify_agents = (
+            db.query(Agent)
+            .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
+            .filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
+            .all()
+        )
+        for va in verify_agents:
+            import subprocess as _sp
+            va.status = AgentStatus.STOPPED
+            if va.tmux_pane:
+                _sp.run(["tmux", "kill-session", "-t", f"ah-{va.id[:8]}"],
+                        capture_output=True, timeout=5)
+                va.tmux_pane = None
+            asyncio.ensure_future(emit_agent_update(va.id, "STOPPED", va.project))
 
     # No branch to merge (use_worktree=False) — skip merge, go straight to COMPLETE
     if not task.branch_name:
@@ -2859,9 +2875,23 @@ async def reject_task_v2(
                 subprocess.run(["tmux", "kill-session", "-t", sess_name],
                                capture_output=True, timeout=5)
                 agent.tmux_pane = None
+    # Stop any running verify sub-agents
+    import subprocess as _sp
+    verify_agents = (
+        db.query(Agent)
+        .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
+        .filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
+        .all()
+    )
+    for va in verify_agents:
+        va.status = AgentStatus.STOPPED
+        if va.tmux_pane:
+            _sp.run(["tmux", "kill-session", "-t", f"ah-{va.id[:8]}"], capture_output=True, timeout=5)
+            va.tmux_pane = None
     task.status = TaskStatus.REJECTED
     task.rejection_reason = body.reason
     task.try_base_commit = None  # Clear try state on reject
+    task.review_artifacts = None  # Clear stale verify data
     task.completed_at = _utcnow()
     db.commit()
     db.refresh(task)
@@ -3158,6 +3188,19 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
                                capture_output=True, timeout=5)
                 agent.tmux_pane = None
             asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
+    # Stop any running verify sub-agents
+    import subprocess as _sp
+    verify_agents = (
+        db.query(Agent)
+        .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
+        .filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
+        .all()
+    )
+    for va in verify_agents:
+        va.status = AgentStatus.STOPPED
+        if va.tmux_pane:
+            _sp.run(["tmux", "kill-session", "-t", f"ah-{va.id[:8]}"], capture_output=True, timeout=5)
+            va.tmux_pane = None
     task.status = TaskStatus.CANCELLED
     task.completed_at = _utcnow()
     # Clean up git artifacts

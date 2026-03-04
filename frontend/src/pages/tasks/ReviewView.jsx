@@ -54,13 +54,18 @@ export default function ReviewView({ tasks, loading, onRefresh }) {
     }
   };
 
+  const [verifyingIds, setVerifyingIds] = useState(new Set());
+
   const handleVerify = async (task) => {
     setError(null);
+    setVerifyingIds((s) => new Set(s).add(task.id));
     try {
       await verifyTask(task.id);
       onRefresh?.();
     } catch (err) {
       setError(err.message || "Verify failed");
+    } finally {
+      setVerifyingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
     }
   };
 
@@ -90,6 +95,7 @@ export default function ReviewView({ tasks, loading, onRefresh }) {
           task={task}
           merging={mergingIds.has(task.id)}
           rejecting={rejectingIds.has(task.id)}
+          verifying={verifyingIds.has(task.id)}
           onApprove={handleApprove}
           onReject={handleReject}
           onRetryMerge={handleApprove}

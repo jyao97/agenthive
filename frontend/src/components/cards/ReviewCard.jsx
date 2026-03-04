@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-export default memo(function ReviewCard({ task, merging, onApprove, onReject, onRetryMerge, onCancel, onVerify }) {
+export default memo(function ReviewCard({ task, merging, verifying, onApprove, onReject, onRetryMerge, onCancel, onVerify }) {
   const navigate = useNavigate();
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
@@ -60,7 +60,7 @@ export default memo(function ReviewCard({ task, merging, onApprove, onReject, on
           const vs = arts.verify_status;
           return (
             <>
-              {vs === "running" ? (
+              {vs === "running" || verifying ? (
                 <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 flex items-center gap-1">
                   <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
                   Verifying
@@ -71,6 +71,8 @@ export default memo(function ReviewCard({ task, merging, onApprove, onReject, on
                 <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Failed</span>
               ) : vs === "warn" ? (
                 <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400">Verify Warn</span>
+              ) : vs === "error" ? (
+                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Error</span>
               ) : (
                 <button
                   type="button"
