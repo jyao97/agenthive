@@ -26,6 +26,7 @@ from models import (
 from session_cache import (
     session_source_dir,
     cache_session,
+    cleanup_source_session,
     evict_session,
     repair_session_jsonl,
     restore_session,
@@ -1560,6 +1561,32 @@ class AgentDispatcher:
             self._tmux_map_cache = _build_tmux_claude_map()
         return self._tmux_map_cache
 
+    def _release_session(
+        self,
+        session_id: str | None,
+        exclude_agent_id: str,
+        project_path: str | None,
+        worktree: str | None,
+        db,
+    ) -> None:
+        """Release a session — clean up source + cache if no other agent uses it."""
+        if not session_id or not project_path:
+            return
+        # Check if another agent still references this session
+        other = (
+            db.query(Agent.id)
+            .filter(Agent.session_id == session_id, Agent.id != exclude_agent_id)
+            .first()
+        )
+        if other:
+            logger.debug(
+                "Session %s still referenced by agent %s — skipping cleanup",
+                session_id, other[0],
+            )
+            return
+        evict_session(session_id, project_path)
+        cleanup_source_session(session_id, project_path, worktree)
+
     def _refresh_pane_attached(self):
         """Check which tmux panes have a human client attached."""
         import subprocess as sp
@@ -2102,12 +2129,21 @@ Here are today's completed tasks:
                     logger.info("Task %s FAILED (agent %s died without output)", task.id, agent.id)
                     continue
                 task.status = TaskStatus.REVIEW
+                # Stop agent — it has finished its task
+                if agent.status != AgentStatus.STOPPED:
+                    agent.status = AgentStatus.STOPPED
+                    if agent.tmux_pane:
+                        import subprocess as _sp
+                        _sp.run(["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
+                                capture_output=True, timeout=5)
+                        agent.tmux_pane = None
                 db.commit()
-                from websocket import emit_task_update
+                from websocket import emit_task_update, emit_agent_update
                 self._emit(emit_task_update(
                     task.id, task.status.value, task.project_name or "",
                     title=task.title, agent_id=task.agent_id,
                 ))
+                self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
                 # Send push notification (suppress if user is viewing the agent or tasks notifications off)
                 try:
                     from push import send_push_notification, is_notification_enabled
@@ -2119,7 +2155,7 @@ Here are today's completed tasks:
                         )
                 except Exception:
                     logger.debug("Push notification failed for task %s", task.id)
-                logger.info("Task %s moved to REVIEW (agent %s done)", task.id, agent.id)
+                logger.info("Task %s moved to REVIEW (agent %s stopped)", task.id, agent.id)
             elif agent.status == AgentStatus.ERROR:
                 try:
                     from task_state_machine import validate_transition
@@ -2160,6 +2196,18 @@ Here are today's completed tasks:
                         _sp.run(["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
                                 capture_output=True, timeout=5)
                         agent.tmux_pane = None
+            # Stop verify sub-agents
+            import subprocess as _sp
+            for va in (
+                db.query(Agent)
+                .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
+                .filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
+                .all()
+            ):
+                va.status = AgentStatus.STOPPED
+                if va.tmux_pane:
+                    _sp.run(["tmux", "kill-session", "-t", f"ah-{va.id[:8]}"], capture_output=True, timeout=5)
+                    va.tmux_pane = None
             task.status = TaskStatus.FAILED
             task.completed_at = _utcnow()
             task.error_message = "Stale merge task — please re-approve"
@@ -2370,7 +2418,10 @@ Here are today's completed tasks:
                     try:
                         cache_session(sid, project.path)
                         if previous_session_id and previous_session_id != sid:
-                            evict_session(previous_session_id, project.path)
+                            self._release_session(
+                                previous_session_id, agent.id,
+                                project.path, agent.worktree, db,
+                            )
                     except OSError:
                         logger.warning("Failed to cache session %s", sid, exc_info=True)
 
