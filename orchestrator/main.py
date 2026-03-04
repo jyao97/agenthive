@@ -82,6 +82,33 @@ logger = logging.getLogger("orchestrator")
 # Serialize tmux agent launches so only one proceeds at a time.
 _tmux_launch_sem = asyncio.Semaphore(1)
 
+# ---- Module-level constants (extracted from inline magic numbers) ----
+
+# tmux command timeout (seconds) — used for send-keys, kill-pane, etc.
+_TMUX_CMD_TIMEOUT = 5
+
+# Maximum seconds to wait for Claude TUI to start / initialize
+_TUI_STARTUP_TIMEOUT = 30
+
+# Seconds to settle after TUI REPL mount before sending prompt
+_TUI_SETTLE_DELAY = 3
+
+# Max file size for project browser (bytes)
+_BROWSE_MAX_FILE_SIZE = 512 * 1024  # 512 KB
+
+# Max concurrent agent launches allowed in STARTING state
+_MAX_STARTING_AGENTS = 10
+
+# Tmux prompt-send: max attempts and JSONL poll duration per attempt
+_MAX_SEND_ATTEMPTS = 5
+_JSONL_POLL_PER_ATTEMPT = 15  # seconds to wait for JSONL per attempt
+
+# Pre-flight import check timeout (seconds)
+_IMPORT_CHECK_TIMEOUT = 15
+
+# Anthropic API request timeout (seconds)
+_API_REQUEST_TIMEOUT = 10
+
 
 def _utcnow():
     return datetime.now(timezone.utc)
@@ -702,7 +729,7 @@ async def system_restart():
         check = _sp.run(
             [sys.executable, "-c", "import main"],
             cwd=orchestrator_dir,
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=_IMPORT_CHECK_TIMEOUT,
             env={**os.environ, "AGENTHIVE_IMPORT_CHECK": "1"},
         )
         if check.returncode != 0:
@@ -805,7 +832,7 @@ async def token_usage():
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=_API_REQUEST_TIMEOUT) as resp:
             data = _json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:200]
@@ -889,7 +916,7 @@ async def list_projects(db: Session = Depends(get_db)):
                 func.count(Agent.id).label("total"),
                 func.count(
                     case((Agent.status.in_([
-                        AgentStatus.IDLE, AgentStatus.EXECUTING,
+                        AgentStatus.EXECUTING,
                         AgentStatus.STARTING, AgentStatus.SYNCING,
                     ]), 1))
                 ).label("active"),
@@ -1222,7 +1249,7 @@ def _check_no_active_agents(name: str, db: Session):
         .filter(
             Agent.project == name,
             Agent.status.in_([
-                AgentStatus.STARTING, AgentStatus.IDLE,
+                AgentStatus.STARTING,
                 AgentStatus.EXECUTING,
             ]),
         )
@@ -1388,9 +1415,9 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
         if agent.cli_sync and agent.tmux_pane:
             import subprocess as _sp
             try:
-                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=3)
-                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=3)
-                _sp.run(["tmux", "kill-pane", "-t", agent.tmux_pane], capture_output=True, timeout=3)
+                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+                _sp.run(["tmux", "kill-pane", "-t", agent.tmux_pane], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
             except Exception:
                 logger.warning("Failed to kill tmux pane %s for agent %s during archive", agent.tmux_pane, agent.id, exc_info=True)
         # Cancel sync task
@@ -2060,8 +2087,6 @@ _BROWSE_IGNORED = {
     ".mypy_cache", ".pytest_cache", ".ruff_cache", "egg-info",
 }
 
-_BROWSE_MAX_FILE_SIZE = 512 * 1024  # 512 KB
-
 
 @app.get("/api/projects/{name}/tree")
 async def get_project_tree(name: str, depth: int = 3, db: Session = Depends(get_db)):
@@ -2212,7 +2237,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
 # ---- Tasks v2 (first-class Task entity) ----
 
 from task_state_machine import can_transition, validate_transition, InvalidTransitionError
-from websocket import emit_task_update
+from websocket import emit_task_update, emit_agent_update
 
 
 @app.post("/api/v2/tasks", response_model=TaskOut, status_code=201)
@@ -2461,6 +2486,15 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
 
     # No branch to merge (use_worktree=False) — skip merge, go straight to COMPLETE
     if not task.branch_name:
+        # Stop the linked agent — its job is done
+        if agent and agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
+            agent.status = AgentStatus.STOPPED
+            if agent.tmux_pane:
+                import subprocess
+                sess_name = f"ah-{agent.id[:8]}"
+                subprocess.run(["tmux", "kill-session", "-t", sess_name],
+                               capture_output=True, timeout=5)
+                agent.tmux_pane = None
         task.status = TaskStatus.COMPLETE
         task.completed_at = _utcnow()
         db.commit()
@@ -2469,6 +2503,8 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
             task.id, task.status.value, task.project_name or "",
             title=task.title,
         ))
+        if agent:
+            asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
         return TaskOut.model_validate(task)
 
     # Sanitize title for use in git commit message (strip quotes/backslashes)
@@ -2674,8 +2710,8 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
         validate_transition(task.status, TaskStatus.CANCELLED)
     except InvalidTransitionError as e:
         raise HTTPException(409, str(e))
-    # Stop running agent if EXECUTING or MERGING
-    if task.status in (TaskStatus.EXECUTING, TaskStatus.MERGING) and task.agent_id:
+    # Stop linked agent regardless of task status (EXECUTING, MERGING, REVIEW, etc.)
+    if task.agent_id:
         agent = db.get(Agent, task.agent_id)
         if agent and agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
             agent.status = AgentStatus.STOPPED
@@ -2685,6 +2721,8 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
                 sess_name = f"ah-{agent.id[:8]}"
                 subprocess.run(["tmux", "kill-session", "-t", sess_name],
                                capture_output=True, timeout=5)
+                agent.tmux_pane = None
+            asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
     task.status = TaskStatus.CANCELLED
     task.completed_at = _utcnow()
     # Clean up git artifacts
@@ -2986,7 +3024,7 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     starting_count = db.query(func.count(Agent.id)).filter(
         Agent.status == AgentStatus.STARTING,
     ).scalar() or 0
-    if starting_count >= 10:
+    if starting_count >= _MAX_STARTING_AGENTS:
         raise HTTPException(
             status_code=429,
             detail="Too many agents launching — please wait for current launches to finish",
@@ -3187,7 +3225,7 @@ async def _launch_tmux_background(
         #   a) Detect the claude process in the pane
         #   b) Wait for the TUI input prompt (❯) to appear in the pane content
         process_detected = False
-        for _ in range(30):
+        for _ in range(_TUI_STARTUP_TIMEOUT):
             await asyncio.sleep(1)
             pane_map = _build_tmux_claude_map()
             if pane_id in pane_map and not pane_map[pane_id]["is_orchestrator"]:
@@ -3195,8 +3233,8 @@ async def _launch_tmux_background(
                 break
         if not process_detected:
             _mark_error(
-                "Claude TUI did not start in pane %s within 30s "
-                "(project_path: %s)" % (pane_id, project_path)
+                "Claude TUI did not start in pane %s within %ds "
+                "(project_path: %s)" % (pane_id, _TUI_STARTUP_TIMEOUT, project_path)
             )
             return
 
@@ -3213,7 +3251,7 @@ async def _launch_tmux_background(
         # was regenerated.  If detected, we press Enter to accept it.
         tui_ready = False
         trust_dialog_handled = False
-        for _ in range(30):
+        for _ in range(_TUI_STARTUP_TIMEOUT):
             await asyncio.sleep(1)
             try:
                 capture = subprocess.run(
@@ -3247,15 +3285,15 @@ async def _launch_tmux_background(
                 continue
         if not tui_ready:
             _mark_error(
-                "Claude TUI did not fully initialize in pane %s within 30s "
-                "(project_path: %s)" % (pane_id, project_path)
+                "Claude TUI did not fully initialize in pane %s within %ds "
+                "(project_path: %s)" % (pane_id, _TUI_STARTUP_TIMEOUT, project_path)
             )
             return
 
         # Extra settle time after REPL mount.  On first-launch projects
         # showSetupScreens() finishes ~200ms before REPL mount; add a buffer
         # to ensure the input handler is fully wired up.
-        await asyncio.sleep(3)
+        await asyncio.sleep(_TUI_SETTLE_DELAY)
 
         # Step 2: Send the prompt, then wait for session JSONL as the
         # definitive acceptance signal.  If the JSONL doesn't appear within
@@ -3332,8 +3370,6 @@ async def _launch_tmux_background(
         if pane_id in pane_map:
             pane_pid = pane_map[pane_id].get("pid")
 
-        _MAX_SEND_ATTEMPTS = 5
-        _JSONL_POLL_PER_ATTEMPT = 15  # seconds to wait for JSONL per attempt
         session_id = None
 
         for attempt in range(_MAX_SEND_ATTEMPTS):
@@ -3633,9 +3669,9 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
         pane = agent.tmux_pane
         try:
             # Send Ctrl-C to interrupt Claude, then close the pane
-            _sp.run(["tmux", "send-keys", "-t", pane, "C-c"], capture_output=True, timeout=3)
-            _sp.run(["tmux", "send-keys", "-t", pane, "C-c"], capture_output=True, timeout=3)
-            _sp.run(["tmux", "kill-pane", "-t", pane], capture_output=True, timeout=3)
+            _sp.run(["tmux", "send-keys", "-t", pane, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+            _sp.run(["tmux", "send-keys", "-t", pane, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+            _sp.run(["tmux", "kill-pane", "-t", pane], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
             logger.info("Killed tmux pane %s for agent %s", pane, agent.id)
         except Exception:
             logger.warning("Failed to kill tmux pane %s for agent %s", pane, agent.id, exc_info=True)
@@ -3681,6 +3717,7 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
 
     db.commit()
     db.refresh(agent)
+    asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
     logger.info("Agent %s stopped", agent.id)
     return agent
 

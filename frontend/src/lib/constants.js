@@ -96,6 +96,53 @@ export function projectBadgeColor(name) {
 
 export const POLL_INTERVAL = 5000;
 
+// ---- Timing constants (ms) ----
+
+/** Polling interval when agent is active (EXECUTING/SYNCING). */
+export const POLL_ACTIVE_INTERVAL = 3000;
+
+/** Polling interval when agent is idle. */
+export const POLL_IDLE_INTERVAL = 10000;
+
+/** Auto-clear streaming content after this much inactivity. */
+export const STREAM_TIMEOUT = 6000;
+
+/** Duration to show "Copied" toast. */
+export const COPY_TOAST_DURATION = 1500;
+
+/** Duration to show transient error toasts. */
+export const ERROR_TOAST_DURATION = 4000;
+
+/** Duration to show success/info toasts. */
+export const TOAST_DURATION = 3000;
+
+/** Escape key cooldown to match backend rate limit. */
+export const ESCAPE_COOLDOWN = 2500;
+
+/** Long-press duration for touch actions. */
+export const LONG_PRESS_DELAY = 500;
+
+/** Double-tap detection window. */
+export const DOUBLE_TAP_WINDOW = 350;
+
+/** Scroll-save debounce delay. */
+export const SCROLL_SAVE_DEBOUNCE = 200;
+
+/** Lightbox swipe navigation threshold (px). */
+export const SWIPE_THRESHOLD = 80;
+
+/** Lightbox dismiss swipe threshold (px). */
+export const DISMISS_THRESHOLD = 100;
+
+/** Lightbox double-tap detection window (ms). */
+export const LIGHTBOX_DOUBLE_TAP_WINDOW = 300;
+
+/** Lightbox double-tap max distance (px). */
+export const LIGHTBOX_DOUBLE_TAP_DIST = 30;
+
+/** Max zoom scale for lightbox. */
+export const MAX_ZOOM_SCALE = 5;
+
 // ---- Task v2 ----
 
 export const TASK_STATUS_COLORS = {
