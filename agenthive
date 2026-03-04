@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-PROJECT_DIR="/home/jyao073/cc-orchestrator"
+PROJECT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 BACKEND_SVC="cc-orchestrator.service"
 FRONTEND_SVC="cc-frontend.service"
 

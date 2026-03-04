@@ -9,3 +9,5 @@ websockets==14.*
 pyyaml==6.*
 openai==1.*
 pywebpush>=2.0.0
+python-dotenv>=1.0
+requests>=2.31
