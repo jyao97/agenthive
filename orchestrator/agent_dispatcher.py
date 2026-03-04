@@ -1928,124 +1928,24 @@ class AgentDispatcher:
                     title=task.title,
                 ))
 
-        # --- MERGING tasks: agent performs the merge, harvest completion ---
-        merging_tasks = (
+        # --- MERGING tasks: legacy cleanup ---
+        # Merges are now performed synchronously in approve_task_v2.
+        # Fail any stale MERGING tasks that may have been left over.
+        stale_merging = (
             db.query(Task)
             .filter(Task.status == TaskStatus.MERGING)
-            .filter(Task.agent_id.isnot(None))
             .all()
         )
-        for task in merging_tasks:
-            agent = db.get(Agent, task.agent_id)
-            if not agent:
-                # Agent deleted while task was MERGING — fail the task
-                task.status = TaskStatus.FAILED
-                task.error_message = "Merge agent was deleted"
-                db.commit()
-                from websocket import emit_task_update
-                self._emit(emit_task_update(
-                    task.id, task.status.value, task.project_name or "",
-                    title=task.title,
-                ))
-                logger.info("Task %s FAILED (merge agent deleted)", task.id)
-                continue
-            if agent.status in (AgentStatus.IDLE, AgentStatus.STOPPED):
-                # Skip if agent still has a pending message (hasn't started yet)
-                has_pending = (
-                    db.query(Message)
-                    .filter(Message.agent_id == agent.id, Message.status == MessageStatus.PENDING)
-                    .count()
-                )
-                if has_pending:
-                    # IDLE: waiting for dispatch; STOPPED: merge will never run → fail
-                    if agent.status == AgentStatus.IDLE:
-                        continue
-                    # Agent stopped before merge could be dispatched
-                    task.status = TaskStatus.FAILED
-                    task.error_message = "Agent stopped before merge was dispatched"
-                    db.commit()
-                    from websocket import emit_task_update
-                    self._emit(emit_task_update(
-                        task.id, task.status.value, task.project_name or "",
-                        title=task.title,
-                    ))
-                    logger.info("Task %s FAILED (agent stopped with pending merge)", task.id)
-                    continue
-                # Agent finished the merge — find the merge response
-                # Only consider messages created AFTER the task entered MERGING
-                # to avoid picking up stale messages from the initial execution.
-                last_msg = (
-                    db.query(Message)
-                    .filter(Message.agent_id == agent.id, Message.role == MessageRole.AGENT)
-                    .order_by(Message.created_at.desc())
-                    .first()
-                )
-                if last_msg and last_msg.status != MessageStatus.FAILED:
-                    task.status = TaskStatus.COMPLETE
-                    task.completed_at = _utcnow()
-                    task.agent_summary = last_msg.content[:2000] if last_msg.content else None
-                elif last_msg and last_msg.status == MessageStatus.FAILED:
-                    task.status = TaskStatus.FAILED
-                    task.error_message = (last_msg.error_message or last_msg.content or "Merge failed")[:500]
-                else:
-                    task.status = TaskStatus.FAILED
-                    task.error_message = "Merge agent stopped without producing output"
-                db.commit()
-                from websocket import emit_task_update, emit_agent_update
-                self._emit(emit_task_update(
-                    task.id, task.status.value, task.project_name or "",
-                    title=task.title,
-                ))
-                # Send push notification for task completion
-                try:
-                    from push import send_push_notification, is_notification_enabled
-                    if is_notification_enabled("tasks"):
-                        status_emoji = "\u2705" if task.status == TaskStatus.COMPLETE else "\u274c"
-                        send_push_notification(
-                            title=f"{status_emoji} Task {task.status.value}",
-                            body=(task.title or task.id)[:100],
-                            url=f"/tasks/{task.id}",
-                        )
-                except Exception:
-                    logger.debug("Push notification failed for task %s", task.id)
-                logger.info("Task %s merge %s (agent %s)", task.id, task.status.value, agent.id)
-                # Stop the agent after merge — its job is done
-                self._stop_merge_agent(agent, db)
-            elif agent.status == AgentStatus.ERROR:
-                task.status = TaskStatus.FAILED
-                task.error_message = "Merge agent encountered an error"
-                db.commit()
-                from websocket import emit_task_update
-                self._emit(emit_task_update(
-                    task.id, task.status.value, task.project_name or "",
-                    title=task.title,
-                ))
-                logger.info("Task %s merge FAILED (agent %s error)", task.id, agent.id)
-                # Stop the agent after failed merge too
-                self._stop_merge_agent(agent, db)
-
-    def _stop_merge_agent(self, agent: Agent, db: Session):
-        """Stop an agent after it finishes a merge task."""
-        if agent.status == AgentStatus.STOPPED:
-            return  # Already stopped
-        from websocket import emit_agent_update
-        # Kill tmux pane if present
-        if agent.cli_sync and agent.tmux_pane:
-            import subprocess as _sp
-            try:
-                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=3)
-                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=3)
-                _sp.run(["tmux", "kill-pane", "-t", agent.tmux_pane], capture_output=True, timeout=3)
-            except Exception:
-                logger.warning("Failed to kill tmux pane %s for merge agent %s", agent.tmux_pane, agent.id)
-        agent.status = AgentStatus.STOPPED
-        agent.tmux_pane = None
-        self._cancel_sync_task(agent.id)
-        self._cancel_launch_task(agent.id)
-        self._stale_session_retries.pop(agent.id, None)
-        db.commit()
-        self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
-        logger.info("Merge agent %s stopped after task completion", agent.id)
+        for task in stale_merging:
+            task.status = TaskStatus.FAILED
+            task.error_message = "Stale merge task — please re-approve"
+            db.commit()
+            from websocket import emit_task_update
+            self._emit(emit_task_update(
+                task.id, task.status.value, task.project_name or "",
+                title=task.title,
+            ))
+            logger.info("Task %s: failed stale MERGING task", task.id)
 
     def _tick(self, db: Session):
         # Invalidate per-tick tmux map cache

@@ -14,13 +14,18 @@ export default function ReviewView({ tasks, loading, onRefresh }) {
     return new Date(b.created_at) - new Date(a.created_at);
   });
 
+  const [mergingIds, setMergingIds] = useState(new Set());
+
   const handleApprove = async (task) => {
     setError(null);
+    setMergingIds((s) => new Set(s).add(task.id));
     try {
       await approveTask(task.id);
       onRefresh?.();
     } catch (err) {
       setError(err.message || "Approve failed");
+    } finally {
+      setMergingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
     }
   };
 
@@ -68,6 +73,7 @@ export default function ReviewView({ tasks, loading, onRefresh }) {
         <ReviewCard
           key={task.id}
           task={task}
+          merging={mergingIds.has(task.id)}
           onApprove={handleApprove}
           onReject={handleReject}
           onRetryMerge={handleApprove}
