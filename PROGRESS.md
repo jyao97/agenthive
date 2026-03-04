@@ -387,3 +387,9 @@ Priority-ranked architectural gaps:
 - **Plan Mode is highest leverage**: Reviewing a 30-second plan vs reviewing a 30-minute execution. Maps directly to the plan agent bug — system partially supports plan mode but lifecycle is broken for exec agents.
 - **Inject shared knowledge into task prompts**: `_build_task_prompt()` should include PROGRESS.md or equivalent cross-task context to prevent repeated mistakes.
 - **Async click handler pattern**: `preventDefault()` must happen synchronously before first `await`. Check condition synchronously, prevent immediately, then do async work.
+
+### 2026-03-04 | Task: Pipeline test: add LICENSE header | Status: success
+
+- What: Added one-line comment header to RELEASE_PREP.md
+- Resolution: Added `# This file was reviewed by pipeline test. Do NOT modify any other content.` at the top of the file
+- Lesson: Straightforward — no issues
