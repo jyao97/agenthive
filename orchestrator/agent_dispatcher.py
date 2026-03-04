@@ -134,8 +134,7 @@ def _derive_selected_index(item: dict) -> None:
             item["selected_index"] = 2
         elif "feedback" in a or "type here" in a:
             item["selected_index"] = 3
-        else:
-            item["selected_index"] = 0
+        # else: leave selected_index unset — don't default to 0
 
 
 def _merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> str | None:
@@ -218,9 +217,13 @@ def _merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> 
                 if db_item.get("selected_indices"):
                     item["selected_indices"] = db_item["selected_indices"]
             else:
-                if item.get("selected_index") is None and db_item.get("selected_index") is not None:
+                # DB's selected_index/selected_indices were set by the
+                # user's explicit web UI click (_patch_interactive_answer)
+                # and are more reliable than heuristic derivation from
+                # tool_result text.  Always prefer them when available.
+                if db_item.get("selected_index") is not None:
                     item["selected_index"] = db_item["selected_index"]
-                if not item.get("selected_indices") and db_item.get("selected_indices"):
+                if db_item.get("selected_indices"):
                     item["selected_indices"] = db_item["selected_indices"]
 
     return json.dumps(merged)
