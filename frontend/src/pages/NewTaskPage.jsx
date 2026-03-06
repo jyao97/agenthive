@@ -41,6 +41,7 @@ export default function NewTaskPage() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [showSchedulePicker, setShowSchedulePicker] = useState(false);
+  const [notifyAt, setNotifyAt] = useState(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const voiceAutoStarted = useRef(false);
@@ -196,6 +197,7 @@ export default function NewTaskPage() {
           skip_permissions: skipPermissions,
           sync_mode: syncMode,
           use_worktree: !!worktree,
+          notify_at: notifyAt || undefined,
           auto_dispatch: false, // inbox only
         });
         clearAllDrafts();
@@ -217,42 +219,11 @@ export default function NewTaskPage() {
     await dismiss();
   };
 
-  // ---- Schedule → create INBOX with notify_at reminder ----
-  const handleSchedule = async (scheduledAt) => {
+  // ---- Attach/detach notify_at reminder time ----
+  const handlePickReminder = (isoString) => {
+    setNotifyAt(isoString);
     setShowSchedulePicker(false);
-    if (!description.trim() && !title.trim() && attachments.length === 0) { showToast("Enter a description.", "error"); return; }
-    if (anyUploading) { showToast("Uploads still in progress...", "error"); return; }
-    const uploaded = attachments.filter((a) => a.uploadedPath);
-    const fullDescription = buildDescriptionText(description.trim(), uploaded);
-    setSubmitting(true);
-    submittingRef.current = true;
-    try {
-      let finalTitle = title.trim() || deriveTitle(description);
-      if (!finalTitle && uploaded.length > 0) finalTitle = "Untitled task";
-      await createTaskV2({
-        title: finalTitle,
-        description: fullDescription || undefined,
-        project_name: project || undefined,
-        priority,
-        model: model || undefined,
-        effort: effort || undefined,
-        skip_permissions: skipPermissions,
-        sync_mode: syncMode,
-        use_worktree: !!worktree,
-        notify_at: scheduledAt,
-        auto_dispatch: false,
-      });
-      clearAllDrafts();
-      clearAttachments();
-      showToast("Reminder set");
-      setIsClosing(true);
-      setTimeout(() => navigate(-1), 250);
-    } catch (err) {
-      showToast("Failed: " + err.message, "error");
-    } finally {
-      setSubmitting(false);
-      submittingRef.current = false;
-    }
+    showToast("Reminder attached");
   };
 
   const hasContent = description.trim() || title.trim() || attachments.some((a) => a.uploadedPath);
@@ -405,22 +376,21 @@ export default function NewTaskPage() {
                   <div className="relative">
                     <button
                       type="button"
-                      onClick={() => setShowSchedulePicker((v) => !v)}
-                      disabled={!canSubmit}
+                      onClick={() => notifyAt ? setNotifyAt(null) : setShowSchedulePicker((v) => !v)}
                       className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                        !canSubmit
-                          ? "bg-elevated text-dim cursor-not-allowed"
-                          : "bg-amber-500 hover:bg-amber-400 text-white"
+                        notifyAt
+                          ? "bg-amber-500 text-white"
+                          : "bg-elevated text-label hover:text-heading"
                       }`}
-                      title="Schedule dispatch"
+                      title={notifyAt ? `Remind: ${new Date(notifyAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} (tap to clear)` : "Set reminder"}
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                       </svg>
                     </button>
                     {showSchedulePicker && (
                       <SendLaterPicker
-                        onSelect={handleSchedule}
+                        onSelect={handlePickReminder}
                         onClose={() => setShowSchedulePicker(false)}
                       />
                     )}

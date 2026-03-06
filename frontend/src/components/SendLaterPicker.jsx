@@ -70,7 +70,7 @@ export default function SendLaterPicker({ onSelect, onClose }) {
       className="absolute bottom-12 right-0 w-56 bg-surface border border-divider rounded-xl shadow-lg overflow-hidden z-50"
     >
       <div className="px-3 py-2 border-b border-divider">
-        <span className="text-xs font-semibold text-heading">Send Later</span>
+        <span className="text-xs font-semibold text-heading">Remind At</span>
       </div>
       <div className="py-1">
         {presets.map((p) => (
