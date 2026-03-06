@@ -89,7 +89,8 @@ class Task(Base):
     sync_mode: Mapped[bool] = mapped_column(Boolean, default=False)
     use_worktree: Mapped[bool] = mapped_column(Boolean, default=True)
     try_base_commit: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notify_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dispatch_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # deprecated — kept for DB compat
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

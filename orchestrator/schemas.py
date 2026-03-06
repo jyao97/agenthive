@@ -45,7 +45,7 @@ class TaskCreate(BaseModel):
     skip_permissions: bool = True
     sync_mode: bool = False
     use_worktree: bool = True
-    scheduled_at: datetime | None = None
+    notify_at: datetime | None = None
     auto_dispatch: bool = False
 
     @field_validator("model", mode="before")
@@ -67,6 +67,7 @@ class TaskUpdate(BaseModel):
     model: str | None = None
     effort: str | None = None
     status: str | None = None
+    notify_at: datetime | None = None
 
 
 class TaskOut(BaseModel):
@@ -91,7 +92,7 @@ class TaskOut(BaseModel):
     use_worktree: bool = True
     try_base_commit: str | None = None
     review_artifacts: str | None = None
-    scheduled_at: datetime | None = None
+    notify_at: datetime | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -100,7 +101,7 @@ class TaskOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
-    @field_validator("created_at", "started_at", "completed_at", "scheduled_at", mode="before")
+    @field_validator("created_at", "started_at", "completed_at", "notify_at", mode="before")
     @classmethod
     def ensure_utc_task(cls, v):
         if v is not None and isinstance(v, datetime) and v.tzinfo is None:

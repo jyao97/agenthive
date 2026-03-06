@@ -20,6 +20,7 @@ from models import (
     MessageRole,
     MessageStatus,
     Project,
+    SystemConfig,
     Task,
     TaskStatus,
 )
@@ -1667,9 +1668,6 @@ class AgentDispatcher:
         from thumbnails import backfill_thumbnails
         asyncio.ensure_future(asyncio.to_thread(backfill_thumbnails))
 
-        # Track last daily summary check (date string -> already triggered)
-        _last_summary_date: str | None = None
-
         while self.running:
             try:
                 if not self.worker_mgr.ping():
@@ -1680,10 +1678,16 @@ class AgentDispatcher:
                 try:
                     self._tick(db)
 
-                    # Daily PROGRESS.md summary auto-trigger (once per day)
+                    # Daily PROGRESS.md summary auto-trigger (once per day, persisted in DB)
                     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                    if _last_summary_date != today_str:
-                        _last_summary_date = today_str
+                    last_row = db.get(SystemConfig, "auto_summary_last_date")
+                    last_date = last_row.value if last_row else None
+                    if last_date != today_str:
+                        if last_row:
+                            last_row.value = today_str
+                        else:
+                            db.add(SystemConfig(key="auto_summary_last_date", value=today_str))
+                        db.commit()
                         self._trigger_daily_progress_summaries(db)
                 finally:
                     db.close()
@@ -1817,6 +1821,23 @@ Here are today's completed tasks:
             _progress_job_clear(project_name)
             return
 
+        # Guard: reject conversational / non-markdown output from LLM
+        _first_line = proposed.lstrip().split("\n", 1)[0].lower()
+        _REFUSAL_MARKERS = ("since ", "it seems", "i ", "the file", "could you", "no tasks",
+                            "unfortunately", "i'm ", "i cannot", "here is", "sure,", "certainly")
+        if not _first_line.startswith("#") and any(_first_line.startswith(m) for m in _REFUSAL_MARKERS):
+            logger.warning("Auto-summary for %s rejected: LLM returned conversational text: %.100s",
+                           project_name, _first_line)
+            _progress_job_clear(project_name)
+            return
+
+        # Guard: reject if output is drastically shorter (>40% content loss)
+        if current_progress and len(proposed) < len(current_progress) * 0.6:
+            logger.warning("Auto-summary for %s rejected: output %d chars vs original %d chars (>40%% loss)",
+                           project_name, len(proposed), len(current_progress))
+            _progress_job_clear(project_name)
+            return
+
         # Write directly to PROGRESS.md
         progress_path = os.path.join(project_path, "PROGRESS.md")
         try:
@@ -1855,68 +1876,49 @@ Here are today's completed tasks:
     # ---- v2 Task dispatch/harvest ----
 
     def _check_scheduled_tasks(self, db: Session):
-        """Handle tasks with a due scheduled_at in INBOX or PLANNING."""
-        from sqlalchemy import and_
-
+        """Handle notify_at — send push reminder with status-aware action text."""
+        from task_state_machine import TERMINAL_STATES
         now = _utcnow()
-        due_tasks = (
+
+        notify_tasks = (
             db.query(Task)
             .filter(
-                Task.scheduled_at != None,  # noqa: E711
-                Task.scheduled_at <= now,
-                Task.status.in_([TaskStatus.INBOX, TaskStatus.PLANNING]),
+                Task.notify_at != None,  # noqa: E711
+                Task.notify_at <= now,
+                Task.status.notin_(TERMINAL_STATES),
             )
             .all()
         )
-        for task in due_tasks:
-            if task.status == TaskStatus.INBOX:
-                # Just notify — clear scheduled_at so we don't re-fire
-                task.scheduled_at = None
-                try:
-                    from push import send_push_notification, is_notification_enabled
-                    if is_notification_enabled("tasks"):
-                        send_push_notification(
-                            f"Scheduled task reminder",
-                            task.title or "Untitled task",
-                            url=f"/tasks/{task.id}",
-                        )
-                except Exception:
-                    logger.warning("Failed to send scheduled task notification for %s", task.id, exc_info=True)
-            elif task.status == TaskStatus.PLANNING:
-                # Notify + transition to PENDING (enter queue)
-                from task_state_machine import can_transition
-                if task.project_name and can_transition(task.status, TaskStatus.PENDING):
-                    task.status = TaskStatus.PENDING
-                    task.scheduled_at = None
-                    from websocket import emit_task_update
-                    self._emit(emit_task_update(
-                        task.id, task.status.value, task.project_name or "",
-                        title=task.title,
-                    ))
-                    try:
-                        from push import send_push_notification, is_notification_enabled
-                        if is_notification_enabled("tasks"):
-                            send_push_notification(
-                                f"Task dispatched (scheduled)",
-                                task.title or "Untitled task",
-                                url="/tasks",
-                            )
-                    except Exception:
-                        logger.warning("Failed to send scheduled task notification for %s", task.id, exc_info=True)
-                else:
-                    # No project — just clear schedule and notify
-                    task.scheduled_at = None
+        _ACTION_TEXT = {
+            TaskStatus.INBOX: "Ready to plan",
+            TaskStatus.PLANNING: "Ready to dispatch",
+            TaskStatus.PENDING: "Queued for execution",
+            TaskStatus.EXECUTING: "Still running",
+            TaskStatus.REVIEW: "Ready to review",
+            TaskStatus.CONFLICT: "Needs attention",
+        }
+        for task in notify_tasks:
+            task.notify_at = None
+            action = _ACTION_TEXT.get(task.status, "Reminder")
+            try:
+                from push import send_push_notification, is_notification_enabled
+                if is_notification_enabled("tasks"):
+                    send_push_notification(
+                        action,
+                        task.title or "Untitled task",
+                        url=f"/tasks/{task.id}",
+                    )
+            except Exception:
+                logger.warning("Failed to send notify_at notification for %s", task.id, exc_info=True)
 
     def _dispatch_pending_tasks(self, db: Session):
         """Pick up PENDING v2 tasks and create tmux agents for them."""
         import secrets
         import subprocess
 
-        from sqlalchemy import or_
         tasks = (
             db.query(Task)
             .filter(Task.status == TaskStatus.PENDING)
-            .filter(or_(Task.scheduled_at == None, Task.scheduled_at <= _utcnow()))  # noqa: E711
             .order_by(Task.priority.desc(), Task.created_at.asc())
             .limit(5)
             .all()
@@ -2303,7 +2305,7 @@ Here are today's completed tasks:
         # Refresh tmux pane-attached cache for notification suppression
         self._refresh_pane_attached()
 
-        # 0pre. Check scheduled tasks (INBOX/PLANNING with due scheduled_at)
+        # 0pre. Check scheduled tasks (notify_at reminders + dispatch_at auto-dispatch)
         self._check_scheduled_tasks(db)
 
         # 0a. Dispatch PENDING v2 tasks → create agents
@@ -2452,6 +2454,12 @@ Here are today's completed tasks:
                         "Agent %s: stale session %s, exhausted %d retries — clearing session_id",
                         agent.id, restore_sid, self._max_stale_retries,
                     )
+                    project = db.get(Project, agent.project)
+                    self._release_session(
+                        restore_sid, agent.id,
+                        project.path if project else None,
+                        agent.worktree, db,
+                    )
                     agent.session_id = None
                     self._stale_session_retries.pop(agent_id, None)
                     # Fall through to normal error handling below
@@ -2474,6 +2482,10 @@ Here are today's completed tasks:
                         logger.warning(
                             "Agent %s: stale session %s, no cache — clearing session_id (attempt %d)",
                             agent.id, restore_sid, retry_count,
+                        )
+                        self._release_session(
+                            restore_sid, agent.id,
+                            project_path, agent.worktree, db,
                         )
                         agent.session_id = None
 
@@ -2975,6 +2987,10 @@ Here are today's completed tasks:
                         logger.info(
                             "Session %s missing, no cache — starting fresh for agent %s",
                             resume_session_id, agent.id,
+                        )
+                        self._release_session(
+                            resume_session_id, agent.id,
+                            project_path, agent.worktree, db,
                         )
                         agent.session_id = None
                         resume_session_id = None

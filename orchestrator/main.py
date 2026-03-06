@@ -2516,7 +2516,7 @@ async def create_task_v2(body: TaskCreate, db: Session = Depends(get_db)):
         skip_permissions=body.skip_permissions,
         sync_mode=body.sync_mode,
         use_worktree=body.use_worktree,
-        scheduled_at=body.scheduled_at,
+        notify_at=body.notify_at,
         status=initial_status,
     )
     db.add(task)
@@ -2703,6 +2703,9 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
         val = getattr(body, field, None)
         if val is not None:
             setattr(task, field, val)
+    # Time fields: allow explicit null to clear
+    if "notify_at" in body.model_fields_set:
+        task.notify_at = body.notify_at
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
@@ -2714,10 +2717,12 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
 
 @app.post("/api/v2/tasks/{task_id}/plan", response_model=TaskOut)
 async def plan_task_v2(task_id: str, db: Session = Depends(get_db)):
-    """Move task from INBOX to PLANNING."""
+    """Move task from INBOX to PLANNING. Requires project_name."""
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
+    if not task.project_name:
+        raise HTTPException(400, "Task requires a project_name before entering PLANNING")
     try:
         validate_transition(task.status, TaskStatus.PLANNING)
     except InvalidTransitionError as e:
@@ -4279,8 +4284,7 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
 async def permanently_delete_agent(agent_id: str, db: Session = Depends(get_db)):
     """Permanently delete an agent, its messages, session JSONL, and output logs."""
     import glob as _glob
-    from config import CLAUDE_HOME
-    from session_cache import session_source_dir
+    from session_cache import cleanup_source_session, evict_session
 
     agent = db.get(Agent, agent_id)
     if not agent:
@@ -4290,23 +4294,13 @@ async def permanently_delete_agent(agent_id: str, db: Session = Depends(get_db))
 
     cleaned_files = []
 
-    # 1. Delete session JSONL file(s)
+    # 1. Delete session source files (.jsonl + subdir) and cache
     if agent.session_id:
         project = db.query(Project).filter(Project.name == agent.project).first()
         if project:
-            # Check both project root and worktree session dirs
-            dirs_to_check = [session_source_dir(project.path)]
-            if agent.worktree:
-                wt_path = os.path.join(project.path, ".claude", "worktrees", agent.worktree)
-                dirs_to_check.append(session_source_dir(wt_path))
-            for sdir in dirs_to_check:
-                jsonl = os.path.join(sdir, f"{agent.session_id}.jsonl")
-                if os.path.isfile(jsonl):
-                    try:
-                        os.remove(jsonl)
-                        cleaned_files.append(jsonl)
-                    except OSError as e:
-                        logger.warning("Failed to delete session JSONL %s: %s", jsonl, e)
+            if cleanup_source_session(agent.session_id, project.path, agent.worktree):
+                cleaned_files.append(f"{agent.session_id}.jsonl")
+            evict_session(agent.session_id, project.path)
 
     # 2. Delete output log files for all messages
     msg_ids = [m.id for m in db.query(Message.id).filter(Message.agent_id == agent_id).all()]

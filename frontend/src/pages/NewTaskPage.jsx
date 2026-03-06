@@ -217,7 +217,7 @@ export default function NewTaskPage() {
     await dismiss();
   };
 
-  // ---- Schedule → create INBOX with scheduled_at ----
+  // ---- Schedule → create INBOX with notify_at reminder ----
   const handleSchedule = async (scheduledAt) => {
     setShowSchedulePicker(false);
     if (!description.trim() && !title.trim() && attachments.length === 0) { showToast("Enter a description.", "error"); return; }
@@ -239,12 +239,12 @@ export default function NewTaskPage() {
         skip_permissions: skipPermissions,
         sync_mode: syncMode,
         use_worktree: !!worktree,
-        scheduled_at: scheduledAt,
+        notify_at: scheduledAt,
         auto_dispatch: false,
       });
       clearAllDrafts();
       clearAttachments();
-      showToast("Scheduled");
+      showToast("Reminder set");
       setIsClosing(true);
       setTimeout(() => navigate(-1), 250);
     } catch (err) {

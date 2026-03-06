@@ -25,6 +25,10 @@ export default memo(function InboxCard({ task, onDispatch, onEdit, onDelete, loa
 
       <p className="text-sm font-semibold text-heading truncate">{task.title}</p>
 
+      {task.notify_at && (
+        <p className="text-[10px] text-amber-400 mt-1">Remind {relativeTime(task.notify_at)}</p>
+      )}
+
       <div className="flex items-center gap-2 mt-2">
         {task.model && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-dim">

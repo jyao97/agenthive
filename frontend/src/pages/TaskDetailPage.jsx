@@ -21,6 +21,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
   const [editTitle, setEditTitle] = useState("");
   const [editDesc, setEditDesc] = useState("");
   const [editProject, setEditProject] = useState("");
+  const [editNotifyAt, setEditNotifyAt] = useState("");
   const pollRef = useRef(null);
   const visible = usePageVisible();
   const { lastEvent, sendWsMessage } = useWebSocket();
@@ -91,6 +92,9 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
     if (editTitle && editTitle !== task.title) updates.title = editTitle;
     if (editDesc !== (task.description || "")) updates.description = editDesc;
     if (editProject && editProject !== task.project_name) updates.project_name = editProject;
+    // Convert local datetime-local value to ISO string, or null to clear
+    const origNotify = task.notify_at ? new Date(task.notify_at).toISOString().slice(0, 16) : "";
+    if (editNotifyAt !== origNotify) updates.notify_at = editNotifyAt ? new Date(editNotifyAt).toISOString() : null;
     if (Object.keys(updates).length > 0) {
       await doAction(updateTaskV2, id, updates);
     }
@@ -101,6 +105,8 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
     setEditTitle(task.title);
     setEditDesc(task.description || "");
     setEditProject(task.project_name || "");
+    // datetime-local expects "YYYY-MM-DDTHH:MM" format in local time
+    setEditNotifyAt(task.notify_at ? new Date(task.notify_at).toISOString().slice(0, 16) : "");
     setEditMode(true);
   };
 
@@ -157,6 +163,9 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
             <span className="text-xs text-orange-400 font-medium">Attempt #{task.attempt_number}</span>
           )}
           <span className="text-xs text-faint">{relativeTime(task.created_at)}</span>
+          {task.notify_at && (
+            <span className="text-xs text-amber-400">Remind {relativeTime(task.notify_at)}</span>
+          )}
         </div>
       </div>
 
@@ -193,6 +202,15 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               <div>
                 <label className="block text-sm font-medium text-label mb-1">Project</label>
                 <ProjectSelector value={editProject} onChange={setEditProject} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-label mb-1">Remind At</label>
+                <input
+                  type="datetime-local"
+                  value={editNotifyAt}
+                  onChange={(e) => setEditNotifyAt(e.target.value)}
+                  className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-heading text-sm focus:border-cyan-500 focus:outline-none"
+                />
               </div>
               <div className="flex gap-2">
                 <button
@@ -426,7 +444,8 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
             <button
               type="button"
               onClick={() => doAction(planTask, id)}
-              disabled={actionLoading}
+              disabled={actionLoading || !task.project_name}
+              title={!task.project_name ? "Set a project before planning" : "Move to Planning"}
               className="whitespace-nowrap px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-500 disabled:opacity-50 transition-colors"
             >
               Plan
