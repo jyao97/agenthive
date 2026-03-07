@@ -3172,7 +3172,8 @@ async def verify_task(task_id: str, request: Request, db: Session = Depends(get_
     if task.review_artifacts:
         try:
             artifacts = _json.loads(task.review_artifacts)
-        except Exception:
+        except (ValueError, TypeError):
+            logger.warning("Invalid review_artifacts JSON for task %s", task.id)
             artifacts = {}
     artifacts["verify_agent_id"] = agent.id
     artifacts["verify_status"] = "running"
@@ -4378,6 +4379,16 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
     ).all()
     for sub in child_subs:
         sub.status = AgentStatus.STOPPED
+        if ad:
+            ad._cancel_sync_task(sub.id)
+            ad._cancel_launch_task(sub.id)
+            ad._stale_session_retries.pop(sub.id, None)
+        if sub.tmux_pane:
+            try:
+                _sp.run(["tmux", "kill-pane", "-t", sub.tmux_pane],
+                        capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+            except Exception:
+                logger.debug("Failed to kill tmux pane for subagent %s", sub.id)
 
     db.commit()
     db.refresh(agent)
@@ -4389,7 +4400,6 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
 @app.delete("/api/agents/{agent_id}/permanent")
 async def permanently_delete_agent(agent_id: str, db: Session = Depends(get_db)):
     """Permanently delete an agent, its messages, session JSONL, and output logs."""
-    import glob as _glob
     from session_cache import cleanup_source_session, evict_session
 
     agent = db.get(Agent, agent_id)
@@ -4509,27 +4519,27 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
             # Kill stale tmux session if it already exists (e.g. stuck from a prior run)
             subprocess.run(
                 ["tmux", "kill-session", "-t", tmux_session],
-                capture_output=True,  # suppress "no such session" errors
+                capture_output=True, timeout=_TMUX_CMD_TIMEOUT,
             )
 
             subprocess.run(
                 ["tmux", "new-session", "-d", "-s", tmux_session,
                  "-c", project.path],
-                check=True,
+                check=True, timeout=_TMUX_CMD_TIMEOUT,
             )
             pane_id = subprocess.run(
                 ["tmux", "display-message", "-t", tmux_session, "-p", "#{pane_id}"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=_TMUX_CMD_TIMEOUT,
             ).stdout.strip()
 
             subprocess.run(
                 ["tmux", "send-keys", "-t", pane_id,
                  "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED", "Enter"],
-                check=True,
+                check=True, timeout=_TMUX_CMD_TIMEOUT,
             )
             subprocess.run(
                 ["tmux", "send-keys", "-t", pane_id, claude_cmd, "Enter"],
-                check=True,
+                check=True, timeout=_TMUX_CMD_TIMEOUT,
             )
 
             agent.tmux_pane = pane_id

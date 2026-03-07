@@ -5891,9 +5891,12 @@ Here are today's completed task sessions with full conversation history:
                 if aid not in stopped_ids
             ]
 
+            db.commit()
             if agents:
-                db.commit()
                 logger.info("Recovered %d agents on startup", len(agents))
+            relinked = sum(1 for a in stopped_cli if a.status == AgentStatus.SYNCING)
+            if relinked:
+                logger.info("Re-linked %d stopped agents with live tmux sessions", relinked)
 
             # Schedule sync tasks for agents with active CLI sessions
             for aid, sid, ppath in agents_to_sync:
