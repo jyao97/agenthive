@@ -343,7 +343,15 @@ export default function SplitScreenPage() {
     [initialPath]
   );
 
-  const handleExit = useCallback(() => navigate(-1), [navigate]);
+  const handleExit = useCallback(() => {
+    // Try going back; if no history (fresh app load), navigate to a real page
+    const saved = localStorage.getItem("ah:last-route");
+    if (window.history.length > 1) {
+      navigate(-1);
+    } else {
+      navigate(saved || "/agents", { replace: true });
+    }
+  }, [navigate]);
   const exitBtnDefault = useMemo(() => () => ({
     x: window.innerWidth - 44,
     y: window.innerHeight / 2 - 20,
