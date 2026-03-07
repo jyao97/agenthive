@@ -283,10 +283,24 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to start backup loop")
 
+    # Start WebSocket stale-connection pruning loop
+    ws_prune_task = None
+    try:
+        from websocket import ws_manager
+
+        async def _ws_prune_loop():
+            while True:
+                await asyncio.sleep(30)
+                await ws_manager.prune_stale()
+
+        ws_prune_task = asyncio.create_task(_ws_prune_loop())
+    except Exception:
+        logger.exception("Failed to start WS prune loop")
+
     yield
 
     # Shutdown
-    for task in (dispatch_task, agent_dispatch_task, backup_task, session_cache_task):
+    for task in (dispatch_task, agent_dispatch_task, backup_task, session_cache_task, ws_prune_task):
         if task:
             task.cancel()
             try:
@@ -3812,11 +3826,12 @@ async def _launch_tmux_background(
 
     from agent_dispatcher import (
         _build_tmux_claude_map,
+        _detect_pid_session_jsonl,
         send_tmux_message,
     )
     from database import SessionLocal
     from session_cache import session_source_dir
-    from websocket import emit_agent_update
+    from websocket import emit_agent_update, emit_new_message
 
     def _mark_error(reason: str):
         """Transition agent to ERROR status on launch failure."""
@@ -3949,8 +3964,22 @@ async def _launch_tmux_background(
             return False
 
         def _scan_for_session_jsonl(owned_sids: set, pane_pid: int | None) -> str | None:
-            """Scan session dirs for a PID-matched JSONL file."""
-            # Re-check dirs in case they just appeared
+            """Scan session dirs for the JSONL created by our launch.
+
+            Tiers:
+              0. /proc/{pid}/fd scan (works if Claude keeps JSONL open)
+              1. Debug-log PID match (legacy Claude Code <2.1.71)
+              2. mtime fallback — newest unowned JSONL created after launch
+                 (Claude Code >=2.1.71 which has no debug logs and doesn't
+                 keep session JSONL fds open)
+            """
+            if pane_pid:
+                # Tier 0: Direct OS check — which JSONL does this process have open?
+                sid = _detect_pid_session_jsonl(pane_pid)
+                if sid and sid not in owned_sids:
+                    return sid
+
+            best_sid, best_mtime = None, launch_start
             for sdir in dict.fromkeys([session_dir, base_session_dir]):
                 if not os.path.isdir(sdir):
                     continue
@@ -3960,11 +3989,21 @@ async def _launch_tmux_background(
                     sid = fname.replace(".jsonl", "")
                     if sid in owned_sids:
                         continue
+                    # Tier 1: debug-log PID match
                     if pane_pid:
                         session_pid = _get_session_pid(sid)
                         if session_pid == pane_pid:
                             return sid
-            return None
+                    # Tier 2: collect candidates for mtime fallback
+                    fpath = os.path.join(sdir, fname)
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                    except OSError:
+                        continue
+                    if mtime > best_mtime:
+                        best_sid, best_mtime = sid, mtime
+
+            return best_sid
 
         # Collect session IDs already owned by other agents (once, reused)
         db_check = SessionLocal()
@@ -3983,6 +4022,8 @@ async def _launch_tmux_background(
         if pane_id in pane_map:
             pane_pid = pane_map[pane_id].get("pid")
 
+        import time as _time
+        launch_start = _time.time()
         session_id = None
 
         for attempt in range(_MAX_SEND_ATTEMPTS):
@@ -4648,6 +4689,7 @@ async def get_agent_messages(
 async def send_agent_message(
     agent_id: str,
     body: SendMessage,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Send a follow-up message to an agent."""
@@ -4657,47 +4699,67 @@ async def send_agent_message(
     if agent.status == AgentStatus.STOPPED:
         raise HTTPException(status_code=400, detail="Agent is stopped")
 
-    # SYNCING agents with a tmux pane: send directly via tmux
+    # SYNCING/STARTING agents with a tmux pane: send directly via tmux
     is_syncing_with_tmux = (
-        agent.status == AgentStatus.SYNCING
+        agent.status in (AgentStatus.SYNCING, AgentStatus.STARTING)
         and agent.tmux_pane
         and not body.queue
         and not body.scheduled_at
     )
     if is_syncing_with_tmux:
-        from agent_dispatcher import send_tmux_message, verify_tmux_pane
+        from agent_dispatcher import (
+            _detect_tmux_pane_for_session,
+            send_tmux_message,
+            verify_tmux_pane,
+        )
+        from websocket import emit_new_message
 
         if not verify_tmux_pane(agent.tmux_pane):
-            agent.tmux_pane = None
+            # Transient tmux lookup failures are common during restarts/races.
+            # Try to recover pane from session_id before falling back to queue.
+            recovered_pane = None
+            if agent.session_id:
+                project = db.get(Project, agent.project)
+                if project:
+                    candidate = _detect_tmux_pane_for_session(agent.session_id, project.path)
+                    if candidate and verify_tmux_pane(candidate):
+                        recovered_pane = candidate
+
+            if recovered_pane:
+                agent.tmux_pane = recovered_pane
+                db.commit()
+            else:
+                agent.tmux_pane = None
+                db.commit()
+                is_syncing_with_tmux = False
+
+        if is_syncing_with_tmux:
+            ok = send_tmux_message(agent.tmux_pane, body.content)
+            if not ok:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to send via tmux",
+                )
+
+            # Record the message as completed (it was sent directly)
+            msg = Message(
+                agent_id=agent.id,
+                role=MessageRole.USER,
+                content=body.content,
+                status=MessageStatus.COMPLETED,
+                source="web",
+                completed_at=_utcnow(),
+            )
+            db.add(msg)
+            agent.last_message_preview = body.content[:200]
+            agent.last_message_at = _utcnow()
             db.commit()
-            raise HTTPException(
-                status_code=400,
-                detail="tmux pane no longer exists — use send later to queue",
-            )
-
-        ok = send_tmux_message(agent.tmux_pane, body.content)
-        if not ok:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to send via tmux",
-            )
-
-        # Record the message as completed (it was sent directly)
-        msg = Message(
-            agent_id=agent.id,
-            role=MessageRole.USER,
-            content=body.content,
-            status=MessageStatus.COMPLETED,
-            source="web",
-            completed_at=_utcnow(),
-        )
-        db.add(msg)
-        agent.last_message_preview = body.content[:200]
-        agent.last_message_at = _utcnow()
-        db.commit()
-        db.refresh(msg)
-        logger.info("Message %s sent to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
-        return msg
+            db.refresh(msg)
+            ad = getattr(request.app.state, "agent_dispatcher", None)
+            if ad:
+                ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
+            logger.info("Message %s sent to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
+            return msg
 
     # SYNCING agents WITHOUT a tmux pane are dispatched via subprocess
     # (same as IDLE), so they should accept messages directly.
@@ -4730,8 +4792,13 @@ async def send_agent_message(
 
     db.commit()
     db.refresh(msg)
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad:
+        from websocket import emit_new_message
+        ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
     logger.info("Message %s sent to agent %s", msg.id, agent.id)
     return msg
+
 
 
 @app.put("/api/agents/{agent_id}/read")
@@ -5163,8 +5230,53 @@ async def git_merge(project: str, branch: str, request: Request, db: Session = D
 
 # ---- Files ----
 
+_VIDEO_MIMES = {"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/x-matroska"}
+
+def _serve_file_with_range(full_path: str, media_type: str, request: Request):
+    """Return a FileResponse, or a StreamingResponse with range support for video."""
+    if media_type not in _VIDEO_MIMES:
+        return FileResponse(full_path, media_type=media_type)
+
+    from starlette.responses import StreamingResponse
+    file_size = os.path.getsize(full_path)
+    range_header = request.headers.get("range")
+
+    if not range_header:
+        return FileResponse(full_path, media_type=media_type,
+                            headers={"Accept-Ranges": "bytes"})
+
+    # Parse "bytes=start-end"
+    range_spec = range_header.replace("bytes=", "").strip()
+    parts = range_spec.split("-", 1)
+    start = int(parts[0]) if parts[0] else 0
+    end = int(parts[1]) if parts[1] else file_size - 1
+    end = min(end, file_size - 1)
+    length = end - start + 1
+
+    def iter_range():
+        with open(full_path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(
+        iter_range(),
+        status_code=206,
+        media_type=media_type,
+        headers={
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(length),
+            "Accept-Ranges": "bytes",
+        },
+    )
+
 @app.get("/api/files/{project}/{path:path}")
-async def serve_project_file(project: str, path: str, db: Session = Depends(get_db)):
+async def serve_project_file(project: str, path: str, request: Request, db: Session = Depends(get_db)):
     """Serve a file from a project's directory (images, videos, etc.)."""
     import mimetypes
     from config import PROJECTS_DIR
@@ -5199,7 +5311,7 @@ async def serve_project_file(project: str, path: str, db: Session = Depends(get_
             raise HTTPException(status_code=404, detail="File not found")
 
     media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
-    return FileResponse(full_path, media_type=media_type)
+    return _serve_file_with_range(full_path, media_type, request)
 
 
 # ---- Uploads ----
@@ -5244,7 +5356,7 @@ def _write_bytes(path: str, data: bytes):
 
 
 @app.get("/api/uploads/{filename}")
-async def serve_upload(filename: str):
+async def serve_upload(filename: str, request: Request):
     """Serve an uploaded file."""
     import mimetypes
     safe_name = os.path.basename(filename)
@@ -5252,7 +5364,7 @@ async def serve_upload(filename: str):
     if not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail="File not found")
     media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
-    return FileResponse(full_path, media_type=media_type)
+    return _serve_file_with_range(full_path, media_type, request)
 
 
 # ---- Push Notifications ----
