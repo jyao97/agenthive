@@ -1256,9 +1256,13 @@ async def create_project(body: ProjectCreate, request: Request, db: Session = De
             try:
                 wm.clone_project(body.name, body.git_url)
             except Exception as e:
-                # Clone failed — remove the DB entry we just committed
-                db.delete(proj)
-                db.commit()
+                # Clone failed — revert: re-archive if reactivated, else delete
+                if existing and existing.archived is False:
+                    proj.archived = True
+                    db.commit()
+                else:
+                    db.delete(proj)
+                    db.commit()
                 raise HTTPException(
                     status_code=400,
                     detail=f"Git clone failed: {e}",
@@ -1423,7 +1427,7 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
                 os.rename(old_path, new_path)
                 logger.info("Renamed project directory %s → %s", old_path, new_path)
             except OSError:
-                logger.warning("Failed to rename project directory %s → %s", old_path, new_path)
+                logger.warning("Failed to rename project directory %s → %s", old_path, new_path, exc_info=True)
                 new_path = old_path  # rename failed, keep old path
 
     new_proj.path = new_path
@@ -1452,7 +1456,7 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
                 os.rename(old_dir, new_dir)
                 logger.info("Migrated %s dir: %s → %s", label, old_dir, new_dir)
             except OSError:
-                logger.warning("Failed to migrate %s dir: %s → %s", label, old_dir, new_dir)
+                logger.warning("Failed to migrate %s dir: %s → %s", label, old_dir, new_dir, exc_info=True)
 
         # Invalidate cached lookups for both old and new paths
         invalidate_path_cache(old_path)
@@ -1527,7 +1531,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
         try:
             wm.stop_project_processes(name)
         except Exception:
-            logger.warning("Failed to stop processes for project %s", name)
+            logger.warning("Failed to stop processes for project %s", name, exc_info=True)
 
     proj.archived = True
     db.commit()
@@ -1979,6 +1983,7 @@ Here is recent agent activity in this project (last 50 messages):
         _claudemd_job_set(project_name, status="error", error="Claude CLI not found")
         return
     except Exception as e:
+        logger.exception("Unexpected error in CLAUDE.md refresh for %s", project_name)
         _claudemd_job_set(project_name, status="error", error=str(e))
         return
 
