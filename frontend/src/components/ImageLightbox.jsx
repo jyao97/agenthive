@@ -24,6 +24,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
   const [dismissOpacity, setDismissOpacity] = useState(1);
   const [dragging, setDragging] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [videoError, setVideoError] = useState(null);
 
   const containerRef = useRef(null);
   const imgRef = useRef(null);
@@ -86,12 +87,13 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     [media.length, resetTransform]
   );
 
-  // Pause video when navigating away
+  // Pause video and reset error when navigating away
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.pause();
     }
     setPlaying(false);
+    setVideoError(null);
   }, [currentIndex]);
 
   // Clamp translate so image doesn't go off-screen too far
@@ -509,12 +511,18 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           key={current.src}
           src={current.src}
           poster={current.src + ".thumb.jpg"}
-          preload="metadata"
+          preload="auto"
           playsInline
+          webkit-playsinline=""
+          controls
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
-          className="max-h-[90vh] max-w-[90vw] object-contain pointer-events-none select-none"
+          onError={(e) => {
+            const err = e.target.error;
+            setVideoError(err ? `${err.message || "Cannot play this video"}` : "Video failed to load");
+          }}
+          className="max-h-[90vh] max-w-[90vw] object-contain select-none"
           style={transformStyle}
           onTransitionEnd={handleTransitionEnd}
         />
@@ -530,34 +538,10 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         />
       )}
 
-      {/* Play/pause overlay for videos */}
-      {isCurrentVideo && (
-        <div
-          className="absolute inset-0 z-10 flex items-center justify-center"
-          style={{ pointerEvents: "none" }}
-        >
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              const v = videoRef.current;
-              if (!v) return;
-              if (v.paused) v.play();
-              else v.pause();
-            }}
-            className="w-16 h-16 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white/90 hover:bg-black/60 transition-colors"
-            style={{ pointerEvents: "auto" }}
-          >
-            {playing ? (
-              <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M6 4h4v16H6zM14 4h4v16h-4z" />
-              </svg>
-            ) : (
-              <svg className="w-8 h-8 ml-1" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            )}
-          </button>
+      {/* Error overlay for videos */}
+      {isCurrentVideo && videoError && (
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-10 px-4 py-2 rounded-lg bg-red-500/80 text-white text-sm max-w-[80vw] text-center">
+          {videoError}
         </div>
       )}
 

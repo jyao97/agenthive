@@ -5250,53 +5250,13 @@ async def git_merge(project: str, branch: str, request: Request, db: Session = D
 
 # ---- Files ----
 
-_VIDEO_MIMES = {"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/x-matroska"}
-
 def _serve_file_with_range(full_path: str, media_type: str, request: Request):
-    """Return a FileResponse, or a StreamingResponse with range support for video."""
-    if media_type not in _VIDEO_MIMES:
-        return FileResponse(full_path, media_type=media_type)
+    """Return a FileResponse with built-in Range request support.
 
-    from starlette.responses import StreamingResponse
-    file_size = os.path.getsize(full_path)
-    range_header = request.headers.get("range")
-
-    if not range_header:
-        return FileResponse(full_path, media_type=media_type,
-                            headers={"Accept-Ranges": "bytes"})
-
-    # Parse "bytes=start-end"
-    range_spec = range_header.replace("bytes=", "").strip()
-    parts = range_spec.split("-", 1)
-    try:
-        start = int(parts[0]) if parts[0] else 0
-        end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
-    except ValueError:
-        raise HTTPException(status_code=416, detail="Invalid Range header")
-    end = min(end, file_size - 1)
-    length = end - start + 1
-
-    def iter_range():
-        with open(full_path, "rb") as f:
-            f.seek(start)
-            remaining = length
-            while remaining > 0:
-                chunk = f.read(min(65536, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                yield chunk
-
-    return StreamingResponse(
-        iter_range(),
-        status_code=206,
-        media_type=media_type,
-        headers={
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Content-Length": str(length),
-            "Accept-Ranges": "bytes",
-        },
-    )
+    Starlette's FileResponse natively handles Accept-Ranges, single-range
+    and multi-range 206 responses, If-Range, and Content-Range headers.
+    """
+    return FileResponse(full_path, media_type=media_type)
 
 @app.get("/api/files/{project}/{path:path}")
 async def serve_project_file(project: str, path: str, request: Request, db: Session = Depends(get_db)):
