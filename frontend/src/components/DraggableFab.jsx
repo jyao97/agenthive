@@ -121,6 +121,10 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, onL
       const dx = t.clientX - dragStart.current.x;
       const dy = t.clientY - dragStart.current.y;
       if (!moved.current && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
+      if (!moved.current) {
+        // First move: disable CSS transitions so transform updates are instant
+        if (fabRef.current) fabRef.current.style.transition = 'none';
+      }
       moved.current = true;
       clearTimeout(longPressTimer.current); // Cancel long-press on drag
       // Direct DOM manipulation — no React re-render during drag
@@ -144,6 +148,8 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, onL
           const barH = cachedBarH.current;
           const minBottom = barH > 0 ? barH + 8 : 0;
           const final_ = clampRB(toRB(abs, w, h), w, h, minBottom);
+          // Restore CSS transitions after position committed
+          requestAnimationFrame(() => { if (el) el.style.transition = ''; });
           setRB(final_);
           try { localStorage.setItem(storageKey, JSON.stringify(final_)); } catch { /* ok */ }
         }
@@ -181,7 +187,7 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, onL
       onTouchStart={onStart}
       onClick={blockClick}
       className={className}
-      style={{ position: "fixed", right: rb.right, bottom: rb.bottom, zIndex: 50, touchAction: "none" }}
+      style={{ position: "fixed", right: rb.right, bottom: rb.bottom, zIndex: 50, touchAction: "none", willChange: "transform" }}
     >
       {children}
     </button>

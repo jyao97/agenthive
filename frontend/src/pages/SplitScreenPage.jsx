@@ -358,8 +358,8 @@ export default function SplitScreenPage() {
     navigate("/projects", { replace: true });
   }, [navigate]);
   const exitBtnDefault = useMemo(() => () => ({
-    x: window.innerWidth - 44,
-    y: window.innerHeight / 2 - 20,
+    x: window.innerWidth - 64,
+    y: window.innerHeight - 140,
   }), []);
 
   return (
@@ -419,11 +419,11 @@ export default function SplitScreenPage() {
       {/* Mobile floating exit button — draggable */}
       {!isWide && (
         <DraggableFab
-          storageKey="ah:fab-pos-split-exit-v2"
+          storageKey="ah:fab-pos-split-v3"
           defaultPosition={exitBtnDefault}
           onClick={handleExit}
           onLongPress={handleForceExit}
-          className="w-8 h-8 flex items-center justify-center rounded-full bg-surface/90 shadow-lg border border-edge text-dim hover:text-heading transition-colors backdrop-blur-sm"
+          className="w-8 h-8 flex items-center justify-center rounded-full bg-surface shadow-lg border border-edge text-dim hover:text-heading transition-colors"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />

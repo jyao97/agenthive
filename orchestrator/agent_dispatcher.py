@@ -6,8 +6,9 @@ import logging
 import os
 import re
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from config import CC_MODEL, CLAUDE_HOME, MAX_CONCURRENT_WORKERS
@@ -589,6 +590,202 @@ def _strip_agent_preamble(content: str) -> str:
     text = _PREAMBLE_RE.sub("", content)
     text = _POSTAMBLE_RE.sub("", text)
     return text.strip() if text != content else content
+
+
+_INSIGHT_RE = re.compile(r"^\d+\.\s+(.+)", re.MULTILINE)
+
+
+def store_insights(db, project: str, date_str: str, section_text: str):
+    """Parse numbered insight lines from a summary section and store in DB + FTS5."""
+    from models import ProgressInsight
+    items = _INSIGHT_RE.findall(section_text)
+    if not items:
+        return 0
+    rows = []
+    for content in items:
+        row = ProgressInsight(project=project, date=date_str, content=content.strip())
+        db.add(row)
+        rows.append(row)
+    db.flush()  # assigns row.id
+    # Sync to FTS5
+    for row in rows:
+        db.execute(
+            text("INSERT INTO progress_insights_fts(rowid, content) VALUES (:id, :content)"),
+            {"id": row.id, "content": row.content},
+        )
+    db.commit()
+    return len(items)
+
+
+def query_insights(db, project: str, query: str, limit: int = 15, recent_days: int = 7) -> list[str]:
+    """Retrieve relevant insights for a project via FTS5 + recency boost."""
+    from models import ProgressInsight
+
+    results: dict[int, tuple[str, float]] = {}
+
+    # 1. FTS5 keyword search
+    if query.strip():
+        words = [w for w in re.split(r"\W+", query) if len(w) > 1]
+        if words:
+            fts_query = " OR ".join(words[:20])
+            fts_rows = db.execute(
+                text(
+                    "SELECT pi.id, pi.content, pi.date, rank "
+                    "FROM progress_insights_fts fts "
+                    "JOIN progress_insights pi ON pi.id = fts.rowid "
+                    "WHERE fts.content MATCH :q AND pi.project = :proj "
+                    "ORDER BY rank LIMIT :lim"
+                ),
+                {"q": fts_query, "proj": project, "lim": limit * 2},
+            ).fetchall()
+            for row_id, content, date_str, rank in fts_rows:
+                results[row_id] = (f"[{date_str}] {content}", -rank)
+
+    # 2. Recent insights (unconditional)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=recent_days)).strftime("%Y-%m-%d")
+    recent_rows = (
+        db.query(ProgressInsight)
+        .filter(ProgressInsight.project == project, ProgressInsight.date >= cutoff)
+        .order_by(ProgressInsight.date.desc())
+        .all()
+    )
+    for r in recent_rows:
+        if r.id not in results:
+            results[r.id] = (f"[{r.date}] {r.content}", 0.5)  # lower rank than FTS hits
+
+    # Sort by relevance score (higher = better)
+    sorted_items = sorted(results.values(), key=lambda x: x[1], reverse=True)
+    return [item[0] for item in sorted_items[:limit]]
+
+
+_DAILY_SUMMARY_MAX_CONTEXT = 500_000  # chars — stay well within Claude context window
+_DAILY_SUMMARY_MAX_MSG = 4000  # per-message truncation (tool outputs can be huge)
+
+
+def _gather_daily_session_context(db, project_name: str, target_date=None) -> str:
+    """Gather all non-subagent agent sessions with messages for a project on a given day.
+
+    Two-pass strategy:
+      Pass 1 — build a slim summary for every session (header + first user msg
+               + last assistant reply) so nothing is silently dropped.
+      Pass 2 — distribute remaining budget to expand sessions with full
+               conversation history.
+
+    Returns a formatted string of session blocks, or empty string if no sessions.
+    """
+    from models import Agent, Message
+
+    if target_date is None:
+        target_date = datetime.now(timezone.utc).date()
+    day_start = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+
+    # Find non-subagent agents for this project that had messages on target_date
+    agent_ids_with_msgs = (
+        db.query(Message.agent_id)
+        .filter(Message.created_at >= day_start, Message.created_at < day_end)
+        .distinct()
+        .subquery()
+    )
+    agents = (
+        db.query(Agent)
+        .filter(
+            Agent.project == project_name,
+            Agent.is_subagent == False,
+            Agent.id.in_(db.query(agent_ids_with_msgs.c.agent_id)),
+        )
+        .order_by(Agent.created_at)
+        .all()
+    )
+    if not agents:
+        return ""
+
+    # ---- collect raw data per session ----
+    sessions: list[dict] = []
+    for agent in agents:
+        label = (agent.name or agent.id)[:120]
+
+        messages = (
+            db.query(Message)
+            .filter(Message.agent_id == agent.id)
+            .order_by(Message.created_at)
+            .all()
+        )
+
+        # Time range from messages (more accurate than agent.created_at)
+        t_start = messages[0].created_at.strftime("%H:%M") if messages else "?"
+        t_end = messages[-1].created_at.strftime("%H:%M") if messages else "?"
+
+        header_parts = [f"### Conversation [{t_start}–{t_end}]: {label}"]
+        if agent.task_id:
+            task = db.get(Task, agent.task_id)
+            if task:
+                header_parts.append(f"Task: {task.title}")
+                if task.description:
+                    header_parts.append(f"Description: {task.description[:500]}")
+        header = "\n".join(header_parts)
+
+        sessions.append({"header": header, "messages": messages})
+
+    # ---- Pass 1: slim summary for every session ----
+    def _slim_block(s: dict) -> str:
+        parts = [s["header"]]
+        msgs = s["messages"]
+        if not msgs:
+            return parts[0]
+        first_user = next((m for m in msgs if m.role.value == "user"), None)
+        last_asst = next((m for m in reversed(msgs) if m.role.value == "assistant"), None)
+        parts.append(f"\n({len(msgs)} messages)")
+        if first_user:
+            c = _strip_agent_preamble(first_user.content or "")[:1500]
+            parts.append(f"[user] {c}")
+        if last_asst and last_asst is not first_user:
+            c = _strip_agent_preamble(last_asst.content or "")[:1500]
+            parts.append(f"[assistant] {c}")
+        return "\n".join(parts)
+
+    slim_blocks = [_slim_block(s) for s in sessions]
+    slim_total = sum(len(b) for b in slim_blocks)
+
+    # If even slim blocks exceed budget, return them truncated
+    if slim_total >= _DAILY_SUMMARY_MAX_CONTEXT:
+        result_blocks, running = [], 0
+        for b in slim_blocks:
+            running += len(b)
+            result_blocks.append(b)
+            if running >= _DAILY_SUMMARY_MAX_CONTEXT:
+                break
+        return "\n\n---\n\n".join(result_blocks)
+
+    # ---- Pass 2: expand sessions with full conversation using remaining budget ----
+    remaining = _DAILY_SUMMARY_MAX_CONTEXT - slim_total
+    # Budget per session (equal share)
+    per_session_budget = remaining // len(sessions) if sessions else 0
+
+    full_blocks: list[str] = []
+    for i, s in enumerate(sessions):
+        msgs = s["messages"]
+        if not msgs or per_session_budget < 200:
+            full_blocks.append(slim_blocks[i])
+            continue
+
+        parts = [s["header"], "\nConversation:"]
+        conv_len = 0
+        for msg in msgs:
+            role = msg.role.value
+            content = _strip_agent_preamble(msg.content or "")
+            if len(content) > _DAILY_SUMMARY_MAX_MSG:
+                content = content[:_DAILY_SUMMARY_MAX_MSG] + "\n...(truncated)"
+            line = f"[{role}] {content}"
+            conv_len += len(line)
+            if conv_len > per_session_budget:
+                parts.append("...(remaining messages omitted)")
+                break
+            parts.append(line)
+
+        full_blocks.append("\n".join(parts))
+
+    return "\n\n---\n\n".join(full_blocks)
 
 
 def _resolve_session_jsonl(
@@ -1901,52 +2098,10 @@ class AgentDispatcher:
             if existing:
                 continue
 
-            # Gather today's completed tasks (use UTC date to match UTC completed_at)
-            today_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time()).replace(tzinfo=timezone.utc)
-            completed_tasks = (
-                db.query(Task)
-                .filter(
-                    Task.project_name == proj.name,
-                    Task.status == TaskStatus.COMPLETE,
-                    Task.completed_at >= today_start,
-                )
-                .order_by(Task.completed_at)
-                .all()
-            )
-
-            if not completed_tasks:
-                logger.info("Auto-summary skipped for %s: no tasks completed today", proj.name)
+            session_context = _gather_daily_session_context(db, proj.name)
+            if not session_context:
+                logger.info("Auto-summary skipped for %s: no agent sessions today", proj.name)
                 continue
-
-            # Build rich session context: task info + full conversation turns
-            session_blocks = []
-            for t in completed_tasks:
-                block_parts = [f"### Task: {t.title}"]
-                if t.description:
-                    block_parts.append(f"Description: {t.description[:500]}")
-                if t.agent_summary:
-                    block_parts.append(f"Agent summary: {t.agent_summary[:500]}")
-
-                # Fetch conversation turns for this task's agent
-                if t.agent_id:
-                    messages = (
-                        db.query(Message)
-                        .filter(Message.agent_id == t.agent_id)
-                        .order_by(Message.created_at)
-                        .all()
-                    )
-                    if messages:
-                        block_parts.append("\nConversation:")
-                        for msg in messages:
-                            role = msg.role.value
-                            # Truncate very long messages but keep enough for understanding
-                            content = msg.content[:2000] if msg.content else ""
-                            content = _strip_agent_preamble(content)
-                            block_parts.append(f"[{role}] {content}")
-
-                session_blocks.append("\n".join(block_parts))
-
-            session_context = "\n\n---\n\n".join(session_blocks)
 
             # Auto-apply: run summary and append result (no review step)
             _progress_job_set(proj.name, status="running")
@@ -1968,28 +2123,56 @@ class AgentDispatcher:
         from main import _progress_job_set, _progress_job_clear
 
         today = date.today().isoformat()
-        prompt = f"""You are a project analyst. Read the following completed task sessions from today and produce a concise daily summary.
+
+        # Read existing PROGRESS.md so LLM can avoid duplicates and contradictions
+        progress_path = os.path.join(project_path, "PROGRESS.md")
+        existing_progress = ""
+        try:
+            if os.path.isfile(progress_path):
+                with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
+                    existing_progress = f.read()
+        except OSError:
+            pass
+        if len(existing_progress) > 50_000:
+            existing_progress = existing_progress[-50_000:]
+
+        existing_block = ""
+        if existing_progress:
+            existing_block = f"""
+
+=== EXISTING PROGRESS.md (for deduplication) ===
+{existing_progress}
+=== END EXISTING ===
+
+"""
+
+        prompt = f"""You are a project analyst. Read ALL the following conversations from {today} thoroughly. Extract every NEW and meaningful insight, decision, bug fix, design choice, and lesson learned.
 
 STRICT RULES:
 1. Output ONLY the summary section — no preamble, no explanation, no markdown fences.
 2. Use EXACTLY this format:
 
-## {today} — Daily Summary
-- [task title]: what was done, key lesson or gotcha (1 line each)
+## {today} — Daily Insights
+1. [insight or decision — one sentence, specific and actionable]
+2. ...
 
-3. Focus on: what was accomplished, problems encountered, solutions found, lessons for future agents.
-4. Deduplicate — if multiple tasks did similar work, merge into one bullet.
-5. Max 15 lines total. Be concise but insightful.
-6. Do NOT output anything before the ## heading or after the last bullet.
-
-Here are today's completed task sessions with full conversation history:
+3. Synthesize across all conversations — do NOT organize by session.
+4. Focus on: new discoveries, architectural decisions, bug root causes & fixes, design choices, gotchas, and lessons that future agents should know.
+5. Omit routine/trivial activity (echo tests, simple file creates). Only include things worth remembering.
+6. Each insight must be self-contained — readable without context of the original conversation.
+7. **DEDUPLICATION**: The existing PROGRESS.md is provided below. Do NOT repeat insights already captured there. Only output genuinely new information from today. If today's conversation contradicts or supersedes a previous insight, note the update explicitly (e.g., "Updated: X is now Y, replacing previous approach Z").
+8. Max 25 numbered items. Be concise but specific — include file names, function names, and concrete details.
+9. Do NOT output anything before the ## heading or after the last numbered item. If there are no new insights, output only the heading with a single item "No new insights today."
+{existing_block}
+Here are today's conversations (with timestamps):
 
 {session_context}"""
 
         try:
             result = subprocess.run(
-                [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
-                capture_output=True, text=True, timeout=300,
+                [CLAUDE_BIN, "-p", "-", "--output-format", "text"],
+                input=prompt,
+                capture_output=True, text=True, timeout=600,
                 cwd=project_path,
             )
             if result.returncode != 0:
@@ -2008,7 +2191,7 @@ Here are today's completed task sessions with full conversation history:
 
         # Guard: reject conversational / non-markdown output from LLM
         first_line = new_section.lstrip().split("\n", 1)[0].lower()
-        _REFUSAL_MARKERS = ("since ", "it seems", "i ", "the file", "could you", "no tasks",
+        _REFUSAL_MARKERS = ("since ", "it seems", "i ", "the file", "could you",
                             "unfortunately", "i'm ", "i cannot", "here is", "sure,", "certainly")
         if not first_line.startswith("#") and any(first_line.startswith(m) for m in _REFUSAL_MARKERS):
             logger.warning("Auto-summary for %s rejected: LLM returned conversational text: %.100s",
@@ -2040,6 +2223,19 @@ Here are today's completed task sessions with full conversation history:
             logger.info("Auto-appended daily PROGRESS.md summary for %s", project_name)
         except OSError as e:
             logger.warning("Failed to write PROGRESS.md for %s: %s", project_name, e)
+
+        # Store parsed insights into DB + FTS5 for RAG retrieval
+        try:
+            fts_db = SessionLocal()
+            try:
+                n = store_insights(fts_db, project_name, today, new_section)
+                if n:
+                    logger.info("Stored %d insights in FTS5 for %s", n, project_name)
+            finally:
+                fts_db.close()
+        except Exception:
+            logger.warning("Failed to store FTS5 insights for %s", project_name, exc_info=True)
+
         _progress_job_clear(project_name)
 
     def _emit(self, coro):
@@ -2192,7 +2388,7 @@ Here are today's completed task sessions with full conversation history:
                 logger.warning("Failed to capture git HEAD for task %s in %s", task.id, proj.path, exc_info=True)
 
         model = task.model or proj.default_model or CC_MODEL
-        prompt = self._build_task_prompt(task)
+        prompt = self._build_task_prompt(task, db)
 
         # Create agent record — IDLE so _dispatch_pending_messages picks it up
         agent = Agent(
@@ -2228,7 +2424,7 @@ Here are today's completed task sessions with full conversation history:
 
         return agent.id
 
-    def _build_task_prompt(self, task: Task) -> str:
+    def _build_task_prompt(self, task: Task, db: Session | None = None) -> str:
         """Build the full prompt for a task agent."""
         parts = [f"# Task: {task.title}"]
         if task.description:
@@ -2246,8 +2442,25 @@ Here are today's completed task sessions with full conversation history:
                 "attempt didn't fully satisfy the requirements and append it to PROGRESS.md "
                 "in the project root. Then proceed with the task."
             )
+
+        # Inject relevant insights from FTS5 RAG
+        project_name = task.project_name or task.project
+        insights_block = ""
+        if db and project_name:
+            try:
+                query_text = f"{task.title} {task.description or ''}"
+                insights = query_insights(db, project_name, query_text, limit=15)
+                if insights:
+                    insights_block = "\n".join(f"- {i}" for i in insights)
+            except Exception:
+                logger.debug("Failed to query insights for task %s", task.id, exc_info=True)
+
         parts.append("\n## Before You Start")
-        parts.append("- Read PROGRESS.md in the project root (if it exists), focusing on entries relevant to this task — avoid repeating past mistakes")
+        if insights_block:
+            parts.append("- Review these relevant past insights and lessons (avoid repeating past mistakes):")
+            parts.append(insights_block)
+        else:
+            parts.append("- Read PROGRESS.md in the project root (if it exists), focusing on entries relevant to this task — avoid repeating past mistakes")
         parts.append("\n## Guidelines")
         parts.append("- Work autonomously — do not ask for confirmation, interviews, or permissions")
         parts.append(
@@ -2307,6 +2520,14 @@ Here are today's completed task sessions with full conversation history:
                 )
                 if last_msg:
                     task.agent_summary = last_msg.content[:2000] if last_msg.content else None
+                    # Auto-store agent summary as an insight for RAG
+                    if task.agent_summary and (task.project_name or task.project):
+                        try:
+                            today_str = _utcnow().strftime("%Y-%m-%d")
+                            summary_line = f"1. [Task: {task.title[:80]}] {task.agent_summary[:500]}"
+                            store_insights(db, task.project_name or task.project, today_str, summary_line)
+                        except Exception:
+                            pass
                 # If agent died without producing any output → FAILED, not REVIEW
                 if not last_msg:
                     try:
@@ -3376,11 +3597,26 @@ Here are today's completed task sessions with full conversation history:
         if include_history and db:
             history_block = self._format_conversation_history(agent, db)
 
+        # Inject relevant insights from FTS5 RAG
+        insights_line = "Also read PROGRESS.md (if it exists) for recent insights, past decisions, and known gotchas.\n"
+        if db:
+            try:
+                insights = query_insights(db, project.name, user_message, limit=10)
+                if insights:
+                    items = "\n".join(f"  - {i}" for i in insights)
+                    insights_line = (
+                        f"Relevant past insights for this project:\n{items}\n"
+                        f"Also read PROGRESS.md if you need more context.\n"
+                    )
+            except Exception:
+                pass  # fall back to generic instruction
+
         return (
             f"You are working in project: {project.display_name}\n"
             f"Project path: {project.path}\n"
             f"\n"
             f"First read the project's CLAUDE.md to understand project conventions.\n"
+            f"{insights_line}"
             f"{history_block}\n"
             f"{user_message}\n\n"
             f"If you make code changes, commit with message format: "

@@ -356,6 +356,23 @@ def init_db():
             ))
             conn.commit()
 
+        # --- progress_insights FTS5 ---
+        tables = [r[0] for r in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )).fetchall()]
+        if "progress_insights_fts" not in tables:
+            conn.execute(text(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS progress_insights_fts "
+                "USING fts5(content, content_rowid='id', tokenize='porter unicode61')"
+            ))
+            # Backfill existing rows if the table was just created
+            if "progress_insights" in tables:
+                conn.execute(text(
+                    "INSERT INTO progress_insights_fts(rowid, content) "
+                    "SELECT id, content FROM progress_insights"
+                ))
+            conn.commit()
+
     # Ensure jwt_secret exists in SystemConfig
     from auth import get_jwt_secret
     db = SessionLocal()

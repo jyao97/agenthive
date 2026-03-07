@@ -2205,30 +2205,57 @@ def _summarize_progress_background(project_name: str, project_path: str,
     """Run claude -p in a thread to generate a daily summary section (incremental append)."""
     from datetime import date
     today = date.today().isoformat()
+    progress_path = os.path.join(project_path, "PROGRESS.md")
 
-    prompt = f"""You are a project analyst. Read the following completed task sessions from today and produce a concise daily summary.
+    # Read existing PROGRESS.md so LLM can avoid duplicates and contradictions
+    existing_progress = ""
+    try:
+        if os.path.isfile(progress_path):
+            with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
+                existing_progress = f.read()
+    except OSError:
+        pass
+    if len(existing_progress) > 50_000:
+        existing_progress = existing_progress[-50_000:]
+
+    existing_block = ""
+    if existing_progress:
+        existing_block = f"""
+
+=== EXISTING PROGRESS.md (for deduplication) ===
+{existing_progress}
+=== END EXISTING ===
+
+"""
+
+    prompt = f"""You are a project analyst. Read ALL the following conversations from {today} thoroughly. Extract every NEW and meaningful insight, decision, bug fix, design choice, and lesson learned.
 
 STRICT RULES:
 1. Output ONLY the summary section — no preamble, no explanation, no markdown fences.
 2. Use EXACTLY this format:
 
-## {today} — Daily Summary
-- [task title]: what was done, key lesson or gotcha (1 line each)
+## {today} — Daily Insights
+1. [insight or decision — one sentence, specific and actionable]
+2. ...
 
-3. Focus on: what was accomplished, problems encountered, solutions found, lessons for future agents.
-4. Deduplicate — if multiple tasks did similar work, merge into one bullet.
-5. Max 15 lines total. Be concise but insightful.
-6. Do NOT output anything before the ## heading or after the last bullet.
-
-Here are today's completed task sessions with full conversation history:
+3. Synthesize across all conversations — do NOT organize by session.
+4. Focus on: new discoveries, architectural decisions, bug root causes & fixes, design choices, gotchas, and lessons that future agents should know.
+5. Omit routine/trivial activity (echo tests, simple file creates). Only include things worth remembering.
+6. Each insight must be self-contained — readable without context of the original conversation.
+7. **DEDUPLICATION**: The existing PROGRESS.md is provided below. Do NOT repeat insights already captured there. Only output genuinely new information from today. If today's conversation contradicts or supersedes a previous insight, note the update explicitly (e.g., "Updated: X is now Y, replacing previous approach Z").
+8. Max 25 numbered items. Be concise but specific — include file names, function names, and concrete details.
+9. Do NOT output anything before the ## heading or after the last numbered item. If there are no new insights, output only the heading with a single item "No new insights today."
+{existing_block}
+Here are today's conversations (with timestamps):
 
 {session_context}"""
 
     from config import CLAUDE_BIN
     try:
         result = subprocess.run(
-            [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
-            capture_output=True, text=True, timeout=300,
+            [CLAUDE_BIN, "-p", "-", "--output-format", "text"],
+            input=prompt,
+            capture_output=True, text=True, timeout=600,
             cwd=project_path,
         )
         if result.returncode != 0:
@@ -2237,7 +2264,7 @@ Here are today's completed task sessions with full conversation history:
             return
         new_section = result.stdout.strip()
     except subprocess.TimeoutExpired:
-        _progress_job_set(project_name, status="error", error="Summary timed out (>5min)")
+        _progress_job_set(project_name, status="error", error="Summary timed out (>10min)")
         return
     except FileNotFoundError:
         _progress_job_set(project_name, status="error", error="Claude CLI not found")
@@ -2274,50 +2301,13 @@ async def summarize_progress(name: str, db: Session = Depends(get_db)):
     if existing and existing["status"] == "running":
         return {"status": "running"}
 
-    # Gather today's completed tasks with rich session context
-    from datetime import date
-    from agent_dispatcher import _strip_agent_preamble
-    today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
-    completed_tasks = (
-        db.query(Task)
-        .filter(
-            Task.project_name == name,
-            Task.status == TaskStatus.COMPLETE,
-            Task.completed_at >= today_start,
-        )
-        .order_by(Task.completed_at)
-        .all()
-    )
+    from agent_dispatcher import _gather_daily_session_context
+    session_context = _gather_daily_session_context(db, name)
 
-    if not completed_tasks:
+    if not session_context:
         _progress_job_set(name, status="complete",
-                         data={"message": "No tasks completed today"})
+                         data={"message": "No agent sessions today"})
         return {"status": "started"}
-
-    session_blocks = []
-    for t in completed_tasks:
-        block_parts = [f"### Task: {t.title}"]
-        if t.description:
-            block_parts.append(f"Description: {t.description[:500]}")
-        if t.agent_summary:
-            block_parts.append(f"Agent summary: {t.agent_summary[:500]}")
-        if t.agent_id:
-            messages = (
-                db.query(Message)
-                .filter(Message.agent_id == t.agent_id)
-                .order_by(Message.created_at)
-                .all()
-            )
-            if messages:
-                block_parts.append("\nConversation:")
-                for msg in messages:
-                    role = msg.role.value
-                    content = msg.content[:2000] if msg.content else ""
-                    content = _strip_agent_preamble(content)
-                    block_parts.append(f"[{role}] {content}")
-        session_blocks.append("\n".join(block_parts))
-
-    session_context = "\n\n---\n\n".join(session_blocks)
 
     _progress_job_set(name, status="running")
     thread = threading.Thread(
@@ -2375,6 +2365,16 @@ async def apply_progress(name: str, db: Session = Depends(get_db)):
             f.write(final_content)
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    # Store parsed insights into DB + FTS5 for RAG retrieval
+    try:
+        from datetime import date as _date
+        from agent_dispatcher import store_insights
+        n = store_insights(db, name, _date.today().isoformat(), new_section)
+        if n:
+            logger.info("Stored %d insights in FTS5 for %s", n, name)
+    except Exception:
+        logger.warning("Failed to store FTS5 insights for %s", name, exc_info=True)
 
     _progress_job_clear(name)
     return {"success": True, "content": final_content, "lines": len(final_content.splitlines())}
