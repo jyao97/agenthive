@@ -1436,7 +1436,7 @@ def _detect_tmux_pane_for_session(session_id: str, project_path: str) -> str | N
                     continue
     except _sp.TimeoutExpired as e:
         logger.debug("Tier 1 pane detection timed out for session %s: %s", session_id, e)
-    except (FileNotFoundError, OSError) as e:
+    except (FileNotFoundError, OSError, ValueError) as e:
         logger.warning("Tier 1 pane detection failed for session %s: %s", session_id, e)
 
     # ---- Tier 2: pane-first process tree walk ----
@@ -2150,6 +2150,7 @@ Here are today's completed task sessions with full conversation history:
                     ))
                     logger.info("Task %s dispatched to agent %s", task.id, agent_id)
             except Exception:
+                db.rollback()
                 logger.exception("Failed to dispatch task %s", task.id)
 
     def _create_task_agent(self, db: Session, task: Task, proj: Project) -> str | None:
@@ -2438,7 +2439,7 @@ Here are today's completed task sessions with full conversation history:
             if task.review_artifacts:
                 try:
                     artifacts = _json.loads(task.review_artifacts)
-                except Exception:
+                except (ValueError, TypeError):
                     logger.warning("Bad review_artifacts JSON for task %s", task.id, exc_info=True)
                     artifacts = {}
 
