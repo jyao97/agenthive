@@ -4812,6 +4812,13 @@ Here are today's completed task sessions with full conversation history:
                             missing.append((r, c, mt))
 
                 if missing and agent:
+                    # Build a list of existing agent messages for
+                    # prefix-match dedup (detect partial messages
+                    # that need updating instead of duplication).
+                    _existing_agent_msgs = [
+                        m for m in all_db
+                        if m.role == MessageRole.AGENT
+                    ]
                     for role, content, meta in missing:
                         meta_json = json.dumps(meta) if meta else None
                         if role == "user":
@@ -4824,15 +4831,35 @@ Here are today's completed task sessions with full conversation history:
                                 completed_at=_utcnow(),
                             ))
                         elif role == "assistant":
-                            db.add(Message(
-                                agent_id=agent_id,
-                                role=MessageRole.AGENT,
-                                content=content,
-                                status=MessageStatus.COMPLETED,
-                                source="cli",
-                                meta_json=meta_json,
-                                completed_at=_utcnow(),
-                            ))
+                            # Check if this is an update to a partial
+                            # message already in the DB (content grew
+                            # since last sync).
+                            updated = False
+                            for existing in _existing_agent_msgs:
+                                if (
+                                    len(existing.content) < len(content)
+                                    and content.startswith(
+                                        existing.content[:200]
+                                    )
+                                ):
+                                    existing.content = content
+                                    existing.completed_at = _utcnow()
+                                    if meta is not None:
+                                        existing.meta_json = _merge_interactive_meta(
+                                            existing.meta_json, meta,
+                                        )
+                                    updated = True
+                                    break
+                            if not updated:
+                                db.add(Message(
+                                    agent_id=agent_id,
+                                    role=MessageRole.AGENT,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    source="cli",
+                                    meta_json=meta_json,
+                                    completed_at=_utcnow(),
+                                ))
                     agent.last_message_preview = (conv_turns[-1][1] or "")[:200]
                     agent.last_message_at = _utcnow()
                     db.commit()
