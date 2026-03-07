@@ -384,17 +384,19 @@ def scaffold_project(project_name: str, project_path: str,
 {TEMPLATE_HEADER}. Rarely modified — only update when project structure or conventions change.
 
 ## Universal Rules
+- Think from first principles. Don't assume the user knows exactly what they want or the best way to get it. Start from the original requirement, question the approach, and suggest a better path if one exists
 - Think step by step. Investigate before coding — read relevant code, trace the full flow, print findings before proposing a fix
 - When a task is complex, break it into sub-tasks and spawn sub-agents to work in parallel
 - Never guess. If unsure, read the code, check logs, or run a test first
 - Every task must produce a visual verification artifact (screenshot, plot, diff, rendered output)
+- If the goal or motivation is unclear, stop and discuss before writing code. If the goal is clear but the path isn't optimal, say so and suggest the better approach
 
 ## Do NOT
 - Do not refactor or rename files unless the task explicitly requires it
 - Do not delete or modify tests unless asked
 - Do not change dependencies/package versions without explicit approval
 - Do not modify CLAUDE.md
-- Never prompt for user confirmation — make your best judgment and proceed. If truly blocked, write the blocker to PROGRESS.md and exit
+- Never prompt for confirmation on implementation details — make your best judgment and proceed. If truly blocked, write the blocker to PROGRESS.md and exit
 
 ## Output Rules
 - Keep responses concise — no long explanations unless asked
