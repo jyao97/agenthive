@@ -4,6 +4,7 @@ import os
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 from config import CC_MODEL, DB_PATH, VALID_MODELS
 
@@ -14,6 +15,7 @@ engine = create_engine(
     f"sqlite:///{DB_PATH}",
     connect_args={"check_same_thread": False},
     echo=False,
+    poolclass=NullPool,
 )
 
 
@@ -261,7 +263,7 @@ def init_db():
         ))
         conn.commit()
 
-        # Add skip_permissions, sync_mode, scheduled_at to tasks if missing
+        # Add skip_permissions, sync_mode to tasks if missing
         task_cols3 = _table_columns(conn, "tasks")
         if "skip_permissions" not in task_cols3:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN skip_permissions BOOLEAN NOT NULL DEFAULT 1"))
@@ -270,6 +272,34 @@ def init_db():
         if "scheduled_at" not in task_cols3:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN scheduled_at DATETIME"))
         conn.commit()
+
+        # Migrate scheduled_at → notify_at + dispatch_at on tasks
+        task_cols_sched = _table_columns(conn, "tasks")
+        if "notify_at" not in task_cols_sched:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN notify_at DATETIME"))
+        if "dispatch_at" not in task_cols_sched:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN dispatch_at DATETIME"))
+        conn.commit()
+
+        if "scheduled_at" in _table_columns(conn, "tasks"):
+            # Data migration: INBOX → notify_at, PLANNING+project → dispatch_at
+            conn.execute(text(
+                "UPDATE tasks SET notify_at = scheduled_at "
+                "WHERE scheduled_at IS NOT NULL AND status = 'INBOX'"
+            ))
+            conn.execute(text(
+                "UPDATE tasks SET dispatch_at = scheduled_at "
+                "WHERE scheduled_at IS NOT NULL AND status = 'PLANNING' "
+                "AND project_name IS NOT NULL AND project_name != ''"
+            ))
+            conn.execute(text(
+                "UPDATE tasks SET notify_at = scheduled_at "
+                "WHERE scheduled_at IS NOT NULL AND status = 'PLANNING' "
+                "AND (project_name IS NULL OR project_name = '')"
+            ))
+            conn.commit()
+            conn.execute(text("ALTER TABLE tasks DROP COLUMN scheduled_at"))
+            conn.commit()
 
         # Add task_id column to agents if missing
         agent_cols = _table_columns(conn, "agents")

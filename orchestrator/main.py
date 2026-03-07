@@ -3840,6 +3840,7 @@ async def _launch_tmux_background(
             agent = db.get(Agent, agent_id)
             if agent and agent.status != AgentStatus.STOPPED:
                 agent.status = AgentStatus.ERROR
+                agent.tmux_pane = None  # release pane so discovery doesn't conflict
                 db.commit()
                 ad._emit(emit_agent_update(agent_id, "ERROR", agent.project))
         finally:
