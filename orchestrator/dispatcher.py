@@ -143,7 +143,7 @@ class TaskDispatcher:
                         url=f"/tasks/{task.id}",
                     )
             except Exception:
-                logger.debug("Push notification failed for task %s", task.id)
+                logger.warning("Push notification failed for task %s", task.id, exc_info=True)
 
             # Clean up process tracking
             self.worker_mgr._processes.pop(task.container_id, None)

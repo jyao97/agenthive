@@ -33,6 +33,7 @@ def is_notification_enabled(category: str) -> bool:
         finally:
             db.close()
     except Exception:
+        logger.warning("Failed to check notification setting for %s", category, exc_info=True)
         return True  # default to enabled on error
 
 

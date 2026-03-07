@@ -100,7 +100,7 @@ def _detect_tech_stack(project_path: str) -> str:
             if "ros" in reqs or "rospy" in reqs:
                 indicators.append("ROS")
         except OSError:
-            pass
+            logger.debug("Failed to read requirements.txt in %s", project_path, exc_info=True)
 
     pyproject = os.path.join(project_path, "pyproject.toml")
     if os.path.isfile(pyproject):
@@ -114,7 +114,7 @@ def _detect_tech_stack(project_path: str) -> str:
             if "fastapi" in content:
                 indicators.append("FastAPI")
         except OSError:
-            pass
+            logger.debug("Failed to read pyproject.toml in %s", project_path, exc_info=True)
 
     if os.path.isfile(os.path.join(project_path, "Cargo.toml")):
         indicators.append("Rust")
@@ -133,7 +133,7 @@ def _detect_tech_stack(project_path: str) -> str:
             if "rails" in content:
                 indicators.append("Rails")
         except OSError:
-            pass
+            logger.debug("Failed to read Gemfile in %s", project_path, exc_info=True)
 
     if os.path.isfile(os.path.join(project_path, "_config.yml")):
         if "Jekyll" not in indicators:
@@ -223,7 +223,7 @@ def _detect_commands(project_path: str) -> dict:
             if "lint" in scripts:
                 result["lint"] = f"`npm run lint`"
         except (json.JSONDecodeError, OSError):
-            pass
+            logger.debug("Failed to read package.json scripts in %s", project_path, exc_info=True)
 
     makefile = os.path.join(project_path, "Makefile")
     if os.path.isfile(makefile):
@@ -235,7 +235,7 @@ def _detect_commands(project_path: str) -> dict:
                     if result[target] == "N/A":
                         result[target] = f"`make {target}`"
         except OSError:
-            pass
+            logger.debug("Failed to read Makefile in %s", project_path, exc_info=True)
 
     pyproject = os.path.join(project_path, "pyproject.toml")
     if os.path.isfile(pyproject):
@@ -248,7 +248,7 @@ def _detect_commands(project_path: str) -> dict:
                 if result["lint"] == "N/A":
                     result["lint"] = "`ruff check .`" if "ruff" in content.lower() else "`black --check .`"
         except OSError:
-            pass
+            logger.debug("Failed to read pyproject.toml commands in %s", project_path, exc_info=True)
 
     if os.path.isfile(os.path.join(project_path, "Gemfile")):
         if result["build"] == "N/A":

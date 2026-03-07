@@ -57,7 +57,7 @@ class ConnectionManager:
                 await asyncio.wait_for(ws.send_text(message), timeout=_SEND_TIMEOUT)
                 return ws, True
             except Exception:
-                logger.debug("WS send failed for %s: %s", ws.client, exc_info=True)
+                logger.debug("WS send failed for %s", ws.client, exc_info=True)
                 return ws, False
 
         results = await asyncio.gather(*[_send(ws) for ws in list(self.active)])
@@ -92,7 +92,7 @@ async def websocket_endpoint(ws: WebSocket):
     from database import SessionLocal
     from auth import get_password_hash, get_jwt_secret, verify_token
 
-    if not os.environ.get("DISABLE_AUTH", "").strip() in ("1", "true", "yes"):
+    if os.environ.get("DISABLE_AUTH", "").strip() not in ("1", "true", "yes"):
         db = SessionLocal()
         try:
             pw_hash = get_password_hash(db)

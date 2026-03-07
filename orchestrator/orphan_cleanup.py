@@ -1,9 +1,12 @@
 """Scan and delete orphaned session JSONL files and output logs."""
 
 import glob
+import logging
 import os
 
 from sqlalchemy import text
+
+logger = logging.getLogger("orchestrator.orphan_cleanup")
 
 from config import CLAUDE_HOME
 from database import engine
