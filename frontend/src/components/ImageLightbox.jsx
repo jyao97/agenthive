@@ -509,7 +509,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           key={current.src}
           src={current.src}
           poster={current.src + ".thumb.jpg"}
-          preload="none"
+          preload="metadata"
           playsInline
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}

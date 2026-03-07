@@ -158,11 +158,62 @@ function StorageChart({ data }) {
   );
 }
 
+function TokenUsageSection({ tokenUsage, onRefresh }) {
+  const [spinning, setSpinning] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setSpinning(true);
+    await onRefresh();
+    setTimeout(() => setSpinning(false), 400);
+  }, [onRefresh]);
+
+  return (
+    <section>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-xs font-semibold text-dim uppercase tracking-wider">Token Usage</h2>
+        <button
+          type="button"
+          onClick={handleRefresh}
+          title="Refresh token usage"
+          className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-input transition-colors"
+        >
+          <svg className={`w-3.5 h-3.5 text-dim ${spinning ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+      </div>
+      <div className="rounded-xl bg-surface shadow-card p-4 space-y-3">
+        {!tokenUsage || tokenUsage._error ? (
+          <p className="text-xs text-faint">
+            {tokenUsage?._error ? "Unable to fetch — tap refresh to retry" : "Tap refresh to load"}
+          </p>
+        ) : (
+          <>
+            {tokenUsage.session && (
+              <UsageBar
+                label="Session (5h)"
+                pct={tokenUsage.session.utilization ?? 0}
+                detail={`${tokenUsage.session.utilization ?? 0}% — resets ${formatResetTime(tokenUsage.session.resets_at)}`}
+              />
+            )}
+            {tokenUsage.weekly && (
+              <UsageBar
+                label="Weekly (7d)"
+                pct={tokenUsage.weekly.utilization ?? 0}
+                detail={`${tokenUsage.weekly.utilization ?? 0}% — resets ${formatResetTime(tokenUsage.weekly.resets_at)}`}
+              />
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function MonitorPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
   const {
     health, healthError, agents, agentCounts, processes, sysStats, tokenUsage, storageStats,
-    refresh, activate, deactivate,
+    refresh, refreshTokenUsage, activate, deactivate,
   } = useMonitor();
   const [refreshing, setRefreshing] = useState(false);
   const [orphanBusy, setOrphanBusy] = useState(false);
@@ -307,28 +358,8 @@ export default function MonitorPage({ theme, onToggleTheme }) {
           </section>
         )}
 
-        {/* Token Usage */}
-        {tokenUsage && (
-          <section>
-            <h2 className="text-xs font-semibold text-dim uppercase tracking-wider mb-2">Token Usage</h2>
-            <div className="rounded-xl bg-surface shadow-card p-4 space-y-3">
-              {tokenUsage.session && (
-                <UsageBar
-                  label="Session (5h)"
-                  pct={tokenUsage.session.utilization ?? 0}
-                  detail={`${tokenUsage.session.utilization ?? 0}% — resets ${formatResetTime(tokenUsage.session.resets_at)}`}
-                />
-              )}
-              {tokenUsage.weekly && (
-                <UsageBar
-                  label="Weekly (7d)"
-                  pct={tokenUsage.weekly.utilization ?? 0}
-                  detail={`${tokenUsage.weekly.utilization ?? 0}% — resets ${formatResetTime(tokenUsage.weekly.resets_at)}`}
-                />
-              )}
-            </div>
-          </section>
-        )}
+        {/* Token Usage — manual refresh only */}
+        <TokenUsageSection tokenUsage={tokenUsage} onRefresh={refreshTokenUsage} />
 
         {/* Storage */}
         <StorageChart data={storageStats} />

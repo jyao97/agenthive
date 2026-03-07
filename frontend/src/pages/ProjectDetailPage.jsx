@@ -74,7 +74,7 @@ function AgentRow({ agent, onClick, starred, onToggleStar, onError, project, isS
     navigator.clipboard.writeText(agent.id).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
+    }).catch(() => {});
   };
 
   const handleStarClick = async (e) => {
@@ -192,7 +192,7 @@ function SessionRow({ session, project, projectActive, onResume, onError, onTogg
     navigator.clipboard.writeText(session.session_id).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
+    }).catch(() => {});
   };
 
   const handleStarClick = async (e) => {

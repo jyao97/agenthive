@@ -29,7 +29,7 @@ function ActionButtons({ src, filename, originalPath }) {
   const handleCopyPath = (e) => {
     e.stopPropagation();
     e.preventDefault();
-    navigator.clipboard.writeText(originalPath || filename);
+    navigator.clipboard.writeText(originalPath || filename).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };

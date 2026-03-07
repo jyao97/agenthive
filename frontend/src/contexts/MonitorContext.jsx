@@ -68,9 +68,12 @@ export function MonitorProvider({ children }) {
 
   const fetchUsage = useCallback(async () => {
     try {
-      setTokenUsage(await fetchTokenUsage());
+      const data = await fetchTokenUsage();
+      setTokenUsage(data);
     } catch (err) {
       console.error("MonitorContext: failed to fetch token usage:", err);
+      // Mark as error so UI can show a degraded state instead of hiding
+      setTokenUsage((prev) => prev ?? { _error: true });
     }
   }, []);
 
@@ -93,9 +96,9 @@ export function MonitorProvider({ children }) {
   const refreshAll = useCallback(async () => {
     await Promise.all([
       fetchHealth(), fetchAgents(), fetchProcesses(),
-      fetchSysStats(), fetchUsage(), fetchStorage(), fetchTasks(),
+      fetchSysStats(), fetchStorage(), fetchTasks(),
     ]);
-  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats, fetchUsage, fetchStorage, fetchTasks]);
+  }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats, fetchStorage, fetchTasks]);
 
   // Initial fetch on mount
   useEffect(() => { refreshAll(); }, [refreshAll]);
@@ -116,16 +119,16 @@ export function MonitorProvider({ children }) {
     }, 5000);
     // Health: every 10s
     const healthId = setInterval(fetchHealth, 10000);
-    // Token usage, storage, task stats: every 30s
+    // Storage, task stats: every 30s
     const slowId = setInterval(() => {
-      fetchUsage(); fetchStorage(); fetchTasks();
+      fetchStorage(); fetchTasks();
     }, 30000);
     return () => {
       clearInterval(fastId);
       clearInterval(healthId);
       clearInterval(slowId);
     };
-  }, [visible, monitorActive, fetchAgents, fetchProcesses, fetchSysStats, fetchHealth, fetchUsage, fetchStorage, fetchTasks]);
+  }, [visible, monitorActive, fetchAgents, fetchProcesses, fetchSysStats, fetchHealth, fetchStorage, fetchTasks]);
 
   const activate = useCallback(() => setMonitorActive(true), []);
   const deactivate = useCallback(() => setMonitorActive(false), []);
@@ -133,7 +136,7 @@ export function MonitorProvider({ children }) {
   return (
     <MonitorContext.Provider value={{
       health, healthError, agents, agentCounts, processes, sysStats, tokenUsage, storageStats, taskStats,
-      refresh: refreshAll, activate, deactivate,
+      refresh: refreshAll, refreshTokenUsage: fetchUsage, activate, deactivate,
     }}>
       {children}
     </MonitorContext.Provider>

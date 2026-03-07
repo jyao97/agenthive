@@ -1713,7 +1713,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // Notify backend which agent we're viewing (suppresses notifications)
   useEffect(() => {
     sendWsMessage({ type: "viewing", agent_id: id });
-    return () => sendWsMessage({ type: "viewing", agent_id: null });
+    return () => sendWsMessage({ type: "viewing", agent_id: null, _unview: id });
   }, [id, sendWsMessage]);
   useEffect(() => {
     if (!lastEvent) return;

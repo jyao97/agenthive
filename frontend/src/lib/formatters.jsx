@@ -201,7 +201,7 @@ function linkifyAgentIds(text, keyPrefix) {
         onDoubleClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          navigator.clipboard.writeText(agentId);
+          navigator.clipboard.writeText(agentId).catch(() => {});
         }}
         title="Click to open, double-tap to copy"
       >

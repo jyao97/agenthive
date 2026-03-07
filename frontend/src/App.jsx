@@ -10,6 +10,7 @@ import useIdleLock from "./hooks/useIdleLock";
 import usePageVisible from "./hooks/usePageVisible";
 import { MonitorProvider } from "./contexts/MonitorContext";
 import { ToastProvider } from "./contexts/ToastContext";
+import { WebSocketProvider } from "./contexts/WebSocketContext";
 import SplitScreenButton from "./components/SplitScreenButton";
 
 const MODULE_IMPORT_ERROR_PATTERNS = [
@@ -423,6 +424,7 @@ export default function App() {
             path="/*"
             element={
               <AuthGuard>
+                <WebSocketProvider>
                 <MonitorProvider>
                 <ErrorBoundary>
                   <Suspense fallback={<div/>}>
@@ -430,6 +432,7 @@ export default function App() {
                   </Suspense>
                 </ErrorBoundary>
                 </MonitorProvider>
+                </WebSocketProvider>
               </AuthGuard>
             }
           />
