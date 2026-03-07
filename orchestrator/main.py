@@ -489,8 +489,10 @@ async def health(request: Request):
     # Check DB
     try:
         db = SessionLocal()
-        db.execute(Agent.__table__.select().limit(1))
-        db.close()
+        try:
+            db.execute(Agent.__table__.select().limit(1))
+        finally:
+            db.close()
     except Exception:
         result.db = "error"
         result.status = "degraded"
@@ -2236,6 +2238,7 @@ Here are today's completed task sessions with full conversation history:
         _progress_job_set(project_name, status="error", error="Claude CLI not found")
         return
     except Exception as e:
+        logger.exception("Unexpected error in progress summary for %s", project_name)
         _progress_job_set(project_name, status="error", error=str(e))
         return
 
