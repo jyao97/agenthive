@@ -49,12 +49,15 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, onL
   const fabRef = useRef(null);
   const sizeRef = useRef({ w: 44, h: 44 });
   const [rb, setRB] = useState(null); // {right, bottom}
+  const rbRef = useRef(rb);
+  rbRef.current = rb;
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const absStart = useRef({ x: 0, y: 0 });
   const moved = useRef(false);
   const longPressTimer = useRef(null);
   const longPressFired = useRef(false);
+  const cachedBarH = useRef(0);
   const onClickRef = useRef(onClick);
   onClickRef.current = onClick;
   const onLongPressRef = useRef(onLongPress);
@@ -88,15 +91,19 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, onL
     }
   });
 
+  // Use a stable onStart via ref — avoids re-creating the callback when rb changes
   const onStart = useCallback((e) => {
     if (e.type === "mousedown" && e.button !== 0) return;
     const t = e.touches ? e.touches[0] : e;
     const { w, h } = sizeRef.current;
+    const currentRB = rbRef.current;
     dragStart.current = { x: t.clientX, y: t.clientY };
-    absStart.current = rb ? toAbs(rb, w, h) : { x: 0, y: 0 };
+    absStart.current = currentRB ? toAbs(currentRB, w, h) : { x: 0, y: 0 };
     moved.current = false;
     longPressFired.current = false;
     dragging.current = true;
+    // Cache bottom bar height once at drag start (expensive DOM query)
+    cachedBarH.current = detectBottomBarHeight();
     // Start long-press timer
     clearTimeout(longPressTimer.current);
     longPressTimer.current = setTimeout(() => {
@@ -105,11 +112,9 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, onL
       onLongPressRef.current?.();
     }, 600);
     e.preventDefault();
-  }, [rb]);
+  }, []); // stable — reads rb via rbRef
 
   useEffect(() => {
-    const { w, h } = sizeRef.current;
-
     const onMove = (e) => {
       if (!dragging.current) return;
       const t = e.touches ? e.touches[0] : e;
@@ -118,10 +123,10 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, onL
       if (!moved.current && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
       moved.current = true;
       clearTimeout(longPressTimer.current); // Cancel long-press on drag
-      const abs = { x: absStart.current.x + dx, y: absStart.current.y + dy };
-      const barH = detectBottomBarHeight();
-      const minBottom = barH > 0 ? barH + 8 : 0;
-      setRB(clampRB(toRB(abs, w, h), w, h, minBottom));
+      // Direct DOM manipulation — no React re-render during drag
+      if (fabRef.current) {
+        fabRef.current.style.transform = `translate(${dx}px, ${dy}px)`;
+      }
     };
 
     const onEnd = () => {
@@ -129,13 +134,19 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, onL
       dragging.current = false;
       clearTimeout(longPressTimer.current);
       if (moved.current) {
-        // Dragged — save position, do NOT trigger click
-        setRB((p) => {
-          if (p) {
-            try { localStorage.setItem(storageKey, JSON.stringify(p)); } catch { /* ok */ }
-          }
-          return p;
-        });
+        // Commit final position to React state (single re-render)
+        const el = fabRef.current;
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          el.style.transform = "";
+          const { w, h } = sizeRef.current;
+          const abs = { x: rect.left, y: rect.top };
+          const barH = cachedBarH.current;
+          const minBottom = barH > 0 ? barH + 8 : 0;
+          const final_ = clampRB(toRB(abs, w, h), w, h, minBottom);
+          setRB(final_);
+          try { localStorage.setItem(storageKey, JSON.stringify(final_)); } catch { /* ok */ }
+        }
       } else if (!longPressFired.current) {
         // Not dragged, not long-pressed — this was a tap
         onClickRef.current?.();
@@ -170,7 +181,7 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, onL
       onTouchStart={onStart}
       onClick={blockClick}
       className={className}
-      style={{ position: "fixed", right: rb.right, bottom: rb.bottom, zIndex: 50, touchAction: "none" }}
+      style={{ position: "fixed", right: rb.right, bottom: rb.bottom, zIndex: 50, touchAction: "none", willChange: "transform" }}
     >
       {children}
     </button>
