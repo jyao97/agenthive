@@ -5291,7 +5291,21 @@ async def serve_project_file(project: str, path: str, request: Request, db: Sess
         if fallback.startswith(base_dir + os.sep) and os.path.isfile(fallback):
             full_path = fallback
         else:
-            raise HTTPException(status_code=404, detail="File not found")
+            # Fallback 2: the agent may have used a path relative to a
+            # subdirectory (e.g. worktree or nested repo).  Walk one level
+            # of subdirectories to find the file.
+            found = False
+            for entry in os.listdir(base_dir):
+                sub = os.path.join(base_dir, entry)
+                if not os.path.isdir(sub):
+                    continue
+                candidate = os.path.realpath(os.path.join(sub, clean))
+                if candidate.startswith(base_dir + os.sep) and os.path.isfile(candidate):
+                    full_path = candidate
+                    found = True
+                    break
+            if not found:
+                raise HTTPException(status_code=404, detail="File not found")
 
     media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
     return _serve_file_with_range(full_path, media_type, request)
