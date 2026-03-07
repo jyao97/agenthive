@@ -5276,6 +5276,12 @@ async def serve_project_file(project: str, path: str, request: Request, db: Sess
     # 2. Strip leading project-directory-name prefix (e.g. "splitvla/file.webp"
     #    when the project root is already splitvla/)
     clean = path
+    # Strip double-prefix: path may contain "api/files/<other_project>/rest"
+    # when the message stored a full URL and the frontend double-wrapped it.
+    import re as _re
+    _dbl = _re.match(r"api/files/[^/]+/(.+)", clean)
+    if _dbl:
+        clean = _dbl.group(1)
     if clean.startswith(base_dir + "/"):
         clean = clean[len(base_dir) + 1:]
     elif clean.startswith(base_name + "/"):
@@ -5304,6 +5310,34 @@ async def serve_project_file(project: str, path: str, request: Request, db: Sess
                     full_path = candidate
                     found = True
                     break
+            # Fallback 3: the file may belong to a different project
+            # (e.g. agent in project A references a file produced in project B).
+            # Search all registered project directories.
+            if not found:
+                for other in db.query(Project).filter(Project.name != project).all():
+                    other_base = os.path.realpath(other.path)
+                    for root_candidate in [other_base]:
+                        candidate = os.path.realpath(os.path.join(root_candidate, clean))
+                        if candidate.startswith(other_base + os.sep) and os.path.isfile(candidate):
+                            full_path = candidate
+                            found = True
+                            break
+                        # Also check one level of subdirectories
+                        if os.path.isdir(root_candidate):
+                            for entry in os.listdir(root_candidate):
+                                sub = os.path.join(root_candidate, entry)
+                                if not os.path.isdir(sub):
+                                    continue
+                                candidate = os.path.realpath(os.path.join(sub, clean))
+                                if candidate.startswith(other_base + os.sep) and os.path.isfile(candidate):
+                                    full_path = candidate
+                                    found = True
+                                    break
+                        if found:
+                            break
+                    if found:
+                        break
+
             if not found:
                 raise HTTPException(status_code=404, detail="File not found")
 
