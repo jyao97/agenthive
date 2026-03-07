@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 from fastapi import WebSocket
@@ -91,17 +92,18 @@ async def websocket_endpoint(ws: WebSocket):
     from database import SessionLocal
     from auth import get_password_hash, get_jwt_secret, verify_token
 
-    db = SessionLocal()
-    try:
-        pw_hash = get_password_hash(db)
-        if pw_hash is not None:
-            token = ws.query_params.get("token", "")
-            jwt_secret = get_jwt_secret(db)
-            if not token or not verify_token(token, jwt_secret):
-                await ws.close(code=4001, reason="Unauthorized")
-                return
-    finally:
-        db.close()
+    if not os.environ.get("DISABLE_AUTH", "").strip() in ("1", "true", "yes"):
+        db = SessionLocal()
+        try:
+            pw_hash = get_password_hash(db)
+            if pw_hash is not None:
+                token = ws.query_params.get("token", "")
+                jwt_secret = get_jwt_secret(db)
+                if not token or not verify_token(token, jwt_secret):
+                    await ws.close(code=4001, reason="Unauthorized")
+                    return
+        finally:
+            db.close()
 
     await ws_manager.connect(ws)
 
