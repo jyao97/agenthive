@@ -91,23 +91,23 @@ def delete_orphans(scan_result: dict) -> dict:
             os.remove(f["path"])
             freed += f["size"]
             deleted_sessions += 1
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("Failed to remove orphan session %s: %s", f["path"], e)
 
     for f in scan_result.get("orphan_logs", []):
         try:
             os.remove(f["path"])
             freed += f["size"]
             deleted_logs += 1
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("Failed to remove orphan log %s: %s", f["path"], e)
 
     for d in scan_result.get("empty_dirs", []):
         try:
             os.rmdir(d)
             deleted_dirs += 1
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("Failed to remove empty dir %s: %s", d, e)
 
     return {
         "deleted_sessions": deleted_sessions,

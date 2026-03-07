@@ -56,6 +56,7 @@ class ConnectionManager:
                 await asyncio.wait_for(ws.send_text(message), timeout=_SEND_TIMEOUT)
                 return ws, True
             except Exception:
+                logger.debug("WS send failed for %s: %s", ws.client, exc_info=True)
                 return ws, False
 
         results = await asyncio.gather(*[_send(ws) for ws in list(self.active)])
@@ -72,6 +73,7 @@ class ConnectionManager:
             try:
                 await asyncio.wait_for(ws.send_text(ping_msg), timeout=_SEND_TIMEOUT)
             except Exception:
+                logger.debug("WS ping failed for %s", ws.client, exc_info=True)
                 disconnected.append(ws)
         if disconnected:
             for ws in disconnected:
