@@ -1669,6 +1669,11 @@ class AgentDispatcher:
         # agent_id -> {pid_str, output_file, message_id, started_at, last_activity}
         self._active_execs: dict[str, dict] = {}
 
+        # Recently-harvested agent IDs — protects against _reap_dead_agents
+        # killing agents in the brief window between harvest (pop from
+        # _active_execs) and the next dispatch adding them back.
+        self._recently_harvested: set[str] = set()
+
         # Track stale session recovery retries per agent to avoid infinite loops.
         # agent_id -> consecutive retry count
         self._stale_session_retries: dict[str, int] = {}
@@ -2492,6 +2497,9 @@ Here are today's completed task sessions with full conversation history:
         # Invalidate per-tick tmux map cache
         self._tmux_map_cache = None
 
+        # Clear recently-harvested set from previous tick
+        self._recently_harvested.clear()
+
         # Refresh tmux pane-attached cache for notification suppression
         self._refresh_pane_attached()
 
@@ -2530,6 +2538,10 @@ Here are today's completed task sessions with full conversation history:
         self._cli_detect_counter += 1
         if self._cli_detect_counter >= self._cli_detect_interval:
             self._cli_detect_counter = 0
+            # Flush in-memory status changes (from harvest/dispatch above)
+            # so DB queries in _reap_dead_agents see current state, not stale
+            # EXECUTING status from the previous commit (autoflush=False).
+            db.flush()
             self._auto_detect_cli_sessions(db)
             self._dedup_pane_agents(db)
             self._reap_dead_agents(db)
@@ -2814,6 +2826,7 @@ Here are today's completed task sessions with full conversation history:
 
         for agent_id in done_agents:
             info = self._active_execs.pop(agent_id, None)
+            self._recently_harvested.add(agent_id)
             self._cancel_stream_task(agent_id)
             # Clean up output file to prevent /tmp accumulation
             if info:
@@ -3820,6 +3833,8 @@ Here are today's completed task sessions with full conversation history:
                 if agent.status == AgentStatus.EXECUTING:
                     if agent.id in self._active_execs:
                         continue
+                    if agent.id in self._recently_harvested:
+                        continue
                     # Not tracked — subprocess vanished; mark STOPPED
                     logger.info(
                         "Orchestrator agent %s EXECUTING but not tracked — stopping",
@@ -3843,6 +3858,8 @@ Here are today's completed task sessions with full conversation history:
             ):
                 if agent.status == AgentStatus.EXECUTING:
                     if agent.id in self._active_execs:
+                        continue
+                    if agent.id in self._recently_harvested:
                         continue
                     logger.info(
                         "CLI agent %s EXECUTING but not tracked — stopping",
