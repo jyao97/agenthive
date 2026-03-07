@@ -231,6 +231,17 @@ def _merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> 
     return json.dumps(merged)
 
 
+# Image metadata injected by Claude Code's Read tool — internal only, hide from UI
+_IMAGE_META_RE = re.compile(
+    r"^\[Image: original \d+x\d+, displayed at \d+x\d+\."
+)
+
+
+def _is_image_metadata(text: str) -> bool:
+    """Return True if text is CLI-generated image metadata (not user-facing)."""
+    return bool(_IMAGE_META_RE.match(text.strip()))
+
+
 def _format_tool_summary(name: str, input_data: dict) -> str | None:
     """Format a tool call as a brief one-line markdown summary."""
     if name == "Bash":
@@ -305,7 +316,8 @@ def _parse_stream_parts(
                         if not isinstance(block, dict):
                             continue
                         if block.get("type") == "text":
-                            parts.append(("text", block["text"]))
+                            if not _is_image_metadata(block.get("text", "")):
+                                parts.append(("text", block["text"]))
                         elif block.get("type") == "tool_use":
                             tool_name = block.get("name", "")
                             tool_input = block.get("input", {})
@@ -831,7 +843,8 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "text" and block.get("text", "").strip():
-                    assistant_parts.append(("text", block["text"]))
+                    if not _is_image_metadata(block["text"]):
+                        assistant_parts.append(("text", block["text"]))
                 elif block.get("type") == "tool_use":
                     tool_name = block.get("name", "")
                     tool_input = block.get("input", {})
@@ -1519,6 +1532,11 @@ class AgentDispatcher:
         self._stale_session_retries: dict[str, int] = {}
         self._max_stale_retries = 3
 
+        # Track timeout retries per message to avoid infinite retry loops.
+        # message_id -> retry count
+        self._timeout_retries: dict[str, int] = {}
+        self._max_timeout_retries = 2
+
         # Streaming output loops: agent_id -> asyncio.Task
         self._stream_tasks: dict[str, asyncio.Task] = {}
 
@@ -1722,7 +1740,7 @@ class AgentDispatcher:
             return
 
         import threading
-        from main import _progress_job_get, _summarize_progress_background, _progress_job_set
+        from main import _progress_job_get, _progress_job_set
 
         for proj in projects:
             # Skip if already running or completed today
@@ -1743,23 +1761,45 @@ class AgentDispatcher:
                 .all()
             )
 
-            parts = []
+            if not completed_tasks:
+                logger.info("Auto-summary skipped for %s: no tasks completed today", proj.name)
+                continue
+
+            # Build rich session context: task info + full conversation turns
+            session_blocks = []
             for t in completed_tasks:
-                summary = t.agent_summary or t.title
-                parts.append(f"- {t.title}: {summary[:300]}")
-            task_summaries = "\n".join(parts) if parts else ""
+                block_parts = [f"### Task: {t.title}"]
+                if t.description:
+                    block_parts.append(f"Description: {t.description[:500]}")
+                if t.agent_summary:
+                    block_parts.append(f"Agent summary: {t.agent_summary[:500]}")
 
-            progress_path = os.path.join(proj.path, "PROGRESS.md")
-            current_progress = ""
-            if os.path.isfile(progress_path):
-                with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
-                    current_progress = f.read()
+                # Fetch conversation turns for this task's agent
+                if t.agent_id:
+                    messages = (
+                        db.query(Message)
+                        .filter(Message.agent_id == t.agent_id)
+                        .order_by(Message.created_at)
+                        .all()
+                    )
+                    if messages:
+                        block_parts.append("\nConversation:")
+                        for msg in messages:
+                            role = msg.role.value
+                            # Truncate very long messages but keep enough for understanding
+                            content = msg.content[:2000] if msg.content else ""
+                            content = _strip_agent_preamble(content)
+                            block_parts.append(f"[{role}] {content}")
 
-            # Auto-apply: run summary and write result directly (no review step)
+                session_blocks.append("\n".join(block_parts))
+
+            session_context = "\n\n---\n\n".join(session_blocks)
+
+            # Auto-apply: run summary and append result (no review step)
             _progress_job_set(proj.name, status="running")
             thread = threading.Thread(
                 target=self._auto_apply_progress_summary,
-                args=(proj.name, proj.path, task_summaries, current_progress),
+                args=(proj.name, proj.path, session_context),
                 daemon=True,
             )
             thread.start()
@@ -1767,39 +1807,31 @@ class AgentDispatcher:
 
     @staticmethod
     def _auto_apply_progress_summary(project_name: str, project_path: str,
-                                     task_summaries: str, current_progress: str):
-        """Run summary and auto-write result to PROGRESS.md (no review step)."""
+                                     session_context: str):
+        """Generate a daily summary section and append it to PROGRESS.md."""
         import subprocess
         from datetime import date
         from config import CLAUDE_BIN
         from main import _progress_job_set, _progress_job_clear
 
         today = date.today().isoformat()
-        prompt = f"""You are appending a daily summary entry to a project's PROGRESS.md file.
+        prompt = f"""You are a project analyst. Read the following completed task sessions from today and produce a concise daily summary.
 
 STRICT RULES:
-1. Output ONLY the new PROGRESS.md content — no preamble, no explanation, no markdown fences.
-2. Keep ALL existing content exactly as-is.
-3. Append a new entry at the bottom in this format:
+1. Output ONLY the summary section — no preamble, no explanation, no markdown fences.
+2. Use EXACTLY this format:
 
 ## {today} — Daily Summary
-- [task title]: brief lesson or outcome (1 line each)
+- [task title]: what was done, key lesson or gotcha (1 line each)
 
-4. Summarize each completed task in 1 line focusing on: what was done, any gotchas/lessons.
-5. If no tasks completed today, output the existing content unchanged (do NOT add an empty entry).
-6. Keep the entry concise — max 10 lines for the new section.
-7. Do NOT modify or reformat existing entries.
-8. If the file exceeds 200 lines, consolidate older entries (30+ days) into a single "## Archive" section at the top with only the most important lessons retained (max 20 lines). Keep recent entries intact.
+3. Focus on: what was accomplished, problems encountered, solutions found, lessons for future agents.
+4. Deduplicate — if multiple tasks did similar work, merge into one bullet.
+5. Max 15 lines total. Be concise but insightful.
+6. Do NOT output anything before the ## heading or after the last bullet.
 
-Here is the current PROGRESS.md:
----
-{current_progress or "(empty — start fresh with a # PROGRESS heading)"}
----
+Here are today's completed task sessions with full conversation history:
 
-Here are today's completed tasks:
----
-{task_summaries or "(no tasks completed today)"}
----"""
+{session_context}"""
 
         try:
             result = subprocess.run(
@@ -1811,39 +1843,48 @@ Here are today's completed tasks:
                 logger.warning("Auto progress summary failed for %s: %s", project_name, result.stderr[:500])
                 _progress_job_set(project_name, status="error", error="Auto-summary failed")
                 return
-            proposed = result.stdout.strip()
+            new_section = result.stdout.strip()
         except Exception as e:
             logger.warning("Auto progress summary error for %s: %s", project_name, e)
             _progress_job_set(project_name, status="error", error=str(e))
             return
 
-        if not proposed or (current_progress and proposed.strip() == current_progress.strip()):
+        if not new_section:
             _progress_job_clear(project_name)
             return
 
         # Guard: reject conversational / non-markdown output from LLM
-        _first_line = proposed.lstrip().split("\n", 1)[0].lower()
+        first_line = new_section.lstrip().split("\n", 1)[0].lower()
         _REFUSAL_MARKERS = ("since ", "it seems", "i ", "the file", "could you", "no tasks",
                             "unfortunately", "i'm ", "i cannot", "here is", "sure,", "certainly")
-        if not _first_line.startswith("#") and any(_first_line.startswith(m) for m in _REFUSAL_MARKERS):
+        if not first_line.startswith("#") and any(first_line.startswith(m) for m in _REFUSAL_MARKERS):
             logger.warning("Auto-summary for %s rejected: LLM returned conversational text: %.100s",
-                           project_name, _first_line)
+                           project_name, first_line)
             _progress_job_clear(project_name)
             return
 
-        # Guard: reject if output is drastically shorter (>40% content loss)
-        if current_progress and len(proposed) < len(current_progress) * 0.6:
-            logger.warning("Auto-summary for %s rejected: output %d chars vs original %d chars (>40%% loss)",
-                           project_name, len(proposed), len(current_progress))
-            _progress_job_clear(project_name)
-            return
+        # Strip markdown fences if LLM wrapped output
+        if new_section.startswith("```"):
+            lines = new_section.split("\n")
+            # Remove first ``` line and last ``` line
+            if lines[-1].strip() == "```":
+                lines = lines[1:-1]
+            else:
+                lines = lines[1:]
+            new_section = "\n".join(lines).strip()
 
-        # Write directly to PROGRESS.md
+        # Append to PROGRESS.md (never overwrite)
         progress_path = os.path.join(project_path, "PROGRESS.md")
         try:
+            existing = ""
+            if os.path.isfile(progress_path):
+                with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
+                    existing = f.read()
+
+            separator = "\n\n" if existing and not existing.endswith("\n\n") else ("\n" if existing and not existing.endswith("\n") else "")
             with open(progress_path, "w", encoding="utf-8") as f:
-                f.write(proposed)
-            logger.info("Auto-applied daily PROGRESS.md summary for %s", project_name)
+                f.write(existing + separator + new_section + "\n")
+            logger.info("Auto-appended daily PROGRESS.md summary for %s", project_name)
         except OSError as e:
             logger.warning("Failed to write PROGRESS.md for %s: %s", project_name, e)
         _progress_job_clear(project_name)
@@ -2541,8 +2582,9 @@ Here are today's completed tasks:
                 )
                 db.add(resp)
                 agent.status = post_exec_status
-                # Successful completion — reset stale session retry counter
+                # Successful completion — reset retry counters
                 self._stale_session_retries.pop(agent_id, None)
+                self._timeout_retries.pop(info["message_id"], None)
 
             # Auto-continue after ExitPlanMode in exec mode.
             # When a non-cli_sync agent calls ExitPlanMode, the CLI
@@ -2686,20 +2728,41 @@ Here are today's completed tasks:
                     info["pid_str"], info["output_file"]
                 )
 
-                # Update message
+                # Update message — auto-retry if under the limit
                 message = db.get(Message, info["message_id"])
+                retry_count = self._timeout_retries.get(info["message_id"], 0)
+                will_retry = message and retry_count < self._max_timeout_retries
+
                 if message:
-                    message.status = MessageStatus.TIMEOUT
-                    message.error_message = f"Timed out after {int(idle_seconds)}s of inactivity"
-                    message.completed_at = now
+                    if will_retry:
+                        retry_count += 1
+                        self._timeout_retries[info["message_id"]] = retry_count
+                        message.status = MessageStatus.PENDING
+                        message.error_message = (
+                            f"Timed out after {int(idle_seconds)}s of inactivity "
+                            f"(auto-retry {retry_count}/{self._max_timeout_retries})"
+                        )
+                        message.completed_at = None
+                        logger.info(
+                            "Agent %s message %s: auto-retry %d/%d after timeout",
+                            agent_id, message.id, retry_count, self._max_timeout_retries,
+                        )
+                    else:
+                        message.status = MessageStatus.TIMEOUT
+                        message.error_message = f"Timed out after {int(idle_seconds)}s of inactivity"
+                        message.completed_at = now
+                        self._timeout_retries.pop(info["message_id"], None)
                     from websocket import emit_message_update
-                    self._emit(emit_message_update(agent_id, message.id, "TIMEOUT"))
+                    self._emit(emit_message_update(agent_id, message.id, message.status.value))
 
                 # Create system message
+                timeout_note = f"Timed out after {int(idle_seconds)}s of inactivity (ran {int(elapsed)}s total)"
+                if will_retry:
+                    timeout_note += f" — auto-retrying ({retry_count}/{self._max_timeout_retries})"
                 sys_msg = Message(
                     agent_id=agent.id,
                     role=MessageRole.SYSTEM,
-                    content=f"Timed out after {int(idle_seconds)}s of inactivity (ran {int(elapsed)}s total)",
+                    content=timeout_note,
                     status=MessageStatus.COMPLETED,
                 )
                 db.add(sys_msg)
@@ -2708,7 +2771,7 @@ Here are today's completed tasks:
                 db.refresh(agent)
                 if agent.status != AgentStatus.STOPPED:
                     agent.status = AgentStatus.SYNCING if agent.cli_sync else AgentStatus.IDLE
-                agent.last_message_preview = f"Timed out after {int(idle_seconds)}s of inactivity"
+                agent.last_message_preview = timeout_note
                 agent.last_message_at = now
                 is_viewed = self._is_agent_in_use(agent.id, agent.tmux_pane)
                 if not is_viewed:
@@ -2723,7 +2786,7 @@ Here are today's completed tasks:
                     if is_notification_enabled("agents"):
                         send_push_notification(
                             title=f"\u23f0 {agent.name}",
-                            body=f"Timed out after {int(idle_seconds)}s of inactivity",
+                            body=timeout_note,
                             url=f"/agents/{agent.id}",
                         )
 
@@ -3021,6 +3084,7 @@ Here are today's completed tasks:
                     "message_id": pending_msg.id,
                     "started_at": _utcnow(),
                     "last_activity": _utcnow(),
+                    "tmux_pane": agent.tmux_pane,
                 }
                 # Cancel sync task before changing status — the sync loop
                 # would exit on its own when it sees non-SYNCING, but
@@ -3672,6 +3736,8 @@ Here are today's completed tasks:
         gid = self._start_generating(agent_id)
         file_pos = 0
         last_content = ""
+        idle_checks = 0  # counts consecutive ticks with no new output
+        PERMISSION_CHECK_TICKS = 60  # check tmux pane after ~30s of no output
         try:
             while True:
                 await asyncio.sleep(0.5)
@@ -3689,7 +3755,23 @@ Here are today's completed tasks:
                     continue  # file not created yet — normal during startup
 
                 if not new_data:
+                    idle_checks += 1
+                    # After sustained idle, check tmux pane for stuck permission prompt
+                    if idle_checks == PERMISSION_CHECK_TICKS:
+                        info = self._active_execs.get(agent_id)
+                        if info:
+                            pane_id = info.get("tmux_pane")
+                            if pane_id:
+                                pane_text = capture_tmux_pane(pane_id)
+                                if pane_text and _detect_plan_prompt(pane_text) == "permission":
+                                    logger.warning(
+                                        "Agent %s: detected stuck permission prompt after %ds idle, killing exec",
+                                        agent_id, idle_checks // 2,
+                                    )
+                                    self.worker_mgr.stop_worker(info["pid_str"])
                     continue
+
+                idle_checks = 0  # reset on new output
 
                 # New output arrived — refresh inactivity timeout
                 info = self._active_execs.get(agent_id)
