@@ -396,7 +396,6 @@ def scaffold_project(project_name: str, project_path: str,
 - Do not delete or modify tests unless asked
 - Do not change dependencies/package versions without explicit approval
 - Do not modify CLAUDE.md
-- Never prompt for confirmation on implementation details — make your best judgment and proceed. If truly blocked, write the blocker to PROGRESS.md and exit
 
 ## Output Rules
 - Keep responses concise — no long explanations unless asked
