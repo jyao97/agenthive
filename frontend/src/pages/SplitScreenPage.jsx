@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, lazy, Suspense } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import {
   useNavigate, useLocation, MemoryRouter, Routes, Route, Navigate, NavLink,
   useNavigate as usePaneNavigate,
@@ -143,10 +143,15 @@ const paneTabs = [
 
 // --- PaneShell: mini-app rendered inside each MemoryRouter pane ---
 
-function PaneShell({ theme, onToggleTheme }) {
+function PaneShell({ theme, onToggleTheme, onPathChange }) {
   const location = usePaneLocation();
   const paneNav = usePaneNavigate();
   const themeProps = { theme, onToggleTheme };
+
+  // Report path changes back to parent for persistence
+  useEffect(() => {
+    if (onPathChange) onPathChange(location.pathname);
+  }, [location.pathname, onPathChange]);
 
   // Navigate to another agent within this pane's MemoryRouter
   const onNavigateAgent = useCallback((agentId) => {
@@ -267,27 +272,47 @@ export default function SplitScreenPage() {
   const effectiveLayout = isWide ? layout : "2row";
   const layoutDef = LAYOUTS.find((l) => l.key === effectiveLayout) || LAYOUTS.find((l) => l.key === "2row");
 
-  const [panes, setPanes] = useState(() =>
-    Array.from({ length: layoutDef.count }, () => ({
+  const [panes, setPanes] = useState(() => {
+    // Restore saved pane paths from localStorage
+    try {
+      const saved = JSON.parse(localStorage.getItem("ah:split-panes") || "null");
+      if (saved && Array.isArray(saved) && saved.length === layoutDef.count) {
+        return saved.map((path) => ({ id: makePaneId(), path: path || initialPath }));
+      }
+    } catch { /* ignore */ }
+    return Array.from({ length: layoutDef.count }, () => ({
       id: makePaneId(),
       path: initialPath,
-    }))
-  );
+    }));
+  });
+
+  // Persist pane paths when they change
+  const panePathsRef = useRef(panes.map((p) => p.path));
+  const handlePanePathChange = useCallback((index, newPath) => {
+    panePathsRef.current = [...panePathsRef.current];
+    panePathsRef.current[index] = newPath;
+    localStorage.setItem("ah:split-panes", JSON.stringify(panePathsRef.current));
+  }, []);
 
   // Adjust pane count when screen size changes
   useEffect(() => {
     setPanes((prev) => {
       if (prev.length === layoutDef.count) return prev;
+      let next;
       if (prev.length < layoutDef.count) {
-        return [
+        next = [
           ...prev,
           ...Array.from({ length: layoutDef.count - prev.length }, () => ({
             id: makePaneId(),
             path: initialPath,
           })),
         ];
+      } else {
+        next = prev.slice(0, layoutDef.count);
       }
-      return prev.slice(0, layoutDef.count);
+      panePathsRef.current = next.map((p) => p.path);
+      localStorage.setItem("ah:split-panes", JSON.stringify(panePathsRef.current));
+      return next;
     });
   }, [layoutDef.count, initialPath]);
 
@@ -298,16 +323,21 @@ export default function SplitScreenPage() {
       localStorage.setItem("ah:split-layout", newKey);
       setPanes((prev) => {
         if (prev.length === newDef.count) return prev;
+        let next;
         if (prev.length < newDef.count) {
-          return [
+          next = [
             ...prev,
             ...Array.from({ length: newDef.count - prev.length }, () => ({
               id: makePaneId(),
               path: initialPath,
             })),
           ];
+        } else {
+          next = prev.slice(0, newDef.count);
         }
-        return prev.slice(0, newDef.count);
+        panePathsRef.current = next.map((p) => p.path);
+        localStorage.setItem("ah:split-panes", JSON.stringify(panePathsRef.current));
+        return next;
       });
     },
     [initialPath]
@@ -389,14 +419,14 @@ export default function SplitScreenPage() {
 
       {/* Panes grid */}
       <div className={`flex-1 grid ${layoutDef.gridClass} gap-1.5 p-1.5 min-h-0 ${!isWide ? "safe-area-pt" : ""}`}>
-        {panes.map((pane) => (
+        {panes.map((pane, idx) => (
           <div
             key={pane.id}
             className="split-pane relative overflow-hidden min-h-0 min-w-0 rounded-xl border border-divider bg-page"
           >
             <RouterIsolator>
               <MemoryRouter initialEntries={[pane.path]}>
-                <PaneShell theme={theme} onToggleTheme={toggle} />
+                <PaneShell theme={theme} onToggleTheme={toggle} onPathChange={(p) => handlePanePathChange(idx, p)} />
               </MemoryRouter>
             </RouterIsolator>
           </div>
