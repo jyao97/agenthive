@@ -90,10 +90,7 @@ export function renderMarkdown(text, project) {
       !imgMatch && line.trim().match(/^(\S+\.(png|jpg|jpeg|gif|svg|webp))$/i);
     if (imgMatch || plainImgMatch) {
       const src = imgMatch ? imgMatch[1] : plainImgMatch[1];
-      const cleanSrc = cleanProjectPath(src, project);
-      const resolvedSrc = src.startsWith("http")
-        ? src
-        : `/api/files/${encodeURIComponent(project)}/${cleanSrc.split("/").map(encodeURIComponent).join("/")}`;
+      const resolvedSrc = resolveFileUrl(src, project);
       elements.push(
         <img
           key={elements.length}
@@ -318,6 +315,38 @@ function cleanProjectPath(raw, project) {
   return p;
 }
 
+/**
+ * Resolve a raw file path to an API URL.
+ *
+ * Handles cross-project references: if the path contains an absolute path
+ * like `/home/.../agenthive-projects/<other-project>/rest`, we extract the
+ * true project from the path instead of using the agent's project.
+ * Also handles paths that are already `/api/files/...` URLs.
+ */
+function resolveFileUrl(rawPath, defaultProject) {
+  if (rawPath.startsWith("http")) return rawPath;
+
+  // Already an /api/files/ URL (from a previous render or message content)
+  const apiMatch = rawPath.match(/^\/?api\/files\/([^/]+)\/(.+)/);
+  if (apiMatch) {
+    const proj = apiMatch[1];
+    const rest = apiMatch[2];
+    return `/api/files/${encodeURIComponent(proj)}/${rest.split("/").map(encodeURIComponent).join("/")}`;
+  }
+
+  // Absolute path with agenthive-projects — extract true project
+  const absMatch = rawPath.match(/agenthive-projects\/([^/]+)\/(.+)/);
+  if (absMatch) {
+    const proj = absMatch[1];
+    const rest = absMatch[2];
+    return `/api/files/${encodeURIComponent(proj)}/${rest.split("/").map(encodeURIComponent).join("/")}`;
+  }
+
+  // Default: use the agent's project
+  const clean = cleanProjectPath(rawPath, defaultProject);
+  return `/api/files/${encodeURIComponent(defaultProject)}/${clean.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 // File extension groups
 const IMAGE_EXTS = /\.(png|jpg|jpeg|gif|svg|webp)$/i;
 const VIDEO_EXTS = /\.(mp4|webm|mov)$/i;
@@ -411,9 +440,7 @@ export function extractFileAttachments(text, project, role) {
     if (seen.has(path) || inlineRendered.has(rawPath)) return;
     seen.add(path);
 
-    const resolvedUrl = rawPath.startsWith("http")
-      ? rawPath
-      : `/api/files/${encodeURIComponent(project)}/${path.split("/").map(encodeURIComponent).join("/")}`;
+    const resolvedUrl = resolveFileUrl(rawPath, project);
 
     const ext = path.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
     const type = classifyExt(path);
