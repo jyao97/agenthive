@@ -45,7 +45,7 @@ function detectBottomBarHeight() {
   return maxH;
 }
 
-export default function DraggableFab({ storageKey, defaultPosition, onClick, className, children }) {
+export default function DraggableFab({ storageKey, defaultPosition, onClick, onLongPress, className, children }) {
   const fabRef = useRef(null);
   const sizeRef = useRef({ w: 44, h: 44 });
   const [rb, setRB] = useState(null); // {right, bottom}
@@ -53,8 +53,12 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, cla
   const dragStart = useRef({ x: 0, y: 0 });
   const absStart = useRef({ x: 0, y: 0 });
   const moved = useRef(false);
+  const longPressTimer = useRef(null);
+  const longPressFired = useRef(false);
   const onClickRef = useRef(onClick);
   onClickRef.current = onClick;
+  const onLongPressRef = useRef(onLongPress);
+  onLongPressRef.current = onLongPress;
 
   // Resolve position on mount
   useEffect(() => {
@@ -91,7 +95,15 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, cla
     dragStart.current = { x: t.clientX, y: t.clientY };
     absStart.current = rb ? toAbs(rb, w, h) : { x: 0, y: 0 };
     moved.current = false;
+    longPressFired.current = false;
     dragging.current = true;
+    // Start long-press timer
+    clearTimeout(longPressTimer.current);
+    longPressTimer.current = setTimeout(() => {
+      longPressFired.current = true;
+      if (navigator.vibrate) navigator.vibrate(30);
+      onLongPressRef.current?.();
+    }, 600);
     e.preventDefault();
   }, [rb]);
 
@@ -105,6 +117,7 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, cla
       const dy = t.clientY - dragStart.current.y;
       if (!moved.current && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
       moved.current = true;
+      clearTimeout(longPressTimer.current); // Cancel long-press on drag
       const abs = { x: absStart.current.x + dx, y: absStart.current.y + dy };
       const barH = detectBottomBarHeight();
       const minBottom = barH > 0 ? barH + 8 : 0;
@@ -114,6 +127,7 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, cla
     const onEnd = () => {
       if (!dragging.current) return;
       dragging.current = false;
+      clearTimeout(longPressTimer.current);
       if (moved.current) {
         // Dragged — save position, do NOT trigger click
         setRB((p) => {
@@ -122,8 +136,8 @@ export default function DraggableFab({ storageKey, defaultPosition, onClick, cla
           }
           return p;
         });
-      } else {
-        // Not dragged — this was a tap, trigger click
+      } else if (!longPressFired.current) {
+        // Not dragged, not long-pressed — this was a tap
         onClickRef.current?.();
       }
     };

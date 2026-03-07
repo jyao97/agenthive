@@ -352,6 +352,11 @@ export default function SplitScreenPage() {
       navigate(saved || "/agents", { replace: true });
     }
   }, [navigate]);
+  const handleForceExit = useCallback(() => {
+    // Long-press: always go to /projects regardless of history
+    localStorage.removeItem("ah:split-panes");
+    navigate("/projects", { replace: true });
+  }, [navigate]);
   const exitBtnDefault = useMemo(() => () => ({
     x: window.innerWidth - 44,
     y: window.innerHeight / 2 - 20,
@@ -364,7 +369,7 @@ export default function SplitScreenPage() {
         <div className="shrink-0 flex items-center gap-2 px-3 py-1 bg-surface/80 border-b border-divider">
           <button
             type="button"
-            onClick={() => navigate(-1)}
+            onClick={handleExit}
             className="flex items-center gap-0.5 text-xs text-label hover:text-heading transition-colors"
           >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -417,6 +422,7 @@ export default function SplitScreenPage() {
           storageKey="ah:fab-pos-split-exit-v2"
           defaultPosition={exitBtnDefault}
           onClick={handleExit}
+          onLongPress={handleForceExit}
           className="w-8 h-8 flex items-center justify-center rounded-full bg-surface/90 shadow-lg border border-edge text-dim hover:text-heading transition-colors backdrop-blur-sm"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
