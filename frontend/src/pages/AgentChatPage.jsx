@@ -355,8 +355,8 @@ function _detectPlanIdx(answer) {
   if (/bypass/.test(a) && !/clear/.test(a) && !/manual/.test(a)) return 1;
   if (/manual/.test(a)) return 2;
   if (/feedback|type here|tell claude/.test(a)) return 3;
-  if (/^yes\b/.test(a) || a === "approve" || a === "approved") return 0;
-  if (/^no\b/.test(a) || a === "reject") return 2;
+  if (/^yes\b/.test(a) || a === "approve" || a === "approved") return 2; // safe default: manual approval
+  if (/^no\b/.test(a) || a === "reject") return 3; // feedback mode, not destructive
   return null; // unrecognized input — do not select any option
 }
 

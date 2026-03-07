@@ -2805,8 +2805,8 @@ Here are today's completed task sessions with full conversation history:
                 from push import send_push_notification, is_notification_enabled
                 if is_notification_enabled("agents"):
                     status_emoji = "\u274c" if is_error else "\u2705"
-                    logger.info(
-                        "PUSH_DEBUG: harvest_completed sending for %s: %s",
+                    logger.debug(
+                        "push: harvest_completed sending for %s: %s",
                         agent.id, preview[:50],
                     )
                     send_push_notification(
@@ -4979,8 +4979,8 @@ Here are today's completed task sessions with full conversation history:
                 if pending_push_body:
                     pending_push_idle += 1
                     if pending_push_idle >= 3:
-                        logger.info(
-                            "PUSH_DEBUG: flushing deferred notification for %s "
+                        logger.debug(
+                            "push: flushing deferred notification for %s "
                             "after %d idle polls: %s",
                             agent_id, pending_push_idle, pending_push_body[:50],
                         )
@@ -5232,8 +5232,8 @@ Here are today's completed task sessions with full conversation history:
                         if pending_push_body:
                             pending_push_body = (_last_content or "")[:120]
                             pending_push_idle = 0  # Reset — still generating
-                            logger.info(
-                                "PUSH_DEBUG: pending updated (turn grew) for %s: %s",
+                            logger.debug(
+                                "push: pending updated (turn grew) for %s: %s",
                                 agent_id, pending_push_body[:50],
                             )
                         logger.info(
@@ -5357,16 +5357,16 @@ Here are today's completed task sessions with full conversation history:
                         if _r == "assistant":
                             pending_push_body = _c[:120]
                             pending_push_idle = 0
-                            logger.info(
-                                "PUSH_DEBUG: pending set (new assistant turn) for %s: %s",
+                            logger.debug(
+                                "push: pending set (new assistant turn) for %s: %s",
                                 agent_id, pending_push_body[:50],
                             )
                             break
                         if _r == "system":
                             pending_push_body = _c[:120]
                             pending_push_idle = 0
-                            logger.info(
-                                "PUSH_DEBUG: pending set (new system turn) for %s: %s",
+                            logger.debug(
+                                "push: pending set (new system turn) for %s: %s",
                                 agent_id, pending_push_body[:50],
                             )
                             break
@@ -5469,8 +5469,8 @@ Here are today's completed task sessions with full conversation history:
 
                 # Flush any deferred push notification before stopping
                 if pending_push_body:
-                    logger.info(
-                        "PUSH_DEBUG: flushing on session end for %s: %s",
+                    logger.debug(
+                        "push: flushing on session end for %s: %s",
                         agent_id, pending_push_body[:50],
                     )
                     db_push = SessionLocal()
