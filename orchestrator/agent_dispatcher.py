@@ -3910,7 +3910,8 @@ Here are today's completed task sessions with full conversation history:
                         mtime = os.path.getmtime(jsonl_path)
                         age = time.time() - mtime
                         alive = age < stale_threshold
-                    except OSError:
+                    except OSError as e:
+                        logger.debug("Session freshness check failed for %s: %s", jsonl_path, e)
                         alive = False
 
             # For STARTING agents without a session_id, give them a grace
@@ -5774,7 +5775,8 @@ Here are today's completed task sessions with full conversation history:
                         try:
                             age = _time.time() - os.path.getmtime(jsonl_path)
                             alive = age < _STALE_SESSION_THRESHOLD
-                        except OSError:
+                        except OSError as e:
+                            logger.debug("Session freshness check failed for %s: %s", jsonl_path, e)
                             alive = False
 
                     if alive:
