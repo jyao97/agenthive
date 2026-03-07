@@ -627,8 +627,8 @@ def _resolve_session_jsonl(
                         )
                         if os.path.isfile(wt_jsonl):
                             return wt_jsonl
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug("_resolve_session_jsonl: worktree scan failed: %s", e)
     return jsonl_path  # return original path even if not found
 
 
@@ -650,8 +650,8 @@ def _infer_worktree_from_session(
                 )
                 if os.path.isfile(wt_jsonl):
                     return name
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_infer_worktree_from_session: scan failed: %s", e)
     return None
 
 
@@ -718,8 +718,8 @@ def _scan_subagents(
                         elif i == 1:
                             msg = entry.get("message", {})
                             model = msg.get("model", "")
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug("_scan_subagents: failed to read %s: %s", fpath, e)
 
             results.append({
                 "claude_agent_id": claude_agent_id,
@@ -730,8 +730,8 @@ def _scan_subagents(
                 "size": stat.st_size,
                 "mtime": stat.st_mtime,
             })
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_scan_subagents: failed to scan dir: %s", e)
 
     return results
 
@@ -1119,8 +1119,8 @@ def _get_session_slug(jsonl_path: str) -> str | None:
                 slug = obj.get("slug")
                 if slug:
                     return slug
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_get_session_slug: failed to read %s: %s", jsonl_path, e)
     return None
 
 
@@ -1141,8 +1141,8 @@ def _get_session_cwd(jsonl_path: str) -> str | None:
                 cwd = obj.get("cwd")
                 if cwd:
                     return cwd
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_get_session_cwd: failed to read %s: %s", jsonl_path, e)
     return None
 
 
@@ -1164,8 +1164,8 @@ def _detect_pid_session_jsonl(claude_pid: int) -> str | None:
                         return sid
             except OSError:
                 continue
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_detect_pid_session_jsonl: /proc/%d/fd scan failed: %s", claude_pid, e)
     return None
 
 
@@ -1205,8 +1205,8 @@ def _get_first_user_content(jsonl_path: str) -> str | None:
                             text = block.get("text", "")
                             if text.strip():
                                 return text
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_get_first_user_content: failed to read %s: %s", jsonl_path, e)
     return None
 
 
@@ -1229,8 +1229,8 @@ def _pid_owns_session(pid: int, session_id: str) -> bool:
                     return True
             except OSError:
                 continue
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_pid_owns_session: /proc/%d/fd scan failed: %s", pid, e)
     return False
 
 
@@ -1633,7 +1633,8 @@ def capture_tmux_pane(pane_id: str) -> str | None:
         if result.returncode == 0:
             return result.stdout
         return None
-    except (_sp.TimeoutExpired, FileNotFoundError, OSError):
+    except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.debug("capture_pane(%s) failed: %s", pane_id, e)
         return None
 
 
@@ -2182,7 +2183,7 @@ Here are today's completed task sessions with full conversation history:
                 if head and len(head) >= 7:
                     task.try_base_commit = head
             except Exception:
-                pass
+                logger.warning("Failed to capture git HEAD for task %s in %s", task.id, proj.path, exc_info=True)
 
         model = task.model or proj.default_model or CC_MODEL
         prompt = self._build_task_prompt(task)
@@ -2344,7 +2345,7 @@ Here are today's completed task sessions with full conversation history:
                             f"/tasks/{task.id}",
                         )
                 except Exception:
-                    logger.debug("Push notification failed for task %s", task.id)
+                    logger.warning("Push notification failed for task %s", task.id, exc_info=True)
                 logger.info("Task %s moved to REVIEW (agent %s stopped)", task.id, agent.id)
             elif agent.status == AgentStatus.ERROR:
                 try:
@@ -2433,6 +2434,7 @@ Here are today's completed task sessions with full conversation history:
                 try:
                     artifacts = _json.loads(task.review_artifacts)
                 except Exception:
+                    logger.warning("Bad review_artifacts JSON for task %s", task.id, exc_info=True)
                     artifacts = {}
 
             # Skip if already harvested
@@ -2770,7 +2772,7 @@ Here are today's completed task sessions with full conversation history:
                                 agent.id,
                             )
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    logger.warning("Failed to parse meta_json for plan-continue on agent %s", agent.id, exc_info=True)
 
             # Update agent denormalized fields
             preview = (result_text or "")[:200]
@@ -2819,8 +2821,8 @@ Here are today's completed task sessions with full conversation history:
                 if output_file:
                     try:
                         os.remove(output_file)
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.warning("Failed to remove output file %s: %s", output_file, e)
 
         # Restart sync tasks for cli_sync agents that returned to SYNCING.
         # The sync loop's reconciliation logic deduplicates turns already
@@ -2947,8 +2949,8 @@ Here are today's completed task sessions with full conversation history:
                 if output_file:
                     try:
                         os.remove(output_file)
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.warning("Failed to remove output file %s: %s", output_file, e)
 
         # Restart sync tasks for timed-out cli_sync agents
         for agent_id in timed_out:
@@ -5695,8 +5697,8 @@ Here are today's completed task sessions with full conversation history:
                                 try:
                                     age = _time.time() - os.path.getmtime(jsonl_path)
                                     session_active = age < _STALE_SESSION_THRESHOLD
-                                except OSError:
-                                    pass
+                                except OSError as e:
+                                    logger.debug("Session freshness check failed for %s: %s", jsonl_path, e)
 
                         if session_active:
                             agent.status = AgentStatus.SYNCING
@@ -5836,8 +5838,8 @@ Here are today's completed task sessions with full conversation history:
                                     )
                             # Clean up the temp file
                             os.unlink(partial_file)
-                        except OSError:
-                            pass
+                        except OSError as e:
+                            logger.warning("Failed to clean up partial output %s: %s", partial_file, e)
 
                     m.status = MessageStatus.PENDING
                     m.completed_at = None

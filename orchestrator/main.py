@@ -847,6 +847,7 @@ def _claude_cli_version() -> str:
             out = subprocess.check_output(["claude", "--version"], timeout=5, text=True).strip()
             _claude_cli_version._v = out.split()[0]  # "2.1.70 (Claude Code)" → "2.1.70"
         except Exception:
+            logger.warning("Claude CLI version detection failed", exc_info=True)
             _claude_cli_version._v = "0.0.0"
     return _claude_cli_version._v
 
@@ -3942,8 +3943,8 @@ async def _launch_tmux_background(
             )
             if cwd_result.returncode == 0 and cwd_result.stdout.strip():
                 actual_cwd = os.path.realpath(cwd_result.stdout.strip())
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("tmux pane CWD lookup failed for %s: %s", pane_id, e)
 
         session_dir = session_source_dir(actual_cwd)
         base_session_dir = session_source_dir(project_path)
@@ -3960,8 +3961,8 @@ async def _launch_tmux_background(
                     for ln in cap.stdout.split("\n"):
                         if "\u23f5" in ln and "esc to interrupt" in ln:
                             return True
-            except (subprocess.TimeoutExpired, OSError):
-                pass
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logger.debug("Status bar check failed for %s: %s", pane_id, e)
             return False
 
         def _scan_for_session_jsonl(owned_sids: set, pane_pid: int | None) -> str | None:
