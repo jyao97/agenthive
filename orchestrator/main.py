@@ -5268,8 +5268,11 @@ def _serve_file_with_range(full_path: str, media_type: str, request: Request):
     # Parse "bytes=start-end"
     range_spec = range_header.replace("bytes=", "").strip()
     parts = range_spec.split("-", 1)
-    start = int(parts[0]) if parts[0] else 0
-    end = int(parts[1]) if parts[1] else file_size - 1
+    try:
+        start = int(parts[0]) if parts[0] else 0
+        end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
+    except ValueError:
+        raise HTTPException(status_code=416, detail="Invalid Range header")
     end = min(end, file_size - 1)
     length = end - start + 1
 
