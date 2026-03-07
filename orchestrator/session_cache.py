@@ -304,6 +304,45 @@ def cache_session(session_id: str, project_path: str) -> bool:
     return cached
 
 
+def cleanup_source_session(
+    session_id: str,
+    project_path: str,
+    worktree: str | None = None,
+) -> bool:
+    """Delete a session JSONL and its subdirectory from the source directory.
+
+    Called when a session is no longer referenced by any agent.
+    Checks both the project root and worktree session dirs.
+    Returns True if anything was removed.
+    """
+    removed = False
+    dirs_to_check = [session_source_dir(project_path)]
+    if worktree:
+        wt_path = os.path.join(project_path, ".claude", "worktrees", worktree)
+        dirs_to_check.append(session_source_dir(wt_path))
+
+    for src_dir in dirs_to_check:
+        jsonl_path = os.path.join(src_dir, f"{session_id}.jsonl")
+        subdir_path = os.path.join(src_dir, session_id)
+
+        if os.path.exists(jsonl_path):
+            try:
+                os.unlink(jsonl_path)
+                removed = True
+                logger.info("Removed orphan source session %s from %s", session_id, src_dir)
+            except OSError as e:
+                logger.warning("Failed to remove source JSONL %s: %s", jsonl_path, e)
+
+        if os.path.isdir(subdir_path):
+            try:
+                shutil.rmtree(subdir_path)
+                removed = True
+            except OSError as e:
+                logger.warning("Failed to remove source subdir %s: %s", subdir_path, e)
+
+    return removed
+
+
 def evict_session(session_id: str, project_path: str) -> None:
     """Remove a cached session that has been superseded.
 

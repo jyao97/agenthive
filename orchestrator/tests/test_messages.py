@@ -192,3 +192,108 @@ async def test_message_search_no_results(client):
     data = resp.json()
     assert data["results"] == []
     assert data["total"] == 0
+
+
+@pytest.mark.anyio
+async def test_send_message_syncing_tmux_pane_missing_falls_back_to_pending(
+    client, db_engine, monkeypatch
+):
+    """SYNCING agent with stale pane should queue message instead of 400."""
+    from sqlalchemy.orm import sessionmaker
+    Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+    db = Session()
+    db.add(Project(name="sync-proj", display_name="SP", path="/tmp/sp"))
+    db.add(Agent(
+        id="syncmsg11111",
+        project="sync-proj",
+        name="Sync Agent",
+        status=AgentStatus.SYNCING,
+        cli_sync=True,
+        tmux_pane="%999",
+        session_id="sess-abc",
+    ))
+    db.commit()
+    db.close()
+
+    monkeypatch.setattr("agent_dispatcher.verify_tmux_pane", lambda _pane: False)
+    monkeypatch.setattr(
+        "agent_dispatcher._detect_tmux_pane_for_session",
+        lambda _sid, _path: None,
+    )
+    def _unexpected_send(_pane: str, _text: str) -> bool:
+        raise AssertionError("should not send via tmux")
+
+    monkeypatch.setattr("agent_dispatcher.send_tmux_message", _unexpected_send)
+
+    resp = await client.post(
+        "/api/agents/syncmsg11111/messages",
+        json={"content": "hello from web"},
+    )
+    assert resp.status_code == 201
+    payload = resp.json()
+    assert payload["status"] == "PENDING"
+
+    db = Session()
+    agent = db.get(Agent, "syncmsg11111")
+    assert agent.tmux_pane is None
+    msg = db.get(Message, payload["id"])
+    assert msg is not None
+    assert msg.status == MessageStatus.PENDING
+    assert msg.source == "web"
+    db.close()
+
+
+@pytest.mark.anyio
+async def test_send_message_syncing_tmux_recover_pane_and_send_direct(
+    client, db_engine, monkeypatch
+):
+    """If old pane is stale but session pane can be recovered, send directly."""
+    from sqlalchemy.orm import sessionmaker
+    Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+    db = Session()
+    db.add(Project(name="sync-proj2", display_name="SP2", path="/tmp/sp2"))
+    db.add(Agent(
+        id="syncmsg22222",
+        project="sync-proj2",
+        name="Sync Agent 2",
+        status=AgentStatus.SYNCING,
+        cli_sync=True,
+        tmux_pane="%111",
+        session_id="sess-def",
+    ))
+    db.commit()
+    db.close()
+
+    sent = {}
+
+    def _verify(pane: str) -> bool:
+        return pane == "%222"
+
+    def _send(pane: str, text: str) -> bool:
+        sent["pane"] = pane
+        sent["text"] = text
+        return True
+
+    monkeypatch.setattr("agent_dispatcher.verify_tmux_pane", _verify)
+    monkeypatch.setattr(
+        "agent_dispatcher._detect_tmux_pane_for_session",
+        lambda _sid, _path: "%222",
+    )
+    monkeypatch.setattr("agent_dispatcher.send_tmux_message", _send)
+
+    resp = await client.post(
+        "/api/agents/syncmsg22222/messages",
+        json={"content": "recover and send"},
+    )
+    assert resp.status_code == 201
+    payload = resp.json()
+    assert payload["status"] == "COMPLETED"
+    assert sent == {"pane": "%222", "text": "recover and send"}
+
+    db = Session()
+    agent = db.get(Agent, "syncmsg22222")
+    assert agent.tmux_pane == "%222"
+    msg = db.get(Message, payload["id"])
+    assert msg is not None
+    assert msg.status == MessageStatus.COMPLETED
+    db.close()

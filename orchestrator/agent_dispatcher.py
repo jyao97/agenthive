@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time as _time
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -1123,6 +1124,92 @@ def _get_session_slug(jsonl_path: str) -> str | None:
     return None
 
 
+def _get_session_cwd(jsonl_path: str) -> str | None:
+    """Extract the working directory from the first user/assistant entry in a JSONL.
+
+    Each JSONL entry written by Claude Code includes a ``cwd`` field.
+    """
+    try:
+        with open(jsonl_path, "r") as f:
+            for i, line in enumerate(f):
+                if i >= 20:
+                    break
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                cwd = obj.get("cwd")
+                if cwd:
+                    return cwd
+    except OSError:
+        pass
+    return None
+
+
+def _detect_pid_session_jsonl(claude_pid: int) -> str | None:
+    """Find the session JSONL that a Claude process currently has open.
+
+    Scans ``/proc/{pid}/fd`` for file handles pointing to ``.jsonl``
+    files under the Claude projects directory.  Returns the session ID
+    (filename without extension) if found.
+    """
+    try:
+        fd_dir = f"/proc/{claude_pid}/fd"
+        for entry in os.listdir(fd_dir):
+            try:
+                target = os.readlink(os.path.join(fd_dir, entry))
+                if target.endswith(".jsonl") and "/.claude/projects/" in target:
+                    sid = os.path.basename(target).replace(".jsonl", "")
+                    if len(sid) >= 32 and "-" in sid:
+                        return sid
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return None
+
+
+def _dedup_sig(text: str) -> str:
+    """Normalize content for dedup comparison.
+
+    tmux converts tabs to spaces, so a message sent via web (tabs)
+    won't exactly match the same message in the JSONL (spaces).
+    Collapse all whitespace runs to single space for comparison.
+    """
+    import re
+    return re.sub(r"\s+", " ", text[:200]).strip()
+
+
+def _get_first_user_content(jsonl_path: str) -> str | None:
+    """Extract the content of the first user message from a JSONL file."""
+    try:
+        with open(jsonl_path, "r") as f:
+            for i, line in enumerate(f):
+                if i >= 50:
+                    break
+                if '"user"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                msg = obj.get("message", {})
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    return content
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "")
+                            if text.strip():
+                                return text
+    except OSError:
+        pass
+    return None
+
+
 def _pid_owns_session(pid: int, session_id: str) -> bool:
     """Check if *pid* has open file handles referencing *session_id*.
 
@@ -1145,6 +1232,55 @@ def _pid_owns_session(pid: int, session_id: str) -> bool:
     except OSError:
         pass
     return False
+
+
+def _get_process_start_time(pid: int) -> float | None:
+    """Return the start time (epoch seconds) of a process, or None."""
+    try:
+        stat_start = os.stat(f"/proc/{pid}").st_mtime
+        return stat_start
+    except OSError:
+        return None
+
+
+def _tier2_match_for_pane(
+    pane_pid: int,
+    recent_candidates: list[tuple[str, str, float]],
+) -> tuple[str, str] | None:
+    """Find the best session JSONL for a pane using process start time.
+
+    Matches the session whose JSONL creation time (ctime) is closest to
+    the process start time.  Rejects matches where the delta exceeds
+    _MAX_START_DELTA to avoid mismatching stale sessions.
+
+    Removes the matched entry from recent_candidates (mutates in place).
+    """
+    if not recent_candidates:
+        return None
+
+    _MAX_START_DELTA = 1800  # 30 min max between process start and session creation
+
+    proc_start = _get_process_start_time(pane_pid)
+    if proc_start is None:
+        return None
+
+    # Find the session whose ctime is closest to the process start
+    best_idx = None
+    best_delta = float("inf")
+    for i, (sid, fpath, mtime) in enumerate(recent_candidates):
+        try:
+            ctime = os.path.getctime(fpath)
+        except OSError:
+            ctime = mtime
+        delta = abs(ctime - proc_start)
+        if delta < best_delta:
+            best_delta = delta
+            best_idx = i
+
+    if best_idx is not None and best_delta <= _MAX_START_DELTA:
+        sid, fpath, _mt = recent_candidates.pop(best_idx)
+        return sid, fpath
+    return None
 
 
 def _is_orchestrator_process(pid: int) -> bool:
@@ -1319,7 +1455,12 @@ def _detect_tmux_pane_for_session(session_id: str, project_path: str) -> str | N
         return user_candidates[0][0]
 
     if len(user_candidates) > 1:
-        # ---- Tier 3: match via debug-log PID ----
+        # ---- Tier 3: match via direct OS file-handle check ----
+        for pane_id, info in user_candidates:
+            if _detect_pid_session_jsonl(info["pid"]) == session_id:
+                return pane_id
+
+        # Tier 4: fallback to debug-log PID (legacy Claude Code)
         session_pid = _get_session_pid(session_id)
         if session_pid:
             for pane_id, info in user_candidates:
@@ -1536,6 +1677,12 @@ class AgentDispatcher:
         # message_id -> retry count
         self._timeout_retries: dict[str, int] = {}
         self._max_timeout_retries = 2
+
+        # Grace retries for SYNCING cli_sync agents that temporarily lose
+        # tmux pane association (e.g. tmux hiccup or race during re-detect).
+        # agent_id -> consecutive no-pane ticks
+        self._syncing_no_pane_retries: dict[str, int] = {}
+        self._max_syncing_no_pane_retries = 15  # ~30s at 2s tick
 
         # Streaming output loops: agent_id -> asyncio.Task
         self._stream_tasks: dict[str, asyncio.Task] = {}
@@ -2898,22 +3045,40 @@ Here are today's completed task sessions with full conversation history:
         """For IDLE agents with PENDING user messages, exec claude."""
         from websocket import emit_agent_update
 
-        # Stop dead SYNCING cli_sync agents whose tmux pane is gone, instead
-        # of dispatching them as normal subprocess agents (Bug 3 fix).
+        # SYNCING cli_sync agents without a pane: retry pane re-detection for a
+        # short grace window before declaring them dead. This avoids false
+        # STOPPED transitions from transient tmux lookup failures.
         syncing_no_pane = db.query(Agent).filter(
             Agent.status == AgentStatus.SYNCING,
             Agent.cli_sync == True,
             Agent.tmux_pane.is_(None),
         ).all()
+        syncing_no_pane_ids = {a.id for a in syncing_no_pane}
+        for aid in list(self._syncing_no_pane_retries.keys()):
+            if aid not in syncing_no_pane_ids:
+                self._syncing_no_pane_retries.pop(aid, None)
+
         for agent in syncing_no_pane:
-            # Attempt one more pane re-detection before giving up
+            # Attempt pane re-detection first
             project = db.get(Project, agent.project)
             if project and agent.session_id:
                 pane = _detect_tmux_pane_for_session(agent.session_id, project.path)
                 if pane and verify_tmux_pane(pane):
                     agent.tmux_pane = pane
+                    self._syncing_no_pane_retries.pop(agent.id, None)
                     continue  # Pane found — let _dispatch_tmux_pending handle it
-            # No pane found — stop the agent
+
+            retries = self._syncing_no_pane_retries.get(agent.id, 0) + 1
+            self._syncing_no_pane_retries[agent.id] = retries
+            if retries < self._max_syncing_no_pane_retries:
+                logger.warning(
+                    "Agent %s SYNCING with no tmux pane (%d/%d) — waiting for re-detect",
+                    agent.id, retries, self._max_syncing_no_pane_retries,
+                )
+                continue
+
+            # Grace window exhausted — stop the agent
+            self._syncing_no_pane_retries.pop(agent.id, None)
             agent.status = AgentStatus.STOPPED
             agent.tmux_pane = None
             db.add(Message(
@@ -3118,22 +3283,22 @@ Here are today's completed task sessions with full conversation history:
                                                error_message=pending_msg.error_message))
 
     def _dispatch_tmux_pending(self, db: Session):
-        """Send pending messages to SYNCING agents via tmux.
+        """Send pending messages to SYNCING/STARTING agents via tmux.
 
         Handles both scheduled messages whose time has arrived AND
         non-scheduled queued messages (e.g. from "Send now" or messages
         queued while the agent was busy).
         """
-        syncing_agents = db.query(Agent).filter(
-            Agent.status == AgentStatus.SYNCING,
+        active_sync_agents = db.query(Agent).filter(
+            Agent.status.in_([AgentStatus.SYNCING, AgentStatus.STARTING]),
             Agent.cli_sync == True,
             Agent.tmux_pane.is_not(None),
         ).all()
 
-        for agent in syncing_agents:
+        for agent in active_sync_agents:
             # Refresh to catch concurrent status changes (e.g. user stopped agent)
             db.refresh(agent)
-            if agent.status != AgentStatus.SYNCING or not agent.tmux_pane:
+            if agent.status not in (AgentStatus.SYNCING, AgentStatus.STARTING) or not agent.tmux_pane:
                 continue
 
             due_msg = (
@@ -3151,7 +3316,14 @@ Here are today's completed task sessions with full conversation history:
                 continue
 
             if not verify_tmux_pane(agent.tmux_pane):
+                logger.warning(
+                    "Tmux pane %s gone for SYNCING agent %s — clearing pane",
+                    agent.tmux_pane, agent.id,
+                )
                 agent.tmux_pane = None
+                # Don't transition to STOPPED here — the sync loop's
+                # liveness check handles that with a grace period.
+                # But we must skip this agent so messages don't pile up.
                 continue
 
             ok = send_tmux_message(agent.tmux_pane, due_msg.content)
@@ -3346,16 +3518,26 @@ Here are today's completed task sessions with full conversation history:
             candidates.sort(key=lambda x: x[2], reverse=True)
 
             # Build PID→session map from debug logs for deterministic matching.
-            # ONLY PID-verified sessions are used — no mtime fallback.
-            # This prevents stale session files from being incorrectly
-            # matched to unrelated tmux panes (e.g. after tmux kill-server).
             pid_to_session: dict[int, tuple[str, str]] = {}  # pid -> (sid, fpath)
             for sid, fpath, mtime in candidates:
                 session_pid = _get_session_pid(sid)
                 if session_pid and session_pid not in pid_to_session:
                     pid_to_session[session_pid] = (sid, fpath)
 
-            # Assign sessions to panes: Tier 0 (session name) + Tier 1 (PID match) only
+            # Build mtime-sorted list for Tier 2 fallback (recently active sessions).
+            # Used when debug logs don't exist (Claude Code >=2.1.71 no longer
+            # writes debug logs by default).
+            _now_ts = _time.time()
+            _RECENT_THRESHOLD = _STALE_SESSION_THRESHOLD  # 30 min — same as liveness check
+            pid_matched_sids = {sid for sid, _ in pid_to_session.values()}
+            recent_candidates = [
+                (sid, fpath, mtime) for sid, fpath, mtime in candidates
+                if (_now_ts - mtime) < _RECENT_THRESHOLD
+                and sid not in active_session_ids
+                and sid not in pid_matched_sids
+            ]
+
+            # Assign sessions to panes: Tier 0 (session name) + Tier 1 (PID) + Tier 2 (mtime)
             for pane_id, pane_pid, tmux_session_name in pane_entries:
                 # --- Tier 0: tmux session name → agent ID match ---
                 if tmux_session_name.startswith("ah-"):
@@ -3395,12 +3577,58 @@ Here are today's completed task sessions with full conversation history:
                                 agents_to_sync.append((named_agent.id, agent_sid, proj.path))
                                 self._emit(emit_agent_update(named_agent.id, "SYNCING", proj.name))
                                 continue
+                        # Named agent has no session_id — try Tier 2 to find
+                        # one and assign it to this agent (common when agent
+                        # previously errored and user restarted claude manually).
+                        t2_match = _tier2_match_for_pane(pane_pid, recent_candidates)
+                        if t2_match:
+                            t2_sid, t2_fpath = t2_match
+                            named_agent.session_id = t2_sid
+                            named_agent.status = AgentStatus.SYNCING
+                            named_agent.tmux_pane = pane_id
+                            named_agent.last_message_at = _utcnow()
+                            db.flush()
+                            active_session_ids.add(t2_sid)
+                            all_agent_session_ids.add(t2_sid)
+                            active_tmux_panes.add(pane_id)
+                            logger.info(
+                                "Revived agent %s (Tier 0+2: name=%s, session=%s, pane=%s)",
+                                named_agent.id, tmux_session_name, t2_sid[:12], pane_id,
+                            )
+                            agents_to_sync.append((named_agent.id, t2_sid, proj.path))
+                            self._emit(emit_agent_update(named_agent.id, "SYNCING", proj.name))
+                            continue
 
                 best_sid, best_fpath = None, None
 
-                # Tier 1: exact PID match via debug log — only reliable method
-                if pane_pid in pid_to_session:
+                # Tier 1: exact PID match (direct OS or debug log)
+                os_sid = _detect_pid_session_jsonl(pane_pid)
+                if os_sid:
+                    for sid, fpath, mtime in candidates:
+                        if sid == os_sid:
+                            best_sid, best_fpath = sid, fpath
+                            # Remove from pid_to_session if it was there (deterministic matching)
+                            for p, (s, f) in list(pid_to_session.items()):
+                                if s == sid:
+                                    pid_to_session.pop(p)
+                            break
+
+                if not best_sid and pane_pid in pid_to_session:
                     best_sid, best_fpath = pid_to_session.pop(pane_pid)
+
+                # Tier 2: mtime fallback — match the most recently written
+                # unowned session JSONL.  Only used when Tier 1 fails (no
+                # debug log, common since Claude Code >=2.1.71).
+                # Uses process start time correlation to avoid mismatches
+                # when multiple panes exist for the same project.
+                if not best_sid and recent_candidates:
+                    t2_match = _tier2_match_for_pane(pane_pid, recent_candidates)
+                    if t2_match:
+                        best_sid, best_fpath = t2_match
+                        logger.info(
+                            "Tier 2 (mtime) match: pane %s → session %s",
+                            pane_id, best_sid[:12],
+                        )
 
                 if not best_sid:
                     continue
@@ -3431,7 +3659,7 @@ Here are today's completed task sessions with full conversation history:
                     self._emit(emit_agent_update(stopped_agent.id, "SYNCING", proj.name))
                     continue
 
-                # --- Session change on existing SYNCING pane → spawn successor ---
+                # --- Session change on existing SYNCING pane → rotate in-place ---
                 existing_pane_agent = db.query(Agent).filter(
                     Agent.status == AgentStatus.SYNCING,
                     Agent.tmux_pane == pane_id,
@@ -3441,7 +3669,7 @@ Here are today's completed task sessions with full conversation history:
                     expected_session = f"ah-{existing_pane_agent.id[:8]}"
                     if tmux_session_name == expected_session:
                         db.commit()
-                        self._spawn_successor_agent(
+                        self._rotate_agent_session(
                             existing_pane_agent.id, best_sid, proj.path,
                             worktree=existing_pane_agent.worktree,
                         )
@@ -4067,17 +4295,27 @@ Here are today's completed task sessions with full conversation history:
         Returns the new session_id if found, otherwise None.
         Used to detect when Claude auto-continues into a new session
         (e.g. context too long).
+
+        Strategies (in priority order):
+          0. Direct fd scan — check if the claude process has an open
+             handle to a .jsonl file (most reliable when available).
+          1. Slug match — /clear transitions reuse the same slug.
+          2. CWD + project match — if the claude process CWD is under
+             the agent's project path and the candidate JSONL's CWD
+             also matches, accept it.  Replaces the old PID/fd-ownership
+             checks which broke in Claude Code v2.1+ (no debug files,
+             no per-session fd handles).
+          3. Legacy PID match — kept as final fallback.
         """
-        # Use _resolve_session_jsonl to find the current session file
-        # (may be in a worktree session dir).
         current_jsonl = _resolve_session_jsonl(current_sid, project_path, worktree)
         try:
             current_mtime = os.path.getmtime(current_jsonl)
         except OSError:
             return None
 
-        # Get the tmux pane PID for this agent so we can verify ownership
+        # Get claude process info from the tmux pane
         pane_pid: int | None = None
+        claude_cwd: str = ""
         db = SessionLocal()
         try:
             agent = db.get(Agent, agent_id)
@@ -4085,24 +4323,43 @@ Here are today's completed task sessions with full conversation history:
                 pane_info = _build_tmux_claude_map().get(agent.tmux_pane)
                 if pane_info:
                     pane_pid = pane_info["pid"]
+                    claude_cwd = pane_info.get("cwd", "")
 
-            # Collect ALL session IDs ever assigned to any agent (including
-            # stopped ones) to avoid re-adopting a dead session that was just
-            # reaped moments ago.
+            # Collect ALL session IDs assigned to any agent to avoid
+            # re-adopting a dead or unrelated session.
             active_sids: set[str] = set()
             for a in db.query(Agent).filter(
                 Agent.session_id.is_not(None),
             ).all():
                 active_sids.add(a.session_id)
+
+            # For CWD-based matching: collect user message signatures
+            # so we can verify the candidate's first prompt matches this
+            # agent's conversation (prevents cross-agent session adoption).
+            agent_user_sigs: set[str] = set()
+            for m in db.query(Message).filter(
+                Message.agent_id == agent_id,
+                Message.role == MessageRole.USER,
+            ).all():
+                agent_user_sigs.add(_dedup_sig(m.content))
         finally:
             db.close()
 
-        # Extract the current session's slug for /clear detection.
-        # A /clear transition reuses the same slug in the new session,
-        # providing PID-independent proof of continuity.
+        # Strategy 0: direct fd scan — the most reliable method when
+        # Claude Code keeps the JSONL open (not always the case).
+        if pane_pid:
+            fd_sid = _detect_pid_session_jsonl(pane_pid)
+            if fd_sid and fd_sid != current_sid and fd_sid not in active_sids:
+                logger.info(
+                    "_detect_successor_session: fd-based match "
+                    "agent=%s pid=%d candidate_sid=%s",
+                    agent_id, pane_pid, fd_sid[:12],
+                )
+                return fd_sid
+
         current_slug = _get_session_slug(current_jsonl)
 
-        # Collect session dirs to scan: project root + worktree dir if set
+        # Collect session dirs to scan
         session_dirs = [session_source_dir(project_path)]
         if worktree:
             wt_path = os.path.join(project_path, ".claude", "worktrees", worktree)
@@ -4110,13 +4367,11 @@ Here are today's completed task sessions with full conversation history:
             if wt_sdir not in session_dirs and os.path.isdir(wt_sdir):
                 session_dirs.append(wt_sdir)
 
-        # Look for a JSONL newer than the current one.
-        # Two matching strategies:
-        #   1. Slug match: if the candidate has the same slug as the current
-        #      session, it's a /clear continuation — accept WITHOUT PID check.
-        #   2. PID match (fallback): for auto-continuations without /clear,
-        #      require PID match or fd-ownership proof.
-        best_sid, best_mtime = None, current_mtime
+        # Separate trackers: slug/PID matches pick newest (strong evidence),
+        # CWD matches pick earliest (weakest evidence, avoid false positives
+        # from unrelated sessions on the same project).
+        best_sid, best_mtime = None, current_mtime       # slug/PID: newest wins
+        cwd_sid, cwd_mtime = None, float("inf")           # CWD: earliest wins
         for session_dir in session_dirs:
             try:
                 for fname in os.listdir(session_dir):
@@ -4127,52 +4382,71 @@ Here are today's completed task sessions with full conversation history:
                         continue
                     fpath = os.path.join(session_dir, fname)
                     mtime = os.path.getmtime(fpath)
-                    if mtime > best_mtime:
-                        # Strategy 1: slug-based match (/clear transition)
-                        if current_slug:
-                            candidate_slug = _get_session_slug(fpath)
-                            if candidate_slug == current_slug:
+                    if mtime <= current_mtime:
+                        continue
+
+                    # Strategy 1: slug match (/clear transition) — newest wins
+                    if current_slug:
+                        candidate_slug = _get_session_slug(fpath)
+                        if candidate_slug == current_slug:
+                            if mtime > best_mtime:
                                 logger.info(
                                     "_detect_successor_session: slug match "
                                     "agent=%s slug=%s candidate_sid=%s",
                                     agent_id, current_slug, sid[:12],
                                 )
                                 best_sid, best_mtime = sid, mtime
-                                continue
+                            continue
 
-                        # Strategy 2: PID-based match (auto-continuation)
-                        session_pid = _get_session_pid(sid)
-                        if pane_pid is not None:
-                            # We know the pane PID — require exact match.
-                            # Fallback: when /clear reuses the same process,
-                            # the new session's debug log may lack PID lock
-                            # lines.  Check /proc/{pane_pid}/fd for open
-                            # handles to ~/.claude/tasks/{sid}/ as proof of
-                            # ownership.
-                            if session_pid != pane_pid:
-                                if session_pid is not None:
-                                    # PID known but mismatched — skip
-                                    continue
-                                # session_pid is None — try /proc fallback
-                                if not _pid_owns_session(pane_pid, sid):
-                                    continue
+                    # Strategy 2: CWD + content match — earliest wins
+                    # Requires the candidate's first user message matches a
+                    # message in this agent's history (prevents cross-agent
+                    # session adoption when multiple agents share a project).
+                    if claude_cwd and claude_cwd.startswith(project_path):
+                        candidate_cwd = _get_session_cwd(fpath)
+                        if candidate_cwd and candidate_cwd.startswith(project_path):
+                            first_prompt = _get_first_user_content(fpath)
+                            if (
+                                first_prompt
+                                and agent_user_sigs
+                                and _dedup_sig(first_prompt) in agent_user_sigs
+                                and mtime < cwd_mtime
+                            ):
+                                cwd_sid, cwd_mtime = sid, mtime
+                            continue
+
+                    # Strategy 3: legacy PID-based match (fallback) — newest wins
+                    session_pid = _get_session_pid(sid)
+                    if pane_pid is not None:
+                        if session_pid == pane_pid:
+                            if mtime > best_mtime:
+                                best_sid, best_mtime = sid, mtime
+                            continue
+                        if session_pid is None and _pid_owns_session(pane_pid, sid):
+                            if mtime > best_mtime:
                                 logger.info(
-                                    "_detect_successor_session: fd-ownership fallback matched "
-                                    "agent=%s pane_pid=%d candidate_sid=%s reason=fallback_fd_ownership",
+                                    "_detect_successor_session: fd-ownership fallback "
+                                    "agent=%s pane_pid=%d candidate_sid=%s",
                                     agent_id, pane_pid, sid[:12],
                                 )
-                        else:
-                            # No pane PID known — require session PID exists
-                            # and is alive (don't accept unverifiable sessions)
-                            if session_pid is None:
-                                continue
-                        best_sid, best_mtime = sid, mtime
+                                best_sid, best_mtime = sid, mtime
+                    elif session_pid is not None:
+                        if mtime > best_mtime:
+                            best_sid, best_mtime = sid, mtime
             except OSError as e:
                 logger.warning(
                     "_detect_successor_session: failed to scan session dir %s for agent %s: %s",
                     session_dir, agent_id, e,
                 )
-        return best_sid
+        # Prefer strong-evidence matches (slug/PID) over weaker CWD match
+        result = best_sid or cwd_sid
+        if result and result == cwd_sid and not best_sid:
+            logger.info(
+                "_detect_successor_session: CWD match "
+                "agent=%s candidate_sid=%s (earliest newer session)",
+                agent_id, cwd_sid[:12],
+            )
+        return result
 
     def _spawn_successor_agent(
         self, old_agent_id: str, new_sid: str, project_path: str,
@@ -4299,6 +4573,54 @@ Here are today's completed task sessions with full conversation history:
         finally:
             db.close()
 
+    def _rotate_agent_session(
+        self, agent_id: str, new_sid: str, project_path: str,
+        worktree: str | None = None,
+    ):
+        """Rotate an agent to a new CLI session in-place.
+
+        Unlike _spawn_successor_agent, this keeps the same agent ID and
+        conversation history.  The sync loop restarts and reconciles
+        turns from the new JSONL against existing DB messages — the
+        dedup logic handles carried-forward history automatically.
+        """
+        from websocket import emit_agent_update
+
+        db = SessionLocal()
+        try:
+            agent = db.get(Agent, agent_id)
+            if not agent:
+                return
+            old_sid = agent.session_id
+            agent.session_id = new_sid
+            new_fpath = _resolve_session_jsonl(
+                new_sid, project_path, worktree or agent.worktree,
+            )
+            detected_model = _detect_session_model(new_fpath)
+            if detected_model:
+                agent.model = detected_model
+            db.add(Message(
+                agent_id=agent_id,
+                role=MessageRole.SYSTEM,
+                content="CLI session continued (new context)",
+                status=MessageStatus.COMPLETED,
+            ))
+            agent.last_message_at = _utcnow()
+            db.commit()
+            self._emit(emit_agent_update(agent_id, "SYNCING", agent.project))
+            logger.info(
+                "Rotated agent %s session in-place: %s → %s",
+                agent_id, (old_sid or "")[:12], new_sid[:12],
+            )
+        finally:
+            db.close()
+
+        # Cancel old sync task and start a fresh one.  The new sync
+        # loop does initial reconciliation which deduplicates turns
+        # already present in the DB.
+        self._cancel_sync_task(agent_id)
+        self.start_session_sync(agent_id, new_sid, project_path)
+
     async def _sync_session_loop(
         self, agent_id: str, session_id: str, project_path: str
     ):
@@ -4338,7 +4660,12 @@ Here are today's completed task sessions with full conversation history:
             finally:
                 db.close()
         finally:
-            self._sync_tasks.pop(agent_id, None)
+            # Only clean up if this is still the active sync task.
+            # _rotate_agent_session replaces the task, so the old one
+            # must not remove the new entry from _sync_tasks.
+            import asyncio as _aio
+            if self._sync_tasks.get(agent_id) is _aio.current_task():
+                self._sync_tasks.pop(agent_id, None)
             # Ensure generating state is cleaned up on any exit path
             if agent_id in self._generating_agents:
                 self._stop_generating(agent_id)
@@ -4399,16 +4726,6 @@ Here are today's completed task sessions with full conversation history:
             """Fast hash of content for change detection."""
             import hashlib
             return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:16]
-
-        def _dedup_sig(text: str) -> str:
-            """Normalize content for dedup comparison.
-
-            tmux converts tabs to spaces, so a message sent via web (tabs)
-            won't exactly match the same message in the JSONL (spaces).
-            Collapse all whitespace runs to single space for comparison.
-            """
-            import re
-            return re.sub(r"\s+", " ", text[:200]).strip()
 
         # Get the current file size and turn count so we only import new turns
         try:
@@ -4753,15 +5070,15 @@ Here are today's completed task sessions with full conversation history:
                     )
                     if new_sid:
                         logger.info(
-                            "Session continuation detected for agent %s: "
-                            "%s → %s — stopping old, creating new",
+                            "Session rotation detected for agent %s: "
+                            "%s → %s — rotating in-place",
                             agent_id, session_id[:12], new_sid[:12],
                         )
-                        self._spawn_successor_agent(
+                        self._rotate_agent_session(
                             agent_id, new_sid, project_path,
                             worktree=_worktree,
                         )
-                        return
+                        return  # new sync task started by _rotate_agent_session
 
                     if idle_polls % 30 == 0:
                         logger.debug(

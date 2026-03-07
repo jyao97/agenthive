@@ -144,3 +144,82 @@ async def test_list_agents_excludes_subagents(client, db_engine):
     ids = [a["id"] for a in data]
     assert "parent111111" in ids
     assert "child1111111" not in ids
+
+
+@pytest.mark.anyio
+async def test_dispatch_pending_syncing_no_pane_grace_then_stop(db_engine, monkeypatch):
+    """SYNCING cli_sync agents should not stop immediately on transient no-pane."""
+    from sqlalchemy.orm import sessionmaker
+    from agent_dispatcher import AgentDispatcher
+
+    Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+    db = Session()
+    db.add(Project(name="sync-grace", display_name="SG", path="/tmp/sg"))
+    agent = Agent(
+        id="syncgrace1111",
+        project="sync-grace",
+        name="Grace Agent",
+        status=AgentStatus.SYNCING,
+        cli_sync=True,
+        tmux_pane=None,
+        session_id="sess-grace",
+    )
+    db.add(agent)
+    pending = Message(
+        agent_id=agent.id,
+        role=MessageRole.USER,
+        content="queued message",
+        status=MessageStatus.PENDING,
+    )
+    db.add(pending)
+    db.commit()
+
+    class DummyWorkerManager:
+        def ensure_project_ready(self, _project):
+            raise AssertionError("idle dispatch should not run in this test")
+
+    dispatcher = AgentDispatcher(DummyWorkerManager())
+    dispatcher._max_syncing_no_pane_retries = 3
+
+    monkeypatch.setattr(
+        "agent_dispatcher._detect_tmux_pane_for_session",
+        lambda _sid, _path: None,
+    )
+    monkeypatch.setattr("agent_dispatcher.verify_tmux_pane", lambda _pane: False)
+
+    def _drop_coro(coro):
+        try:
+            coro.close()
+        except Exception:
+            pass
+
+    dispatcher._emit = _drop_coro
+
+    # First two ticks: still in grace window.
+    dispatcher._dispatch_pending_messages(db)
+    db.flush()
+    assert agent.status == AgentStatus.SYNCING
+    assert pending.status == MessageStatus.PENDING
+
+    dispatcher._dispatch_pending_messages(db)
+    db.flush()
+    assert agent.status == AgentStatus.SYNCING
+    assert pending.status == MessageStatus.PENDING
+
+    # Third tick: grace exhausted, agent is stopped and pending message fails.
+    dispatcher._dispatch_pending_messages(db)
+    db.flush()
+    assert agent.status == AgentStatus.STOPPED
+    assert pending.status == MessageStatus.FAILED
+    assert pending.error_message == "Agent tmux session no longer exists"
+
+    system_messages = (
+        db.query(Message)
+        .filter(
+            Message.agent_id == agent.id,
+            Message.role == MessageRole.SYSTEM,
+        )
+        .all()
+    )
+    assert any("tmux pane not found" in (m.content or "") for m in system_messages)
+    db.close()

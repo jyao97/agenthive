@@ -1,5 +1,6 @@
 """WebSocket hub — broadcasts real-time events to connected clients."""
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -8,6 +9,9 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 logger = logging.getLogger("orchestrator.ws")
+
+# Timeout for individual WS send operations (seconds)
+_SEND_TIMEOUT = 5
 
 
 class ConnectionManager:
@@ -45,17 +49,34 @@ class ConnectionManager:
             "data": data,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-        disconnected = []
-        sent = 0
-        for ws in self.active:
+        # Send to all clients in parallel with per-client timeout
+        # so one stale connection doesn't block the rest.
+        async def _send(ws):
             try:
-                await ws.send_text(message)
-                sent += 1
+                await asyncio.wait_for(ws.send_text(message), timeout=_SEND_TIMEOUT)
+                return ws, True
             except Exception:
-                disconnected.append(ws)
+                return ws, False
+
+        results = await asyncio.gather(*[_send(ws) for ws in list(self.active)])
+        disconnected = [ws for ws, ok in results if not ok]
         for ws in disconnected:
             self.disconnect(ws)
-        return sent
+        return sum(1 for _, ok in results if ok)
+
+    async def prune_stale(self):
+        """Ping all clients and remove any that fail to respond."""
+        ping_msg = json.dumps({"type": "ping"})
+        disconnected = []
+        for ws in list(self.active):
+            try:
+                await asyncio.wait_for(ws.send_text(ping_msg), timeout=_SEND_TIMEOUT)
+            except Exception:
+                disconnected.append(ws)
+        if disconnected:
+            for ws in disconnected:
+                self.disconnect(ws)
+            logger.info("Pruned %d stale WebSocket connections", len(disconnected))
 
 
 # Singleton manager
