@@ -292,11 +292,23 @@ function AppRoutes({ themeProps }) {
   const location = useLocation();
   const bgLocation = location.state?.backgroundLocation;
 
+  // Persist current route so app resumes where you left off
+  useEffect(() => {
+    const path = location.pathname;
+    if (path && path !== "/login" && path !== "/") {
+      localStorage.setItem("ah:last-route", path);
+    }
+  }, [location.pathname]);
+
+  // On first mount, redirect to last-visited route
+  const savedRoute = localStorage.getItem("ah:last-route");
+  const resumeTo = savedRoute && savedRoute !== "/" && savedRoute !== "/login" ? savedRoute : "/projects";
+
   return (
     <>
       {/* Render background page when overlay is active, otherwise normal routes */}
       <Routes location={bgLocation || location}>
-        <Route path="/" element={<Navigate to="/projects" replace />} />
+        <Route path="/" element={<Navigate to={resumeTo} replace />} />
         <Route path="/projects" element={<ProjectsPage {...themeProps} />} />
         <Route path="/projects/trash" element={<TrashPage {...themeProps} />} />
         <Route path="/projects/:name" element={<ProjectDetailPage {...themeProps} />} />
