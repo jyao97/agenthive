@@ -240,6 +240,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     try {
       await createProject({ name });
       await load();
+      window.dispatchEvent(new CustomEvent("projects-data-changed"));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -252,12 +253,20 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
     try {
       await archiveProject(name);
       await load();
+      window.dispatchEvent(new CustomEvent("projects-data-changed"));
     } catch (err) {
       setError(err.message);
     } finally {
       setBusy(null);
     }
   };
+
+  // Cross-pane sync: project list changes
+  useEffect(() => {
+    const onDataChanged = () => load();
+    window.addEventListener("projects-data-changed", onDataChanged);
+    return () => window.removeEventListener("projects-data-changed", onDataChanged);
+  }, [load]);
 
   useEffect(() => {
     if (!visible) return;

@@ -28,6 +28,8 @@ export function setAgentMuted(agentId, muted) {
   if (muted) set.add(agentId);
   else set.delete(agentId);
   localStorage.setItem(MUTED_KEY, JSON.stringify([...set]));
+  // Notify other panes in split-screen (same window, so storage event won't fire)
+  window.dispatchEvent(new CustomEvent("agent-mute-changed", { detail: { agentId, muted } }));
 }
 
 /** Check if agent notifications are globally enabled. */

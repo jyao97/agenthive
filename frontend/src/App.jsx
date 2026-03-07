@@ -10,6 +10,7 @@ import useIdleLock from "./hooks/useIdleLock";
 import usePageVisible from "./hooks/usePageVisible";
 import { MonitorProvider } from "./contexts/MonitorContext";
 import { ToastProvider } from "./contexts/ToastContext";
+import SplitScreenButton from "./components/SplitScreenButton";
 
 const MODULE_IMPORT_ERROR_PATTERNS = [
   "Importing a module script failed",
@@ -84,6 +85,7 @@ const MonitorPage = lazyPage(() => import("./pages/MonitorPage"));
 const GitPage = lazyPage(() => import("./pages/GitPage"));
 const TaskDetailPage = lazyPage(() => import("./pages/TaskDetailPage"));
 const NewTaskPage = lazyPage(() => import("./pages/NewTaskPage"));
+const SplitScreenPage = lazyPage(() => import("./pages/SplitScreenPage"));
 
 const tabs = [
   {
@@ -305,6 +307,7 @@ function AppRoutes({ themeProps }) {
         {!bgLocation && <Route path="/new/task" element={<NewTaskPage />} />}
         <Route path="/new" element={<NewPage {...themeProps} />} />
         <Route path="/monitor" element={<MonitorPage {...themeProps} />} />
+        <Route path="/split" element={<SplitScreenPage />} />
         <Route path="/git" element={<GitPage {...themeProps} />} />
       </Routes>
       {/* Overlay: NewTaskPage sheet rendered on top of background page */}
@@ -322,7 +325,7 @@ export default function App() {
   const themeProps = { theme, onToggleTheme: toggle };
   const location = useLocation();
   const navigate = useNavigate();
-  const hideNav = location.pathname.match(/^\/agents\/[^/]+$/) || location.pathname.match(/^\/tasks\/[^/]+$/) || location.pathname === "/login";
+  const hideNav = location.pathname.match(/^\/agents\/[^/]+$/) || location.pathname.match(/^\/tasks\/[^/]+$/) || location.pathname === "/login" || location.pathname === "/split";
   const [unread, setUnread] = useState(0);
   const [claudeMdPending, setClaudeMdPending] = useState(0);
   const [reviewCount, setReviewCount] = useState(0);
@@ -432,6 +435,9 @@ export default function App() {
           />
         </Routes>
       </main>
+
+      {/* Split screen button — large screens only, always visible */}
+      <SplitScreenButton />
 
       {/* Bottom tab bar — floating glass pill */}
       {!hideNav && (

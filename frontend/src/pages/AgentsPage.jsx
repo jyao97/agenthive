@@ -38,7 +38,7 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
     navigator.clipboard.writeText(agent.id).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
+    }).catch(() => {});
   };
 
   const handleClick = () => {
@@ -224,6 +224,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     setAgentNotificationsEnabled(next);
     updateNotificationSettings({ agents_enabled: next }).catch(() => {});
     showToast(next ? "Agent notifications enabled" : "Agent notifications disabled");
+    window.dispatchEvent(new CustomEvent("agent-notifs-changed", { detail: { enabled: next } }));
   }, [agentNotifsOn, showToast]);
 
   // Message content search
@@ -268,6 +269,18 @@ export default function AgentsPage({ theme, onToggleTheme }) {
       setLoading(false);
     }
   }, []);
+
+  // Cross-pane sync: notification toggle + data refresh
+  useEffect(() => {
+    const onNotifsChanged = (e) => setAgentNotifsOn(e.detail.enabled);
+    const onDataChanged = () => load();
+    window.addEventListener("agent-notifs-changed", onNotifsChanged);
+    window.addEventListener("agents-data-changed", onDataChanged);
+    return () => {
+      window.removeEventListener("agent-notifs-changed", onNotifsChanged);
+      window.removeEventListener("agents-data-changed", onDataChanged);
+    };
+  }, [load]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -391,6 +404,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     setSelected(new Set());
     setSelecting(false);
     load();
+    window.dispatchEvent(new CustomEvent("agents-data-changed"));
   };
 
   const handleBulkStop = async () => {
@@ -415,6 +429,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     setSelected(new Set());
     setSelecting(false);
     load();
+    window.dispatchEvent(new CustomEvent("agents-data-changed"));
   };
 
   const deletableSelected = filtered.filter(
@@ -446,6 +461,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     setSelected(new Set());
     setSelecting(false);
     load();
+    window.dispatchEvent(new CustomEvent("agents-data-changed"));
   };
 
   return (

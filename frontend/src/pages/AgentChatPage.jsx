@@ -556,6 +556,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   const [inlineLightbox, setInlineLightbox] = useState(null); // { media, initialIndex }
   const longPressTimer = useRef(null);
   const lastTapRef = useRef(0);
+  const touchStartYRef = useRef(0);
   const editTextareaRef = useRef(null);
   const markdownRef = useRef(null);
 
@@ -590,19 +591,23 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
 
   const canModify = isScheduled || isPending;
 
-  const handleLongPressStart = () => {
+  const handleLongPressStart = (e) => {
+    touchStartYRef.current = e.touches?.[0]?.clientY ?? 0;
     if (!canModify) return;
     longPressTimer.current = setTimeout(() => {
       setShowActions(true);
     }, LONG_PRESS_DELAY);
   };
-  const handleLongPressEnd = () => {
+  const handleLongPressEnd = (e) => {
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
     }
     // Double-tap detection for touch (copy content)
-    if (!canModify) {
+    // Skip if the finger moved significantly (scroll gesture, not a tap)
+    const endY = e.changedTouches?.[0]?.clientY ?? 0;
+    const movedTooFar = Math.abs(endY - touchStartYRef.current) > 10;
+    if (!canModify && !movedTooFar) {
       const now = Date.now();
       if (now - lastTapRef.current < DOUBLE_TAP_WINDOW) {
         handleDoubleClick();
@@ -618,7 +623,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     navigator.clipboard.writeText(message.content || "").then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), COPY_TOAST_DURATION);
-    });
+    }).catch(() => {});
   };
 
   const handleCancel = () => {
@@ -1345,8 +1350,9 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
 // --- Main Page ---
 
-export default function AgentChatPage({ theme, onToggleTheme }) {
-  const { id } = useParams();
+export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgentId, embedded, onClose, onNavigateAgent }) {
+  const { id: routeId } = useParams();
+  const id = propAgentId || routeId;
   const navigate = useNavigate();
   const visible = usePageVisible();
   const [agent, setAgent] = useState(null);
@@ -1372,6 +1378,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const [fileModal, setFileModal] = useState(null); // "CLAUDE.md" | "PROGRESS.md" | null
   const [showBrowser, setShowBrowser] = useState(false);
   const [fileExists, setFileExists] = useState({ "CLAUDE.md": null, "PROGRESS.md": null });
+  const [headerExpanded, setHeaderExpanded] = useState(false);
   const messagesEndRef = useRef(null);
   const toastTimer = useRef(null);
   const health = useHealthStatus();
@@ -1524,7 +1531,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   // Mark as read on mount and when new messages arrive
   useEffect(() => {
     if (agent && agent.unread_count > 0) {
-      markAgentRead(id).catch((err) => {
+      markAgentRead(id).then(() => {
+        window.dispatchEvent(new CustomEvent("agents-data-changed"));
+      }).catch((err) => {
         console.warn("Failed to mark agent as read:", err);
       });
     }
@@ -1565,7 +1574,9 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       } else {
         await starSession(agent.project, sessionId);
       }
-      setStarred(!starred);
+      const nextStarred = !starred;
+      setStarred(nextStarred);
+      window.dispatchEvent(new CustomEvent("agent-star-changed", { detail: { agentId: id, starred: nextStarred } }));
     } catch (err) {
       showToast("Failed to update star: " + err.message, "error");
     } finally {
@@ -1582,6 +1593,21 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     });
     showToast(nextMuted ? "Notifications muted for this agent" : "Notifications enabled for this agent");
   };
+
+  // Sync mute & star state across split-screen panes
+  useEffect(() => {
+    const onMute = (e) => { if (e.detail?.agentId === id) setMuted(e.detail.muted); };
+    const onStar = (e) => { if (e.detail?.agentId === id) setStarred(e.detail.starred); };
+    const onRename = (e) => { if (e.detail?.agentId === id) setAgent((prev) => prev ? { ...prev, name: e.detail.name } : prev); };
+    window.addEventListener("agent-mute-changed", onMute);
+    window.addEventListener("agent-star-changed", onStar);
+    window.addEventListener("agent-renamed", onRename);
+    return () => {
+      window.removeEventListener("agent-mute-changed", onMute);
+      window.removeEventListener("agent-star-changed", onStar);
+      window.removeEventListener("agent-renamed", onRename);
+    };
+  }, [id]);
 
   // Auto-scroll to bottom on new messages or streaming content
   const scrollContainerRef = useRef(null);
@@ -1781,6 +1807,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     try {
       await renameAgent(id, trimmed);
       setAgent((prev) => prev ? { ...prev, name: trimmed } : prev);
+      window.dispatchEvent(new CustomEvent("agent-renamed", { detail: { agentId: id, name: trimmed } }));
       showToast("Renamed");
     } catch (err) {
       showToast("Rename failed: " + err.message, "error");
@@ -1853,6 +1880,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       await stopAgent(id);
       showToast("Agent stopped");
       loadData();
+      window.dispatchEvent(new CustomEvent("agents-data-changed"));
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     } finally {
@@ -1874,6 +1902,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       await resumeAgent(id, mode ? { mode } : null);
       showToast("Agent resumed");
       loadData();
+      window.dispatchEvent(new CustomEvent("agents-data-changed"));
     } catch (err) {
       // Handle superseded agent (409)
       try {
@@ -1925,7 +1954,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-faint">
         <p>Agent not found</p>
-        <button type="button" onClick={() => navigate("/agents")} className="mt-2 text-sm text-cyan-400 underline">
+        <button type="button" onClick={() => { if (onClose) onClose(); else navigate("/agents"); }} className="mt-2 text-sm text-cyan-400 underline">
           Back to Agents
         </button>
       </div>
@@ -1949,6 +1978,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
   const hasTmuxPane = !!agent.tmux_pane;
   const isStopped = agent.status === "STOPPED";
   const isError = agent.status === "ERROR";
+  const compactHeader = embedded && !headerExpanded;
 
   let disabledReason = "";
   if (isStopped) disabledReason = "Agent is stopped — click Resume to restart";
@@ -1965,18 +1995,24 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
       )}
 
       {/* Header */}
-      <div className="shrink-0 bg-surface border-b border-divider px-4 py-2 safe-area-pt relative z-10">
-        <div className="max-w-2xl mx-auto space-y-1.5">
+      <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10`}>
+        <div className={`${embedded ? "" : "max-w-2xl"} mx-auto ${compactHeader ? "" : "space-y-1.5"}`}>
           {/* Row 1: Back + name | project + icon buttons */}
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => navigate("/agents")}
+              onClick={() => { if (onClose) onClose(); else navigate("/agents"); }}
               className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
             >
-              <svg className="w-5 h-5 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-              </svg>
+              {embedded ? (
+                <svg className="w-5 h-5 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                </svg>
+              )}
             </button>
 
             {editingName ? (
@@ -2002,90 +2038,127 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
               </h1>
             )}
 
-            {/* Icon buttons */}
-            <div className="shrink-0 flex items-center">
-              {["CLAUDE.md", "PROGRESS.md"].map((fn) => {
-                const letter = fn === "CLAUDE.md" ? "C" : "P";
-                const exists = fileExists[fn];
-                const color = exists === false ? "text-zinc-500 hover:text-zinc-400" : "text-cyan-400 hover:text-cyan-300";
-                return (
-                  <button
-                    key={fn}
-                    type="button"
-                    onClick={() => setFileModal(fn)}
-                    title={fn}
-                    className={`shrink-0 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${color}`}
-                  >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2v6h6" />
-                      <text x="12" y="17" textAnchor="middle" fill="currentColor" stroke="none" fontSize="7" fontWeight="700" fontFamily="system-ui">{letter}</text>
-                    </svg>
+            {compactHeader ? (
+              /* Compact: status dot + stop/resume + expand chevron */
+              <div className="shrink-0 flex items-center gap-1.5">
+                <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${statusDot}`} />
+                {(isStopped || isError) ? (
+                  <button type="button" onClick={() => handleResume()} disabled={resuming}
+                    className="px-2 h-6 flex items-center gap-1 rounded-md text-[10px] font-medium bg-cyan-600 text-white disabled:opacity-50 enabled:hover:bg-cyan-500">
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4l14 8-14 8V4z" /></svg>
+                    {resuming ? "..." : "Resume"}
                   </button>
-                );
-              })}
-              <button
-                type="button"
-                onClick={() => setShowBrowser(true)}
-                title="Browse files"
-                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-300 hover:bg-input transition-colors"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                onClick={handleToggleMute}
-                title={muted ? "Unmute notifications" : "Mute notifications"}
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
-              >
-                {muted ? (
-                  <BellOff className="w-3.5 h-3.5 text-dim hover:text-cyan-400 transition-colors" />
                 ) : (
-                  <Bell className="w-3.5 h-3.5 text-cyan-400" />
+                  <button type="button" onClick={() => setShowStopConfirm(true)}
+                    className="px-2 h-6 flex items-center gap-1 rounded-md text-[10px] font-medium bg-red-600 text-white hover:bg-red-500">
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+                    Stop
+                  </button>
                 )}
-              </button>
-
-              <button
-                type="button"
-                onClick={handleToggleStar}
-                disabled={starLoading}
-                title={starred ? "Unstar session" : "Star session"}
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors disabled:opacity-50"
-              >
-                {starred ? (
-                  <svg className="w-3.5 h-3.5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-                  </svg>
-                ) : (
-                  <svg className="w-3.5 h-3.5 text-dim hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-                  </svg>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={onToggleTheme}
-                title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-                className="w-7 h-7 flex items-center justify-center rounded-lg text-dim hover:text-heading hover:bg-input transition-colors"
-              >
-                {theme === "dark" ? (
+                <button type="button" onClick={() => setHeaderExpanded(true)} title="Show details"
+                  className="w-6 h-6 flex items-center justify-center rounded-lg text-dim hover:text-body hover:bg-input transition-colors">
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
                   </svg>
-                ) : (
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </button>
+              </div>
+            ) : (
+              /* Full: icon buttons */
+              <div className="shrink-0 flex items-center">
+                {["CLAUDE.md", "PROGRESS.md"].map((fn) => {
+                  const letter = fn === "CLAUDE.md" ? "C" : "P";
+                  const exists = fileExists[fn];
+                  const color = exists === false ? "text-zinc-500 hover:text-zinc-400" : "text-cyan-400 hover:text-cyan-300";
+                  return (
+                    <button
+                      key={fn}
+                      type="button"
+                      onClick={() => setFileModal(fn)}
+                      title={fn}
+                      className={`shrink-0 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${color}`}
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14 2v6h6" />
+                        <text x="12" y="17" textAnchor="middle" fill="currentColor" stroke="none" fontSize="7" fontWeight="700" fontFamily="system-ui">{letter}</text>
+                      </svg>
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setShowBrowser(true)}
+                  title="Browse files"
+                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-300 hover:bg-input transition-colors"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                   </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleToggleMute}
+                  title={muted ? "Unmute notifications" : "Mute notifications"}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
+                >
+                  {muted ? (
+                    <BellOff className="w-3.5 h-3.5 text-dim hover:text-cyan-400 transition-colors" />
+                  ) : (
+                    <Bell className="w-3.5 h-3.5 text-cyan-400" />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleToggleStar}
+                  disabled={starLoading}
+                  title={starred ? "Unstar session" : "Star session"}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors disabled:opacity-50"
+                >
+                  {starred ? (
+                    <svg className="w-3.5 h-3.5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3.5 h-3.5 text-dim hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                    </svg>
+                  )}
+                </button>
+
+                {!embedded && (
+                <button
+                  type="button"
+                  onClick={onToggleTheme}
+                  title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg text-dim hover:text-heading hover:bg-input transition-colors"
+                >
+                  {theme === "dark" ? (
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                    </svg>
+                  )}
+                </button>
                 )}
-              </button>
-            </div>
+
+                {embedded && (
+                <button type="button" onClick={() => setHeaderExpanded(false)} title="Collapse"
+                  className="w-7 h-7 flex items-center justify-center rounded-lg text-dim hover:text-body hover:bg-input transition-colors">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+                  </svg>
+                </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Task banner */}
-          {agent.task_id && (
+          {!compactHeader && agent.task_id && (
             <div className="ml-9 flex items-center gap-1.5">
               <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
@@ -2101,7 +2174,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
           )}
 
           {/* Row 2: Status + model + branch | action buttons (ml-9 aligns with name after back btn) */}
-          <div className="flex items-center gap-2 ml-9">
+          {!compactHeader && <div className="flex items-center gap-2 ml-9">
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
               <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
               <span className={`text-xs shrink-0 ${statusText}`}>
@@ -2139,7 +2212,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
               {(isStopped || isError) && agent?.successor_id && (
                 <button
                   type="button"
-                  onClick={() => navigate(`/agents/${agent.successor_id}`)}
+                  onClick={() => embedded && onNavigateAgent ? onNavigateAgent(agent.successor_id) : navigate(`/agents/${agent.successor_id}`)}
                   className="px-2.5 h-7 flex items-center gap-1 rounded-lg text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors"
                 >
                   Continued
@@ -2184,17 +2257,17 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
                 {healthLabel}
               </button>
             </div>
-          </div>
+          </div>}
         </div>
       </div>
 
       {/* Agent ID + session size + parent link */}
-      <div className="shrink-0 bg-surface border-b border-divider px-4 py-1">
-        <div className="max-w-2xl mx-auto flex items-center gap-2">
+      {!compactHeader && <div className="shrink-0 bg-surface border-b border-divider px-4 py-1">
+        <div className={`${embedded ? "" : "max-w-2xl"} mx-auto flex items-center gap-2`}>
           {agent.parent_id && (
             <button
               type="button"
-              onClick={() => navigate(`/agents/${agent.parent_id}`)}
+              onClick={() => embedded && onNavigateAgent ? onNavigateAgent(agent.parent_id) : navigate(`/agents/${agent.parent_id}`)}
               className="text-[10px] text-cyan-400 hover:underline flex items-center gap-0.5"
             >
               <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -2209,7 +2282,7 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
               onDoubleClick={() => {
                 navigator.clipboard.writeText(agent.id).then(() => {
                   showToast("Copied " + agent.id);
-                });
+                }).catch(() => {});
               }}
               title="Double-tap to copy"
             >{agent.id}</span>
@@ -2228,13 +2301,13 @@ export default function AgentChatPage({ theme, onToggleTheme }) {
             )}
           </span>
         </div>
-      </div>
+      </div>}
 
       {/* Messages */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 pb-36 max-w-2xl mx-auto w-full flex flex-col"
+        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 pb-36 ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (

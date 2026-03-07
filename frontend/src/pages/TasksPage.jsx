@@ -150,7 +150,15 @@ export default function TasksPage({ theme, onToggleTheme }) {
     setTaskNotificationsEnabled(next);
     updateNotificationSettings({ tasks_enabled: next }).catch(() => {});
     showToast(next ? "Task notifications enabled" : "Task notifications disabled");
+    window.dispatchEvent(new CustomEvent("task-notifs-changed", { detail: { enabled: next } }));
   }, [taskNotifsOn, showToast]);
+
+  // Cross-pane sync: notification toggle
+  useEffect(() => {
+    const onNotifsChanged = (e) => setTaskNotifsOn(e.detail.enabled);
+    window.addEventListener("task-notifs-changed", onNotifsChanged);
+    return () => window.removeEventListener("task-notifs-changed", onNotifsChanged);
+  }, []);
 
   const ViewComponent = {
     INBOX: InboxView,

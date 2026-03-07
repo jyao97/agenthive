@@ -153,6 +153,16 @@ body::after {
   top: max(1rem, calc(env(safe-area-inset-top, 0px) + 0.5rem));
 }
 
+/* ── Split-pane: tighter padding for embedded pages ── */
+.split-pane [class~="px-4"] { padding-left: 0.5rem; padding-right: 0.5rem; }
+.split-pane [class~="px-5"] { padding-left: 0.75rem; padding-right: 0.75rem; }
+.split-pane [class~="p-5"]  { padding: 0.625rem; }
+.split-pane [class~="gap-4"] { gap: 0.5rem; }
+.split-pane .safe-area-pt { padding-top: 0 !important; }
+.split-pane .safe-area-pb { padding-bottom: 0 !important; }
+.split-pane .safe-area-pb-tight { padding-bottom: 0 !important; }
+.split-pane [style*="safe-area-inset-top"] { padding-top: 0.25rem !important; }
+
 /* ── Selection highlight ── */
 ::selection {
   background-color: rgba(0, 210, 255, 0.2);
