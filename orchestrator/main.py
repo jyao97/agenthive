@@ -825,13 +825,34 @@ async def system_restart():
     return {"status": "restarting"}
 
 
+def _claude_cli_version() -> str:
+    """Detect installed Claude CLI version, cached after first call."""
+    if not hasattr(_claude_cli_version, "_v"):
+        import subprocess
+        try:
+            out = subprocess.check_output(["claude", "--version"], timeout=5, text=True).strip()
+            _claude_cli_version._v = out.split()[0]  # "2.1.70 (Claude Code)" → "2.1.70"
+        except Exception:
+            _claude_cli_version._v = "0.0.0"
+    return _claude_cli_version._v
+
+
+_token_usage_cache: dict = {"data": None, "ts": 0.0}
+_TOKEN_USAGE_TTL = 120  # seconds — avoid rate-limiting from Anthropic
+
+
 @app.get("/api/system/token-usage")
 async def token_usage():
     """Query Claude API token usage via OAuth credentials."""
+    import time
     import json as _json
     import urllib.request
     import urllib.error
     from config import CLAUDE_CREDENTIALS_PATH
+
+    now = time.monotonic()
+    if _token_usage_cache["data"] is not None and now - _token_usage_cache["ts"] < _TOKEN_USAGE_TTL:
+        return _token_usage_cache["data"]
 
     if not CLAUDE_CREDENTIALS_PATH or not os.path.exists(CLAUDE_CREDENTIALS_PATH):
         raise HTTPException(
@@ -855,6 +876,8 @@ async def token_usage():
         "https://api.anthropic.com/api/oauth/usage",
         headers={
             "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "User-Agent": f"claude-code/{_claude_cli_version()}",
             "anthropic-beta": "oauth-2025-04-20",
         },
     )
@@ -863,8 +886,13 @@ async def token_usage():
             data = _json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:200]
+        # On rate-limit, return stale cache if available instead of failing
+        if exc.code == 429 and _token_usage_cache["data"] is not None:
+            return _token_usage_cache["data"]
         raise HTTPException(status_code=exc.code, detail=f"Anthropic API error: {body}")
     except Exception as exc:
+        if _token_usage_cache["data"] is not None:
+            return _token_usage_cache["data"]
         raise HTTPException(status_code=502, detail=f"Failed to reach Anthropic API: {exc}")
 
     # Return only the fields the frontend needs
@@ -882,6 +910,8 @@ async def token_usage():
             "resets_at": seven_day.get("resets_at"),
         }
 
+    _token_usage_cache["data"] = result
+    _token_usage_cache["ts"] = now
     return result
 
 
@@ -2149,37 +2179,28 @@ def _progress_job_clear(project_name: str):
 
 
 def _summarize_progress_background(project_name: str, project_path: str,
-                                   task_summaries: str, current_progress: str):
-    """Run claude -p in a thread to summarize today's completed tasks into PROGRESS.md."""
+                                   session_context: str):
+    """Run claude -p in a thread to generate a daily summary section (incremental append)."""
     from datetime import date
     today = date.today().isoformat()
 
-    prompt = f"""You are appending a daily summary entry to a project's PROGRESS.md file.
+    prompt = f"""You are a project analyst. Read the following completed task sessions from today and produce a concise daily summary.
 
 STRICT RULES:
-1. Output ONLY the new PROGRESS.md content — no preamble, no explanation, no markdown fences.
-2. Keep ALL existing content exactly as-is.
-3. Append a new entry at the bottom in this format:
+1. Output ONLY the summary section — no preamble, no explanation, no markdown fences.
+2. Use EXACTLY this format:
 
 ## {today} — Daily Summary
-- [task title]: brief lesson or outcome (1 line each)
-- ...
+- [task title]: what was done, key lesson or gotcha (1 line each)
 
-4. Summarize each completed task in 1 line focusing on: what was done, any gotchas/lessons.
-5. If no tasks completed today, append: "## {today} — No tasks completed today"
-6. Keep the entry concise — max 10 lines for the new section.
-7. Do NOT modify or reformat existing entries.
-8. If the file exceeds 200 lines, consolidate older entries (30+ days) into a single "## Archive" section at the top with only the most important lessons retained (max 20 lines). Keep recent entries intact.
+3. Focus on: what was accomplished, problems encountered, solutions found, lessons for future agents.
+4. Deduplicate — if multiple tasks did similar work, merge into one bullet.
+5. Max 15 lines total. Be concise but insightful.
+6. Do NOT output anything before the ## heading or after the last bullet.
 
-Here is the current PROGRESS.md:
----
-{current_progress or "(empty — start fresh with a # PROGRESS heading)"}
----
+Here are today's completed task sessions with full conversation history:
 
-Here are today's completed tasks:
----
-{task_summaries or "(no tasks completed today)"}
----"""
+{session_context}"""
 
     from config import CLAUDE_BIN
     try:
@@ -2192,7 +2213,7 @@ Here are today's completed tasks:
             logger.warning("progress summary failed for %s: %s", project_name, result.stderr[:500])
             _progress_job_set(project_name, status="error", error="Claude agent failed — try again")
             return
-        proposed = result.stdout.strip()
+        new_section = result.stdout.strip()
     except subprocess.TimeoutExpired:
         _progress_job_set(project_name, status="error", error="Summary timed out (>5min)")
         return
@@ -2203,18 +2224,21 @@ Here are today's completed tasks:
         _progress_job_set(project_name, status="error", error=str(e))
         return
 
-    if not proposed:
+    if not new_section:
         _progress_job_set(project_name, status="error", error="Claude agent returned empty output")
         return
 
-    if not current_progress:
-        data = {"current": "", "proposed": proposed, "diff": "", "hunks": [], "is_new": True}
-    elif current_progress.strip() == proposed.strip():
-        data = {"hunks": [], "message": "No changes needed"}
-    else:
-        raw_diff, hunks = _compute_diff_hunks(current_progress, proposed)
-        data = {"current": current_progress, "proposed": proposed, "diff": raw_diff, "hunks": hunks}
+    # Strip markdown fences if LLM wrapped output
+    if new_section.startswith("```"):
+        lines = new_section.split("\n")
+        if lines[-1].strip() == "```":
+            lines = lines[1:-1]
+        else:
+            lines = lines[1:]
+        new_section = "\n".join(lines).strip()
 
+    # For manual flow: show proposed section for user review before appending
+    data = {"proposed": new_section, "is_append": True}
     _progress_job_set(project_name, status="complete", data=data)
 
 
@@ -2227,8 +2251,9 @@ async def summarize_progress(name: str, db: Session = Depends(get_db)):
     if existing and existing["status"] == "running":
         return {"status": "running"}
 
-    # Gather today's completed tasks
-    from datetime import date, timedelta
+    # Gather today's completed tasks with rich session context
+    from datetime import date
+    from agent_dispatcher import _strip_agent_preamble
     today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
     completed_tasks = (
         db.query(Task)
@@ -2241,22 +2266,40 @@ async def summarize_progress(name: str, db: Session = Depends(get_db)):
         .all()
     )
 
-    parts = []
-    for t in completed_tasks:
-        summary = t.agent_summary or t.title
-        parts.append(f"- {t.title}: {summary[:300]}")
-    task_summaries = "\n".join(parts) if parts else ""
+    if not completed_tasks:
+        _progress_job_set(name, status="complete",
+                         data={"message": "No tasks completed today"})
+        return {"status": "started"}
 
-    progress_path = os.path.join(project_path, "PROGRESS.md")
-    current_progress = ""
-    if os.path.isfile(progress_path):
-        with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
-            current_progress = f.read()
+    session_blocks = []
+    for t in completed_tasks:
+        block_parts = [f"### Task: {t.title}"]
+        if t.description:
+            block_parts.append(f"Description: {t.description[:500]}")
+        if t.agent_summary:
+            block_parts.append(f"Agent summary: {t.agent_summary[:500]}")
+        if t.agent_id:
+            messages = (
+                db.query(Message)
+                .filter(Message.agent_id == t.agent_id)
+                .order_by(Message.created_at)
+                .all()
+            )
+            if messages:
+                block_parts.append("\nConversation:")
+                for msg in messages:
+                    role = msg.role.value
+                    content = msg.content[:2000] if msg.content else ""
+                    content = _strip_agent_preamble(content)
+                    block_parts.append(f"[{role}] {content}")
+        session_blocks.append("\n".join(block_parts))
+
+    session_context = "\n\n---\n\n".join(session_blocks)
 
     _progress_job_set(name, status="running")
     thread = threading.Thread(
         target=_summarize_progress_background,
-        args=(name, project_path, task_summaries, current_progress),
+        args=(name, project_path, session_context),
         daemon=True,
     )
     thread.start()
@@ -2285,7 +2328,7 @@ async def discard_progress_summary(name: str):
 
 @app.post("/api/projects/{name}/apply-progress")
 async def apply_progress(name: str, db: Session = Depends(get_db)):
-    """Apply proposed PROGRESS.md summary (always accept_all)."""
+    """Append proposed PROGRESS.md summary section."""
     project_path = _resolve_project_path(name, db)
     progress_path = os.path.join(project_path, "PROGRESS.md")
 
@@ -2293,18 +2336,25 @@ async def apply_progress(name: str, db: Session = Depends(get_db)):
     if not job or job["status"] != "complete":
         raise HTTPException(status_code=410, detail="Proposal expired — run summary again")
 
-    proposed = job["data"].get("proposed", "")
-    if not proposed:
+    new_section = job["data"].get("proposed", "")
+    if not new_section:
         raise HTTPException(status_code=400, detail="No proposed content")
 
     try:
+        existing = ""
+        if os.path.isfile(progress_path):
+            with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
+                existing = f.read()
+
+        separator = "\n\n" if existing and not existing.endswith("\n\n") else ("\n" if existing and not existing.endswith("\n") else "")
+        final_content = existing + separator + new_section + "\n"
         with open(progress_path, "w", encoding="utf-8") as f:
-            f.write(proposed)
+            f.write(final_content)
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     _progress_job_clear(name)
-    return {"success": True, "content": proposed, "lines": len(proposed.splitlines())}
+    return {"success": True, "content": final_content, "lines": len(final_content.splitlines())}
 
 
 @app.patch("/api/projects/{name}/settings")
@@ -3644,6 +3694,11 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     # directory that hasn't been explicitly trusted yet.
     _preflight_claude_project(proj.path)
 
+    # Kill stale tmux session if it already exists (e.g. stuck from a prior run)
+    subprocess.run(
+        ["tmux", "kill-session", "-t", tmux_session],
+        capture_output=True,  # suppress "no such session" errors
+    )
     # Create a new detached tmux session for this agent
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", tmux_session,
@@ -4399,6 +4454,12 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
 
             tmux_session = f"ah-{agent.id[:8]}"
             _preflight_claude_project(project.path)
+
+            # Kill stale tmux session if it already exists (e.g. stuck from a prior run)
+            subprocess.run(
+                ["tmux", "kill-session", "-t", tmux_session],
+                capture_output=True,  # suppress "no such session" errors
+            )
 
             subprocess.run(
                 ["tmux", "new-session", "-d", "-s", tmux_session,
