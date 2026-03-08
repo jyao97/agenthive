@@ -2029,6 +2029,57 @@ class AgentDispatcher:
         evict_session(session_id, project_path, worktree)
         cleanup_source_session(session_id, project_path, worktree)
 
+    def _clear_agent_session(
+        self,
+        db,
+        agent: Agent,
+        *,
+        reason: str = "",
+        emit: bool = True,
+        add_message: bool = True,
+    ):
+        """Clear agent's session_id with consistent notification.
+
+        Centralises the session_id = None pattern so every call site
+        gets a system message and a WebSocket emit by default.
+        """
+        if not agent.session_id:
+            return
+        agent.session_id = None
+        if add_message and reason:
+            db.add(Message(
+                agent_id=agent.id,
+                role=MessageRole.SYSTEM,
+                content=f"Session ended: {reason}",
+                status=MessageStatus.COMPLETED,
+            ))
+        if emit:
+            from websocket import emit_agent_update
+            self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
+
+    def _clear_agent_pane(
+        self,
+        db,
+        agent: Agent,
+        *,
+        kill_tmux: bool = True,
+    ):
+        """Clear agent's tmux pane reference with optional session kill.
+
+        When *kill_tmux* is True (default), kills the ``ah-{id[:8]}``
+        tmux session before clearing the reference.  Pass False when
+        the pane is already dead or is being transferred to a new agent.
+        """
+        if not agent.tmux_pane:
+            return
+        if kill_tmux:
+            import subprocess as _sp
+            _sp.run(
+                ["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
+                capture_output=True, timeout=5,
+            )
+        agent.tmux_pane = None
+
     def _refresh_pane_attached(self):
         """Check which tmux panes have a human client attached."""
         import subprocess as sp
@@ -2640,11 +2691,7 @@ Here are the day's conversations (with timestamps):
                 # Stop agent — it has finished its task
                 if agent.status != AgentStatus.STOPPED:
                     agent.status = AgentStatus.STOPPED
-                    if agent.tmux_pane:
-                        import subprocess as _sp
-                        _sp.run(["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
-                                capture_output=True, timeout=5)
-                        agent.tmux_pane = None
+                    self._clear_agent_pane(db, agent)
                 db.commit()
                 from websocket import emit_task_update, emit_agent_update
                 self._emit(emit_task_update(
@@ -2689,13 +2736,8 @@ Here are the day's conversations (with timestamps):
                 agent = db.get(Agent, task.agent_id)
                 if agent and agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
                     agent.status = AgentStatus.STOPPED
-                    if agent.tmux_pane:
-                        import subprocess as _sp
-                        _sp.run(["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
-                                capture_output=True, timeout=5)
-                        agent.tmux_pane = None
+                    self._clear_agent_pane(db, agent)
             # Stop verify sub-agents
-            import subprocess as _sp
             for va in (
                 db.query(Agent)
                 .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
@@ -2703,9 +2745,7 @@ Here are the day's conversations (with timestamps):
                 .all()
             ):
                 va.status = AgentStatus.STOPPED
-                if va.tmux_pane:
-                    _sp.run(["tmux", "kill-session", "-t", f"ah-{va.id[:8]}"], capture_output=True, timeout=5)
-                    va.tmux_pane = None
+                self._clear_agent_pane(db, va)
             TaskStateMachine.transition(task, TaskStatus.FAILED)
             task.error_message = "Stale merge task — please re-approve"
             db.commit()
@@ -2958,7 +2998,10 @@ Here are the day's conversations (with timestamps):
                         project.path if project else None,
                         agent.worktree, db,
                     )
-                    agent.session_id = None
+                    self._clear_agent_session(
+                        db, agent,
+                        reason="stale session recovery exhausted retries",
+                    )
                     self._stale_session_retries.pop(agent_id, None)
                     # Fall through to normal error handling below
                 else:
@@ -2985,7 +3028,10 @@ Here are the day's conversations (with timestamps):
                             restore_sid, agent.id,
                             project_path, agent.worktree, db,
                         )
-                        agent.session_id = None
+                        self._clear_agent_session(
+                            db, agent,
+                            reason="stale session data unavailable",
+                        )
 
                     if message:
                         message.status = MessageStatus.PENDING
@@ -3391,7 +3437,7 @@ Here are the day's conversations (with timestamps):
             # Grace window exhausted — stop the agent
             self._syncing_no_pane_retries.pop(agent.id, None)
             agent.status = AgentStatus.STOPPED
-            agent.tmux_pane = None
+            self._clear_agent_pane(db, agent, kill_tmux=False)
             db.add(Message(
                 agent_id=agent.id, role=MessageRole.SYSTEM,
                 content="CLI session ended — tmux pane not found",
@@ -3518,7 +3564,11 @@ Here are the day's conversations (with timestamps):
                             resume_session_id, agent.id,
                             project_path, agent.worktree, db,
                         )
-                        agent.session_id = None
+                        self._clear_agent_session(
+                            db, agent,
+                            reason="session missing, starting fresh",
+                            emit=False, add_message=False,
+                        )
                         resume_session_id = None
 
             # Refresh agent from DB to catch concurrent status changes
@@ -3615,7 +3665,7 @@ Here are the day's conversations (with timestamps):
                     "Tmux pane %s gone for SYNCING agent %s — clearing pane",
                     agent.tmux_pane, agent.id,
                 )
-                agent.tmux_pane = None
+                self._clear_agent_pane(db, agent, kill_tmux=False)
                 # Don't transition to STOPPED here — the sync loop's
                 # liveness check handles that with a grace period.
                 # But we must skip this agent so messages don't pile up.
@@ -4084,7 +4134,7 @@ Here are the day's conversations (with timestamps):
                         )
                         self._cancel_sync_task(existing_pane_agent.id)
                         existing_pane_agent.status = AgentStatus.STOPPED
-                        existing_pane_agent.tmux_pane = None
+                        self._clear_agent_pane(db, existing_pane_agent, kill_tmux=False)
                         db.flush()
                         self._emit(emit_agent_update(
                             existing_pane_agent.id, "STOPPED", proj.name,
@@ -4283,7 +4333,7 @@ Here are the day's conversations (with timestamps):
                     alive = True
                 elif not verify_tmux_pane(agent.tmux_pane):
                     # Pane is gone entirely
-                    agent.tmux_pane = None
+                    self._clear_agent_pane(db, agent, kill_tmux=False)
                 # else: pane exists but claude isn't running in it → not alive
             elif agent.session_id:
                 # No pane — check if session file was recently written
@@ -4349,7 +4399,7 @@ Here are the day's conversations (with timestamps):
                 agent.tmux_pane, (agent.session_id or "")[:12],
             )
             agent.status = AgentStatus.STOPPED
-            agent.tmux_pane = None
+            self._clear_agent_pane(db, agent, kill_tmux=False)
             self._cancel_sync_task(agent.id)
             self._cancel_launch_task(agent.id)
             self._stale_session_retries.pop(agent.id, None)
@@ -4875,7 +4925,7 @@ Here are the day's conversations (with timestamps):
             # Stop old agent
             self._cancel_sync_task(old_agent_id)
             old_agent.status = AgentStatus.STOPPED
-            old_agent.tmux_pane = None
+            self._clear_agent_pane(db, old_agent, kill_tmux=False)
             # Keep session_id so the UI can still show session size.
             # Resume is blocked by the successor check in the API.
             db.flush()
@@ -5329,7 +5379,7 @@ Here are the day's conversations (with timestamps):
                         agent = db.get(Agent, agent_id)
                         if agent and agent.status == AgentStatus.SYNCING:
                             agent.status = AgentStatus.STOPPED
-                            agent.tmux_pane = None
+                            self._clear_agent_pane(db, agent, kill_tmux=False)
                             db.add(Message(
                                 agent_id=agent_id,
                                 role=MessageRole.SYSTEM,
@@ -5475,7 +5525,7 @@ Here are the day's conversations (with timestamps):
                                 ag_stop = db_stop.get(Agent, agent_id)
                                 if ag_stop and ag_stop.status == AgentStatus.SYNCING:
                                     ag_stop.status = AgentStatus.STOPPED
-                                    ag_stop.tmux_pane = None
+                                    self._clear_agent_pane(db_stop, ag_stop, kill_tmux=False)
                                     sys_msg = Message(
                                         agent_id=agent_id,
                                         role=MessageRole.SYSTEM,
@@ -5919,7 +5969,7 @@ Here are the day's conversations (with timestamps):
                     if agent and agent.status == AgentStatus.SYNCING:
                         saved_pane = agent.tmux_pane
                         agent.status = AgentStatus.STOPPED
-                        agent.tmux_pane = None
+                        self._clear_agent_pane(db, agent, kill_tmux=False)
                         sys_msg = Message(
                             agent_id=agent_id,
                             role=MessageRole.SYSTEM,
@@ -6017,7 +6067,7 @@ Here are the day's conversations (with timestamps):
                 )
                 self._cancel_sync_task(stale.id)
                 stale.status = AgentStatus.STOPPED
-                stale.tmux_pane = None
+                self._clear_agent_pane(db, stale, kill_tmux=False)
                 db.add(Message(
                     agent_id=stale.id, role=MessageRole.SYSTEM,
                     content="CLI session ended — another agent owns this tmux pane",
@@ -6051,7 +6101,7 @@ Here are the day's conversations (with timestamps):
                 )
                 self._cancel_sync_task(stale.id)
                 stale.status = AgentStatus.STOPPED
-                stale.tmux_pane = None
+                self._clear_agent_pane(db, stale, kill_tmux=False)
                 db.add(Message(
                     agent_id=stale.id, role=MessageRole.SYSTEM,
                     content="Stopped — another agent already syncs this session",
@@ -6212,7 +6262,7 @@ Here are the day's conversations (with timestamps):
 
                     # Process is dead or session stale — stop
                     agent.status = AgentStatus.STOPPED
-                    agent.tmux_pane = None
+                    self._clear_agent_pane(db, agent, kill_tmux=False)
                     msg = Message(
                         agent_id=agent.id,
                         role=MessageRole.SYSTEM,
