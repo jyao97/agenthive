@@ -2371,15 +2371,27 @@ Here are today's conversations (with timestamps):
             try:
                 agent_id = self._create_task_agent(db, task, proj)
                 if agent_id:
-                    task.status = TaskStatus.EXECUTING
-                    task.agent_id = agent_id
-                    task.started_at = _utcnow()
+                    # Atomic CAS: only update if task is still PENDING
+                    rows = (
+                        db.query(Task)
+                        .filter(Task.id == task.id, Task.status == TaskStatus.PENDING)
+                        .update({
+                            "status": TaskStatus.EXECUTING,
+                            "agent_id": agent_id,
+                            "started_at": _utcnow(),
+                        }, synchronize_session="fetch")
+                    )
+                    if rows == 0:
+                        db.rollback()
+                        logger.warning("Task %s: status changed concurrently, skipping", task.id)
+                        continue
                     db.commit()
-                    from websocket import emit_task_update
+                    from websocket import emit_task_update, emit_agent_update
                     self._emit(emit_task_update(
                         task.id, task.status.value, task.project_name or "",
                         title=task.title, agent_id=agent_id,
                     ))
+                    self._emit(emit_agent_update(agent_id, AgentStatus.IDLE.value, proj.name))
                     logger.info("Task %s dispatched to agent %s", task.id, agent_id)
             except Exception:
                 db.rollback()
@@ -2453,10 +2465,7 @@ Here are today's conversations (with timestamps):
             source="task",
         )
         db.add(msg)
-        db.commit()
-
-        from websocket import emit_agent_update
-        self._emit(emit_agent_update(agent.id, agent.status.value, proj.name))
+        db.flush()  # Don't commit — caller does atomic CAS + commit
 
         return agent.id
 
