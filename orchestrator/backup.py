@@ -8,16 +8,19 @@ import shutil
 import sqlite3
 from datetime import datetime, timezone
 
-from config import BACKUP_DIR, BACKUP_INTERVAL_HOURS, DB_PATH, MAX_BACKUPS
+from config import BACKUP_DIR, BACKUP_ENABLED, BACKUP_INTERVAL_HOURS, DB_PATH, MAX_BACKUPS
 
 logger = logging.getLogger("orchestrator.backup")
 
 
 async def run_backup_loop():
-    """Run periodic backups on a schedule."""
+    """Run periodic backups on a schedule.  Exits immediately if disabled."""
+    if not BACKUP_ENABLED:
+        logger.info("Backup disabled (BACKUP_ENABLED=0)")
+        return
     logger.info(
-        "Backup loop started (interval=%dh, max_backups=%d)",
-        BACKUP_INTERVAL_HOURS, MAX_BACKUPS,
+        "Backup loop started (interval=%dh, max_backups=%d, dir=%s)",
+        BACKUP_INTERVAL_HOURS, MAX_BACKUPS, BACKUP_DIR,
     )
     while True:
         try:

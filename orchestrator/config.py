@@ -60,6 +60,7 @@ PROJECTS_DIR = os.getenv("PROJECTS_DIR", os.getenv("HOST_PROJECTS_DIR", ""))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # Backup
+BACKUP_ENABLED = os.getenv("BACKUP_ENABLED", "1").strip().lower() in ("1", "true", "yes")
 BACKUP_INTERVAL_HOURS = int(os.getenv("BACKUP_INTERVAL_HOURS", "1"))
 MAX_BACKUPS = int(os.getenv("MAX_BACKUPS", "48"))
 
@@ -71,7 +72,7 @@ DB_PATH = _resolve(os.getenv("DB_PATH", "data/orchestrator.db"))
 
 # Logs and backups directories
 LOG_DIR = _resolve(os.getenv("LOG_DIR", "logs"))
-BACKUP_DIR = _resolve(os.getenv("BACKUP_DIR", "backups"))
+BACKUP_DIR = _resolve(os.getenv("BACKUP_DIR", "backups"))  # also configurable via .env BACKUP_DIR=/your/path
 
 # Session cache
 SESSION_CACHE_INTERVAL = int(os.getenv("SESSION_CACHE_INTERVAL", "30"))
