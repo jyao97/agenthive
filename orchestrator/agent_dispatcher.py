@@ -2315,6 +2315,25 @@ Here are the day's conversations (with timestamps):
         except Exception:
             logger.warning("Failed to schedule WebSocket emit", exc_info=True)
 
+    def _fail_message(self, msg: Message, reason: str, *, emit: bool = True):
+        """Mark a message as FAILED with a reason and optional WebSocket emit."""
+        msg.status = MessageStatus.FAILED
+        msg.error_message = reason
+        msg.completed_at = _utcnow()
+        if emit:
+            from websocket import emit_message_update
+            self._emit(emit_message_update(msg.agent_id, msg.id, "FAILED",
+                                           error_message=reason))
+
+    def _fail_pending_messages(self, db: Session, agent_id: str, reason: str):
+        """Fail all PENDING/EXECUTING messages for an agent."""
+        pending = db.query(Message).filter(
+            Message.agent_id == agent_id,
+            Message.status.in_([MessageStatus.PENDING, MessageStatus.EXECUTING]),
+        ).all()
+        for m in pending:
+            self._fail_message(m, reason)
+
     def _next_generation_id(self, agent_id: str) -> int:
         """Return the next monotonic generation ID for an agent."""
         gid = self._generation_ids.get(agent_id, 0) + 1
@@ -2884,12 +2903,7 @@ Here are the day's conversations (with timestamps):
                 self.worker_mgr.stop_worker(info["pid_str"])
                 message = db.get(Message, info["message_id"])
                 if message and message.status == MessageStatus.EXECUTING:
-                    message.status = MessageStatus.FAILED
-                    message.error_message = "Agent stopped by user"
-                    message.completed_at = _utcnow()
-                    from websocket import emit_message_update
-                    self._emit(emit_message_update(agent_id, message.id, "FAILED",
-                                                   error_message=message.error_message))
+                    self._fail_message(message, "Agent stopped by user")
                 done_agents.append(agent_id)
                 continue
 
@@ -3406,16 +3420,8 @@ Here are the day's conversations (with timestamps):
                 status=MessageStatus.COMPLETED,
             ))
             # Fail any pending messages
-            pending = db.query(Message).filter(
-                Message.agent_id == agent.id,
-                Message.status == MessageStatus.PENDING,
-            ).all()
-            from websocket import emit_message_update
-            for m in pending:
-                m.status = MessageStatus.FAILED
-                m.error_message = "Agent tmux session no longer exists"
-                self._emit(emit_message_update(agent.id, m.id, "FAILED",
-                                               error_message=m.error_message))
+            self._fail_pending_messages(db, agent.id,
+                                        "Agent tmux session no longer exists")
             # NOTE: removed db.commit() here — it was flushing ALL dirty
             # objects in the session (including harvest changes from step 1),
             # making re-queued messages visible to the dispatch query below
@@ -3494,10 +3500,8 @@ Here are the day's conversations (with timestamps):
                 )
                 if count >= self._max_project_ready_failures:
                     agent.status = AgentStatus.ERROR
-                    pending_msg.status = MessageStatus.FAILED
-                    pending_msg.error_message = (
-                        f"Project directory not ready after {count} attempts"
-                    )
+                    reason = f"Project directory not ready after {count} attempts"
+                    self._fail_message(pending_msg, reason)
                     msg = Message(
                         agent_id=agent.id,
                         role=MessageRole.SYSTEM,
@@ -3509,9 +3513,6 @@ Here are the day's conversations (with timestamps):
                     # dirty objects caused double-dispatch.  Let _tick()
                     # commit atomically at the end.
                     self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
-                    from websocket import emit_message_update
-                    self._emit(emit_message_update(agent.id, pending_msg.id, "FAILED",
-                                                   error_message=pending_msg.error_message))
                 continue
 
             # Use --resume with session_id if available.
@@ -3596,11 +3597,7 @@ Here are the day's conversations (with timestamps):
                 logger.exception(
                     "Failed to exec claude for agent %s", agent.id
                 )
-                pending_msg.status = MessageStatus.FAILED
-                pending_msg.error_message = "Failed to start claude process"
-                from websocket import emit_message_update
-                self._emit(emit_message_update(agent.id, pending_msg.id, "FAILED",
-                                               error_message=pending_msg.error_message))
+                self._fail_message(pending_msg, "Failed to start claude process")
 
     def _dispatch_tmux_pending(self, db: Session):
         """Send pending messages to SYNCING/STARTING agents via tmux.
@@ -3667,15 +3664,11 @@ Here are the day's conversations (with timestamps):
                 from websocket import emit_message_update
                 self._emit(emit_message_update(agent.id, due_msg.id, "COMPLETED"))
             else:
-                due_msg.status = MessageStatus.FAILED
-                due_msg.error_message = "Failed to send via tmux"
+                self._fail_message(due_msg, "Failed to send via tmux")
                 logger.warning(
                     "Failed to dispatch pending message %s via tmux for agent %s",
                     due_msg.id, agent.id,
                 )
-                from websocket import emit_message_update
-                self._emit(emit_message_update(agent.id, due_msg.id, "FAILED",
-                                               error_message=due_msg.error_message))
 
     # ------------------------------------------------------------------
     # Unified message preparation
