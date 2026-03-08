@@ -1,11 +1,11 @@
-import { useState } from "react";
+import useAsyncHandler from "../../hooks/useAsyncHandler";
+import ErrorAlert from "../../components/ErrorAlert";
 import QueueCard from "../../components/cards/QueueCard";
 import ActiveCard from "../../components/cards/ActiveCard";
 import { updateTaskV2, cancelTask } from "../../lib/api";
 
 export default function ExecutingView({ tasks, loading, onRefresh }) {
-  const [error, setError] = useState(null);
-  const [loadingIds, setLoadingIds] = useState(new Set());
+  const { error, setError, handle } = useAsyncHandler();
 
   const active = tasks
     .filter((t) => t.status === "EXECUTING")
@@ -17,32 +17,6 @@ export default function ExecutingView({ tasks, loading, onRefresh }) {
       if (b.priority !== a.priority) return b.priority - a.priority;
       return new Date(a.created_at) - new Date(b.created_at);
     });
-
-  const handleCancel = async (task) => {
-    setError(null);
-    setLoadingIds((s) => new Set(s).add(task.id));
-    try {
-      await cancelTask(task.id);
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Cancel failed");
-    } finally {
-      setLoadingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
-
-  const handleDispatchNow = async (task) => {
-    setError(null);
-    setLoadingIds((s) => new Set(s).add(task.id));
-    try {
-      await updateTaskV2(task.id, { priority: 1 });
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Priority update failed");
-    } finally {
-      setLoadingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
 
   if (!loading && active.length === 0 && queued.length === 0) {
     return (
@@ -58,12 +32,7 @@ export default function ExecutingView({ tasks, loading, onRefresh }) {
 
   return (
     <div className="space-y-3">
-      {error && (
-        <div className="bg-red-950/40 border border-red-800 rounded-xl px-3 py-2 flex items-center justify-between">
-          <p className="text-red-400 text-sm">{error}</p>
-          <button type="button" onClick={() => setError(null)} className="text-red-400/60 hover:text-red-400 text-xs ml-2">dismiss</button>
-        </div>
-      )}
+      <ErrorAlert error={error} onDismiss={() => setError(null)} />
 
       {active.length > 0 && (
         <>
@@ -75,7 +44,7 @@ export default function ExecutingView({ tasks, loading, onRefresh }) {
             <span className="text-xs font-medium text-cyan-400">Running · {active.length}</span>
           </div>
           {active.map((task) => (
-            <ActiveCard key={task.id} task={task} onCancel={handleCancel} />
+            <ActiveCard key={task.id} task={task} onCancel={(t) => handle(t.id, () => cancelTask(t.id).then(() => onRefresh?.()), "Cancel failed")} />
           ))}
         </>
       )}
@@ -87,7 +56,7 @@ export default function ExecutingView({ tasks, loading, onRefresh }) {
             <span className="text-xs font-medium text-dim">Queued · {queued.length}</span>
           </div>
           {queued.map((task, i) => (
-            <QueueCard key={task.id} task={task} position={i + 1} onDispatchNow={handleDispatchNow} />
+            <QueueCard key={task.id} task={task} position={i + 1} onDispatchNow={(t) => handle(t.id, () => updateTaskV2(t.id, { priority: 1 }).then(() => onRefresh?.()), "Priority update failed")} />
           ))}
         </>
       )}
