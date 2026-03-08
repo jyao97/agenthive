@@ -1561,6 +1561,11 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
                 _sp.run(["tmux", "kill-pane", "-t", agent.tmux_pane], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
             except Exception:
                 logger.warning("Failed to kill tmux pane %s for agent %s during archive", agent.tmux_pane, agent.id, exc_info=True)
+            # Also kill the session as fallback (pane kill may leave the session alive)
+            try:
+                _sp.run(["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+            except Exception:
+                pass
         if ad:
             ad.stop_agent_cleanup(db, agent, "Agent stopped — project archived",
                                   kill_tmux=False, emit=False)
