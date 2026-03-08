@@ -1461,10 +1461,11 @@ def _dedup_sig(text: str) -> str:
 
     tmux converts tabs to spaces, so a message sent via web (tabs)
     won't exactly match the same message in the JSONL (spaces).
-    Collapse all whitespace runs to single space for comparison.
+    Collapse all whitespace runs to single space, THEN truncate —
+    the order matters because tab→space expansion changes char count.
     """
     import re
-    return re.sub(r"\s+", " ", text[:200]).strip()
+    return re.sub(r"\s+", " ", text).strip()[:200]
 
 
 def _get_first_user_content(jsonl_path: str) -> str | None:
