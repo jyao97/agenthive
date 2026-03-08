@@ -233,6 +233,10 @@ def _merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> 
     return json.dumps(merged)
 
 
+# Marker embedded in _build_agent_prompt output — sync loop uses this to skip
+# wrapped prompts (which are already stored as the original user message).
+_AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt -->"
+
 # Image metadata injected by Claude Code's Read tool — internal only, hide from UI
 _IMAGE_META_RE = re.compile(
     r"^\[Image: original \d+x\d+, displayed at \d+x\d+\."
@@ -3546,22 +3550,12 @@ Here are the day's conversations (with timestamps):
             if agent.id in self._active_execs:
                 continue
 
-            # Build the prompt — session cache handles continuity, no fake history
-            prompt, insights_list = self._build_agent_prompt(
-                agent, project, pending_msg.content,
-                include_history=False, db=db,
+            # Unified preparation: RAG insights + prompt wrapping + agent preview
+            _, prompt, _ = self._prepare_dispatch(
+                db, agent, project, pending_msg.content,
+                existing_message=pending_msg,
+                wrap_prompt=True,
             )
-
-            # Store RAG insights in message metadata for frontend display
-            if insights_list:
-                existing_meta = {}
-                if pending_msg.meta_json:
-                    try:
-                        existing_meta = json.loads(pending_msg.meta_json)
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                existing_meta["insights"] = insights_list
-                pending_msg.meta_json = json.dumps(existing_meta)
 
             try:
                 pid_str, output_file = self.worker_mgr.exec_claude_in_agent(
@@ -3652,22 +3646,14 @@ Here are the day's conversations (with timestamps):
                 # But we must skip this agent so messages don't pile up.
                 continue
 
-            # Store RAG insights in message metadata for frontend display
+            # Unified preparation: RAG insights + agent preview
             project = db.get(Project, agent.project)
-            if project and due_msg.content:
-                try:
-                    insights_list = query_insights(db, project.name, due_msg.content, limit=10)
-                    if insights_list:
-                        existing_meta = {}
-                        if due_msg.meta_json:
-                            try:
-                                existing_meta = json.loads(due_msg.meta_json)
-                            except (json.JSONDecodeError, ValueError):
-                                pass
-                        existing_meta["insights"] = insights_list
-                        due_msg.meta_json = json.dumps(existing_meta)
-                except Exception:
-                    logger.debug("query_insights failed for tmux dispatch", exc_info=True)
+            if project:
+                self._prepare_dispatch(
+                    db, agent, project, due_msg.content,
+                    existing_message=due_msg,
+                    wrap_prompt=False,
+                )
 
             ok = send_tmux_message(agent.tmux_pane, due_msg.content)
             if ok:
@@ -3691,36 +3677,119 @@ Here are the day's conversations (with timestamps):
                 self._emit(emit_message_update(agent.id, due_msg.id, "FAILED",
                                                error_message=due_msg.error_message))
 
+    # ------------------------------------------------------------------
+    # Unified message preparation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_first_user_message(db: Session, agent_id: str) -> bool:
+        """Check whether the agent has any completed/executing user messages."""
+        return db.query(Message.id).filter(
+            Message.agent_id == agent_id,
+            Message.role == MessageRole.USER,
+            Message.status.in_([MessageStatus.COMPLETED, MessageStatus.EXECUTING]),
+        ).first() is None
+
+    def _prepare_dispatch(
+        self,
+        db: Session,
+        agent: Agent,
+        project: Project,
+        content: str,
+        *,
+        existing_message: Message | None = None,
+        source: str | None = "web",
+        wrap_prompt: bool = False,
+        include_history: bool = False,
+    ) -> tuple[Message, str, list[str]]:
+        """Prepare a user message for dispatch.  Single entry point for all
+        message paths — handles RAG insights, metadata, prompt wrapping,
+        and agent preview update.
+
+        Returns ``(message, prompt, insights_list)`` where:
+        - *message*: the DB Message (created or updated, NOT yet committed)
+        - *prompt*: the text to send to Claude (wrapped or raw)
+        - *insights_list*: RAG insights found (may be empty)
+
+        The caller is responsible for:
+        - Setting the final message status (COMPLETED / EXECUTING / PENDING)
+        - Actual delivery (tmux send / subprocess exec)
+        - ``db.commit()``
+        - WebSocket notifications
+        """
+        # 1. RAG insights — only for the first user message
+        insights_list: list[str] = []
+        if content and self._is_first_user_message(db, agent.id):
+            try:
+                insights_list = query_insights(db, project.name, content, limit=10)
+            except Exception:
+                logger.debug("query_insights failed in _prepare_dispatch", exc_info=True)
+
+        # 2. Create or reuse message
+        if existing_message:
+            msg = existing_message
+        else:
+            msg = Message(
+                agent_id=agent.id,
+                role=MessageRole.USER,
+                content=content,
+                source=source,
+            )
+            db.add(msg)
+
+        # 3. Store insights in meta_json
+        if insights_list:
+            existing_meta = {}
+            if msg.meta_json:
+                try:
+                    existing_meta = json.loads(msg.meta_json)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            existing_meta["insights"] = insights_list
+            msg.meta_json = json.dumps(existing_meta)
+
+        # 4. Build prompt (optionally wrapped with project context)
+        prompt = content
+        if wrap_prompt:
+            prompt = self._build_agent_prompt(
+                agent, project, content,
+                include_history=include_history, db=db,
+                insights_list=insights_list,
+            )
+
+        # 5. Update agent preview
+        agent.last_message_preview = content[:200]
+        agent.last_message_at = _utcnow()
+
+        return msg, prompt, insights_list
+
     def _build_agent_prompt(
         self, agent: Agent, project: Project, user_message: str,
         include_history: bool = False, db: Session | None = None,
-    ) -> tuple[str, list[str]]:
-        """Build the prompt sent to claude for an agent message.
-        When include_history=True, injects recent conversation history so context
-        is preserved even when the Claude Code session can't be resumed.
+        insights_list: list[str] | None = None,
+    ) -> str:
+        """Build the wrapped prompt sent to Claude for an agent message.
 
-        Returns (prompt_str, insights_list) where insights_list contains the
-        raw insight strings retrieved from RAG (empty if none found).
+        When *insights_list* is provided, uses it directly instead of
+        querying the DB (avoids duplicate queries when called from
+        ``_prepare_dispatch``).
         """
         history_block = ""
         if include_history and db:
             history_block = self._format_conversation_history(agent, db)
 
-        # Inject relevant insights from FTS5 RAG
+        # Format insights line from pre-computed list
         insights_line = ""
-        insights_list: list[str] = []
-        if db:
-            try:
-                insights_list = query_insights(db, project.name, user_message, limit=10)
-                if insights_list:
-                    items = "\n".join(f"  - {i}" for i in insights_list)
-                    insights_line = (
-                        f"Relevant past insights for this project:\n{items}\n"
-                    )
-            except Exception:
-                logger.debug("query_insights failed for agent prompt", exc_info=True)
+        if insights_list is None:
+            insights_list = []
+        if insights_list:
+            items = "\n".join(f"  - {i}" for i in insights_list)
+            insights_line = (
+                f"Relevant past insights for this project:\n{items}\n"
+            )
 
-        prompt = (
+        return (
+            f"{_AGENTHIVE_PROMPT_MARKER}\n"
             f"You are working in project: {project.display_name}\n"
             f"Project path: {project.path}\n"
             f"\n"
@@ -3731,7 +3800,6 @@ Here are the day's conversations (with timestamps):
             f"If you make code changes, commit with message format: "
             f"[agent-{agent.id}] short description"
         )
-        return prompt, insights_list
 
     def _format_conversation_history(self, agent: Agent, db: Session) -> str:
         """Format recent conversation messages as context for a fresh session."""
@@ -5121,6 +5189,9 @@ Here are the day's conversations (with timestamps):
             conv_turns = [
                 (r, c, m) for r, c, m in initial_turns
                 if r in ("user", "assistant")
+                # Skip system-wrapped prompts injected by _build_agent_prompt —
+                # the original user message is already stored in the DB.
+                and not (r == "user" and _AGENTHIVE_PROMPT_MARKER in c[:80])
             ]
 
             if conv_turns:
@@ -5647,6 +5718,9 @@ Here are the day's conversations (with timestamps):
                         meta = rest[0] if rest else None
                         meta_json = json.dumps(meta) if meta else None
                         if role == "user":
+                            # Skip system-wrapped prompts from _build_agent_prompt
+                            if _AGENTHIVE_PROMPT_MARKER in content[:80]:
+                                continue
                             # Dedup: skip if a matching web-sent (or sourceless)
                             # message already exists.  Use whitespace-normalised
                             # comparison because tmux converts tabs to spaces.

@@ -162,32 +162,37 @@ function InsightsBubble({ insights }) {
   if (!insights || insights.length === 0) return null;
 
   return (
-    <div className="flex justify-end my-1">
-      <div className="max-w-[85%]">
+    <div className="flex justify-center my-2">
+      <div className="inline-block max-w-[90%]">
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="w-full text-left rounded-xl px-3 py-1.5 bg-cyan-900/30 border border-cyan-500/20 cursor-pointer hover:bg-cyan-900/40 transition-colors"
+          className={`w-full px-3 py-1.5 bg-amber-500/10 border border-amber-400/25 text-left cursor-pointer hover:bg-amber-500/15 transition-colors ${expanded ? "rounded-t-lg" : "rounded-lg"}`}
         >
           <div className="flex items-center gap-1.5">
-            <svg className="w-3 h-3 shrink-0 text-cyan-400 opacity-70" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <svg className="w-3 h-3 shrink-0 text-amber-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
             </svg>
-            <span className="text-[11px] text-cyan-300/80 font-medium">RAG Insights ({insights.length})</span>
-            <svg className={`w-3 h-3 shrink-0 text-cyan-400/50 transition-transform ml-auto ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <span className="text-xs text-amber-300 font-medium">Past Insights ({insights.length})</span>
+            <svg className={`w-3 h-3 shrink-0 text-amber-400/60 transition-transform ml-auto ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path strokeLinecap="round" d="m19 9-7 7-7-7" />
             </svg>
           </div>
         </button>
         {expanded && (
-          <div className="mt-0 border border-cyan-500/20 border-t-0 rounded-b-xl bg-cyan-900/15 px-3 py-2 max-h-[300px] overflow-y-auto">
-            <ul className="space-y-1">
-              {insights.map((insight, i) => (
-                <li key={i} className="text-[11px] text-cyan-100/70 leading-relaxed flex gap-1.5">
-                  <span className="shrink-0 text-cyan-400/40 select-none">-</span>
-                  <span>{insight}</span>
-                </li>
-              ))}
+          <div className="border border-amber-400/25 border-t-0 rounded-b-lg bg-elevated px-3 py-2 max-h-[300px] overflow-y-auto">
+            <ul className="space-y-1.5">
+              {insights.map((insight, i) => {
+                const dateMatch = insight.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*/);
+                const date = dateMatch ? dateMatch[1] : null;
+                const text = dateMatch ? insight.slice(dateMatch[0].length) : insight;
+                return (
+                  <li key={i} className="text-xs text-body/80 leading-relaxed flex gap-1.5">
+                    {date && <span className="shrink-0 text-[10px] text-dim font-mono">{date}</span>}
+                    <span>{text}</span>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}

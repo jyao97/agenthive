@@ -3600,13 +3600,23 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
             )
     else:
         # Normal mode: create the initial user message
-        msg = Message(
-            agent_id=agent.id,
-            role=MessageRole.USER,
-            content=body.prompt,
-            status=MessageStatus.PENDING,
-        )
-        db.add(msg)
+        ad = getattr(request.app.state, "agent_dispatcher", None)
+        if ad:
+            msg, _, _ = ad._prepare_dispatch(
+                db, agent, project, body.prompt,
+                source="web",
+                wrap_prompt=False,  # wrapping deferred to dispatch time
+            )
+            msg.status = MessageStatus.PENDING
+        else:
+            msg = Message(
+                agent_id=agent.id,
+                role=MessageRole.USER,
+                content=body.prompt,
+                status=MessageStatus.PENDING,
+                source="web",
+            )
+            db.add(msg)
         db.commit()
         db.refresh(agent)
 
@@ -3882,30 +3892,33 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
             if worktree:
                 _task.branch_name = _task.branch_name or f"worktree-{worktree}"
 
-    # Save the initial prompt as a user message so it shows in the chat
+    # Save the initial prompt and prepare wrapped version for Claude
+    launch_prompt = None
+    ad = getattr(request.app.state, "agent_dispatcher", None)
     if prompt:
-        msg = Message(
-            agent_id=agent.id,
-            role=MessageRole.USER,
-            content=prompt,
-            status=MessageStatus.COMPLETED,
-            source="web",
-            completed_at=datetime.now(timezone.utc),
-        )
-        db.add(msg)
+        if ad:
+            msg, launch_prompt, _ = ad._prepare_dispatch(
+                db, agent, proj, prompt,
+                source="web",
+                wrap_prompt=True,
+            )
+        else:
+            msg = Message(
+                agent_id=agent.id,
+                role=MessageRole.USER,
+                content=prompt,
+                source="web",
+            )
+            db.add(msg)
+        msg.status = MessageStatus.COMPLETED
+        msg.completed_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(agent)
 
     # Schedule background task: wait for Claude TUI to load, send prompt,
     # detect session JSONL, and start sync.
-    ad = getattr(request.app.state, "agent_dispatcher", None)
-    if ad and prompt:
-        # Wrap raw prompt with project context + RAG insights (same as
-        # _dispatch_tmux_pending does for subsequent messages)
-        launch_prompt, _ = ad._build_agent_prompt(
-            agent, proj, prompt, include_history=False, db=db,
-        )
+    if ad and launch_prompt:
         launch_task = asyncio.ensure_future(
             _launch_tmux_background(ad, agent.id, pane_id, launch_prompt, proj.path)
         )
@@ -4900,18 +4913,27 @@ async def send_agent_message(
                     detail="Failed to send via tmux",
                 )
 
-            # Record the message as completed (it was sent directly)
-            msg = Message(
-                agent_id=agent.id,
-                role=MessageRole.USER,
-                content=body.content,
-                status=MessageStatus.COMPLETED,
-                source="web",
-                completed_at=_utcnow(),
-            )
-            db.add(msg)
-            agent.last_message_preview = body.content[:200]
-            agent.last_message_at = _utcnow()
+            # Unified preparation: RAG insights + message creation + agent preview
+            project = db.get(Project, agent.project)
+            if not project:
+                raise HTTPException(status_code=400, detail="Project not found")
+            ad = getattr(request.app.state, "agent_dispatcher", None)
+            if ad:
+                msg, _, _ = ad._prepare_dispatch(
+                    db, agent, project, body.content,
+                    source="web",
+                    wrap_prompt=False,
+                )
+            else:
+                msg = Message(
+                    agent_id=agent.id,
+                    role=MessageRole.USER,
+                    content=body.content,
+                    source="web",
+                )
+                db.add(msg)
+            msg.status = MessageStatus.COMPLETED
+            msg.completed_at = _utcnow()
             db.commit()
             db.refresh(msg)
             ad = getattr(request.app.state, "agent_dispatcher", None)
