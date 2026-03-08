@@ -388,11 +388,16 @@ Priority-ranked architectural gaps:
 - **Inject shared knowledge into task prompts**: `_build_task_prompt()` should include PROGRESS.md or equivalent cross-task context to prevent repeated mistakes.
 - **Async click handler pattern**: `preventDefault()` must happen synchronously before first `await`. Check condition synchronously, prevent immediately, then do async work.
 
+### 2026-03-04 | Task: Pipeline test: add hello.txt | Status: success
+- What: Created hello_pipeline_test.txt in project root with content "Hello from pipeline test!"
+- Resolution: Straightforward file creation and commit
+- Lesson: No issues — pipeline test successful
+
 ### 2026-03-04 | Task: Pipeline test: add LICENSE header | Status: success
 
 - What: Added one-line comment header to RELEASE_PREP.md
 - Resolution: Added `# This file was reviewed by pipeline test. Do NOT modify any other content.` at the top of the file
-- Lesson: Straightforward — no issues
+- Lesson: When Edit tool doesn't show up in git status, use bash to verify filesystem changes before assuming success
 
 ### 2026-03-04 | Task: Concurrent test 2: HIGH priority | Status: success
 
