@@ -43,6 +43,7 @@ from models import (
     TaskStatus,
 )
 from agent_dispatcher import ALIVE_STATUSES, TERMINAL_STATUSES
+from utils import utcnow as _utcnow
 from schemas import (
     AgentBrief,
     AgentCreate,
@@ -147,10 +148,6 @@ def _graceful_kill_tmux(pane_id: str, session_name: str):
         _sp.run(["tmux", "kill-session", "-t", session_name], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
     except Exception:
         pass
-
-
-def _utcnow():
-    return datetime.now(timezone.utc)
 
 
 def _effective_task_status(msg: Message, agent: Agent) -> str:

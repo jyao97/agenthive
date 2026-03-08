@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from config import CC_MODEL, CLAUDE_HOME, MAX_CONCURRENT_WORKERS
+from utils import utcnow as _utcnow, truncate as _truncate
 from database import SessionLocal
 from log_config import save_worker_log
 from models import (
@@ -49,16 +50,6 @@ TERMINAL_STATUSES = [AgentStatus.STOPPED, AgentStatus.ERROR]
 # means the CLI session has ended.  Used in _reap_dead_agents and
 # startup recovery to decide whether a session is still active.
 _STALE_SESSION_THRESHOLD = 1800
-
-
-def _utcnow():
-    return datetime.now(timezone.utc)
-
-
-def _truncate(text: str, max_len: int) -> str:
-    if len(text) <= max_len:
-        return text
-    return text[:max_len] + "\n... [truncated]"
 
 
 def _query_verify_agents(db: Session, task_id, *, alive_only=True):

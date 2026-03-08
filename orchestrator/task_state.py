@@ -5,12 +5,9 @@ from datetime import datetime, timezone
 
 from models import Task, TaskStatus
 from task_state_machine import VALID_TRANSITIONS, can_transition
+from utils import utcnow as _utcnow
 
 logger = logging.getLogger("orchestrator.task_state")
-
-
-def _utcnow():
-    return datetime.now(timezone.utc)
 
 
 # States that set completed_at — terminal states plus REJECTED (which records completion time

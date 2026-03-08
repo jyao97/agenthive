@@ -1,11 +1,12 @@
-import { useState } from "react";
+import useAsyncHandler from "../../hooks/useAsyncHandler";
+import ErrorAlert from "../../components/ErrorAlert";
 import ReviewCard from "../../components/cards/ReviewCard";
 import { approveTask, rejectTask, cancelTask, verifyTask } from "../../lib/api";
 
 const STATUS_ORDER = { REVIEW: 0, CONFLICT: 1, MERGING: 2 };
 
 export default function ReviewView({ tasks, loading, onRefresh }) {
-  const [error, setError] = useState(null);
+  const { loadingIds, error, setError, handle } = useAsyncHandler();
 
   const sorted = [...tasks].sort((a, b) => {
     const oa = STATUS_ORDER[a.status] ?? 9;
@@ -13,61 +14,6 @@ export default function ReviewView({ tasks, loading, onRefresh }) {
     if (oa !== ob) return oa - ob;
     return new Date(b.created_at) - new Date(a.created_at);
   });
-
-  const [mergingIds, setMergingIds] = useState(new Set());
-
-  const handleApprove = async (task) => {
-    setError(null);
-    setMergingIds((s) => new Set(s).add(task.id));
-    try {
-      await approveTask(task.id);
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Approve failed");
-    } finally {
-      setMergingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
-
-  const [rejectingIds, setRejectingIds] = useState(new Set());
-
-  const handleReject = async (task, reason) => {
-    setError(null);
-    setRejectingIds((s) => new Set(s).add(task.id));
-    try {
-      await rejectTask(task.id, reason);
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Reject failed");
-    } finally {
-      setRejectingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
-
-  const handleCancel = async (task) => {
-    setError(null);
-    try {
-      await cancelTask(task.id);
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Cancel failed");
-    }
-  };
-
-  const [verifyingIds, setVerifyingIds] = useState(new Set());
-
-  const handleVerify = async (task) => {
-    setError(null);
-    setVerifyingIds((s) => new Set(s).add(task.id));
-    try {
-      await verifyTask(task.id);
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Verify failed");
-    } finally {
-      setVerifyingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
 
   if (!loading && sorted.length === 0) {
     return (
@@ -83,24 +29,19 @@ export default function ReviewView({ tasks, loading, onRefresh }) {
 
   return (
     <div className="space-y-3">
-      {error && (
-        <div className="bg-red-950/40 border border-red-800 rounded-xl px-3 py-2 flex items-center justify-between">
-          <p className="text-red-400 text-sm">{error}</p>
-          <button type="button" onClick={() => setError(null)} className="text-red-400/60 hover:text-red-400 text-xs ml-2">dismiss</button>
-        </div>
-      )}
+      <ErrorAlert error={error} onDismiss={() => setError(null)} />
       {sorted.map((task) => (
         <ReviewCard
           key={task.id}
           task={task}
-          merging={mergingIds.has(task.id)}
-          rejecting={rejectingIds.has(task.id)}
-          verifying={verifyingIds.has(task.id)}
-          onApprove={handleApprove}
-          onReject={handleReject}
-          onRetryMerge={handleApprove}
-          onCancel={handleCancel}
-          onVerify={handleVerify}
+          merging={loadingIds.has(task.id)}
+          rejecting={false}
+          verifying={loadingIds.has(`verify-${task.id}`)}
+          onApprove={(t) => handle(t.id, () => approveTask(t.id).then(() => onRefresh?.()), "Approve failed")}
+          onReject={(t, reason) => handle(t.id, () => rejectTask(t.id, reason).then(() => onRefresh?.()), "Reject failed")}
+          onRetryMerge={(t) => handle(t.id, () => approveTask(t.id).then(() => onRefresh?.()), "Retry merge failed")}
+          onCancel={(t) => handle(t.id, () => cancelTask(t.id).then(() => onRefresh?.()), "Cancel failed")}
+          onVerify={(t) => handle(`verify-${t.id}`, () => verifyTask(t.id).then(() => onRefresh?.()), "Verify failed")}
         />
       ))}
     </div>

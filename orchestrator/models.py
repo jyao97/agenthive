@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from utils import utcnow as _utcnow
+
 
 class Base(DeclarativeBase):
     pass
@@ -53,10 +55,6 @@ class MessageStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
-
-
-def _utcnow():
-    return datetime.now(timezone.utc)
 
 
 def _new_uuid():

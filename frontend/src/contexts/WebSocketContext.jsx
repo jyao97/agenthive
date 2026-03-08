@@ -64,15 +64,15 @@ export function WebSocketProvider({ children }) {
       };
 
       ws.onmessage = (e) => {
+        let event;
         try {
-          const event = JSON.parse(e.data);
-          // Filter out pong (keepalive response) and ping (server prune probe)
-          if (event.type === "pong" || event.type === "ping") return;
-          setLastEvent(event);
-          showBrowserNotification(event);
+          event = JSON.parse(e.data);
         } catch {
-          // Expected: untrusted input may not be valid JSON
+          return; // untrusted input may not be valid JSON
         }
+        if (event.type === "pong" || event.type === "ping") return;
+        setLastEvent(event);
+        showBrowserNotification(event);
       };
 
       ws.onclose = () => {

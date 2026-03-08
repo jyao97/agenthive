@@ -1,6 +1,12 @@
 import { memo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+const STATUS_STYLE = {
+  MERGING:  { dot: "bg-purple-500 animate-pulse", label: "Merging...",    color: "text-purple-400" },
+  REVIEW:   { dot: "bg-amber-500",                label: "Needs Review",  color: "text-amber-400" },
+  CONFLICT: { dot: "bg-red-500",                  label: "Conflict",      color: "text-red-400" },
+};
+
 export default memo(function ReviewCard({ task, merging, verifying, onApprove, onReject, onRetryMerge, onCancel, onVerify }) {
   const navigate = useNavigate();
   const [rejecting, setRejecting] = useState(false);
@@ -8,20 +14,13 @@ export default memo(function ReviewCard({ task, merging, verifying, onApprove, o
 
   const isMerging = merging || task.status === "MERGING";
 
-  const statusDot = isMerging ? "bg-purple-500 animate-pulse"
-    : task.status === "REVIEW" ? "bg-amber-500"
-    : task.status === "CONFLICT" ? "bg-red-500"
-    : "bg-purple-500 animate-pulse";
+  const { dot: statusDot, label: statusLabel, color: statusColor } =
+    STATUS_STYLE[isMerging ? "MERGING" : task.status] || STATUS_STYLE.MERGING;
 
-  const statusLabel = isMerging ? "Merging..."
-    : task.status === "REVIEW" ? "Needs Review"
-    : task.status === "CONFLICT" ? "Conflict"
-    : "Merging...";
-
-  const statusColor = isMerging ? "text-purple-400"
-    : task.status === "REVIEW" ? "text-amber-400"
-    : task.status === "CONFLICT" ? "text-red-400"
-    : "text-purple-400";
+  let verifyStatus = null;
+  if (task.review_artifacts) {
+    try { verifyStatus = JSON.parse(task.review_artifacts).verify_status; } catch { /* malformed JSON */ }
+  }
 
   return (
     <div
@@ -55,57 +54,53 @@ export default memo(function ReviewCard({ task, merging, verifying, onApprove, o
         {isMerging && (
           <span className="text-xs text-purple-400 font-medium">Merging branch...</span>
         )}
-        {task.status === "REVIEW" && !rejecting && !isMerging && (() => {
-          const arts = task.review_artifacts ? (() => { try { return JSON.parse(task.review_artifacts); } catch { return {}; } })() : {};
-          const vs = arts.verify_status;
-          return (
-            <>
-              {vs === "running" || verifying ? (
-                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 flex items-center gap-1">
-                  <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
-                  Verifying
-                </span>
-              ) : vs === "pass" ? (
-                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400">Verified</span>
-              ) : vs === "fail" ? (
-                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Failed</span>
-              ) : vs === "warn" ? (
-                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400">Verify Warn</span>
-              ) : vs === "error" ? (
-                <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Error</span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onVerify?.(task); }}
-                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 transition-colors"
-                >
-                  Verify
-                </button>
-              )}
+        {task.status === "REVIEW" && !rejecting && !isMerging && (
+          <>
+            {verifyStatus === "running" || verifying ? (
+              <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 flex items-center gap-1">
+                <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
+                Verifying
+              </span>
+            ) : verifyStatus === "pass" ? (
+              <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400">Verified</span>
+            ) : verifyStatus === "fail" ? (
+              <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Failed</span>
+            ) : verifyStatus === "warn" ? (
+              <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400">Verify Warn</span>
+            ) : verifyStatus === "error" ? (
+              <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Error</span>
+            ) : (
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); onApprove?.(task); }}
-                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400 hover:bg-green-500/25 transition-colors"
+                onClick={(e) => { e.stopPropagation(); onVerify?.(task); }}
+                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 transition-colors"
               >
-                Approve
+                Verify
               </button>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setRejecting(true); }}
-                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors"
-              >
-                Reject
-              </button>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); if (confirm("Delete this task?")) onCancel?.(task); }}
-                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
-              >
-                Delete
-              </button>
-            </>
-          );
-        })()}
+            )}
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onApprove?.(task); }}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400 hover:bg-green-500/25 transition-colors"
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setRejecting(true); }}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors"
+            >
+              Reject
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); if (confirm("Delete this task?")) onCancel?.(task); }}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
+            >
+              Delete
+            </button>
+          </>
+        )}
         {task.status === "CONFLICT" && (
           <>
             <button

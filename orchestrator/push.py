@@ -23,18 +23,17 @@ logger = logging.getLogger("orchestrator.push")
 
 def is_notification_enabled(category: str) -> bool:
     """Check if notifications are globally enabled for a category ('agents' or 'tasks')."""
+    from database import SessionLocal
+    from models import SystemConfig
+    db = SessionLocal()
     try:
-        from database import SessionLocal
-        from models import SystemConfig
-        db = SessionLocal()
-        try:
-            row = db.get(SystemConfig, f"notifications_{category}_enabled")
-            return row.value != "0" if row else True
-        finally:
-            db.close()
+        row = db.get(SystemConfig, f"notifications_{category}_enabled")
+        return row.value != "0" if row else True
     except Exception:
         logger.warning("Failed to check notification setting for %s", category, exc_info=True)
         return True  # default to enabled on error
+    finally:
+        db.close()
 
 
 def send_push_notification(title: str, body: str, url: str = "/") -> None:
