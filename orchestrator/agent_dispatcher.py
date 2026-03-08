@@ -2822,7 +2822,7 @@ Here are the day's conversations (with timestamps):
                 if agent:
                     self.stop_agent_cleanup(
                         db, agent, "",
-                        add_message=False, emit=False, cancel_tasks=False,
+                        add_message=False, emit=True, cancel_tasks=False,
                     )
             # Stop verify sub-agents
             for va in (
@@ -2833,7 +2833,7 @@ Here are the day's conversations (with timestamps):
             ):
                 self.stop_agent_cleanup(
                     db, va, "",
-                    add_message=False, emit=False, cancel_tasks=False,
+                    add_message=False, emit=True, cancel_tasks=False,
                 )
             TaskStateMachine.transition(task, TaskStatus.FAILED)
             task.error_message = "Stale merge task — please re-approve"
@@ -5210,7 +5210,7 @@ Here are the day's conversations (with timestamps):
                         if sub_ag and sub_ag.status == AgentStatus.SYNCING:
                             self.stop_agent_cleanup(
                                 db_sub, sub_ag, "",
-                                kill_tmux=False, emit=False,
+                                kill_tmux=False, emit=True,
                                 add_message=False, cancel_tasks=False,
                             )
                     db_sub.commit()
