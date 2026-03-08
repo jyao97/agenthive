@@ -110,6 +110,44 @@ _IMPORT_CHECK_TIMEOUT = 15
 _API_REQUEST_TIMEOUT = 10
 
 
+def _create_tmux_claude_session(session_name: str, project_path: str, claude_cmd: str) -> str:
+    """Create a tmux session running Claude. Returns pane_id."""
+    import subprocess as _sp
+    # Kill any stale session with same name
+    _sp.run(["tmux", "kill-session", "-t", session_name],
+            capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+    # Create new detached session
+    _sp.run(["tmux", "new-session", "-d", "-s", session_name, "-c", project_path],
+            check=True, capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+    # Get pane ID
+    pane_result = _sp.run(["tmux", "display-message", "-p", "-t", session_name, "#{pane_id}"],
+                          capture_output=True, text=True, timeout=_TMUX_CMD_TIMEOUT)
+    pane_id = pane_result.stdout.strip()
+    # Unset problematic env vars
+    _sp.run(["tmux", "send-keys", "-t", pane_id,
+             "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED", "Enter"],
+            check=True, capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+    # Launch Claude
+    _sp.run(["tmux", "send-keys", "-t", pane_id, claude_cmd, "Enter"],
+            check=True, capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+    return pane_id
+
+
+def _graceful_kill_tmux(pane_id: str, session_name: str):
+    """Send Ctrl-C to interrupt Claude, then kill the pane and session."""
+    import subprocess as _sp
+    try:
+        _sp.run(["tmux", "send-keys", "-t", pane_id, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+        _sp.run(["tmux", "send-keys", "-t", pane_id, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+        _sp.run(["tmux", "kill-pane", "-t", pane_id], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+    except Exception:
+        logger.warning("Failed graceful tmux kill for pane %s", pane_id, exc_info=True)
+    try:
+        _sp.run(["tmux", "kill-session", "-t", session_name], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+    except Exception:
+        pass
+
+
 def _utcnow():
     return datetime.now(timezone.utc)
 
@@ -1554,13 +1592,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
     for agent in active_agents:
         # Kill tmux pane for CLI-synced agents
         if agent.cli_sync and agent.tmux_pane:
-            import subprocess as _sp
-            try:
-                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
-                _sp.run(["tmux", "send-keys", "-t", agent.tmux_pane, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
-                _sp.run(["tmux", "kill-pane", "-t", agent.tmux_pane], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
-            except Exception:
-                logger.warning("Failed to kill tmux pane %s for agent %s during archive", agent.tmux_pane, agent.id, exc_info=True)
+            _graceful_kill_tmux(agent.tmux_pane, f"ah-{agent.id[:8]}")
         if ad:
             ad.stop_agent_cleanup(db, agent, "Agent stopped — project archived",
                                   kill_tmux=False, emit=False)
@@ -3845,38 +3877,7 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     # directory that hasn't been explicitly trusted yet.
     _preflight_claude_project(proj.path)
 
-    # Kill stale tmux session if it already exists (e.g. stuck from a prior run)
-    subprocess.run(
-        ["tmux", "kill-session", "-t", tmux_session],
-        capture_output=True,  # suppress "no such session" errors
-    )
-    # Create a new detached tmux session for this agent
-    subprocess.run(
-        ["tmux", "new-session", "-d", "-s", tmux_session,
-         "-c", proj.path],
-        check=True,
-    )
-    pane_id = subprocess.run(
-        ["tmux", "display-message", "-t", tmux_session, "-p", "#{pane_id}"],
-        capture_output=True, text=True,
-    ).stdout.strip()
-
-    # Clear environment vars in the tmux session:
-    # - CLAUDECODE / CLAUDE_CODE_ENTRYPOINT: prevents nesting detection
-    # - AGENTHIVE_MANAGED: clean up inherited env from systemd service
-    # Note: _is_orchestrator_process() distinguishes orchestrator subprocesses
-    # from tmux agents by checking for the -p flag in /proc/pid/cmdline.
-    subprocess.run(
-        ["tmux", "send-keys", "-t", pane_id,
-         "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED", "Enter"],
-        check=True,
-    )
-
-    # Start Claude interactively (full TUI — user can attach and interact)
-    subprocess.run(
-        ["tmux", "send-keys", "-t", pane_id, claude_cmd, "Enter"],
-        check=True,
-    )
+    pane_id = _create_tmux_claude_session(tmux_session, proj.path, claude_cmd)
 
     # Create Agent record immediately so the frontend can navigate to it.
     agent_name = (prompt or "CLI session")[:80]
@@ -3971,6 +3972,7 @@ async def _launch_tmux_background(
     from agent_dispatcher import (
         _build_tmux_claude_map,
         _detect_pid_session_jsonl,
+        capture_tmux_pane,
         send_tmux_message,
     )
     from database import SessionLocal
@@ -4026,36 +4028,29 @@ async def _launch_tmux_background(
         trust_dialog_handled = False
         for _ in range(_TUI_STARTUP_TIMEOUT):
             await asyncio.sleep(1)
-            try:
-                capture = subprocess.run(
-                    ["tmux", "capture-pane", "-t", pane_id, "-p"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if capture.returncode != 0:
-                    continue
-                pane_text = capture.stdout
-
-                # Check for the REPL status bar (definitive ready signal)
-                for ln in pane_text.split("\n"):
-                    if "\u23f5" in ln and "shift+tab" in ln:
-                        tui_ready = True
-                        break
-                if tui_ready:
-                    break
-
-                # Check for the project trust dialog and auto-accept it
-                if not trust_dialog_handled and "trust this folder" in pane_text.lower():
-                    subprocess.run(
-                        ["tmux", "send-keys", "-t", pane_id, "Enter"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    trust_dialog_handled = True
-                    logger.info(
-                        "Auto-accepted project trust dialog in pane %s for agent %s",
-                        pane_id, agent_id,
-                    )
-            except (subprocess.TimeoutExpired, OSError):
+            pane_text = capture_tmux_pane(pane_id)
+            if pane_text is None:
                 continue
+
+            # Check for the REPL status bar (definitive ready signal)
+            for ln in pane_text.split("\n"):
+                if "\u23f5" in ln and "shift+tab" in ln:
+                    tui_ready = True
+                    break
+            if tui_ready:
+                break
+
+            # Check for the project trust dialog and auto-accept it
+            if not trust_dialog_handled and "trust this folder" in pane_text.lower():
+                subprocess.run(
+                    ["tmux", "send-keys", "-t", pane_id, "Enter"],
+                    capture_output=True, text=True, timeout=_TMUX_CMD_TIMEOUT,
+                )
+                trust_dialog_handled = True
+                logger.info(
+                    "Auto-accepted project trust dialog in pane %s for agent %s",
+                    pane_id, agent_id,
+                )
         if not tui_ready:
             _mark_error(
                 "Claude TUI did not fully initialize in pane %s within %ds "
@@ -4095,17 +4090,11 @@ async def _launch_tmux_background(
         def _check_status_bar_processing() -> bool:
             """Check if the status bar shows 'esc to interrupt' — definitive
             indicator that Claude is actively processing."""
-            try:
-                cap = subprocess.run(
-                    ["tmux", "capture-pane", "-t", pane_id, "-p"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if cap.returncode == 0:
-                    for ln in cap.stdout.split("\n"):
-                        if "\u23f5" in ln and "esc to interrupt" in ln:
-                            return True
-            except (subprocess.TimeoutExpired, OSError) as e:
-                logger.debug("Status bar check failed for %s: %s", pane_id, e)
+            pane_text = capture_tmux_pane(pane_id)
+            if pane_text:
+                for ln in pane_text.split("\n"):
+                    if "\u23f5" in ln and "esc to interrupt" in ln:
+                        return True
             return False
 
         def _scan_for_session_jsonl(owned_sids: set, pane_pid: int | None) -> str | None:
@@ -4464,22 +4453,8 @@ async def stop_agent(agent_id: str, request: Request, db: Session = Depends(get_
 
     # Kill the tmux pane/session if this is a CLI-synced agent
     if agent.cli_sync and agent.tmux_pane:
-        import subprocess as _sp
-        pane = agent.tmux_pane
-        sess_name = f"ah-{agent.id[:8]}"
-        try:
-            # Send Ctrl-C to interrupt Claude, then close the pane
-            _sp.run(["tmux", "send-keys", "-t", pane, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
-            _sp.run(["tmux", "send-keys", "-t", pane, "C-c"], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
-            _sp.run(["tmux", "kill-pane", "-t", pane], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
-            logger.info("Killed tmux pane %s for agent %s", pane, agent.id)
-        except Exception:
-            logger.warning("Failed to kill tmux pane %s for agent %s", pane, agent.id, exc_info=True)
-        # Also kill the session as fallback (pane kill may leave the session alive)
-        try:
-            _sp.run(["tmux", "kill-session", "-t", sess_name], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
-        except Exception:
-            pass
+        _graceful_kill_tmux(agent.tmux_pane, f"ah-{agent.id[:8]}")
+        logger.info("Killed tmux pane %s for agent %s", agent.tmux_pane, agent.id)
 
     ad = getattr(request.app.state, "agent_dispatcher", None)
 
@@ -4689,31 +4664,7 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
             tmux_session = f"ah-{agent.id[:8]}"
             _preflight_claude_project(project.path)
 
-            # Kill stale tmux session if it already exists (e.g. stuck from a prior run)
-            subprocess.run(
-                ["tmux", "kill-session", "-t", tmux_session],
-                capture_output=True, timeout=_TMUX_CMD_TIMEOUT,
-            )
-
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", tmux_session,
-                 "-c", project.path],
-                check=True, timeout=_TMUX_CMD_TIMEOUT,
-            )
-            pane_id = subprocess.run(
-                ["tmux", "display-message", "-t", tmux_session, "-p", "#{pane_id}"],
-                capture_output=True, text=True, timeout=_TMUX_CMD_TIMEOUT,
-            ).stdout.strip()
-
-            subprocess.run(
-                ["tmux", "send-keys", "-t", pane_id,
-                 "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED", "Enter"],
-                check=True, timeout=_TMUX_CMD_TIMEOUT,
-            )
-            subprocess.run(
-                ["tmux", "send-keys", "-t", pane_id, claude_cmd, "Enter"],
-                check=True, timeout=_TMUX_CMD_TIMEOUT,
-            )
+            pane_id = _create_tmux_claude_session(tmux_session, project.path, claude_cmd)
 
             agent.tmux_pane = pane_id
             agent.status = AgentStatus.SYNCING
