@@ -3547,10 +3547,21 @@ Here are the day's conversations (with timestamps):
                 continue
 
             # Build the prompt — session cache handles continuity, no fake history
-            prompt = self._build_agent_prompt(
+            prompt, insights_list = self._build_agent_prompt(
                 agent, project, pending_msg.content,
                 include_history=False, db=db,
             )
+
+            # Store RAG insights in message metadata for frontend display
+            if insights_list:
+                existing_meta = {}
+                if pending_msg.meta_json:
+                    try:
+                        existing_meta = json.loads(pending_msg.meta_json)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                existing_meta["insights"] = insights_list
+                pending_msg.meta_json = json.dumps(existing_meta)
 
             try:
                 pid_str, output_file = self.worker_mgr.exec_claude_in_agent(
@@ -3641,6 +3652,23 @@ Here are the day's conversations (with timestamps):
                 # But we must skip this agent so messages don't pile up.
                 continue
 
+            # Store RAG insights in message metadata for frontend display
+            project = db.get(Project, agent.project)
+            if project and due_msg.content:
+                try:
+                    insights_list = query_insights(db, project.name, due_msg.content, limit=10)
+                    if insights_list:
+                        existing_meta = {}
+                        if due_msg.meta_json:
+                            try:
+                                existing_meta = json.loads(due_msg.meta_json)
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                        existing_meta["insights"] = insights_list
+                        due_msg.meta_json = json.dumps(existing_meta)
+                except Exception:
+                    logger.debug("query_insights failed for tmux dispatch", exc_info=True)
+
             ok = send_tmux_message(agent.tmux_pane, due_msg.content)
             if ok:
                 due_msg.status = MessageStatus.COMPLETED
@@ -3666,30 +3694,33 @@ Here are the day's conversations (with timestamps):
     def _build_agent_prompt(
         self, agent: Agent, project: Project, user_message: str,
         include_history: bool = False, db: Session | None = None,
-    ) -> str:
+    ) -> tuple[str, list[str]]:
         """Build the prompt sent to claude for an agent message.
         When include_history=True, injects recent conversation history so context
         is preserved even when the Claude Code session can't be resumed.
+
+        Returns (prompt_str, insights_list) where insights_list contains the
+        raw insight strings retrieved from RAG (empty if none found).
         """
         history_block = ""
         if include_history and db:
             history_block = self._format_conversation_history(agent, db)
 
         # Inject relevant insights from FTS5 RAG
-        insights_line = "Also read PROGRESS.md (if it exists) for recent insights, past decisions, and known gotchas.\n"
+        insights_line = ""
+        insights_list: list[str] = []
         if db:
             try:
-                insights = query_insights(db, project.name, user_message, limit=10)
-                if insights:
-                    items = "\n".join(f"  - {i}" for i in insights)
+                insights_list = query_insights(db, project.name, user_message, limit=10)
+                if insights_list:
+                    items = "\n".join(f"  - {i}" for i in insights_list)
                     insights_line = (
                         f"Relevant past insights for this project:\n{items}\n"
-                        f"Also read PROGRESS.md if you need more context.\n"
                     )
             except Exception:
                 logger.debug("query_insights failed for agent prompt", exc_info=True)
 
-        return (
+        prompt = (
             f"You are working in project: {project.display_name}\n"
             f"Project path: {project.path}\n"
             f"\n"
@@ -3700,6 +3731,7 @@ Here are the day's conversations (with timestamps):
             f"If you make code changes, commit with message format: "
             f"[agent-{agent.id}] short description"
         )
+        return prompt, insights_list
 
     def _format_conversation_history(self, agent: Agent, db: Session) -> str:
         """Format recent conversation messages as context for a fresh session."""

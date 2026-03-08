@@ -3901,8 +3901,13 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     # detect session JSONL, and start sync.
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if ad and prompt:
+        # Wrap raw prompt with project context + RAG insights (same as
+        # _dispatch_tmux_pending does for subsequent messages)
+        launch_prompt, _ = ad._build_agent_prompt(
+            agent, proj, prompt, include_history=False, db=db,
+        )
         launch_task = asyncio.ensure_future(
-            _launch_tmux_background(ad, agent.id, pane_id, prompt, proj.path)
+            _launch_tmux_background(ad, agent.id, pane_id, launch_prompt, proj.path)
         )
         ad.track_launch_task(agent.id, launch_task)
 
