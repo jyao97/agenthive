@@ -3,6 +3,7 @@
 import glob
 import logging
 import os
+import shutil
 
 from sqlalchemy import text
 
@@ -10,6 +11,7 @@ logger = logging.getLogger("orchestrator.orphan_cleanup")
 
 from config import CLAUDE_HOME
 from database import engine
+from session_cache import CACHE_DIR
 
 
 def scan_orphans() -> dict:
@@ -105,6 +107,38 @@ def delete_orphans(scan_result: dict) -> dict:
         except OSError as e:
             logger.warning("Failed to remove orphan log %s: %s", f["path"], e)
 
+    # Evict orphan sessions from session cache (mirrors ~/.claude/projects/ layout)
+    evicted_cache = 0
+    orphan_sids = set()
+    for f in scan_result.get("orphan_sessions", []):
+        sid = os.path.basename(f["path"]).replace(".jsonl", "")
+        orphan_sids.add(sid)
+    if orphan_sids and os.path.isdir(CACHE_DIR):
+        for dirpath, _, filenames in os.walk(CACHE_DIR):
+            for fname in filenames:
+                if not fname.endswith(".jsonl"):
+                    continue
+                sid = fname[:-6]
+                if sid in orphan_sids:
+                    cache_path = os.path.join(dirpath, fname)
+                    try:
+                        os.remove(cache_path)
+                        evicted_cache += 1
+                    except OSError as e:
+                        logger.warning("Failed to evict cached session %s: %s", cache_path, e)
+        # Also remove orphan session subdirectories (chunked cache)
+        for dirpath, dirnames, _ in os.walk(CACHE_DIR):
+            for dname in dirnames:
+                if dname in orphan_sids:
+                    subdir = os.path.join(dirpath, dname)
+                    try:
+                        shutil.rmtree(subdir)
+                        evicted_cache += 1
+                    except OSError as e:
+                        logger.warning("Failed to evict cached session dir %s: %s", subdir, e)
+    if evicted_cache:
+        logger.info("Evicted %d orphan entries from session cache", evicted_cache)
+
     for d in scan_result.get("empty_dirs", []):
         try:
             os.rmdir(d)
@@ -116,5 +150,6 @@ def delete_orphans(scan_result: dict) -> dict:
         "deleted_sessions": deleted_sessions,
         "deleted_logs": deleted_logs,
         "deleted_dirs": deleted_dirs,
+        "evicted_cache": evicted_cache,
         "freed_bytes": freed,
     }
