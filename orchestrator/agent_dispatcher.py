@@ -4086,18 +4086,9 @@ Here are the day's conversations (with timestamps):
                     if named_agent:
                         agent_sid = named_agent.session_id
                         if agent_sid:
-                            jsonl_path = os.path.join(
-                                session_dir, f"{agent_sid}.jsonl"
+                            jsonl_path = _resolve_session_jsonl(
+                                agent_sid, proj.path, named_agent.worktree
                             )
-                            if not os.path.isfile(jsonl_path) and named_agent.worktree:
-                                wt_path = os.path.join(
-                                    proj.path, ".claude", "worktrees", named_agent.worktree
-                                )
-                                wt_jsonl = os.path.join(
-                                    session_source_dir(wt_path), f"{agent_sid}.jsonl"
-                                )
-                                if os.path.isfile(wt_jsonl):
-                                    jsonl_path = wt_jsonl
                             if os.path.isfile(jsonl_path):
                                 named_agent.status = AgentStatus.SYNCING
                                 named_agent.tmux_pane = pane_id
