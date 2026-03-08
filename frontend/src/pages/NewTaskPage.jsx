@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { createTaskV2, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
+import { DATE_SHORT } from "../lib/formatters";
 import ProjectSelector from "../components/ProjectSelector";
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
@@ -382,7 +383,7 @@ export default function NewTaskPage() {
                           ? "bg-amber-500 text-white"
                           : "bg-elevated text-label hover:text-heading"
                       }`}
-                      title={notifyAt ? `Remind: ${new Date(notifyAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} (tap to clear)` : "Set reminder"}
+                      title={notifyAt ? `Remind: ${new Date(notifyAt).toLocaleString([], DATE_SHORT)} (tap to clear)` : "Set reminder"}
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />

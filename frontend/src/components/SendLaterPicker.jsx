@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { DATE_SHORT } from "../lib/formatters";
 
 export default function SendLaterPicker({ onSelect, onClose }) {
   const [customValue, setCustomValue] = useState("");
@@ -61,7 +62,7 @@ export default function SendLaterPicker({ onSelect, onClose }) {
   const localMin = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })();
 
   const displayTime = customValue
-    ? new Date(customValue).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    ? new Date(customValue).toLocaleString([], DATE_SHORT)
     : null;
 
   return (
