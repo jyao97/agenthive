@@ -242,6 +242,8 @@ export const fetchTokenUsage = () => request("/api/system/token-usage");
 export const restartServer = () => request("/api/system/restart", { method: "POST" });
 export const scanOrphans = () => request("/api/system/orphans/scan");
 export const cleanOrphans = () => request("/api/system/orphans/clean", { method: "POST" });
+export const fetchBackupStatus = () => request("/api/system/backup");
+export const purgeBackups = () => request("/api/system/backup", { method: "DELETE" });
 export const fetchProcesses = () => request("/api/processes");
 
 // --- Notification Settings ---

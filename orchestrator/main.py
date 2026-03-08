@@ -744,6 +744,63 @@ async def system_orphan_clean():
     return await asyncio.get_event_loop().run_in_executor(None, _clean)
 
 
+@app.get("/api/system/backup")
+async def get_backup_status():
+    """Return current backup config and on-disk stats."""
+    import glob as globmod
+    from config import BACKUP_ENABLED, BACKUP_INTERVAL_HOURS, MAX_BACKUPS
+
+    backup_dirs = sorted(globmod.glob(os.path.join(BACKUP_DIR, "backup_*")))
+    total_bytes = 0
+    for d in backup_dirs:
+        for dp, _, files in os.walk(d):
+            for f in files:
+                try:
+                    total_bytes += os.path.getsize(os.path.join(dp, f))
+                except OSError:
+                    pass
+
+    return {
+        "enabled": BACKUP_ENABLED,
+        "interval_hours": BACKUP_INTERVAL_HOURS,
+        "max_backups": MAX_BACKUPS,
+        "backup_dir": BACKUP_DIR,
+        "backup_count": len(backup_dirs),
+        "total_bytes": total_bytes,
+    }
+
+
+@app.delete("/api/system/backup")
+async def purge_backups():
+    """Delete ALL backup snapshots (not session-cache)."""
+    import glob as globmod
+    import shutil
+
+    backup_dirs = sorted(globmod.glob(os.path.join(BACKUP_DIR, "backup_*")))
+    if not backup_dirs:
+        return {"detail": "No backups to delete", "deleted": 0, "freed_bytes": 0}
+
+    freed = 0
+    deleted = 0
+    for d in backup_dirs:
+        sz = 0
+        for dp, _, files in os.walk(d):
+            for f in files:
+                try:
+                    sz += os.path.getsize(os.path.join(dp, f))
+                except OSError:
+                    pass
+        try:
+            shutil.rmtree(d)
+            freed += sz
+            deleted += 1
+        except OSError as e:
+            logger.warning("Failed to remove backup %s: %s", d, e)
+
+    logger.info("Purged %d backups, freed %d bytes", deleted, freed)
+    return {"detail": "ok", "deleted": deleted, "freed_bytes": freed}
+
+
 @app.post("/api/system/restart")
 async def system_restart():
     """Restart the AgentHive server.

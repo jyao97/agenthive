@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS } from "../lib/constants";
-import { scanOrphans, cleanOrphans } from "../lib/api";
+import { scanOrphans, cleanOrphans, fetchBackupStatus, purgeBackups } from "../lib/api";
 import { useMonitor } from "../contexts/MonitorContext";
 
 const HEALTH_COLORS = {
@@ -218,14 +218,43 @@ export default function MonitorPage({ theme, onToggleTheme }) {
   const [refreshing, setRefreshing] = useState(false);
   const [orphanBusy, setOrphanBusy] = useState(false);
   const [orphanResult, setOrphanResult] = useState(null);
+  const [backupInfo, setBackupInfo] = useState(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+
+  const loadBackupInfo = useCallback(async () => {
+    try {
+      const info = await fetchBackupStatus();
+      setBackupInfo(info);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   // Activate fast polling while this page is mounted; show cached data
   // immediately, then do a fresh fetch.
   useEffect(() => {
     activate();
     refresh();
+    loadBackupInfo();
     return () => deactivate();
-  }, [activate, deactivate, refresh]);
+  }, [activate, deactivate, refresh, loadBackupInfo]);
+
+  const handlePurgeBackups = useCallback(async () => {
+    if (!backupInfo || backupInfo.backup_count === 0) return;
+    if (!window.confirm(
+      `Delete all ${backupInfo.backup_count} backup snapshots (${formatBytes(backupInfo.total_bytes)})?\n\nThis cannot be undone.`
+    )) return;
+    setBackupBusy(true);
+    try {
+      await purgeBackups();
+      await loadBackupInfo();
+      refresh();
+    } catch {
+      /* ignore */
+    } finally {
+      setBackupBusy(false);
+    }
+  }, [backupInfo, loadBackupInfo, refresh]);
 
   const handleOrphanClean = useCallback(async () => {
     setOrphanBusy(true);
@@ -363,6 +392,48 @@ export default function MonitorPage({ theme, onToggleTheme }) {
 
         {/* Storage */}
         <StorageChart data={storageStats} />
+
+        {/* Backup Management */}
+        {backupInfo && (
+          <section>
+            <h2 className="text-xs font-semibold text-dim uppercase tracking-wider mb-2">Backup</h2>
+            <div className="rounded-xl bg-surface shadow-card p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm text-heading font-medium">
+                    {backupInfo.enabled ? "Enabled" : "Disabled"}
+                  </p>
+                  <p className="text-xs text-dim mt-0.5">
+                    {backupInfo.enabled
+                      ? `Every ${backupInfo.interval_hours}h, keep ${backupInfo.max_backups} max`
+                      : "Set BACKUP_ENABLED=1 in .env to enable"}
+                  </p>
+                </div>
+                <div className={`px-2 py-0.5 rounded text-xs font-medium ${backupInfo.enabled ? "bg-green-500/20 text-green-400" : "bg-zinc-600/30 text-zinc-400"}`}>
+                  {backupInfo.enabled ? "ON" : "OFF"}
+                </div>
+              </div>
+              {backupInfo.backup_count > 0 && (
+                <div className="flex items-center justify-between pt-2 border-t border-divider">
+                  <span className="text-xs text-dim">
+                    {backupInfo.backup_count} snapshots ({formatBytes(backupInfo.total_bytes)})
+                  </span>
+                  <button
+                    type="button"
+                    disabled={backupBusy}
+                    onClick={handlePurgeBackups}
+                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-600/20 text-red-400 hover:bg-red-600/30 transition-colors disabled:opacity-50"
+                  >
+                    {backupBusy ? "Deleting..." : "Purge all"}
+                  </button>
+                </div>
+              )}
+              {backupInfo.backup_count === 0 && (
+                <p className="text-xs text-faint pt-1 border-t border-divider">No backup snapshots on disk</p>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* Orphan Cleanup */}
         <div className="flex items-center gap-3">
