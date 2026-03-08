@@ -28,6 +28,15 @@ export async function authedFetch(url, opts = {}) {
   return fetch(`${BASE}${url}`, { ...opts, headers });
 }
 
+/** Handle 401 by clearing auth and emitting event. */
+function handle401() {
+  clearAuthToken();
+  if (window.location.pathname !== "/login") {
+    window.dispatchEvent(new Event("auth-expired"));
+  }
+  throw new Error("Not authenticated");
+}
+
 async function request(url, opts = {}) {
   const headers = { "Content-Type": "application/json", ...opts.headers };
   const token = getAuthToken();
@@ -37,14 +46,7 @@ async function request(url, opts = {}) {
 
   const res = await fetch(`${BASE}${url}`, { ...opts, headers });
 
-  if (res.status === 401) {
-    clearAuthToken();
-    // Dispatch event so React Router can navigate gracefully (no full reload)
-    if (window.location.pathname !== "/login") {
-      window.dispatchEvent(new Event("auth-expired"));
-    }
-    throw new Error("Not authenticated");
-  }
+  if (res.status === 401) handle401();
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);
@@ -263,13 +265,7 @@ async function formDataRequest(url, formData, errorLabel = "Request") {
     body: formData,
     headers,
   });
-  if (res.status === 401) {
-    clearAuthToken();
-    if (window.location.pathname !== "/login") {
-      window.dispatchEvent(new Event("auth-expired"));
-    }
-    throw new Error("Not authenticated");
-  }
+  if (res.status === 401) handle401();
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || `${errorLabel} (${res.status})`);
