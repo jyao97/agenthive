@@ -1,43 +1,17 @@
-import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import useAsyncHandler from "../../hooks/useAsyncHandler";
+import ErrorAlert from "../../components/ErrorAlert";
 import InboxCard from "../../components/cards/InboxCard";
 import { dispatchTask, cancelTask } from "../../lib/api";
 
 export default function InboxView({ tasks, loading, onRefresh }) {
   const navigate = useNavigate();
-  const [error, setError] = useState(null);
-  const [loadingIds, setLoadingIds] = useState(new Set());
+  const { loadingIds, error, setError, handle } = useAsyncHandler();
 
   const sorted = [...tasks].sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
     return new Date(b.created_at) - new Date(a.created_at);
   });
-
-  const handleDispatch = async (task) => {
-    setError(null);
-    setLoadingIds((s) => new Set(s).add(task.id));
-    try {
-      await dispatchTask(task.id);
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Dispatch failed");
-    } finally {
-      setLoadingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
-
-  const handleDelete = async (task) => {
-    setError(null);
-    setLoadingIds((s) => new Set(s).add(task.id));
-    try {
-      await cancelTask(task.id);
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Delete failed");
-    } finally {
-      setLoadingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
 
   if (!loading && sorted.length === 0) {
     return (
@@ -53,18 +27,13 @@ export default function InboxView({ tasks, loading, onRefresh }) {
 
   return (
     <div className="space-y-3">
-      {error && (
-        <div className="bg-red-950/40 border border-red-800 rounded-xl px-3 py-2 flex items-center justify-between">
-          <p className="text-red-400 text-sm">{error}</p>
-          <button type="button" onClick={() => setError(null)} className="text-red-400/60 hover:text-red-400 text-xs ml-2">dismiss</button>
-        </div>
-      )}
+      <ErrorAlert error={error} onDismiss={() => setError(null)} />
       {sorted.map((task) => (
         <InboxCard
           key={task.id}
           task={task}
-          onDispatch={handleDispatch}
-          onDelete={handleDelete}
+          onDispatch={(t) => handle(t.id, () => dispatchTask(t.id).then(() => onRefresh?.()), "Dispatch failed")}
+          onDelete={(t) => handle(t.id, () => cancelTask(t.id).then(() => onRefresh?.()), "Delete failed")}
           loading={loadingIds.has(task.id)}
           onEdit={(t) => navigate(`/tasks/${t.id}`)}
         />

@@ -1,5 +1,6 @@
-import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import useAsyncHandler from "../../hooks/useAsyncHandler";
+import ErrorAlert from "../../components/ErrorAlert";
 import { dispatchTask, cancelTask, updateTaskV2 } from "../../lib/api";
 import { projectBadgeColor, modelDisplayName } from "../../lib/constants";
 import { relativeTime } from "../../lib/formatters";
@@ -75,52 +76,12 @@ function PlanningCard({ task, onDispatch, onBack, onDelete, loading }) {
 }
 
 export default function PlanningView({ tasks, loading, onRefresh }) {
-  const [error, setError] = useState(null);
-  const [loadingIds, setLoadingIds] = useState(new Set());
+  const { loadingIds, error, setError, handle } = useAsyncHandler();
 
   const sorted = [...tasks].sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
     return new Date(a.created_at) - new Date(b.created_at);
   });
-
-  const handleDispatch = async (task) => {
-    setError(null);
-    setLoadingIds((s) => new Set(s).add(task.id));
-    try {
-      await dispatchTask(task.id);
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Dispatch failed");
-    } finally {
-      setLoadingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
-
-  const handleBack = async (task) => {
-    setError(null);
-    setLoadingIds((s) => new Set(s).add(task.id));
-    try {
-      await updateTaskV2(task.id, { status: "INBOX" });
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Move to inbox failed");
-    } finally {
-      setLoadingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
-
-  const handleDelete = async (task) => {
-    setError(null);
-    setLoadingIds((s) => new Set(s).add(task.id));
-    try {
-      await cancelTask(task.id);
-      onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Delete failed");
-    } finally {
-      setLoadingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
-    }
-  };
 
   if (!loading && sorted.length === 0) {
     return (
@@ -136,19 +97,14 @@ export default function PlanningView({ tasks, loading, onRefresh }) {
 
   return (
     <div className="space-y-3">
-      {error && (
-        <div className="bg-red-950/40 border border-red-800 rounded-xl px-3 py-2 flex items-center justify-between">
-          <p className="text-red-400 text-sm">{error}</p>
-          <button type="button" onClick={() => setError(null)} className="text-red-400/60 hover:text-red-400 text-xs ml-2">dismiss</button>
-        </div>
-      )}
+      <ErrorAlert error={error} onDismiss={() => setError(null)} />
       {sorted.map((task) => (
         <PlanningCard
           key={task.id}
           task={task}
-          onDispatch={handleDispatch}
-          onBack={handleBack}
-          onDelete={handleDelete}
+          onDispatch={(t) => handle(t.id, () => dispatchTask(t.id).then(() => onRefresh?.()), "Dispatch failed")}
+          onBack={(t) => handle(t.id, () => updateTaskV2(t.id, { status: "INBOX" }).then(() => onRefresh?.()), "Move to inbox failed")}
+          onDelete={(t) => handle(t.id, () => cancelTask(t.id).then(() => onRefresh?.()), "Delete failed")}
           loading={loadingIds.has(task.id)}
         />
       ))}
