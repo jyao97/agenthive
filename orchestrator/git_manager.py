@@ -222,6 +222,7 @@ class GitManager:
         """Remove a git worktree (force)."""
         return self._run_git(project_path, ["worktree", "remove", worktree_path, "--force"])
 
-    def delete_branch(self, project_path: str, branch: str) -> str:
-        """Delete a local branch (-d)."""
-        return self._run_git(project_path, ["branch", "-d", branch])
+    def delete_branch(self, project_path: str, branch: str, *, force: bool = False) -> str:
+        """Delete a local branch (-d, or -D if force=True)."""
+        flag = "-D" if force else "-d"
+        return self._run_git(project_path, ["branch", flag, branch])

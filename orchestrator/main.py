@@ -1614,8 +1614,29 @@ async def delete_project(name: str, request: Request, db: Session = Depends(get_
     # If registered, clean up DB resources
     if proj:
         _check_no_active_agents(name, db)
-        agent_ids = [a.id for a in db.query(Agent.id).filter(Agent.project == name).all()]
+
+        # Clean up session files for all agents being deleted
+        from session_cache import cleanup_source_session, evict_session
+        import glob as globmod
+        agents_to_delete = db.query(Agent).filter(Agent.project == name).all()
+        for agent in agents_to_delete:
+            if agent.session_id:
+                try:
+                    cleanup_source_session(agent.session_id, proj.path, agent.worktree)
+                    evict_session(agent.session_id, proj.path, agent.worktree)
+                except Exception:
+                    logger.debug("Failed to cleanup session for agent %s", agent.id, exc_info=True)
+
+        # Clean up output logs for all messages of these agents
+        agent_ids = [a.id for a in agents_to_delete]
         if agent_ids:
+            msg_ids = [m.id for m in db.query(Message.id).filter(Message.agent_id.in_(agent_ids)).all()]
+            for mid in msg_ids:
+                for f in globmod.glob(f"/tmp/claude-output-*-{mid}.log"):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
             db.query(Message).filter(Message.agent_id.in_(agent_ids)).delete(synchronize_session=False)
         # Delete Tasks before Agents (Task.agent_id FK references agents.id)
         db.query(Task).filter(Task.project == name).delete(synchronize_session=False)
@@ -3477,14 +3498,13 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
     # Clean up git artifacts
     proj = db.query(Project).filter(Project.name == task.project_name).first()
     if proj:
-        import subprocess as _sp
+        from git_manager import GitManager
+        gm = GitManager()
         if task.worktree_name:
             wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
-            _sp.run(["git", "worktree", "remove", wt_path, "--force"],
-                    cwd=proj.path, capture_output=True, timeout=30)
+            gm.remove_worktree(proj.path, wt_path)
         if task.branch_name:
-            _sp.run(["git", "branch", "-D", task.branch_name],
-                    cwd=proj.path, capture_output=True, timeout=10)
+            gm.delete_branch(proj.path, task.branch_name, force=True)
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(

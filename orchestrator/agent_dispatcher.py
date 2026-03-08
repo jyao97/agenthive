@@ -5041,6 +5041,7 @@ Here are the day's conversations (with timestamps):
                 parent_id=old_agent_id,
                 worktree=wt,
                 muted=old_agent.muted,
+                task_id=old_agent.task_id,
                 last_message_preview=agent_name,
                 last_message_at=_utcnow(),
             )
