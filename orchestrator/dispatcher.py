@@ -12,7 +12,9 @@ from utils import utcnow as _utcnow, truncate as _truncate
 from database import SessionLocal
 from log_config import save_worker_log
 from models import Project, Task, TaskStatus
+from push import send_push_notification, is_notification_enabled
 from task_state import TaskStateMachine
+from websocket import emit_task_update, emit_worker_update, emit_system_alert
 from worker_manager import WorkerManager
 
 logger = logging.getLogger("orchestrator.dispatcher")
@@ -127,12 +129,10 @@ class TaskDispatcher:
                 logger.warning("Task %s: worker exited without status signal", task.id)
 
             save_worker_log(task.id, logs)
-            from websocket import emit_task_update
             self._emit(emit_task_update(task.id, task.status.value, task.project, title=task.title))
 
             # Send push notification for task completion
             try:
-                from push import send_push_notification, is_notification_enabled
                 if is_notification_enabled("tasks"):
                     status_emoji = "\u2705" if task.status == TaskStatus.COMPLETE else "\u274c"
                     send_push_notification(
@@ -176,7 +176,6 @@ class TaskDispatcher:
                     self.worker_mgr.stop_worker(task.container_id)
                 TaskStateMachine.transition(task, TaskStatus.TIMEOUT)
                 task.error_message = f"Timed out after {int(elapsed)}s"
-                from websocket import emit_task_update
                 self._emit(emit_task_update(task.id, task.status.value, task.project))
 
     # ---- Step 3: Auto-retry ----
@@ -203,7 +202,6 @@ class TaskDispatcher:
                 "Task %s re-queued for retry #%d (was: %s)",
                 task.id, task.retries, prev_error,
             )
-            from websocket import emit_task_update
             self._emit(emit_task_update(task.id, task.status.value, task.project))
 
     # ---- Step 4: Assign ----
@@ -242,7 +240,6 @@ class TaskDispatcher:
             if not project:
                 TaskStateMachine.transition(task, TaskStatus.FAILED)
                 task.error_message = f"Project '{task.project}' not found"
-                from websocket import emit_task_update
                 self._emit(emit_task_update(task.id, task.status.value, task.project))
                 continue
 
@@ -260,14 +257,12 @@ class TaskDispatcher:
                     "Assigned task %s to worker (project: %s, active: %d/%d)",
                     task.id, task.project, total_active, MAX_CONCURRENT_WORKERS,
                 )
-                from websocket import emit_task_update, emit_worker_update
                 self._emit(emit_task_update(task.id, task.status.value, task.project))
                 self._emit(emit_worker_update("created", f"claude-worker-{task.id[:8]}", task.project))
             except Exception:
                 logger.exception("Failed to start worker for task %s", task.id)
                 TaskStateMachine.transition(task, TaskStatus.FAILED)
                 task.error_message = "Failed to start worker process"
-                from websocket import emit_task_update
                 self._emit(emit_task_update(task.id, task.status.value, task.project))
 
     # ---- Housekeeping ----
@@ -298,7 +293,6 @@ class TaskDispatcher:
                         fraction * 100, DISK_USAGE_THRESHOLD * 100,
                     )
                     self._paused_disk = True
-                    from websocket import emit_system_alert
                     asyncio.ensure_future(emit_system_alert(
                         f"Disk usage {fraction*100:.0f}% — new tasks paused", "error"
                     ))
@@ -356,7 +350,6 @@ class TaskDispatcher:
                 db.commit()
                 logger.info("Recovered %d stale tasks", len(stale))
                 # Emit WebSocket events so frontend reflects recovery
-                from websocket import emit_task_update
                 for task in stale:
                     proj_name = task.project_name or task.project or ""
                     self._emit(emit_task_update(
