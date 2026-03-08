@@ -42,6 +42,7 @@ from models import (
     Task,
     TaskStatus,
 )
+from agent_dispatcher import ALIVE_STATUSES, TERMINAL_STATUSES
 from schemas import (
     AgentBrief,
     AgentCreate,
@@ -1546,7 +1547,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
         db.query(Agent)
         .filter(
             Agent.project == name,
-            Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
+            Agent.status.notin_(TERMINAL_STATUSES),
         )
         .all()
     )
@@ -2979,7 +2980,7 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
         verify_agents = (
             db.query(Agent)
             .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
-            .filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
+            .filter(Agent.status.notin_(TERMINAL_STATUSES))
             .all()
         )
         for va in verify_agents:
@@ -3139,7 +3140,7 @@ async def reject_task_v2(
     verify_agents = (
         db.query(Agent)
         .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
-        .filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
+        .filter(Agent.status.notin_(TERMINAL_STATUSES))
         .all()
     )
     for va in verify_agents:
@@ -3185,7 +3186,7 @@ async def verify_task(task_id: str, request: Request, db: Session = Depends(get_
             Agent.task_id == task.id,
             Agent.is_subagent == True,
             Agent.name.like("Verify:%"),
-            Agent.status.in_([AgentStatus.IDLE, AgentStatus.STARTING, AgentStatus.EXECUTING]),
+            Agent.status.in_(ALIVE_STATUSES),
         )
         .first()
     )
@@ -3460,7 +3461,7 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
     verify_agents = (
         db.query(Agent)
         .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
-        .filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
+        .filter(Agent.status.notin_(TERMINAL_STATUSES))
         .all()
     )
     for va in verify_agents:
@@ -3982,11 +3983,13 @@ async def _launch_tmux_background(
         db = SessionLocal()
         try:
             agent = db.get(Agent, agent_id)
-            if agent and agent.status != AgentStatus.STOPPED:
-                agent.status = AgentStatus.ERROR
-                ad._clear_agent_pane(db, agent, kill_tmux=False)  # release pane so discovery doesn't conflict
+            if agent:
+                ad.error_agent_cleanup(
+                    db, agent, reason,
+                    add_message=False, fail_executing=False,
+                    cancel_tasks=False,
+                )
                 db.commit()
-                ad._emit(emit_agent_update(agent_id, "ERROR", agent.project))
         finally:
             db.close()
         logger.warning("tmux launch failed for agent %s: %s", agent_id, reason)

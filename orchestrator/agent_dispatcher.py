@@ -40,6 +40,11 @@ from worker_manager import WorkerManager
 
 logger = logging.getLogger("orchestrator.agent_dispatcher")
 
+# Agent status groupings for query filters
+ALIVE_STATUSES = [AgentStatus.IDLE, AgentStatus.EXECUTING, AgentStatus.STARTING, AgentStatus.SYNCING]
+ACTIVE_STATUSES = [AgentStatus.STARTING, AgentStatus.EXECUTING, AgentStatus.SYNCING]
+TERMINAL_STATUSES = [AgentStatus.STOPPED, AgentStatus.ERROR]
+
 # Session file stale threshold (seconds) — 30 minutes without writes
 # means the CLI session has ended.  Used in _reap_dead_agents and
 # startup recovery to decide whether a session is still active.
@@ -2470,6 +2475,68 @@ Here are the day's conversations (with timestamps):
 
         return True
 
+    def error_agent_cleanup(
+        self,
+        db: Session,
+        agent: Agent,
+        reason: str,
+        *,
+        kill_tmux: bool = False,
+        emit: bool = True,
+        add_message: bool = True,
+        fail_executing: bool = True,
+        cancel_tasks: bool = True,
+    ) -> bool:
+        """Mark agent as ERROR with consistent cleanup.
+
+        Returns True if the agent was actually transitioned, False if already
+        STOPPED/ERROR.
+
+        Args:
+            db: Active SQLAlchemy session (caller is responsible for commit).
+            agent: Agent instance to mark as ERROR.
+            reason: Human-readable reason (used for system message and fail reason).
+            kill_tmux: Kill the agent's tmux session if it has a pane.
+            emit: Emit a WebSocket agent-update event.
+            add_message: Add a system message with the reason text.
+            fail_executing: Mark EXECUTING messages as FAILED.
+            cancel_tasks: Cancel dispatcher sync/launch tasks and clear
+                          retry state for this agent.
+        """
+        if agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
+            return False
+
+        self._clear_agent_pane(db, agent, kill_tmux=kill_tmux)
+
+        agent.status = AgentStatus.ERROR
+
+        if fail_executing:
+            for m in db.query(Message).filter(
+                Message.agent_id == agent.id,
+                Message.status == MessageStatus.EXECUTING,
+            ).all():
+                self._fail_message(m, reason)
+
+        if add_message:
+            db.add(Message(
+                agent_id=agent.id,
+                role=MessageRole.SYSTEM,
+                content=reason,
+                status=MessageStatus.COMPLETED,
+            ))
+
+        if cancel_tasks:
+            self._cancel_sync_task(agent.id)
+            self._cancel_launch_task(agent.id)
+            self._stale_session_retries.pop(agent.id, None)
+            self._syncing_no_pane_retries.pop(agent.id, None)
+
+        if emit:
+            from websocket import emit_agent_update
+            self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
+
+        return True
+
     def _next_generation_id(self, agent_id: str) -> int:
         """Return the next monotonic generation ID for an agent."""
         gid = self._generation_ids.get(agent_id, 0) + 1
@@ -2552,7 +2619,7 @@ Here are the day's conversations (with timestamps):
             active = (
                 db.query(Agent)
                 .filter(Agent.project == proj.name)
-                .filter(Agent.status.in_([AgentStatus.EXECUTING, AgentStatus.STARTING]))
+                .filter(Agent.status.in_(ACTIVE_STATUSES))
                 .count()
             )
             if active >= proj.max_concurrent:
@@ -2828,7 +2895,7 @@ Here are the day's conversations (with timestamps):
             for va in (
                 db.query(Agent)
                 .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
-                .filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
+                .filter(Agent.status.notin_(TERMINAL_STATUSES))
                 .all()
             ):
                 self.stop_agent_cleanup(
@@ -3425,24 +3492,14 @@ Here are the day's conversations (with timestamps):
         for agent in starting:
             project = db.get(Project, agent.project)
             if not project:
-                agent.status = AgentStatus.ERROR
-                msg = Message(
-                    agent_id=agent.id,
-                    role=MessageRole.SYSTEM,
-                    content=f"Project '{agent.project}' not found",
-                    status=MessageStatus.FAILED,
-                )
-                db.add(msg)
-
-                from websocket import emit_agent_update, emit_new_message
-                self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
-                self._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
+                reason = f"Project '{agent.project}' not found"
+                self.error_agent_cleanup(db, agent, reason)
                 if not agent.muted and not self._is_agent_in_use(agent.id, agent.tmux_pane):
                     from push import send_push_notification, is_notification_enabled
                     if is_notification_enabled("agents"):
                         send_push_notification(
                             title=f"\u274c {agent.name}",
-                            body=f"Project '{agent.project}' not found",
+                            body=reason,
                             url=f"/agents/{agent.id}",
                         )
                 continue
@@ -3464,24 +3521,14 @@ Here are the day's conversations (with timestamps):
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
             except Exception:
                 logger.exception("Failed to start agent %s", agent.id)
-                agent.status = AgentStatus.ERROR
-                msg = Message(
-                    agent_id=agent.id,
-                    role=MessageRole.SYSTEM,
-                    content="Failed to start — project directory not found",
-                    status=MessageStatus.FAILED,
-                )
-                db.add(msg)
-
-                from websocket import emit_agent_update, emit_new_message
-                self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
-                self._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
+                reason = "Failed to start — project directory not found"
+                self.error_agent_cleanup(db, agent, reason)
                 if not agent.muted and not self._is_agent_in_use(agent.id, agent.tmux_pane):
                     from push import send_push_notification, is_notification_enabled
                     if is_notification_enabled("agents"):
                         send_push_notification(
                             title=f"\u274c {agent.name}",
-                            body="Failed to start — project directory not found",
+                            body=reason,
                             url=f"/agents/{agent.id}",
                         )
 
@@ -3608,20 +3655,12 @@ Here are the day's conversations (with timestamps):
                     project.name, count, self._max_project_ready_failures,
                 )
                 if count >= self._max_project_ready_failures:
-                    agent.status = AgentStatus.ERROR
                     reason = f"Project directory not ready after {count} attempts"
                     self._fail_message(pending_msg, reason)
-                    msg = Message(
-                        agent_id=agent.id,
-                        role=MessageRole.SYSTEM,
-                        content=f"Project directory for '{project.name}' is not accessible — agent stopped",
-                        status=MessageStatus.COMPLETED,
+                    self.error_agent_cleanup(
+                        db, agent,
+                        f"Project directory for '{project.name}' is not accessible — agent stopped",
                     )
-                    db.add(msg)
-                    # NOTE: removed db.commit() — same-tick flush of ALL
-                    # dirty objects caused double-dispatch.  Let _tick()
-                    # commit atomically at the end.
-                    self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
                 continue
 
             # Use --resume with session_id if available.
@@ -5177,20 +5216,16 @@ Here are the day's conversations (with timestamps):
             logger.exception("Sync loop crashed for agent %s", agent_id)
             # Transition agent out of phantom SYNCING state so the UI
             # reflects reality instead of showing a stuck spinner.
-            from websocket import emit_agent_update
             db = SessionLocal()
             try:
                 agent = db.get(Agent, agent_id)
                 if agent and agent.status == AgentStatus.SYNCING:
-                    agent.status = AgentStatus.ERROR
-                    db.add(Message(
-                        agent_id=agent_id,
-                        role=MessageRole.SYSTEM,
-                        content="Sync loop crashed — check server logs for details",
-                        status=MessageStatus.COMPLETED,
-                    ))
+                    self.error_agent_cleanup(
+                        db, agent,
+                        "Sync loop crashed — check server logs for details",
+                        cancel_tasks=False,
+                    )
                     db.commit()
-                    self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
                     logger.warning(
                         "Agent %s moved to ERROR after sync loop crash", agent_id
                     )
