@@ -4856,7 +4856,9 @@ async def send_agent_message(
                 is_syncing_with_tmux = False
 
         if is_syncing_with_tmux:
-            ok = send_tmux_message(agent.tmux_pane, body.content)
+            from agent_dispatcher import _AGENTHIVE_PROMPT_MARKER
+            _tagged = f"{_AGENTHIVE_PROMPT_MARKER}\n{body.content}"
+            ok = send_tmux_message(agent.tmux_pane, _tagged)
             if not ok:
                 raise HTTPException(
                     status_code=500,

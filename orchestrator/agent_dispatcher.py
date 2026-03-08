@@ -3849,7 +3849,8 @@ Here are the day's conversations (with timestamps):
                     wrap_prompt=False,
                 )
 
-            ok = send_tmux_message(agent.tmux_pane, due_msg.content)
+            _tagged = f"{_AGENTHIVE_PROMPT_MARKER}\n{due_msg.content}"
+            ok = send_tmux_message(agent.tmux_pane, _tagged)
             if ok:
                 due_msg.status = MessageStatus.COMPLETED
                 due_msg.completed_at = _utcnow()
