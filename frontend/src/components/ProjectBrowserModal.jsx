@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { fetchProjectTree, browseProjectFile, authedFetch } from "../lib/api";
+import { fetchProjectTree, browseProjectFile, downloadFile as dlFile } from "../lib/api";
 import { renderMarkdown } from "../lib/formatters";
 
 /* ---- tiny helpers ---- */
@@ -24,19 +24,7 @@ function langFromExt(ext) {
 
 function downloadFile(project, path, filename) {
   const url = `/api/files/${encodeURIComponent(project)}/${path.split("/").map(encodeURIComponent).join("/")}`;
-  authedFetch(url)
-    .then((res) => res.blob())
-    .then((blob) => {
-      const objUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(objUrl);
-    })
-    .catch(() => window.open(url, "_blank"));
+  dlFile(url, filename);
 }
 
 /* ---- folder / file icons (inline SVG) ---- */

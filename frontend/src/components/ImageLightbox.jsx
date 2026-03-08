@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { downloadFile } from "../lib/api";
+import { useToast } from "../contexts/ToastContext";
 import {
   SWIPE_THRESHOLD, DISMISS_THRESHOLD,
   LIGHTBOX_DOUBLE_TAP_WINDOW, LIGHTBOX_DOUBLE_TAP_DIST,
@@ -16,6 +18,7 @@ const TRANSITION_DURATION_MS = 250;
  * - Swipe down to dismiss
  */
 export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
+  const toast = useToast();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [scale, setScale] = useState(1);
   const [translate, setTranslate] = useState({ x: 0, y: 0 });
@@ -486,14 +489,13 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            const dlUrl = current.src + (current.src.includes("?") ? "&" : "?") + "download=1";
-            const a = document.createElement("a");
-            a.href = dlUrl;
-            a.download = current.filename || "image";
-            a.style.display = "none";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+            const fn = current.filename || "image";
+            downloadFile(current.src, fn)
+              .then((r) => {
+                if (r === "shared") toast.success(`Saved ${fn}`);
+                else if (r === "downloaded") toast.success(`Downloaded ${fn}`);
+              })
+              .catch(() => toast.error(`Failed to download ${fn}`));
           }}
           className="absolute top-4 right-18 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 text-white/80 hover:bg-white/20 transition-colors"
           style={{ marginTop: "env(safe-area-inset-top, 0px)" }}

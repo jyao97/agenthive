@@ -294,6 +294,50 @@ export async function uploadFile(file) {
   return formDataRequest("/api/upload", formData, "Upload failed");
 }
 
+/**
+ * Download a file reliably across platforms including iOS Safari PWA.
+ * Returns: "shared" | "downloaded" | "cancelled" — or throws on network error.
+ */
+export async function downloadFile(url, filename) {
+  const dlUrl = url + (url.includes("?") ? "&" : "?") + "download=1";
+
+  // Only use Web Share API on mobile PWA standalone mode (iOS needs it; desktop should direct-download)
+  const isStandalonePWA = window.matchMedia("(display-mode: standalone)").matches
+    || window.navigator.standalone === true;
+  const isTouchDevice = "ontouchend" in document;
+  const useShareAPI = isStandalonePWA && isTouchDevice;
+
+  const resp = await authedFetch(dlUrl);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const blob = await resp.blob();
+
+  // Strategy 1: Web Share API — the only reliable method in iOS Safari PWA standalone mode
+  if (useShareAPI) {
+    const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file] });
+        return "shared";
+      } catch (err) {
+        if (err.name === "AbortError") return "cancelled";
+        throw err;
+      }
+    }
+  }
+
+  // Strategy 2: blob URL + anchor click (desktop browsers, Android)
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  return "downloaded";
+}
+
 export async function generateWorktreeName(prompt) {
   const res = await authedFetch("/api/worktree-name", {
     method: "POST",

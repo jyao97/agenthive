@@ -1,23 +1,23 @@
 import { useState, useCallback } from "react";
-import { authedFetch } from "../lib/api";
+import { authedFetch, downloadFile } from "../lib/api";
+import { useToast } from "../contexts/ToastContext";
 import ImageLightbox from "./ImageLightbox";
 
 // --- Shared action buttons (download + copy path) ---
 
 function ActionButtons({ src, filename, originalPath }) {
   const [copied, setCopied] = useState(false);
+  const toast = useToast();
 
   const handleDownload = (e) => {
     e.stopPropagation();
     e.preventDefault();
-    const dlUrl = src + (src.includes("?") ? "&" : "?") + "download=1";
-    const a = document.createElement("a");
-    a.href = dlUrl;
-    a.download = filename;
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    downloadFile(src, filename)
+      .then((r) => {
+        if (r === "shared") toast.success(`Saved ${filename}`);
+        else if (r === "downloaded") toast.success(`Downloaded ${filename}`);
+      })
+      .catch(() => toast.error(`Failed to download ${filename}`));
   };
 
   const handleCopyPath = (e) => {
