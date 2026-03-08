@@ -25,6 +25,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
   const [dragging, setDragging] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [videoError, setVideoError] = useState(null);
+  const [hiresReady, setHiresReady] = useState({}); // { [index]: true } when full-res loaded
 
   const containerRef = useRef(null);
   const imgRef = useRef(null);
@@ -95,6 +96,16 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     setPlaying(false);
     setVideoError(null);
   }, [currentIndex]);
+
+  // Preload full-res image in background when thumbnail is shown
+  useEffect(() => {
+    const cur = media[currentIndex];
+    if (!cur || cur.type === "video" || !cur.thumbSrc || hiresReady[currentIndex]) return;
+    const img = new Image();
+    img.onload = () => setHiresReady((prev) => ({ ...prev, [currentIndex]: true }));
+    img.src = cur.src;
+    return () => { img.onload = null; };
+  }, [currentIndex, media, hiresReady]);
 
   // Clamp translate so image doesn't go off-screen too far
   const clampTranslate = useCallback(
@@ -469,6 +480,30 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         }
       }}
     >
+      {/* Download button (always full-res) */}
+      {!isCurrentVideo && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            const dlUrl = current.src + (current.src.includes("?") ? "&" : "?") + "download=1";
+            const a = document.createElement("a");
+            a.href = dlUrl;
+            a.download = current.filename || "image";
+            a.style.display = "none";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          }}
+          className="absolute top-4 right-18 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 text-white/80 hover:bg-white/20 transition-colors"
+          style={{ marginTop: "env(safe-area-inset-top, 0px)" }}
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+          </svg>
+        </button>
+      )}
+
       {/* Close button */}
       <button
         type="button"
@@ -529,7 +564,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       ) : (
         <img
           ref={imgRef}
-          src={current.src}
+          src={current.thumbSrc && !hiresReady[currentIndex] ? current.thumbSrc : current.src}
           alt={current.filename || ""}
           draggable={false}
           className="max-h-[90vh] max-w-[90vw] object-contain pointer-events-none select-none"

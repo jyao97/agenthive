@@ -334,6 +334,12 @@ function resolveFileUrl(rawPath, defaultProject) {
     return `/api/files/${encodeURIComponent(proj)}/${rest.split("/").map(encodeURIComponent).join("/")}`;
   }
 
+  // User-uploaded file path (.agenthive/uploads/) — route to /api/uploads/
+  const uploadMatch = rawPath.match(/\.agenthive\/uploads\/([^/]+)$/);
+  if (uploadMatch) {
+    return `/api/uploads/${encodeURIComponent(uploadMatch[1])}`;
+  }
+
   // Absolute path with agenthive-projects — extract true project
   const absMatch = rawPath.match(/agenthive-projects\/([^/]+)\/(.+)/);
   if (absMatch) {
@@ -444,7 +450,12 @@ export function extractFileAttachments(text, project, role) {
 
     const ext = path.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
     const type = classifyExt(path);
-    results.push({ path, resolvedUrl, type, ext, originalPath: rawPath });
+    // Only generate thumbUrl for /api/files/ URLs (not /api/uploads/ or http)
+    const thumbCandidate = type === "image" && resolvedUrl.startsWith("/api/files/")
+      ? resolvedUrl.replace(/^\/api\/files\//, "/api/thumbs/")
+      : undefined;
+    const thumbUrl = thumbCandidate !== resolvedUrl ? thumbCandidate : undefined;
+    results.push({ path, resolvedUrl, type, ext, originalPath: rawPath, thumbUrl });
   };
 
   let m;

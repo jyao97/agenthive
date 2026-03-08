@@ -333,7 +333,7 @@ app.add_middleware(
 
 # ---- Auth middleware ----
 
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/api/files/", "/api/uploads/", "/docs", "/openapi.json")
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/api/files/", "/api/uploads/", "/api/thumbs/", "/docs", "/openapi.json")
 
 
 @app.middleware("http")
@@ -1847,12 +1847,19 @@ _claudemd_jobs_lock = threading.Lock()
 _CLAUDEMD_CACHE_TTL = 600  # 10 minutes
 
 
+_CLAUDEMD_RUNNING_TTL = 900  # 15 min — auto-expire stuck "running" jobs
+
+
 def _claudemd_job_get(project_name: str) -> dict | None:
     with _claudemd_jobs_lock:
         entry = _claudemd_jobs.get(project_name)
         if not entry:
             return None
-        if entry["status"] != "running" and _time.monotonic() - entry["ts"] > _CLAUDEMD_CACHE_TTL:
+        age = _time.monotonic() - entry["ts"]
+        if entry["status"] == "running" and age > _CLAUDEMD_RUNNING_TTL:
+            del _claudemd_jobs[project_name]
+            return None
+        if entry["status"] != "running" and age > _CLAUDEMD_CACHE_TTL:
             del _claudemd_jobs[project_name]
             return None
         return entry
@@ -2179,12 +2186,19 @@ _progress_jobs_lock = threading.Lock()
 _PROGRESS_CACHE_TTL = 600  # 10 minutes
 
 
+_PROGRESS_RUNNING_TTL = 900  # 15 min — auto-expire stuck "running" jobs
+
+
 def _progress_job_get(project_name: str) -> dict | None:
     with _progress_jobs_lock:
         entry = _progress_jobs.get(project_name)
         if not entry:
             return None
-        if entry["status"] != "running" and _time.monotonic() - entry["ts"] > _PROGRESS_CACHE_TTL:
+        age = _time.monotonic() - entry["ts"]
+        if entry["status"] == "running" and age > _PROGRESS_RUNNING_TTL:
+            del _progress_jobs[project_name]
+            return None
+        if entry["status"] != "running" and age > _PROGRESS_CACHE_TTL:
             del _progress_jobs[project_name]
             return None
         return entry
@@ -2203,8 +2217,8 @@ def _progress_job_clear(project_name: str):
 def _summarize_progress_background(project_name: str, project_path: str,
                                    session_context: str):
     """Run claude -p in a thread to generate a daily summary section (incremental append)."""
-    from datetime import date
-    today = date.today().isoformat()
+    from datetime import datetime as _dt, timezone as _tz
+    today = _dt.now(_tz.utc).date().isoformat()
     progress_path = os.path.join(project_path, "PROGRESS.md")
 
     # Read existing PROGRESS.md so LLM can avoid duplicates and contradictions
@@ -2368,9 +2382,9 @@ async def apply_progress(name: str, db: Session = Depends(get_db)):
 
     # Store parsed insights into DB + FTS5 for RAG retrieval
     try:
-        from datetime import date as _date
+        from datetime import datetime as _dt2, timezone as _tz2
         from agent_dispatcher import store_insights
-        n = store_insights(db, name, _date.today().isoformat(), new_section)
+        n = store_insights(db, name, _dt2.now(_tz2.utc).date().isoformat(), new_section)
         if n:
             logger.info("Stored %d insights in FTS5 for %s", n, name)
     except Exception:
@@ -5268,11 +5282,12 @@ def _serve_file_with_range(full_path: str, media_type: str, request: Request):
     """
     return FileResponse(full_path, media_type=media_type)
 
-@app.get("/api/files/{project}/{path:path}")
-async def serve_project_file(project: str, path: str, request: Request, db: Session = Depends(get_db)):
-    """Serve a file from a project's directory (images, videos, etc.)."""
-    import mimetypes
-    from config import PROJECTS_DIR
+def _resolve_project_file(project: str, path: str, db) -> str:
+    """Resolve a project-relative path to an absolute filesystem path.
+
+    Raises HTTPException(404) if the file cannot be found.
+    """
+    import re as _re
 
     proj = db.get(Project, project)
     if not proj:
@@ -5288,7 +5303,6 @@ async def serve_project_file(project: str, path: str, request: Request, db: Sess
     clean = path
     # Strip double-prefix: path may contain "api/files/<other_project>/rest"
     # when the message stored a full URL and the frontend double-wrapped it.
-    import re as _re
     _dbl = _re.match(r"api/files/[^/]+/(.+)", clean)
     if _dbl:
         clean = _dbl.group(1)
@@ -5351,8 +5365,55 @@ async def serve_project_file(project: str, path: str, request: Request, db: Sess
             if not found:
                 raise HTTPException(status_code=404, detail="File not found")
 
+    return full_path
+
+
+@app.get("/api/files/{project}/{path:path}")
+async def serve_project_file(project: str, path: str, request: Request,
+                             download: bool = False, db: Session = Depends(get_db)):
+    """Serve a file from a project's directory (images, videos, etc.)."""
+    import mimetypes
+    full_path = _resolve_project_file(project, path, db)
     media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
+    if download:
+        return FileResponse(full_path, media_type=media_type,
+                            filename=os.path.basename(full_path))
     return _serve_file_with_range(full_path, media_type, request)
+
+
+_THUMB_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+
+@app.get("/api/thumbs/{project}/{path:path}")
+async def serve_thumbnail(project: str, path: str, request: Request, db: Session = Depends(get_db)):
+    """Serve a resized thumbnail (max 1200px, JPEG q80) with filesystem caching."""
+    import mimetypes
+    full_path = _resolve_project_file(project, path, db)
+
+    _, ext = os.path.splitext(full_path)
+    if ext.lower() not in _THUMB_IMAGE_EXTS:
+        media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
+        return _serve_file_with_range(full_path, media_type, request)
+
+    # Cache path: .thumbcache/<filename>.thumb.jpg next to the original
+    cache_dir = os.path.join(os.path.dirname(full_path), ".thumbcache")
+    thumb_file = os.path.join(cache_dir, os.path.basename(full_path) + ".thumb.jpg")
+
+    if os.path.isfile(thumb_file) and os.path.getmtime(thumb_file) >= os.path.getmtime(full_path):
+        return FileResponse(thumb_file, media_type="image/jpeg")
+
+    try:
+        from PIL import Image
+        os.makedirs(cache_dir, exist_ok=True)
+        with Image.open(full_path) as img:
+            img.thumbnail((1200, 1200))
+            if img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
+            img.save(thumb_file, "JPEG", quality=80)
+        return FileResponse(thumb_file, media_type="image/jpeg")
+    except Exception:
+        media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
+        return _serve_file_with_range(full_path, media_type, request)
 
 
 # ---- Uploads ----

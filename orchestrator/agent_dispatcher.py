@@ -596,28 +596,51 @@ _INSIGHT_RE = re.compile(r"^\d+\.\s+(.+)", re.MULTILINE)
 
 
 def store_insights(db, project: str, date_str: str, section_text: str):
-    """Parse numbered insight lines from a summary section and store in DB + FTS5."""
+    """Parse numbered insight lines from a summary section and store in DB + FTS5.
+
+    Uses a separate DB session to avoid committing/rolling back the caller's transaction.
+    """
     from models import ProgressInsight
     items = _INSIGHT_RE.findall(section_text)
     if not items:
         return 0
-    rows = []
-    for content in items:
-        row = ProgressInsight(project=project, date=date_str, content=content.strip())
-        db.add(row)
-        rows.append(row)
-    db.flush()  # assigns row.id
-    # Sync to FTS5
-    for row in rows:
-        db.execute(
-            text("INSERT INTO progress_insights_fts(rowid, content) VALUES (:id, :content)"),
-            {"id": row.id, "content": row.content},
-        )
-    db.commit()
-    return len(items)
+
+    own_db = SessionLocal()
+    try:
+        stored = 0
+        for content in items:
+            content = content.strip()
+            # Deduplicate: skip if identical insight already exists for this project+date
+            exists = own_db.query(ProgressInsight.id).filter(
+                ProgressInsight.project == project,
+                ProgressInsight.date == date_str,
+                ProgressInsight.content == content,
+            ).first()
+            if exists:
+                continue
+            row = ProgressInsight(project=project, date=date_str, content=content)
+            own_db.add(row)
+            own_db.flush()  # assigns row.id
+            try:
+                own_db.execute(
+                    text("INSERT INTO progress_insights_fts(rowid, content) VALUES (:id, :content)"),
+                    {"id": row.id, "content": row.content},
+                )
+            except Exception:
+                logger.warning("FTS5 insert failed for insight %s — skipping FTS sync", row.id, exc_info=True)
+            stored += 1
+        own_db.commit()
+        return stored
+    except Exception:
+        logger.warning("store_insights failed for %s/%s — rolling back", project, date_str, exc_info=True)
+        own_db.rollback()
+        return 0
+    finally:
+        own_db.close()
 
 
-_NON_ENGLISH_RE = re.compile(r"[^\x00-\x7F]{2,}")
+_NON_ENGLISH_RE = re.compile(r"[^\x00-\x7F]+")
+_TRANSLATE_CACHE_MAX = 256
 _translate_cache: dict[str, str] = {}
 
 
@@ -631,7 +654,7 @@ def _translate_to_english(text_input: str) -> str:
         return _translate_cache[cache_key]
     try:
         import openai
-        client = openai.OpenAI()
+        client = openai.OpenAI(timeout=5)
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{
@@ -643,6 +666,9 @@ def _translate_to_english(text_input: str) -> str:
         )
         translated = resp.choices[0].message.content.strip()
         if translated:
+            if len(_translate_cache) >= _TRANSLATE_CACHE_MAX:
+                # Evict oldest entry
+                _translate_cache.pop(next(iter(_translate_cache)))
             _translate_cache[cache_key] = translated
             return translated
     except Exception:
@@ -661,9 +687,10 @@ def query_insights(db, project: str, query: str, limit: int = 15, recent_days: i
 
     # 1. FTS5 keyword search
     if query.strip():
-        words = [w for w in re.split(r"\W+", query) if len(w) > 1]
+        _fts_reserved = {"AND", "OR", "NOT", "NEAR"}
+        words = [w for w in re.split(r"\W+", query) if len(w) > 1 and w.upper() not in _fts_reserved]
         if words:
-            fts_query = " OR ".join(words[:20])
+            fts_query = " OR ".join(f'"{w}"' for w in words[:20])
             fts_rows = db.execute(
                 text(
                     "SELECT pi.id, pi.content, pi.date, rank "
@@ -677,12 +704,13 @@ def query_insights(db, project: str, query: str, limit: int = 15, recent_days: i
             for row_id, content, date_str, rank in fts_rows:
                 results[row_id] = (f"[{date_str}] {content}", -rank)
 
-    # 2. Recent insights (unconditional)
+    # 2. Recent insights (unconditional, bounded)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=recent_days)).strftime("%Y-%m-%d")
     recent_rows = (
         db.query(ProgressInsight)
         .filter(ProgressInsight.project == project, ProgressInsight.date >= cutoff)
         .order_by(ProgressInsight.date.desc())
+        .limit(limit * 3)
         .all()
     )
     for r in recent_rows:
@@ -743,7 +771,11 @@ def _gather_daily_session_context(db, project_name: str, target_date=None) -> st
 
         messages = (
             db.query(Message)
-            .filter(Message.agent_id == agent.id)
+            .filter(
+                Message.agent_id == agent.id,
+                Message.created_at >= day_start,
+                Message.created_at < day_end,
+            )
             .order_by(Message.created_at)
             .all()
         )
@@ -769,8 +801,8 @@ def _gather_daily_session_context(db, project_name: str, target_date=None) -> st
         msgs = s["messages"]
         if not msgs:
             return parts[0]
-        first_user = next((m for m in msgs if m.role.value == "user"), None)
-        last_asst = next((m for m in reversed(msgs) if m.role.value == "assistant"), None)
+        first_user = next((m for m in msgs if m.role.value == "USER"), None)
+        last_asst = next((m for m in reversed(msgs) if m.role.value == "AGENT"), None)
         parts.append(f"\n({len(msgs)} messages)")
         if first_user:
             c = _strip_agent_preamble(first_user.content or "")[:1500]
@@ -2083,6 +2115,8 @@ class AgentDispatcher:
                     self._tick(db)
 
                     # Daily PROGRESS.md summary auto-trigger (once per day, persisted in DB)
+                    # Summarize *yesterday* — triggered after midnight UTC so the full
+                    # previous day's sessions are available.
                     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                     last_row = db.get(SystemConfig, "auto_summary_last_date")
                     last_date = last_row.value if last_row else None
@@ -2092,7 +2126,8 @@ class AgentDispatcher:
                         else:
                             db.add(SystemConfig(key="auto_summary_last_date", value=today_str))
                         db.commit()
-                        self._trigger_daily_progress_summaries(db)
+                        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+                        self._trigger_daily_progress_summaries(db, target_date=yesterday)
                 finally:
                     db.close()
                 _consecutive_failures = 0
@@ -2115,7 +2150,7 @@ class AgentDispatcher:
     def stop(self):
         self.running = False
 
-    def _trigger_daily_progress_summaries(self, db: Session):
+    def _trigger_daily_progress_summaries(self, db: Session, target_date=None):
         """Auto-trigger PROGRESS.md summary for projects with the toggle enabled."""
         projects = (
             db.query(Project)
@@ -2134,16 +2169,16 @@ class AgentDispatcher:
             if existing:
                 continue
 
-            session_context = _gather_daily_session_context(db, proj.name)
+            session_context = _gather_daily_session_context(db, proj.name, target_date=target_date)
             if not session_context:
-                logger.info("Auto-summary skipped for %s: no agent sessions today", proj.name)
+                logger.info("Auto-summary skipped for %s: no agent sessions on %s", proj.name, target_date or "today")
                 continue
 
             # Auto-apply: run summary and append result (no review step)
             _progress_job_set(proj.name, status="running")
             thread = threading.Thread(
                 target=self._auto_apply_progress_summary,
-                args=(proj.name, proj.path, session_context),
+                args=(proj.name, proj.path, session_context, target_date),
                 daemon=True,
             )
             thread.start()
@@ -2151,14 +2186,14 @@ class AgentDispatcher:
 
     @staticmethod
     def _auto_apply_progress_summary(project_name: str, project_path: str,
-                                     session_context: str):
+                                     session_context: str, target_date=None):
         """Generate a daily summary section and append it to PROGRESS.md."""
         import subprocess
-        from datetime import date
         from config import CLAUDE_BIN
         from main import _progress_job_set, _progress_job_clear
 
-        today = date.today().isoformat()
+        # Use the date that was actually summarized (default: yesterday UTC)
+        summary_date = (target_date or (datetime.now(timezone.utc) - timedelta(days=1)).date()).isoformat()
 
         # Read existing PROGRESS.md so LLM can avoid duplicates and contradictions
         progress_path = os.path.join(project_path, "PROGRESS.md")
@@ -2182,13 +2217,13 @@ class AgentDispatcher:
 
 """
 
-        prompt = f"""You are a project analyst. Read ALL the following conversations from {today} thoroughly. Extract every NEW and meaningful insight, decision, bug fix, design choice, and lesson learned.
+        prompt = f"""You are a project analyst. Read ALL the following conversations from {summary_date} thoroughly. Extract every NEW and meaningful insight, decision, bug fix, design choice, and lesson learned.
 
 STRICT RULES:
 1. Output ONLY the summary section — no preamble, no explanation, no markdown fences.
 2. Use EXACTLY this format:
 
-## {today} — Daily Insights
+## {summary_date} — Daily Insights
 1. [insight or decision — one sentence, specific and actionable]
 2. ...
 
@@ -2196,11 +2231,11 @@ STRICT RULES:
 4. Focus on: new discoveries, architectural decisions, bug root causes & fixes, design choices, gotchas, and lessons that future agents should know.
 5. Omit routine/trivial activity (echo tests, simple file creates). Only include things worth remembering.
 6. Each insight must be self-contained — readable without context of the original conversation.
-7. **DEDUPLICATION**: The existing PROGRESS.md is provided below. Do NOT repeat insights already captured there. Only output genuinely new information from today. If today's conversation contradicts or supersedes a previous insight, note the update explicitly (e.g., "Updated: X is now Y, replacing previous approach Z").
+7. **DEDUPLICATION**: The existing PROGRESS.md is provided below. Do NOT repeat insights already captured there. Only output genuinely new information. If this day's conversation contradicts or supersedes a previous insight, note the update explicitly (e.g., "Updated: X is now Y, replacing previous approach Z").
 8. Max 25 numbered items. Be concise but specific — include file names, function names, and concrete details.
-9. Do NOT output anything before the ## heading or after the last numbered item. If there are no new insights, output only the heading with a single item "No new insights today."
+9. Do NOT output anything before the ## heading or after the last numbered item. If there are no new insights, output only the heading with a single item "No new insights."
 {existing_block}
-Here are today's conversations (with timestamps):
+Here are the day's conversations (with timestamps):
 
 {session_context}"""
 
@@ -2262,13 +2297,9 @@ Here are today's conversations (with timestamps):
 
         # Store parsed insights into DB + FTS5 for RAG retrieval
         try:
-            fts_db = SessionLocal()
-            try:
-                n = store_insights(fts_db, project_name, today, new_section)
-                if n:
-                    logger.info("Stored %d insights in FTS5 for %s", n, project_name)
-            finally:
-                fts_db.close()
+            n = store_insights(None, project_name, summary_date, new_section)
+            if n:
+                logger.info("Stored %d insights in FTS5 for %s", n, project_name)
         except Exception:
             logger.warning("Failed to store FTS5 insights for %s", project_name, exc_info=True)
 
@@ -2569,10 +2600,12 @@ Here are today's conversations (with timestamps):
                     if task.agent_summary and (task.project_name or task.project):
                         try:
                             today_str = _utcnow().strftime("%Y-%m-%d")
-                            summary_line = f"1. [Task: {task.title[:80]}] {task.agent_summary[:500]}"
+                            # Condense to a single clean line (strip newlines, limit length)
+                            clean_summary = " ".join(task.agent_summary[:500].split())
+                            summary_line = f"1. {task.title[:80]}: {clean_summary}"
                             store_insights(db, task.project_name or task.project, today_str, summary_line)
                         except Exception:
-                            pass
+                            logger.debug("Failed to store task-completion insight for task %s", task.id, exc_info=True)
                 # If agent died without producing any output → FAILED, not REVIEW
                 if not last_msg:
                     try:
@@ -3654,7 +3687,7 @@ Here are today's conversations (with timestamps):
                         f"Also read PROGRESS.md if you need more context.\n"
                     )
             except Exception:
-                pass  # fall back to generic instruction
+                logger.debug("query_insights failed for agent prompt", exc_info=True)
 
         return (
             f"You are working in project: {project.display_name}\n"

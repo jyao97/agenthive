@@ -356,6 +356,20 @@ def init_db():
             ))
             conn.commit()
 
+        # --- progress_insights compound index for existing DBs ---
+        if "progress_insights" in [r[0] for r in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )).fetchall()]:
+            existing_indexes = {r[1] for r in conn.execute(text(
+                "PRAGMA index_list(progress_insights)"
+            )).fetchall()}
+            if "ix_progress_project_date" not in existing_indexes:
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_progress_project_date "
+                    "ON progress_insights(project, date)"
+                ))
+                conn.commit()
+
         # --- progress_insights FTS5 ---
         tables = [r[0] for r in conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table'"

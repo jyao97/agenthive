@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -199,10 +199,13 @@ class PushSubscription(Base):
 
 class ProgressInsight(Base):
     __tablename__ = "progress_insights"
+    __table_args__ = (
+        Index("ix_progress_project_date", "project", "date"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
+    date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)  # YYYY-MM-DD
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 

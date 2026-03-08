@@ -7,23 +7,17 @@ import ImageLightbox from "./ImageLightbox";
 function ActionButtons({ src, filename, originalPath }) {
   const [copied, setCopied] = useState(false);
 
-  const handleDownload = async (e) => {
+  const handleDownload = (e) => {
     e.stopPropagation();
     e.preventDefault();
-    try {
-      const res = await authedFetch(src);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch {
-      window.open(src, "_blank");
-    }
+    const dlUrl = src + (src.includes("?") ? "&" : "?") + "download=1";
+    const a = document.createElement("a");
+    a.href = dlUrl;
+    a.download = filename;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const handleCopyPath = (e) => {
@@ -69,19 +63,49 @@ function ActionButtons({ src, filename, originalPath }) {
 
 // --- Image Preview (compact thumbnail, tappable fullscreen) ---
 
-function ImagePreview({ src, filename, originalPath, onOpen }) {
+function ImagePreview({ src, thumbSrc, filename, originalPath, onOpen }) {
+  // Two-stage error: thumb fails → try full-res → then show error UI
+  const [thumbFailed, setThumbFailed] = useState(false);
   const [error, setError] = useState(false);
 
-  if (error) return null;
+  const activeSrc = thumbSrc && !thumbFailed ? thumbSrc : src;
+
+  const handleError = () => {
+    if (thumbSrc && !thumbFailed) {
+      setThumbFailed(true); // fall back to full-res src
+    } else {
+      setError(true); // both failed
+    }
+  };
+
+  if (error) {
+    return (
+      <div>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-elevated max-w-[240px]">
+          <svg className="w-4 h-4 text-red-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+          <span className="text-xs text-dim truncate flex-1 min-w-0">{filename}</span>
+          <button
+            type="button"
+            onClick={() => { setThumbFailed(false); setError(false); }}
+            className="text-xs text-cyan-400 hover:underline shrink-0"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
       <div className="cursor-pointer" onClick={onOpen}>
         <img
-          src={src}
+          src={activeSrc}
           alt={filename}
           loading="lazy"
-          onError={() => setError(true)}
+          onError={handleError}
           className="max-h-[120px] max-w-full rounded-lg border border-divider object-contain"
         />
       </div>
@@ -285,6 +309,7 @@ export default function FileAttachments({ attachments }) {
   const galleryMedia = mediaAtts.map((att) => ({
     type: att.type,
     src: att.resolvedUrl,
+    thumbSrc: att.thumbUrl,
     filename: att.path.split("/").pop(),
   }));
 
@@ -302,6 +327,7 @@ export default function FileAttachments({ attachments }) {
             <ImagePreview
               key={att.path}
               src={att.resolvedUrl}
+              thumbSrc={att.thumbUrl}
               filename={filename}
               originalPath={att.originalPath}
               onOpen={() => openLightbox(idx)}

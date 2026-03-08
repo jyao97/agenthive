@@ -32,6 +32,15 @@ export default defineConfig({
               expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
             },
           },
+          // Image thumbnails — cached aggressively (small JPEG, rarely change)
+          {
+            urlPattern: /\/api\/thumbs\//,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'thumbnail-cache',
+              expiration: { maxEntries: 500, maxAgeSeconds: 7 * 24 * 60 * 60 },
+            },
+          },
           // Files/uploads must bypass SW cache — Safari requires intact
           // HTTP Range responses for <video> playback and Workbox caching
           // strategies strip/corrupt the 206 + Content-Range semantics.
