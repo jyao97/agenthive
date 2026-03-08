@@ -56,6 +56,18 @@ def _truncate(text: str, max_len: int) -> str:
     return text[:max_len] + "\n... [truncated]"
 
 
+def _query_verify_agents(db: Session, task_id, *, alive_only=True):
+    """Query verify sub-agents for a task."""
+    q = db.query(Agent).filter(
+        Agent.task_id == task_id,
+        Agent.is_subagent == True,
+        Agent.name.like("Verify:%"),
+    )
+    if alive_only:
+        q = q.filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
+    return q.all()
+
+
 def _short_path(path: str) -> str:
     """Shorten a file path for display (last 2 components)."""
     parts = path.rstrip("/").split("/")
@@ -2825,12 +2837,7 @@ Here are the day's conversations (with timestamps):
                         add_message=False, emit=False, cancel_tasks=False,
                     )
             # Stop verify sub-agents
-            for va in (
-                db.query(Agent)
-                .filter(Agent.task_id == task.id, Agent.is_subagent == True, Agent.name.like("Verify:%"))
-                .filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
-                .all()
-            ):
+            for va in _query_verify_agents(db, task.id):
                 self.stop_agent_cleanup(
                     db, va, "",
                     add_message=False, emit=False, cancel_tasks=False,
