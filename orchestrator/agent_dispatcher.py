@@ -9,6 +9,7 @@ import time as _time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from config import CC_MODEL, CLAUDE_HOME, MAX_CONCURRENT_WORKERS
@@ -4841,89 +4842,105 @@ Here are the day's conversations (with timestamps):
         db = SessionLocal()
         try:
             for sub in subs:
-                cid = sub["claude_agent_id"]
-                if cid in known:
-                    # Already tracked — check if JSONL grew
-                    info = known[cid]
-                    if sub["size"] > info["last_size"]:
-                        info["last_size"] = sub["size"]
-                        info["idle_polls"] = 0
-                        # Update messages from JSONL
-                        sub_agent_id = info["agent_id"]
-                        turns = _parse_session_turns(sub["jsonl_path"])
-                        existing_count = db.query(Message).filter(
-                            Message.agent_id == sub_agent_id,
-                        ).count()
-                        if len(turns) > existing_count:
-                            # Import new turns
-                            self._import_turns_as_messages(db, sub_agent_id, turns[existing_count:])
-                            sub_ag = db.get(Agent, sub_agent_id)
-                            if sub_ag:
-                                last_turn = turns[-1] if turns else None
-                                if last_turn:
-                                    sub_ag.last_message_preview = (last_turn[1] or "")[:200]
-                                    sub_ag.last_message_at = _utcnow()
-                                db.commit()
-                                self._emit(emit_new_message(
-                                    sub_agent_id, "sync",
-                                    sub_ag.name, project_name,
-                                ))
+                try:
+                    cid = sub["claude_agent_id"]
+                    if cid in known:
+                        # Already tracked — check if JSONL grew
+                        info = known[cid]
+                        if sub["size"] > info["last_size"]:
+                            info["last_size"] = sub["size"]
+                            info["idle_polls"] = 0
+                            # Update messages from JSONL
+                            sub_agent_id = info["agent_id"]
+                            turns = _parse_session_turns(sub["jsonl_path"])
+                            existing_count = db.query(Message).filter(
+                                Message.agent_id == sub_agent_id,
+                            ).count()
+                            if len(turns) > existing_count:
+                                # Import new turns
+                                self._import_turns_as_messages(db, sub_agent_id, turns[existing_count:])
+                                sub_ag = db.get(Agent, sub_agent_id)
+                                if sub_ag:
+                                    last_turn = turns[-1] if turns else None
+                                    if last_turn:
+                                        sub_ag.last_message_preview = (last_turn[1] or "")[:200]
+                                        sub_ag.last_message_at = _utcnow()
+                                    db.commit()
+                                    self._emit(emit_new_message(
+                                        sub_agent_id, "sync",
+                                        sub_ag.name, project_name,
+                                    ))
+                        else:
+                            info["idle_polls"] = info.get("idle_polls", 0) + 1
+                            # If idle for 3+ polls, mark STOPPED
+                            if info["idle_polls"] >= 3:
+                                sub_ag = db.get(Agent, info["agent_id"])
+                                if sub_ag and sub_ag.status == AgentStatus.SYNCING:
+                                    self.stop_agent_cleanup(
+                                        db, sub_ag, "",
+                                        kill_tmux=False, add_message=False,
+                                        cancel_tasks=False,
+                                    )
+                                    db.commit()
                     else:
-                        info["idle_polls"] = info.get("idle_polls", 0) + 1
-                        # If idle for 3+ polls, mark STOPPED
-                        if info["idle_polls"] >= 3:
-                            sub_ag = db.get(Agent, info["agent_id"])
-                            if sub_ag and sub_ag.status == AgentStatus.SYNCING:
-                                self.stop_agent_cleanup(
-                                    db, sub_ag, "",
-                                    kill_tmux=False, add_message=False,
-                                    cancel_tasks=False,
-                                )
-                                db.commit()
-                else:
-                    # New subagent — create Agent record and import turns
-                    name = sub["slug"] or f"subagent-{cid[:8]}"
-                    sub_agent = Agent(
-                        project=project_name,
-                        name=name,
-                        mode=AgentMode.AUTO,
-                        status=AgentStatus.SYNCING,
-                        cli_sync=True,
-                        parent_id=agent_id,
-                        is_subagent=True,
-                        claude_agent_id=cid,
-                        model=sub["model"] or None,
+                        # New subagent — create Agent record and import turns
+                        name = sub["slug"] or f"subagent-{cid[:8]}"
+                        sub_agent = Agent(
+                            project=project_name,
+                            name=name,
+                            mode=AgentMode.AUTO,
+                            status=AgentStatus.SYNCING,
+                            cli_sync=True,
+                            parent_id=agent_id,
+                            is_subagent=True,
+                            claude_agent_id=cid,
+                            model=sub["model"] or None,
+                        )
+                        db.add(sub_agent)
+                        db.flush()  # get the generated id
+
+                        # Import turns from JSONL
+                        turns = _parse_session_turns(sub["jsonl_path"])
+                        self._import_turns_as_messages(db, sub_agent.id, turns)
+
+                        if turns:
+                            last_turn = turns[-1]
+                            sub_agent.last_message_preview = (last_turn[1] or "")[:200]
+                            sub_agent.last_message_at = _utcnow()
+
+                        db.commit()
+                        known[cid] = {
+                            "agent_id": sub_agent.id,
+                            "last_size": sub["size"],
+                            "idle_polls": 0,
+                        }
+                        logger.info(
+                            "Created subagent %s (%s) for parent %s — %d turns",
+                            sub_agent.id, name, agent_id, len(turns),
+                        )
+                        self._emit(emit_agent_update(
+                            sub_agent.id, "SYNCING", project_name,
+                        ))
+                except (OSError, json.JSONDecodeError) as exc:
+                    logger.warning(
+                        "Failed to parse subagent JSONL %s for agent %s: %s",
+                        sub.get("jsonl_path", "?"), agent_id, exc,
                     )
-                    db.add(sub_agent)
-                    db.flush()  # get the generated id
-
-                    # Import turns from JSONL
-                    turns = _parse_session_turns(sub["jsonl_path"])
-                    self._import_turns_as_messages(db, sub_agent.id, turns)
-
-                    if turns:
-                        last_turn = turns[-1]
-                        sub_agent.last_message_preview = (last_turn[1] or "")[:200]
-                        sub_agent.last_message_at = _utcnow()
-
-                    db.commit()
-                    known[cid] = {
-                        "agent_id": sub_agent.id,
-                        "last_size": sub["size"],
-                        "idle_polls": 0,
-                    }
-                    logger.info(
-                        "Created subagent %s (%s) for parent %s — %d turns",
-                        sub_agent.id, name, agent_id, len(turns),
+                    continue
+                except (IntegrityError, OperationalError) as exc:
+                    db.rollback()
+                    logger.warning(
+                        "DB error processing subagent %s for agent %s: %s",
+                        sub.get("claude_agent_id", "?"), agent_id, exc,
                     )
-                    self._emit(emit_agent_update(
-                        sub_agent.id, "SYNCING", project_name,
-                    ))
-        except Exception:
-            logger.warning(
-                "Error processing subagents for agent %s",
-                agent_id, exc_info=True,
-            )
+                    continue
+                except Exception:
+                    db.rollback()
+                    logger.warning(
+                        "Unexpected error processing subagent %s for agent %s",
+                        sub.get("claude_agent_id", "?"), agent_id, exc_info=True,
+                    )
+                    continue
         finally:
             db.close()
 
@@ -5416,16 +5433,24 @@ Here are the day's conversations (with timestamps):
                 db_sub = SessionLocal()
                 try:
                     for cid, info in known_subs.items():
-                        sub_ag = db_sub.get(Agent, info["agent_id"])
-                        if sub_ag and sub_ag.status == AgentStatus.SYNCING:
-                            self.stop_agent_cleanup(
-                                db_sub, sub_ag, "",
-                                kill_tmux=False, emit=True,
-                                add_message=False, cancel_tasks=False,
+                        try:
+                            sub_ag = db_sub.get(Agent, info["agent_id"])
+                            if sub_ag and sub_ag.status == AgentStatus.SYNCING:
+                                self.stop_agent_cleanup(
+                                    db_sub, sub_ag, "",
+                                    kill_tmux=False, emit=True,
+                                    add_message=False, cancel_tasks=False,
+                                )
+                        except Exception:
+                            logger.warning(
+                                "Failed to clean up subagent %s for agent %s",
+                                info.get("agent_id", "?"), agent_id, exc_info=True,
                             )
-                    db_sub.commit()
-                except Exception:
-                    logger.warning("Error stopping subagents for %s", agent_id, exc_info=True)
+                    try:
+                        db_sub.commit()
+                    except Exception:
+                        db_sub.rollback()
+                        logger.warning("Failed to commit subagent cleanup for agent %s", agent_id, exc_info=True)
                 finally:
                     db_sub.close()
 
