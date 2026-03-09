@@ -240,18 +240,27 @@ export function renderInline(text) {
         </code>
       );
     } else {
-      // Tokenize bold (**...**) and italic (*...*) into safe React elements
+      // Tokenize bold, italic, and links into safe React elements
       const tokens = tokenizeBoldItalic(part);
       for (let j = 0; j < tokens.length; j++) {
         const token = tokens[j];
         const key = `${i}-${j}`;
-        const linked = linkifyAgentIds(token.text, key);
-        if (token.type === "bold") {
-          elements.push(<strong key={key}>{linked || token.text}</strong>);
-        } else if (token.type === "italic") {
-          elements.push(<em key={key}>{linked || token.text}</em>);
+        if (token.type === "link") {
+          elements.push(
+            <a key={key} href={token.href} target="_blank" rel="noopener noreferrer"
+              className="text-cyan-400 hover:underline" onClick={(e) => e.stopPropagation()}>
+              {token.text}
+            </a>
+          );
         } else {
-          elements.push(<span key={key}>{linked || token.text}</span>);
+          const linked = linkifyAgentIds(token.text, key);
+          if (token.type === "bold") {
+            elements.push(<strong key={key}>{linked || token.text}</strong>);
+          } else if (token.type === "italic") {
+            elements.push(<em key={key}>{linked || token.text}</em>);
+          } else {
+            elements.push(<span key={key}>{linked || token.text}</span>);
+          }
         }
       }
     }
@@ -265,13 +274,14 @@ export function renderInline(text) {
 }
 
 /**
- * Split text into tokens of plain text, bold (**...**), and italic (*...*).
- * Returns an array of { type: "text"|"bold"|"italic", text: string }.
+ * Split text into tokens of plain text, bold (**...**), italic (*...*),
+ * and markdown links ([text](url)).
+ * Returns an array of { type: "text"|"bold"|"italic"|"link", text: string, href?: string }.
  */
 function tokenizeBoldItalic(text) {
   const tokens = [];
-  // Match **bold** first, then *italic*
-  const re = /(\*\*(.+?)\*\*|\*(.+?)\*)/g;
+  // Match **bold**, *italic*, and [text](url) — but not ![img](url)
+  const re = /(\*\*(.+?)\*\*|\*(.+?)\*|(?<!!)\[([^\]]+)\]\((https?:\/\/[^)]+)\))/g;
   let lastIndex = 0;
   let match;
 
@@ -281,8 +291,10 @@ function tokenizeBoldItalic(text) {
     }
     if (match[2] !== undefined) {
       tokens.push({ type: "bold", text: match[2] });
-    } else {
+    } else if (match[3] !== undefined) {
       tokens.push({ type: "italic", text: match[3] });
+    } else {
+      tokens.push({ type: "link", text: match[4], href: match[5] });
     }
     lastIndex = re.lastIndex;
   }
