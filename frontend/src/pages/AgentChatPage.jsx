@@ -63,6 +63,7 @@ import useHealthStatus from "../hooks/useHealthStatus";
 import usePageVisible from "../hooks/usePageVisible";
 import { useToast } from "../contexts/ToastContext";
 
+const ACTIVE_AGENT_STATUSES = new Set(["EXECUTING", "SYNCING"]);
 // --- Chat Bubble ---
 
 function SystemBubble({ message }) {
