@@ -1493,7 +1493,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             type="button"
             onClick={() => handleToggleAutoProgress(!project.auto_progress_summary)}
             className={`shrink-0 w-9 h-5 rounded-full transition-colors relative ${
-              project.auto_progress_summary ? "bg-cyan-500" : "bg-zinc-600"
+              project.auto_progress_summary ? "bg-cyan-500" : "bg-elevated"
             }`}
           >
             <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
@@ -1510,7 +1510,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             type="button"
             onClick={() => handleToggleAiInsights(!project.ai_insights)}
             className={`shrink-0 w-9 h-5 rounded-full transition-colors relative ${
-              project.ai_insights ? "bg-cyan-500" : "bg-zinc-600"
+              project.ai_insights ? "bg-cyan-500" : "bg-elevated"
             }`}
           >
             <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
