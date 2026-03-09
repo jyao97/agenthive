@@ -131,8 +131,6 @@ export const updateProjectSettings = (project, settings) =>
   request(`/api/projects/${e(project)}/settings`, { method: "PATCH", body: JSON.stringify(settings) });
 
 // --- Tasks (agent-sourced: each USER message = one task) ---
-export const fetchTasks = (params = "") =>
-  request(`/api/tasks${params ? `?${params}` : ""}`);
 export const fetchTask = (id) => request(`/api/tasks/${id}`);
 
 // --- Tasks v2 (first-class Task entity) ---

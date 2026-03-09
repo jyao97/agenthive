@@ -42,7 +42,7 @@ from models import (
     Task,
     TaskStatus,
 )
-from agent_dispatcher import ALIVE_STATUSES, TERMINAL_STATUSES
+from agent_dispatcher import ALIVE_STATUSES, TERMINAL_STATUSES, _query_verify_agents
 from utils import utcnow as _utcnow
 from schemas import (
     AgentBrief,
@@ -2607,6 +2607,9 @@ async def browse_project_file(name: str, path: str, db: Session = Depends(get_db
 
 # ---- Tasks (agent-sourced: each USER message = one task) ----
 
+# DEPRECATED: v1 task listing (treats each USER message as a task).
+# Only the GET-by-id variant (/api/tasks/{task_id}) is still used by TaskDetail.jsx.
+# Prefer /api/v2/tasks for all new code. Will be removed after TaskDetail.jsx migration.
 @app.get("/api/tasks", response_model=list[AgentTaskBrief])
 async def list_tasks(
     project: str | None = None,
@@ -2697,18 +2700,6 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
 from task_state_machine import can_transition, validate_transition, InvalidTransitionError
 from task_state import TaskStateMachine
 from websocket import emit_task_update, emit_agent_update
-
-
-def _query_verify_agents(db: Session, task_id, *, alive_only=True):
-    """Query verify sub-agents for a task."""
-    q = db.query(Agent).filter(
-        Agent.task_id == task_id,
-        Agent.is_subagent == True,
-        Agent.name.like("Verify:%"),
-    )
-    if alive_only:
-        q = q.filter(Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]))
-    return q.all()
 
 
 def _stop_task_agents(db: Session, task, ad, reason, *, emit=True, add_message=False):
