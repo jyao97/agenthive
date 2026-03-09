@@ -26,6 +26,9 @@ from agent_dispatcher import (
     _dedup_sig,
     _parse_agenthive_marker,
     _AGENTHIVE_PROMPT_MARKER,
+    _is_wrapped_prompt,
+    _write_session_owner,
+    _read_session_owner,
     AgentDispatcher,
 )
 
@@ -163,12 +166,12 @@ class TestMarkerDedup:
             ("assistant", "Response", None, "uuid-m3"),
         ]
 
-        # Apply same filter as reconciliation (~line 5415-5421)
+        # Apply same filter as reconciliation — uses _is_wrapped_prompt
         conv_turns = [
             t
             for t in raw_turns
             if t[0] in ("user", "assistant")
-            and not (t[0] == "user" and _AGENTHIVE_PROMPT_MARKER in t[1][:80])
+            and not (t[0] == "user" and _is_wrapped_prompt(t[1]))
         ]
 
         assert len(conv_turns) == 2
@@ -176,8 +179,8 @@ class TestMarkerDedup:
         assert conv_turns[1][1] == "Response"
 
     def test_marker_msg_id_backfill(self, db_session, sample_agent):
-        """When a marker has msg_id=X and the JSONL entry has jsonl_uuid=Y,
-        the DB message with id=X should get jsonl_uuid=Y backfilled."""
+        """When a wrapped prompt is seen in JSONL with a uuid, the most recent
+        unlinked web message for this agent gets jsonl_uuid backfilled."""
         # Create a web-originated message (no jsonl_uuid yet)
         web_msg = Message(
             id="webmsg123456",
@@ -191,16 +194,21 @@ class TestMarkerDedup:
         db_session.add(web_msg)
         db_session.commit()
 
-        # Simulate incremental sync encountering the marker turn
-        marker_content = "<!-- agenthive-prompt agent_id=abc msg_id=webmsg123456 -->\nOriginal user prompt"
+        # Simulate incremental sync encountering the wrapped prompt turn.
+        # New prompts use preamble prefix; old ones used marker tag.
+        wrapped_content = "You are working in project: test\nProject path: /tmp\n\nOriginal user prompt"
         jsonl_uuid = "jsonl-uuid-999"
 
-        # This is the logic from ~line 5979-5987
-        if _AGENTHIVE_PROMPT_MARKER in marker_content[:80]:
-            marker_attrs = _parse_agenthive_marker(marker_content)
-            if marker_attrs and marker_attrs.get("msg_id") and jsonl_uuid:
-                _web_msg = db_session.get(Message, marker_attrs["msg_id"])
-                if _web_msg and not _web_msg.jsonl_uuid:
+        # This is the new backfill logic from incremental sync
+        if _is_wrapped_prompt(wrapped_content):
+            if jsonl_uuid:
+                _web_msg = db_session.query(Message).filter(
+                    Message.agent_id == sample_agent.id,
+                    Message.role == MessageRole.USER,
+                    Message.source == "web",
+                    Message.jsonl_uuid.is_(None),
+                ).order_by(Message.created_at.desc()).first()
+                if _web_msg:
                     _web_msg.jsonl_uuid = jsonl_uuid
 
         db_session.commit()
@@ -614,3 +622,42 @@ class TestReconciliationFlow:
         assert len(missing) == 2
         assert missing[0] == ("user", "Brand new question", None, "uuid-new-1")
         assert missing[1] == ("assistant", "Brand new answer", None, "uuid-new-2")
+
+
+# ---------------------------------------------------------------------------
+# 6. Session ownership sidecar files
+# ---------------------------------------------------------------------------
+
+
+class TestSessionOwnerSidecar:
+    """Test _write_session_owner / _read_session_owner sidecar files."""
+
+    def test_write_and_read_owner(self, tmp_path):
+        sid = "test-session-123"
+        agent_id = "agent-abc"
+        _write_session_owner(str(tmp_path), sid, agent_id)
+        assert _read_session_owner(str(tmp_path), sid) == agent_id
+
+    def test_read_missing_returns_none(self, tmp_path):
+        assert _read_session_owner(str(tmp_path), "nonexistent") is None
+
+    def test_overwrite_owner(self, tmp_path):
+        sid = "test-session-456"
+        _write_session_owner(str(tmp_path), sid, "agent-old")
+        _write_session_owner(str(tmp_path), sid, "agent-new")
+        assert _read_session_owner(str(tmp_path), sid) == "agent-new"
+
+    def test_is_wrapped_prompt_new_format(self):
+        """New prompts start with 'You are working in project:'."""
+        content = "You are working in project: test\nProject path: /tmp\n\nHello"
+        assert _is_wrapped_prompt(content) is True
+
+    def test_is_wrapped_prompt_old_format(self):
+        """Old prompts start with '<!-- agenthive-prompt'."""
+        content = "<!-- agenthive-prompt agent_id=abc -->\nYou are working in project: test"
+        assert _is_wrapped_prompt(content) is True
+
+    def test_is_wrapped_prompt_normal_content(self):
+        """Normal user content should not be detected as wrapped."""
+        content = "Please fix the bug in main.py"
+        assert _is_wrapped_prompt(content) is False
