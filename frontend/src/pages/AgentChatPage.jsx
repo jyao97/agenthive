@@ -166,24 +166,24 @@ function InsightsBubble({ insights }) {
 
   return (
     <div className="flex justify-center my-2">
-      <div className="inline-block max-w-[90%]">
+      <div className="inline-block max-w-[90%] border-l-[3px] border-amber-600/40 rounded-r-lg bg-surface">
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className={`w-full px-3 py-1.5 bg-amber-500/10 border border-amber-400/25 text-left cursor-pointer hover:bg-amber-500/15 transition-colors ${expanded ? "rounded-t-lg" : "rounded-lg"}`}
+          className="w-full px-3 py-1.5 text-left cursor-pointer hover:bg-elevated/50 transition-colors rounded-r-lg"
         >
           <div className="flex items-center gap-1.5">
-            <svg className="w-3 h-3 shrink-0 text-amber-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <svg className="w-3 h-3 shrink-0 text-amber-700 dark:text-amber-500/70" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
             </svg>
-            <span className="text-xs text-amber-300 font-medium">Past Insights ({insights.length})</span>
-            <svg className={`w-3 h-3 shrink-0 text-amber-400/60 transition-transform ml-auto ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <span className="text-xs font-medium text-amber-800 dark:text-amber-500/80">Past Insights ({insights.length})</span>
+            <svg className={`w-3 h-3 shrink-0 text-dim transition-transform ml-auto ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path strokeLinecap="round" d="m19 9-7 7-7-7" />
             </svg>
           </div>
         </button>
         {expanded && (
-          <div className="border border-amber-400/25 border-t-0 rounded-b-lg bg-elevated px-3 py-2 max-h-[300px] overflow-y-auto">
+          <div className="px-3 py-2 border-t border-elevated max-h-[300px] overflow-y-auto">
             <ul className="space-y-1.5">
               {insights.map((insight, i) => {
                 const dateMatch = insight.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*/);
