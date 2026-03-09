@@ -661,3 +661,134 @@ class TestSessionOwnerSidecar:
         """Normal user content should not be detected as wrapped."""
         content = "Please fix the bug in main.py"
         assert _is_wrapped_prompt(content) is False
+
+
+class TestWebTmuxContentDedup:
+    """Tests for the web→tmux round-trip content dedup in incremental sync.
+
+    When a web message is sent via tmux to a SYNCING agent, the JSONL
+    records it as a user entry.  The sync loop must detect that this
+    turn corresponds to the existing web Message and skip import.
+    """
+
+    def test_unlinked_web_message_skips_import(self, db_session, sample_agent):
+        """User turn matching an unlinked web message should be skipped
+        and the web message should get jsonl_uuid backfilled."""
+        from sqlalchemy import or_
+
+        # Simulate web-originated message (no jsonl_uuid yet)
+        web_msg = Message(
+            id="web_dedup_01",
+            agent_id=sample_agent.id,
+            role=MessageRole.USER,
+            content="What is 2+2?",
+            status=MessageStatus.COMPLETED,
+            source="web",
+            jsonl_uuid=None,
+        )
+        db_session.add(web_msg)
+        db_session.commit()
+
+        # Simulate incremental sync encountering the same content
+        # as a user turn with a new JSONL UUID (web→tmux round-trip)
+        content = "What is 2+2?"
+        jsonl_uuid = "uuid-from-jsonl-001"
+
+        # This replicates the secondary content dedup logic
+        _norm = _dedup_sig(content)
+        _unlinked = db_session.query(Message).filter(
+            Message.agent_id == sample_agent.id,
+            Message.role == MessageRole.USER,
+            or_(
+                Message.source == "web",
+                Message.source == "plan_continue",
+            ),
+            Message.jsonl_uuid.is_(None),
+        ).all()
+        _match = next(
+            (m for m in _unlinked if _dedup_sig(m.content) == _norm),
+            None,
+        )
+
+        assert _match is not None, "Should find unlinked web message"
+        assert _match.id == "web_dedup_01"
+
+        # Backfill UUID
+        if jsonl_uuid:
+            _match.jsonl_uuid = jsonl_uuid
+        db_session.commit()
+        db_session.refresh(web_msg)
+
+        assert web_msg.jsonl_uuid == "uuid-from-jsonl-001"
+
+    def test_linked_web_message_not_matched(self, db_session, sample_agent):
+        """Already-linked web messages should not match (prevents false
+        suppression when a user sends the same content twice)."""
+        from sqlalchemy import or_
+
+        # Web message already linked to a JSONL UUID
+        web_msg = Message(
+            id="web_dedup_02",
+            agent_id=sample_agent.id,
+            role=MessageRole.USER,
+            content="Hello again",
+            status=MessageStatus.COMPLETED,
+            source="web",
+            jsonl_uuid="uuid-already-linked",
+        )
+        db_session.add(web_msg)
+        db_session.commit()
+
+        # Second send of same content → new JSONL UUID
+        content = "Hello again"
+        _norm = _dedup_sig(content)
+        _unlinked = db_session.query(Message).filter(
+            Message.agent_id == sample_agent.id,
+            Message.role == MessageRole.USER,
+            or_(
+                Message.source == "web",
+                Message.source == "plan_continue",
+            ),
+            Message.jsonl_uuid.is_(None),
+        ).all()
+        _match = next(
+            (m for m in _unlinked if _dedup_sig(m.content) == _norm),
+            None,
+        )
+
+        assert _match is None, "Linked message should not match"
+
+    def test_plan_continue_source_matched(self, db_session, sample_agent):
+        """plan_continue messages should also be matched for dedup."""
+        from sqlalchemy import or_
+
+        plan_msg = Message(
+            id="plan_dedup_01",
+            agent_id=sample_agent.id,
+            role=MessageRole.USER,
+            content="Continue with the plan",
+            status=MessageStatus.COMPLETED,
+            source="plan_continue",
+            jsonl_uuid=None,
+        )
+        db_session.add(plan_msg)
+        db_session.commit()
+
+        content = "Continue with the plan"
+        _norm = _dedup_sig(content)
+        _unlinked = db_session.query(Message).filter(
+            Message.agent_id == sample_agent.id,
+            Message.role == MessageRole.USER,
+            or_(
+                Message.source == "web",
+                Message.source == "plan_continue",
+            ),
+            Message.jsonl_uuid.is_(None),
+        ).all()
+        _match = next(
+            (m for m in _unlinked if _dedup_sig(m.content) == _norm),
+            None,
+        )
+
+        assert _match is not None
+        assert _match.id == "plan_dedup_01"

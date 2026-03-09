@@ -1285,11 +1285,11 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, s
                     if uuid in seen_uuids:
                         continue
                     seen_uuids.add(uuid)
-                # Secondary: content fallback for turns without UUID
-                else:
-                    if content in seen_content:
-                        continue
-                    seen_content.add(content)
+                # Content-based dedup catches queue-op + user-entry
+                # pairs for the same message (queue-ops lack UUIDs)
+                if content in seen_content:
+                    continue
+                seen_content.add(content)
             deduped.append((role, content, meta, uuid))
         turns = deduped
 
@@ -6091,13 +6091,17 @@ Here are the day's conversations (with timestamps):
                             # Detects both new preamble prefix and legacy markers.
                             if _is_wrapped_prompt(content):
                                 # Backfill jsonl_uuid onto the most recent
-                                # unlinked web message for this agent, so
-                                # future syncs use UUID dedup.
+                                # unlinked web/plan_continue message for this
+                                # agent, so future syncs use UUID dedup.
                                 if jsonl_uuid:
+                                    from sqlalchemy import or_ as _or
                                     _web_msg = db.query(Message).filter(
                                         Message.agent_id == agent_id,
                                         Message.role == MessageRole.USER,
-                                        Message.source == "web",
+                                        _or(
+                                            Message.source == "web",
+                                            Message.source == "plan_continue",
+                                        ),
                                         Message.jsonl_uuid.is_(None),
                                     ).order_by(Message.created_at.desc()).first()
                                     if _web_msg:
@@ -6112,21 +6116,48 @@ Here are the day's conversations (with timestamps):
                                 ).first()
                                 if existing_uuid:
                                     continue
-                            # Secondary: content-based fallback for messages
-                            # without JSONL uuid (queue-operations, legacy)
+                            # Secondary: content dedup against unlinked
+                            # web/plan_continue messages — catches web→tmux
+                            # round-trips where the marker was stripped or
+                            # absent (the common case for follow-up messages
+                            # sent to SYNCING agents).
+                            from sqlalchemy import or_
+                            _norm = _dedup_sig(content)
+                            _unlinked = db.query(Message).filter(
+                                Message.agent_id == agent_id,
+                                Message.role == MessageRole.USER,
+                                or_(
+                                    Message.source == "web",
+                                    Message.source == "plan_continue",
+                                ),
+                                Message.jsonl_uuid.is_(None),
+                            ).all()
+                            _match = next(
+                                (m for m in _unlinked
+                                 if _dedup_sig(m.content) == _norm),
+                                None,
+                            )
+                            if _match:
+                                if jsonl_uuid:
+                                    _match.jsonl_uuid = jsonl_uuid
+                                logger.debug(
+                                    "Skipping duplicate user turn for agent %s "
+                                    "(matches unlinked web/plan_continue msg %s)",
+                                    agent_id, _match.id,
+                                )
+                                continue
+                            # Tertiary: broader content fallback for turns
+                            # without UUID (queue-operations, legacy imports)
                             if not jsonl_uuid:
-                                from sqlalchemy import or_
-                                _norm = _dedup_sig(content)
                                 _candidates = db.query(Message).filter(
                                     Message.agent_id == agent_id,
                                     Message.role == MessageRole.USER,
                                     or_(Message.source != "cli", Message.source.is_(None)),
                                 ).all()
-                                existing_web = any(
+                                if any(
                                     _dedup_sig(m.content) == _norm
                                     for m in _candidates
-                                )
-                                if existing_web:
+                                ):
                                     logger.debug(
                                         "Skipping duplicate user turn for agent %s "
                                         "(already sent via web)", agent_id,

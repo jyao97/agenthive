@@ -251,10 +251,22 @@ class TestParseSessionTurns:
         ])
         turns = _parse_session_turns(str(jsonl))
         user_turns = [t for t in turns if t[0] == "user"]
-        # same-uuid appears twice → deduplicated to 1; different-uuid kept → total 2
-        assert len(user_turns) == 2
+        # same-uuid deduped; different-uuid also deduped because content
+        # "Hello" was already seen — this cross-check catches queue-op +
+        # user-entry pairs where both have same content but different UUIDs.
+        assert len(user_turns) == 1
         assert user_turns[0][3] == "same-uuid"
-        assert user_turns[1][3] == "different-uuid"
+
+    def test_parse_turns_dedup_uuid_different_content(self, tmp_path):
+        """Different UUIDs with different content are both kept."""
+        jsonl = tmp_path / "session.jsonl"
+        _write_jsonl(jsonl, [
+            {"type": "user", "uuid": "uuid-1", "message": {"role": "user", "content": "Hello"}, "sessionId": "s1"},
+            {"type": "user", "uuid": "uuid-2", "message": {"role": "user", "content": "World"}, "sessionId": "s1"},
+        ])
+        turns = _parse_session_turns(str(jsonl))
+        user_turns = [t for t in turns if t[0] == "user"]
+        assert len(user_turns) == 2
 
     def test_parse_turns_dedup_by_content_no_uuid(self, tmp_path):
         jsonl = tmp_path / "session.jsonl"
@@ -268,6 +280,21 @@ class TestParseSessionTurns:
         # queue-operation turns have no uuid; content-based dedup should remove the duplicate
         assert len(user_turns) == 1
         assert user_turns[0][1] == "Duplicate msg"
+
+    def test_parse_turns_dedup_queue_op_then_user_entry(self, tmp_path):
+        """Queue-op + subsequent user entry with same content are deduped."""
+        jsonl = tmp_path / "session.jsonl"
+        _write_jsonl(jsonl, [
+            {"type": "queue-operation", "operation": "enqueue", "content": "My question", "sessionId": "s1"},
+            {"type": "assistant", "uuid": "a1", "message": {"content": [{"type": "text", "text": "Working..."}]}, "sessionId": "s1"},
+            {"type": "user", "uuid": "uuid-for-question", "message": {"role": "user", "content": "My question"}, "sessionId": "s1"},
+        ])
+        turns = _parse_session_turns(str(jsonl))
+        user_turns = [t for t in turns if t[0] == "user"]
+        # Queue-op (no uuid) comes first, user entry (with uuid) is deduped
+        # because content "My question" already seen
+        assert len(user_turns) == 1
+        assert user_turns[0][1] == "My question"
 
 
 # ===========================================================================
