@@ -2424,25 +2424,29 @@ class AgentDispatcher:
         from main import _progress_job_get, _progress_job_set
 
         for proj in projects:
-            # Skip if already running or completed today
-            existing = _progress_job_get(proj.name)
-            if existing:
-                continue
+            try:
+                # Skip if already running or completed today
+                existing = _progress_job_get(proj.name)
+                if existing:
+                    logger.info("Auto-summary skipped for %s: job already %s", proj.name, existing.get("status", "cached"))
+                    continue
 
-            session_context = _gather_daily_session_context(db, proj.name, target_date=target_date)
-            if not session_context:
-                logger.info("Auto-summary skipped for %s: no agent sessions on %s", proj.name, target_date or "today")
-                continue
+                session_context = _gather_daily_session_context(db, proj.name, target_date=target_date)
+                if not session_context:
+                    logger.info("Auto-summary skipped for %s: no agent sessions on %s", proj.name, target_date or "today")
+                    continue
 
-            # Auto-apply: run summary and append result (no review step)
-            _progress_job_set(proj.name, status="running")
-            thread = threading.Thread(
-                target=self._auto_apply_progress_summary,
-                args=(proj.name, proj.path, session_context, target_date),
-                daemon=True,
-            )
-            thread.start()
-            logger.info("Auto-triggered daily PROGRESS.md summary for project %s", proj.name)
+                # Auto-apply: run summary and append result (no review step)
+                _progress_job_set(proj.name, status="running")
+                thread = threading.Thread(
+                    target=self._auto_apply_progress_summary,
+                    args=(proj.name, proj.path, session_context, target_date),
+                    daemon=True,
+                )
+                thread.start()
+                logger.info("Auto-triggered daily PROGRESS.md summary for project %s", proj.name)
+            except Exception:
+                logger.warning("Auto-summary failed for %s, continuing to next project", proj.name, exc_info=True)
 
     @staticmethod
     def _auto_apply_progress_summary(project_name: str, project_path: str,
