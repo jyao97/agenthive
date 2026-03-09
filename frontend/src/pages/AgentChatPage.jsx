@@ -165,46 +165,35 @@ function InsightsBubble({ insights }) {
   if (!insights || insights.length === 0) return null;
 
   return (
-    <div className="flex justify-center my-2">
-      <div
-        className="inline-block max-w-[90%] border-l-[3px] rounded-r"
-        style={{ borderColor: "#D4A853", backgroundColor: "#FEFDFB", boxShadow: "0 0 0 1px #E5E2DC" }}
+    <div className="rounded-lg bg-elevated overflow-hidden max-w-[280px] mt-1.5 ml-auto">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-hover transition-colors text-left"
       >
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="w-full px-3 py-1.5 text-left cursor-pointer rounded-r"
-          style={{ backgroundColor: "transparent" }}
-        >
-          <div className="flex items-center gap-1.5">
-            <svg className="w-3 h-3 shrink-0" style={{ color: "#8B7355" }} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.241-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 010-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            <span className="text-[11px] font-medium" style={{ color: "#8B7355" }}>Past Insights ({insights.length})</span>
-            <svg className={`w-3 h-3 shrink-0 transition-transform ml-auto ${expanded ? "rotate-180" : ""}`} style={{ color: "#8B7355" }} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" d="m19 9-7 7-7-7" />
-            </svg>
-          </div>
-        </button>
-        {expanded && (
-          <div className="px-3 py-2 max-h-[300px] overflow-y-auto" style={{ borderTop: "1px solid #E5E2DC" }}>
-            <ul className="space-y-1.5">
-              {insights.map((insight, i) => {
-                const dateMatch = insight.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*/);
-                const date = dateMatch ? dateMatch[1] : null;
-                const text = dateMatch ? insight.slice(dateMatch[0].length) : insight;
-                return (
-                  <li key={i} className="text-xs leading-relaxed flex gap-1.5" style={{ color: "#374151" }}>
-                    {date && <span className="shrink-0 text-[10px] font-mono" style={{ color: "#9CA3AF" }}>{date}</span>}
-                    <span>{text}</span>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
-      </div>
+        <svg className="w-4 h-4 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+        </svg>
+        <span className="text-xs text-label flex-1 min-w-0">Past Insights ({insights.length})</span>
+        <svg className={`w-3 h-3 text-dim shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" d="m19 9-7 7-7-7" />
+        </svg>
+      </button>
+      {expanded && (
+        <div className="border-t border-divider max-h-60 overflow-y-auto">
+          {insights.map((insight, i) => {
+            const dateMatch = insight.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*/);
+            const date = dateMatch ? dateMatch[1] : null;
+            const text = dateMatch ? insight.slice(dateMatch[0].length) : insight;
+            return (
+              <div key={i} className="flex items-start gap-2 px-3 py-1.5 text-left">
+                {date && <span className="shrink-0 text-[10px] text-dim font-mono mt-0.5">{date}</span>}
+                <span className="text-xs text-label">{text}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -798,9 +787,6 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-2`}>
       <div className="max-w-[85%] relative">
-        {userInsights && userInsights.length > 0 && (
-          <InsightsBubble insights={userInsights} />
-        )}
         <div
           className={`rounded-2xl px-4 py-2.5 ${
             isUser
@@ -874,6 +860,9 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
           </div>
         )}
         {attachments.length > 0 && <FileAttachments attachments={attachments} />}
+        {userInsights && userInsights.length > 0 && (
+          <InsightsBubble insights={userInsights} />
+        )}
         {inlineLightbox && (
           <ImageLightbox
             media={inlineLightbox.media}
