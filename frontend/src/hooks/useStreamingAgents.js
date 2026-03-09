@@ -30,6 +30,16 @@ export function useStreamingAgents(agents, lastEvent) {
         return next;
       });
     }
+    // Seed from backend on connect/reconnect
+    if (lastEvent.type === "generating_agents" && lastEvent.data?.agent_ids) {
+      const ids = lastEvent.data.agent_ids;
+      setStreamingAgents((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.add(id);
+        if (next.size === prev.size) return prev;
+        return next;
+      });
+    }
     // Clear streaming on status change away from active states
     if (lastEvent.type === "agent_update" && lastEvent.data?.agent_id) {
       const aid = lastEvent.data.agent_id;
