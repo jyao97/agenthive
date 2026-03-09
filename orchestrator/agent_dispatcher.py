@@ -819,6 +819,56 @@ def query_insights(db, project: str, query: str, limit: int = 15,
     return [item[0] for item in sorted_items[:limit]]
 
 
+def query_insights_ai(db, project: str, user_message: str, limit: int = 50) -> list[str]:
+    """Two-stage insight retrieval: FTS5 coarse fetch → 4o-mini semantic reranking.
+
+    Stage 1: Fetch *limit* candidates via FTS5 with recency padding.
+    Stage 2: Send candidates + user message to 4o-mini to select the most relevant.
+
+    Falls back to standard FTS5 (no padding, limit=10) on any failure.
+    """
+    # Stage 1: coarse retrieval with padding to fill the candidate pool
+    candidates = query_insights(db, project, user_message, limit=limit, pad_recent=True)
+    if not candidates:
+        return []
+
+    # Stage 2: semantic reranking via 4o-mini
+    numbered = "\n".join(f"{i+1}. {c}" for i, c in enumerate(candidates))
+    prompt = (
+        "You are a relevance filter for a software development assistant. "
+        "Given a developer's message and a numbered list of past development "
+        "insights, select the ones most relevant to the developer's current task.\n\n"
+        "Return ONLY a JSON array of insight numbers (1-indexed). "
+        "Select up to 10. If fewer than 10 are relevant, return only the "
+        "relevant ones. Do not include insights that aren't clearly related "
+        "to the task.\n\n"
+        f"Example response: [3, 7, 12, 28, 41]\n\n"
+        f"Developer's message:\n{user_message}\n\n"
+        f"Past insights:\n{numbered}"
+    )
+
+    try:
+        import openai
+        client = openai.OpenAI(timeout=5)
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            temperature=0,
+        )
+        raw = resp.choices[0].message.content.strip()
+        indices = json.loads(raw)
+        if not isinstance(indices, list):
+            raise ValueError(f"Expected list, got {type(indices)}")
+        # Bounds-check + dedup, preserve order
+        valid = [i for i in indices if isinstance(i, int) and 1 <= i <= len(candidates)]
+        selected = [candidates[i - 1] for i in dict.fromkeys(valid)]
+        return selected[:10]
+    except Exception:
+        logger.warning("query_insights_ai 4o-mini call failed — falling back to FTS5", exc_info=True)
+        return query_insights(db, project, user_message, limit=10)
+
+
 _DAILY_SUMMARY_MAX_CONTEXT = 500_000  # chars — stay well within Claude context window
 _DAILY_SUMMARY_MAX_MSG = 4000  # per-message truncation (tool outputs can be huge)
 
