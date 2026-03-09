@@ -29,11 +29,8 @@ export function WebSocketProvider({ children }) {
   // Sync the backend about which agents are currently being viewed
   const _syncViewing = useCallback(() => {
     const agents = viewingAgentsRef.current;
-    // Send the first agent in the set (backend tracks one per connection)
-    // If nothing is being viewed, send null to clear
-    const agentId = agents.size > 0 ? agents.values().next().value : null;
-    const effective = agentId && document.visibilityState === "visible" ? agentId : null;
-    _send({ type: "viewing", agent_id: effective });
+    const ids = document.visibilityState === "visible" ? [...agents] : [];
+    _send({ type: "viewing", agent_ids: ids });
   }, [_send]);
 
   const connect = useCallback(() => {
