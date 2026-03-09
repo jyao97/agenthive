@@ -255,7 +255,7 @@ export default function NewTaskPage() {
   const sheetTransition = isDragging ? "none" : "transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)";
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end">
+    <div className="fixed inset-0 z-50 flex flex-col justify-end items-center">
       {/* Backdrop */}
       <div
         className="absolute inset-0 transition-opacity duration-300"
@@ -265,7 +265,7 @@ export default function NewTaskPage() {
 
       {/* Bottom sheet card */}
       <div
-        className="relative z-10 bg-page rounded-t-[20px] shadow-2xl flex flex-col"
+        className="relative z-10 bg-page rounded-t-[20px] shadow-2xl flex flex-col w-full max-w-2xl"
         style={{
           maxHeight: "92vh",
           transform: mounted ? sheetTranslate : "translateY(100%)",
