@@ -5465,6 +5465,7 @@ Here are the day's conversations (with timestamps):
     ):
         """Inner sync loop — see _sync_session_loop for docs."""
         POLL_INTERVAL = 3  # seconds between checks
+        _GENERATING_IDLE_THRESHOLD = 2  # idle polls before clearing is_generating (~6s)
 
         from websocket import emit_agent_stream, emit_agent_update, emit_new_message
 
@@ -5782,8 +5783,10 @@ Here are the day's conversations (with timestamps):
                         "Sync loop heartbeat for agent %s: idle_polls=%d, session=%s",
                         agent_id, idle_polls, session_id[:12],
                     )
-                # File stopped growing — clear generating state
-                if is_generating:
+                # File stopped growing — clear generating state after threshold
+                # (covers brief API latency gaps between tool completion and
+                # next response start, where JSONL is static but agent is busy)
+                if is_generating and idle_polls >= _GENERATING_IDLE_THRESHOLD:
                     is_generating = False
                     self._stop_generating(agent_id)
                     _sync_gen_id = None
