@@ -1615,7 +1615,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
         .all()
     )
     for t in orphan_tasks:
-        TaskStateMachine.transition(t, TaskStatus.CANCELLED)
+        TaskStateMachine.transition(t, TaskStatus.CANCELLED, strict=False)
         asyncio.ensure_future(emit_task_update(
             t.id, t.status.value, t.project_name or "",
             title=t.title,
@@ -2697,7 +2697,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
 
 # ---- Tasks v2 (first-class Task entity) ----
 
-from task_state_machine import can_transition, validate_transition, InvalidTransitionError
+from task_state_machine import can_transition, InvalidTransitionError
 from task_state import TaskStateMachine
 from websocket import emit_task_update, emit_agent_update
 
@@ -2943,7 +2943,6 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
     if hasattr(body, "status") and body.status is not None:
         try:
             new_status = TaskStatus(body.status)
-            validate_transition(task.status, new_status)
             TaskStateMachine.transition(task, new_status)
         except (ValueError, InvalidTransitionError) as exc:
             raise HTTPException(409, str(exc))
@@ -2972,10 +2971,9 @@ async def plan_task_v2(task_id: str, db: Session = Depends(get_db)):
     if not task.project_name:
         raise HTTPException(400, "Task requires a project_name before entering PLANNING")
     try:
-        validate_transition(task.status, TaskStatus.PLANNING)
+        TaskStateMachine.transition(task, TaskStatus.PLANNING)
     except InvalidTransitionError as e:
         raise HTTPException(409, str(e))
-    TaskStateMachine.transition(task, TaskStatus.PLANNING)
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
@@ -2995,10 +2993,9 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
         raise HTTPException(400, "Task requires a project_name before dispatch")
     if not task.title:
         raise HTTPException(400, "Task requires a title before dispatch")
-    try:
-        validate_transition(task.status, TaskStatus.PENDING)
-    except InvalidTransitionError as e:
-        raise HTTPException(409, str(e))
+    # Validate transition before atomic CAS (transition applied via atomic update below)
+    if not can_transition(task.status, TaskStatus.PENDING):
+        raise HTTPException(409, f"Invalid task transition: {task.status.value} -> pending (task {task.id})")
     # Build atomic update dict — prevents TOCTOU race on concurrent dispatches
     expected_status = task.status
     update_dict: dict = {"status": TaskStatus.PENDING}
@@ -3040,7 +3037,7 @@ async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(
     if not task:
         raise HTTPException(404, "Task not found")
     try:
-        validate_transition(task.status, TaskStatus.MERGING)
+        TaskStateMachine.transition(task, TaskStatus.MERGING)
     except InvalidTransitionError as e:
         raise HTTPException(409, str(e))
 
@@ -3170,10 +3167,8 @@ async def reject_task_v2(
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    try:
-        validate_transition(task.status, TaskStatus.REJECTED)
-    except InvalidTransitionError as e:
-        raise HTTPException(409, str(e))
+    if not can_transition(task.status, TaskStatus.REJECTED):
+        raise HTTPException(409, f"Invalid task transition: {task.status.value} -> rejected (task {task.id})")
     ad = getattr(request.app.state, "agent_dispatcher", None)
     _stop_task_agents(db, task, ad, "Agent stopped — task rejected", emit=True)
     TaskStateMachine.transition(task, TaskStatus.REJECTED)
@@ -3449,10 +3444,8 @@ async def cancel_task_v2(task_id: str, request: Request, db: Session = Depends(g
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    try:
-        validate_transition(task.status, TaskStatus.CANCELLED)
-    except InvalidTransitionError as e:
-        raise HTTPException(409, str(e))
+    if not can_transition(task.status, TaskStatus.CANCELLED):
+        raise HTTPException(409, f"Invalid task transition: {task.status.value} -> cancelled (task {task.id})")
     ad = getattr(request.app.state, "agent_dispatcher", None)
     _stop_task_agents(db, task, ad, "Agent stopped — task cancelled")
     TaskStateMachine.transition(task, TaskStatus.CANCELLED)

@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 
 from models import Task, TaskStatus
-from task_state_machine import VALID_TRANSITIONS, can_transition
+from task_state_machine import VALID_TRANSITIONS, InvalidTransitionError, can_transition
 from utils import utcnow as _utcnow
 
 logger = logging.getLogger("orchestrator.task_state")
@@ -23,10 +23,12 @@ class TaskStateMachine:
 
     @staticmethod
     def transition(task: Task, new_status: TaskStatus, *, reason: str | None = None,
-                   set_timestamps: bool = True) -> Task:
+                   set_timestamps: bool = True, strict: bool = True) -> Task:
         """Validate and apply a task status transition.
 
-        - Validates the transition is allowed (logs warning if not, still applies for backwards compat)
+        - Validates the transition is allowed
+        - If strict=True (default), raises InvalidTransitionError on invalid transitions
+        - If strict=False, logs a warning and applies anyway (for cleanup paths)
         - Sets started_at when transitioning to EXECUTING (if not already set)
         - Sets completed_at when transitioning to completion states (COMPLETE, FAILED, CANCELLED, TIMEOUT, REJECTED)
         - Returns the task for chaining
@@ -34,8 +36,13 @@ class TaskStateMachine:
         old_status = task.status
 
         if not can_transition(old_status, new_status):
+            if strict:
+                raise InvalidTransitionError(
+                    f"Invalid task transition: {old_status.value} -> {new_status.value} "
+                    f"(task {task.id})"
+                )
             logger.warning(
-                "Task %s: invalid transition %s -> %s (applying anyway for backwards compat)",
+                "Task %s: invalid transition %s -> %s (applying anyway, strict=False)",
                 task.id, old_status.value, new_status.value,
             )
 
