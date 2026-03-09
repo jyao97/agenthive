@@ -1162,6 +1162,7 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
             "git_remote": proj.git_remote if proj else None,
             "description": proj.description if proj else None,
             "auto_progress_summary": proj.auto_progress_summary if proj else False,
+            "ai_insights": proj.ai_insights if proj else False,
         }
 
         # Richer stats for active projects
@@ -2533,6 +2534,8 @@ async def update_project_settings(name: str, request: Request, db: Session = Dep
     body = await request.json()
     if "auto_progress_summary" in body:
         proj.auto_progress_summary = bool(body["auto_progress_summary"])
+    if "ai_insights" in body:
+        proj.ai_insights = bool(body["ai_insights"])
 
     db.commit()
     db.refresh(proj)

@@ -350,6 +350,14 @@ def init_db():
             ))
             conn.commit()
 
+        # Add ai_insights column to projects if missing
+        proj_cols3 = _table_columns(conn, "projects")
+        if "ai_insights" not in proj_cols3:
+            conn.execute(text(
+                "ALTER TABLE projects ADD COLUMN ai_insights BOOLEAN NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+
         if "use_worktree" not in task_cols:
             conn.execute(text(
                 "ALTER TABLE tasks ADD COLUMN use_worktree BOOLEAN NOT NULL DEFAULT 1"

@@ -261,6 +261,7 @@ class ProjectOut(BaseModel):
     default_model: str = "claude-opus-4-6"
     archived: bool = False
     auto_progress_summary: bool = False
+    ai_insights: bool = False
 
     model_config = {"from_attributes": True}
 

@@ -213,6 +213,7 @@ class Project(Base):
     )
     archived: Mapped[bool] = mapped_column(default=False)
     auto_progress_summary: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_insights: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class StarredSession(Base):
