@@ -242,9 +242,33 @@ def _merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> 
     return json.dumps(merged)
 
 
-# Marker embedded in _build_agent_prompt output — sync loop uses this to skip
-# wrapped prompts (which are already stored as the original user message).
-_AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt -->"
+# Marker prefix embedded in _build_agent_prompt output — sync loop uses this
+# to skip wrapped prompts (already stored as the original user message).
+# New format: <!-- agenthive-prompt agent_id=... msg_id=... -->
+# Old format (compat): <!-- agenthive-prompt -->
+_AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt"
+
+
+def _parse_agenthive_marker(text: str) -> dict | None:
+    """Extract agent_id and msg_id from an agenthive-prompt marker.
+
+    Returns dict of attributes if marker found, None otherwise.
+    Old-format markers (no attributes) return an empty dict.
+    """
+    prefix = _AGENTHIVE_PROMPT_MARKER
+    pos = text[:200].find(prefix)
+    if pos < 0:
+        return None
+    end = text.find("-->", pos)
+    if end < 0:
+        return {}
+    attrs_str = text[pos + len(prefix):end]
+    attrs: dict[str, str] = {}
+    for part in attrs_str.split():
+        if "=" in part:
+            k, _, v = part.partition("=")
+            attrs[k] = v
+    return attrs
 
 # Image metadata injected by Claude Code's Read tool — internal only, hide from UI
 _IMAGE_META_RE = re.compile(
@@ -1019,18 +1043,20 @@ def _scan_subagents(
     return results
 
 
-def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
+def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, str | None]]:
     """Parse a Claude Code session JSONL into conversation turns.
 
-    Returns a list of (role, content, metadata) tuples where role is
-    "user", "assistant", or "system".  metadata is a dict with an
-    "interactive" key when the turn contains AskUserQuestion or
-    ExitPlanMode tool calls, or None otherwise.
+    Returns a list of (role, content, metadata, jsonl_uuid) tuples where:
+    - role: "user", "assistant", or "system"
+    - content: text content of the turn
+    - metadata: dict with "interactive" key for tool calls, or None
+    - jsonl_uuid: the JSONL entry's uuid field for deterministic dedup,
+      or None for entries without uuid (queue-operations, system)
 
     Skips tool_result entries (intermediate tool calls) and queue-operations.
     Groups consecutive assistant entries into a single turn using _format_parts style.
     """
-    turns: list[tuple[str, str, dict | None]] = []
+    turns: list[tuple[str, str, dict | None, str | None]] = []
 
     try:
         with open(jsonl_path, "r", errors="replace") as f:
@@ -1045,8 +1071,11 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
     pending_interactive: list[dict] = []
     # Map tool_use_id → interactive entry for matching tool_result answers
     interactive_by_id: dict[str, dict] = {}
+    # Track the first JSONL uuid for the current assistant turn group
+    assistant_turn_uuid: str | None = None
 
     def flush_assistant():
+        nonlocal assistant_turn_uuid
         if not assistant_parts and not pending_interactive:
             return
         text = _format_parts(assistant_parts) if assistant_parts else ""
@@ -1054,9 +1083,10 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
         if pending_interactive:
             meta = {"interactive": list(pending_interactive)}
         if text.strip() or meta:
-            turns.append(("assistant", text.strip() if text else "", meta))
+            turns.append(("assistant", text.strip() if text else "", meta, assistant_turn_uuid))
         assistant_parts.clear()
         pending_interactive.clear()
+        assistant_turn_uuid = None
 
     for line in lines:
         line = line.strip()
@@ -1068,6 +1098,7 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
             continue
 
         entry_type = entry.get("type")
+        entry_uuid = entry.get("uuid")  # present on user/assistant entries
 
         if entry_type == "user":
             msg = entry.get("message", {})
@@ -1112,17 +1143,20 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
                     "This session is being continued from a previous conversation"
                 ):
                     flush_assistant()
-                    turns.append(("system", content, None))
+                    turns.append(("system", content, None, None))
                     continue
                 flush_assistant()
                 clean = _strip_agent_preamble(stripped)
-                turns.append(("user", clean, None))
+                turns.append(("user", clean, None, entry_uuid))
 
         elif entry_type == "assistant":
             msg = entry.get("message", {})
             # Skip subagent messages
             if entry.get("parent_tool_use_id"):
                 continue
+            # Track first uuid in this assistant turn group
+            if assistant_turn_uuid is None and entry_uuid:
+                assistant_turn_uuid = entry_uuid
             for block in msg.get("content", []):
                 if not isinstance(block, dict):
                     continue
@@ -1163,6 +1197,7 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
 
         elif entry_type == "queue-operation":
             # Queued prompts sent while assistant is working
+            # Note: queue-operations have no uuid in JSONL
             if entry.get("operation") == "enqueue":
                 queued_content = entry.get("content", "")
                 if isinstance(queued_content, str) and queued_content.strip():
@@ -1170,10 +1205,10 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
                     # Sub-agent task results are system-generated, not user input
                     if clean_q.lstrip().startswith("<task-notification>"):
                         flush_assistant()
-                        turns.append(("assistant", clean_q, None))
+                        turns.append(("assistant", clean_q, None, None))
                     else:
                         flush_assistant()
-                        turns.append(("user", clean_q, None))
+                        turns.append(("user", clean_q, None, None))
 
         elif entry_type == "system":
             # Use structured fields from JSONL (subtype, content)
@@ -1185,7 +1220,7 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
             content = entry.get("content", "")
             if subtype or content:
                 label = content or subtype.replace("_", " ")
-                turns.append(("system", label, None))
+                turns.append(("system", label, None, None))
 
     # Flush any remaining assistant content
     flush_assistant()
@@ -1196,20 +1231,20 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None]]:
     # Keep only the first occurrence of each unique user message.
     if turns:
         seen_user: set[str] = set()
-        deduped: list[tuple[str, str, dict | None]] = []
-        for role, content, meta in turns:
+        deduped: list[tuple[str, str, dict | None, str | None]] = []
+        for role, content, meta, uuid in turns:
             if role == "user":
                 if content in seen_user:
                     continue
                 seen_user.add(content)
-            deduped.append((role, content, meta))
+            deduped.append((role, content, meta, uuid))
         turns = deduped
 
     return turns
 
 
 def _update_stale_interactive_metadata(
-    db: "Session", agent_id: str, turns: list[tuple[str, str, dict | None]]
+    db: "Session", agent_id: str, turns: list[tuple]
 ) -> bool:
     """Update DB messages whose interactive metadata has stale (null) answers.
 
@@ -1223,7 +1258,7 @@ def _update_stale_interactive_metadata(
     """
     # 1. Collect all interactive items with non-null answers, keyed by tool_use_id
     answered: dict[str, str] = {}
-    for _role, _content, meta in turns:
+    for _role, _content, meta, *_rest in turns:
         if not meta or "interactive" not in meta:
             continue
         for item in meta["interactive"]:
@@ -1269,7 +1304,7 @@ def _update_stale_interactive_metadata(
     #    to prevent duplicate interactive bubbles.
     turns_with_meta = [
         (content, meta)
-        for _role, content, meta in turns
+        for _role, content, meta, *_rest in turns
         if _role == "assistant" and meta and meta.get("interactive")
     ]
     if turns_with_meta:
@@ -1453,7 +1488,11 @@ def _detect_pid_session_jsonl(claude_pid: int) -> str | None:
 
 
 def _dedup_sig(text: str) -> str:
-    """Normalize content for dedup comparison.
+    """Normalize content for dedup comparison (backward-compat fallback).
+
+    Primary dedup now uses JSONL uuid fields.  This function is kept as
+    a secondary fallback for messages imported before jsonl_uuid support
+    and for queue-operation entries that have no JSONL uuid.
 
     tmux converts tabs to spaces, so a message sent via web (tabs)
     won't exactly match the same message in the JSONL (spaces).
@@ -1491,6 +1530,32 @@ def _get_first_user_content(jsonl_path: str) -> str | None:
                                 return text
     except OSError as e:
         logger.debug("_get_first_user_content: failed to read %s: %s", jsonl_path, e)
+    return None
+
+
+def _get_first_user_uuid(jsonl_path: str) -> str | None:
+    """Extract the JSONL uuid of the first user message entry."""
+    try:
+        with open(jsonl_path, "r") as f:
+            for i, line in enumerate(f):
+                if i >= 50:
+                    break
+                if '"user"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if obj.get("type") != "user":
+                    continue
+                msg = obj.get("message", {})
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    return obj.get("uuid")
+    except OSError as e:
+        logger.debug("_get_first_user_uuid: failed to read %s: %s", jsonl_path, e)
     return None
 
 
@@ -2417,12 +2482,13 @@ Here are the day's conversations (with timestamps):
     def _import_turns_as_messages(self, db, agent_id, turns, *, source="cli"):
         """Import conversation turns as Message records.
 
-        Each turn is (role, content, meta) where meta is optional dict.
-        Returns the number of messages imported.
+        Each turn is (role, content, meta, jsonl_uuid) where meta and
+        jsonl_uuid are optional.  Returns the number of messages imported.
         """
         imported = 0
         for role, content, *rest in turns:
             meta = rest[0] if rest else None
+            jsonl_uuid = rest[1] if len(rest) > 1 else None
             meta_json = json.dumps(meta) if meta else None
             if role == "user":
                 msg = Message(
@@ -2432,6 +2498,7 @@ Here are the day's conversations (with timestamps):
                     status=MessageStatus.COMPLETED,
                     source=source,
                     meta_json=meta_json,
+                    jsonl_uuid=jsonl_uuid,
                     completed_at=_utcnow(),
                 )
             elif role == "assistant":
@@ -2442,6 +2509,7 @@ Here are the day's conversations (with timestamps):
                     status=MessageStatus.COMPLETED,
                     source=source,
                     meta_json=meta_json,
+                    jsonl_uuid=jsonl_uuid,
                     completed_at=_utcnow(),
                 )
             elif role == "system":
@@ -2451,6 +2519,7 @@ Here are the day's conversations (with timestamps):
                     content=content,
                     status=MessageStatus.COMPLETED,
                     source=source,
+                    jsonl_uuid=jsonl_uuid,
                     completed_at=_utcnow(),
                 )
             else:
@@ -3946,6 +4015,7 @@ Here are the day's conversations (with timestamps):
                 agent, project, content,
                 include_history=include_history, db=db,
                 insights_list=insights_list,
+                msg_id=msg.id,
             )
 
         # 5. Update agent preview
@@ -3958,6 +4028,7 @@ Here are the day's conversations (with timestamps):
         self, agent: Agent, project: Project, user_message: str,
         include_history: bool = False, db: Session | None = None,
         insights_list: list[str] | None = None,
+        msg_id: str | None = None,
     ) -> str:
         """Build the wrapped prompt sent to Claude for an agent message.
 
@@ -3979,8 +4050,14 @@ Here are the day's conversations (with timestamps):
                 f"Relevant past insights for this project:\n{items}\n"
             )
 
+        # Build marker with agent/message tags for deterministic dedup
+        marker = f"{_AGENTHIVE_PROMPT_MARKER} agent_id={agent.id}"
+        if msg_id:
+            marker += f" msg_id={msg_id}"
+        marker += " -->"
+
         return (
-            f"{_AGENTHIVE_PROMPT_MARKER}\n"
+            f"{marker}\n"
             f"You are working in project: {project.display_name}\n"
             f"Project path: {project.path}\n"
             f"\n"
@@ -4855,15 +4932,14 @@ Here are the day's conversations (with timestamps):
             ).all():
                 active_sids.add(a.session_id)
 
-            # For CWD-based matching: collect user message signatures
-            # so we can verify the candidate's first prompt matches this
-            # agent's conversation (prevents cross-agent session adoption).
-            agent_user_sigs: set[str] = set()
-            for m in db.query(Message).filter(
-                Message.agent_id == agent_id,
-                Message.role == MessageRole.USER,
-            ).all():
-                agent_user_sigs.add(_dedup_sig(m.content))
+            # Collect jsonl_uuids of this agent's messages for UUID-based
+            # session matching (Strategy 2).
+            agent_jsonl_uuids: set[str] = {
+                m.jsonl_uuid for m in db.query(Message).filter(
+                    Message.agent_id == agent_id,
+                    Message.jsonl_uuid.is_not(None),
+                ).all()
+            }
         finally:
             db.close()
 
@@ -4954,21 +5030,29 @@ Here are the day's conversations (with timestamps):
                                 best_sid, best_mtime = sid, mtime
                             continue
 
-                    # Strategy 2: CWD + content match — earliest wins
-                    # Requires the candidate's first user message matches a
-                    # message in this agent's history (prevents cross-agent
-                    # session adoption when multiple agents share a project).
+                    # Strategy 2: CWD + agent-tag match — earliest wins
+                    # Uses the agenthive-prompt marker (which embeds agent_id)
+                    # for deterministic ownership.  Falls back to JSONL uuid
+                    # matching for sessions started before tagged markers.
                     if claude_cwd and claude_cwd.startswith(project_path):
                         candidate_cwd = _get_session_cwd(fpath)
                         if candidate_cwd and candidate_cwd.startswith(project_path):
                             first_prompt = _get_first_user_content(fpath)
-                            if (
-                                first_prompt
-                                and agent_user_sigs
-                                and _dedup_sig(first_prompt) in agent_user_sigs
-                                and mtime < cwd_mtime
-                            ):
-                                cwd_sid, cwd_mtime = sid, mtime
+                            if first_prompt:
+                                # Primary: check tagged marker for this agent
+                                marker_attrs = _parse_agenthive_marker(first_prompt)
+                                if marker_attrs and marker_attrs.get("agent_id") == agent_id:
+                                    if mtime < cwd_mtime:
+                                        cwd_sid, cwd_mtime = sid, mtime
+                                    continue
+                                # Secondary: check if first JSONL entry uuid
+                                # matches a message in this agent's history
+                                if agent_jsonl_uuids:
+                                    first_uuid = _get_first_user_uuid(fpath)
+                                    if first_uuid and first_uuid in agent_jsonl_uuids:
+                                        if mtime < cwd_mtime:
+                                            cwd_sid, cwd_mtime = sid, mtime
+                                        continue
                             continue
 
                     # Strategy 3: legacy PID-based match (fallback) — newest wins
@@ -5306,23 +5390,29 @@ Here are the day's conversations (with timestamps):
         db = SessionLocal()
         try:
             conv_turns = [
-                (r, c, m) for r, c, m in initial_turns
-                if r in ("user", "assistant")
+                t for t in initial_turns
+                if t[0] in ("user", "assistant")
                 # Skip system-wrapped prompts injected by _build_agent_prompt —
                 # the original user message is already stored in the DB.
-                and not (r == "user" and _AGENTHIVE_PROMPT_MARKER in c[:80])
+                and not (t[0] == "user" and _AGENTHIVE_PROMPT_MARKER in t[1][:80])
             ]
 
             if conv_turns:
                 agent = db.get(Agent, agent_id)
 
-                # Get ALL user/agent DB messages for signature matching
+                # Get ALL user/agent DB messages for dedup
                 all_db = db.query(Message).filter(
                     Message.agent_id == agent_id,
                     Message.role.in_([MessageRole.USER, MessageRole.AGENT]),
                 ).all()
-                # Build a multiset of (role_char, content_prefix) — use
-                # a dict with counts so duplicate content is handled
+
+                # Primary: UUID-based dedup via jsonl_uuid
+                db_uuids: set[str] = {
+                    m.jsonl_uuid for m in all_db if m.jsonl_uuid
+                }
+
+                # Secondary: content multiset for backward compat
+                # (messages imported before jsonl_uuid was added)
                 db_sig_counts: dict[tuple[str, str], int] = {}
                 for m in all_db:
                     role_char = "u" if m.role == MessageRole.USER else "a"
@@ -5330,22 +5420,25 @@ Here are the day's conversations (with timestamps):
                     db_sig_counts[sig] = db_sig_counts.get(sig, 0) + 1
 
                 # Walk through JSONL turns and collect missing ones
-                missing: list[tuple[str, str, dict | None]] = []
-                for r, c, mt in conv_turns:
+                missing: list[tuple[str, str, dict | None, str | None]] = []
+                for r, c, mt, uuid in conv_turns:
+                    # Primary: UUID-based dedup
+                    if uuid and uuid in db_uuids:
+                        continue
+                    # Secondary: content-based fallback (backward compat)
                     role_char = "u" if r == "user" else "a"
                     content_sig = _dedup_sig(c)
                     sig = (role_char, content_sig)
                     if db_sig_counts.get(sig, 0) > 0:
-                        db_sig_counts[sig] -= 1  # consume the match
-                    else:
-                        # Role may have changed (e.g. task-notification fixed
-                        # from USER→AGENT); check the opposite role before
-                        # declaring the turn missing.
-                        alt = ("a" if role_char == "u" else "u", content_sig)
-                        if db_sig_counts.get(alt, 0) > 0:
-                            db_sig_counts[alt] -= 1
-                        else:
-                            missing.append((r, c, mt))
+                        db_sig_counts[sig] -= 1
+                        continue
+                    # Check opposite role (e.g. task-notification fixed
+                    # from USER→AGENT)
+                    alt = ("a" if role_char == "u" else "u", content_sig)
+                    if db_sig_counts.get(alt, 0) > 0:
+                        db_sig_counts[alt] -= 1
+                        continue
+                    missing.append((r, c, mt, uuid))
 
                 if missing and agent:
                     # Build a list of existing agent messages for
@@ -5355,7 +5448,7 @@ Here are the day's conversations (with timestamps):
                         m for m in all_db
                         if m.role == MessageRole.AGENT
                     ]
-                    for role, content, meta in missing:
+                    for role, content, meta, uuid in missing:
                         meta_json = json.dumps(meta) if meta else None
                         if role == "user":
                             db.add(Message(
@@ -5364,6 +5457,7 @@ Here are the day's conversations (with timestamps):
                                 content=content,
                                 status=MessageStatus.COMPLETED,
                                 source="cli",
+                                jsonl_uuid=uuid,
                                 completed_at=_utcnow(),
                             ))
                         elif role == "assistant":
@@ -5380,6 +5474,8 @@ Here are the day's conversations (with timestamps):
                                 ):
                                     existing.content = content
                                     existing.completed_at = _utcnow()
+                                    if uuid and not existing.jsonl_uuid:
+                                        existing.jsonl_uuid = uuid
                                     if meta is not None:
                                         existing.meta_json = _merge_interactive_meta(
                                             existing.meta_json, meta,
@@ -5394,6 +5490,7 @@ Here are the day's conversations (with timestamps):
                                     status=MessageStatus.COMPLETED,
                                     source="cli",
                                     meta_json=meta_json,
+                                    jsonl_uuid=uuid,
                                     completed_at=_utcnow(),
                                 ))
                     agent.last_message_preview = (conv_turns[-1][1] or "")[:200]
@@ -5817,40 +5914,59 @@ Here are the day's conversations (with timestamps):
                     # Import new turns
                     for role, content, *rest in new_turns:
                         meta = rest[0] if rest else None
+                        jsonl_uuid = rest[1] if len(rest) > 1 else None
                         meta_json = json.dumps(meta) if meta else None
                         if role == "user":
-                            # Skip system-wrapped prompts from _build_agent_prompt
+                            # Skip system-wrapped prompts from _build_agent_prompt.
+                            # New tagged markers carry agent_id/msg_id for
+                            # deterministic dedup; old markers are also caught
+                            # by the prefix check.
                             if _AGENTHIVE_PROMPT_MARKER in content[:80]:
+                                # Extract msg_id from marker if present —
+                                # backfill jsonl_uuid onto the original web
+                                # message so future syncs use UUID dedup.
+                                marker_attrs = _parse_agenthive_marker(content)
+                                if marker_attrs and marker_attrs.get("msg_id") and jsonl_uuid:
+                                    _web_msg = db.get(Message, marker_attrs["msg_id"])
+                                    if _web_msg and not _web_msg.jsonl_uuid:
+                                        _web_msg.jsonl_uuid = jsonl_uuid
                                 continue
-                            # Dedup: skip if an orchestrator-dispatched message
-                            # already exists.  Use whitespace-normalised comparison
-                            # because tmux converts tabs to spaces.  Match against
-                            # all non-CLI sources (web, task, plan_continue, etc.)
-                            # so queued tmux dispatches are covered without needing
-                            # an inline marker.
-                            from sqlalchemy import or_
-                            _norm = _dedup_sig(content)
-                            _candidates = db.query(Message).filter(
-                                Message.agent_id == agent_id,
-                                Message.role == MessageRole.USER,
-                                or_(Message.source != "cli", Message.source.is_(None)),
-                            ).all()
-                            existing_web = any(
-                                _dedup_sig(m.content) == _norm
-                                for m in _candidates
-                            )
-                            if existing_web:
-                                logger.debug(
-                                    "Skipping duplicate user turn for agent %s "
-                                    "(already sent via web)", agent_id,
+                            # Primary: UUID-based dedup — skip if jsonl_uuid
+                            # already exists in DB for this agent
+                            if jsonl_uuid:
+                                existing_uuid = db.query(Message.id).filter(
+                                    Message.agent_id == agent_id,
+                                    Message.jsonl_uuid == jsonl_uuid,
+                                ).first()
+                                if existing_uuid:
+                                    continue
+                            # Secondary: content-based fallback for messages
+                            # without JSONL uuid (queue-operations, legacy)
+                            if not jsonl_uuid:
+                                from sqlalchemy import or_
+                                _norm = _dedup_sig(content)
+                                _candidates = db.query(Message).filter(
+                                    Message.agent_id == agent_id,
+                                    Message.role == MessageRole.USER,
+                                    or_(Message.source != "cli", Message.source.is_(None)),
+                                ).all()
+                                existing_web = any(
+                                    _dedup_sig(m.content) == _norm
+                                    for m in _candidates
                                 )
-                                continue
+                                if existing_web:
+                                    logger.debug(
+                                        "Skipping duplicate user turn for agent %s "
+                                        "(already sent via web)", agent_id,
+                                    )
+                                    continue
                             msg = Message(
                                 agent_id=agent_id,
                                 role=MessageRole.USER,
                                 content=content,
                                 status=MessageStatus.COMPLETED,
                                 source="cli",
+                                jsonl_uuid=jsonl_uuid,
                                 completed_at=_utcnow(),
                             )
                         elif role == "assistant":
@@ -5861,6 +5977,7 @@ Here are the day's conversations (with timestamps):
                                 status=MessageStatus.COMPLETED,
                                 source="cli",
                                 meta_json=meta_json,
+                                jsonl_uuid=jsonl_uuid,
                                 completed_at=_utcnow(),
                             )
                         elif role == "system":
@@ -5870,6 +5987,7 @@ Here are the day's conversations (with timestamps):
                                 content=content,
                                 status=MessageStatus.COMPLETED,
                                 source="cli",
+                                jsonl_uuid=jsonl_uuid,
                                 completed_at=_utcnow(),
                             )
                         else:

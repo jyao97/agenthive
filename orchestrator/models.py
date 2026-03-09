@@ -169,6 +169,7 @@ class Message(Base):
     stream_log: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str | None] = mapped_column(String(20), nullable=True)  # "web" | "cli" | None
+    jsonl_uuid: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)  # JSONL entry uuid for dedup
     meta_json: Mapped[str | None] = mapped_column("metadata", Text, nullable=True)  # JSON string for interactive data
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -398,6 +398,18 @@ def init_db():
                 ))
                 conn.commit()
 
+        # --- Add jsonl_uuid column to messages if missing ---
+        msg_cols = _table_columns(conn, "messages")
+        if "jsonl_uuid" not in msg_cols:
+            conn.execute(text(
+                "ALTER TABLE messages ADD COLUMN jsonl_uuid VARCHAR(50)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_messages_jsonl_uuid "
+                "ON messages(jsonl_uuid) WHERE jsonl_uuid IS NOT NULL"
+            ))
+            conn.commit()
+
         # --- progress_insights compound index for existing DBs ---
         if "progress_insights" in [r[0] for r in conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table'"
