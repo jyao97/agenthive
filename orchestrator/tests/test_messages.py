@@ -108,6 +108,7 @@ async def test_get_messages_empty(client, db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="msg-proj", display_name="MP", path="/tmp/mp"))
+    db.flush()
     db.add(Agent(id="mmmm11112222", project="msg-proj", name="Msg Agent", status=AgentStatus.IDLE))
     db.commit()
     db.close()
@@ -127,7 +128,9 @@ async def test_get_messages_with_data(client, db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="msg-proj2", display_name="MP2", path="/tmp/mp2"))
+    db.flush()
     db.add(Agent(id="msg2agent1111", project="msg-proj2", name="Agent M", status=AgentStatus.IDLE))
+    db.flush()
     now = datetime.now(timezone.utc)
     for i in range(3):
         db.add(Message(
@@ -157,7 +160,9 @@ async def test_get_messages_pagination_limit(client, db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="pag-proj", display_name="PP", path="/tmp/pp"))
+    db.flush()
     db.add(Agent(id="pagagent1111", project="pag-proj", name="Pag Agent", status=AgentStatus.IDLE))
+    db.flush()
     now = datetime.now(timezone.utc)
     for i in range(10):
         db.add(Message(
@@ -203,6 +208,7 @@ async def test_send_message_syncing_tmux_pane_missing_falls_back_to_pending(
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="sync-proj", display_name="SP", path="/tmp/sp"))
+    db.flush()
     db.add(Agent(
         id="syncmsg11111",
         project="sync-proj",
@@ -252,6 +258,7 @@ async def test_send_message_syncing_tmux_recover_pane_and_send_direct(
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="sync-proj2", display_name="SP2", path="/tmp/sp2"))
+    db.flush()
     db.add(Agent(
         id="syncmsg22222",
         project="sync-proj2",

@@ -45,6 +45,7 @@ def _setup_syncing_agent(db, *, agent_id="synctest1111", project_name="disp-proj
     existing = db.query(Project).filter(Project.name == project_name).first()
     if not existing:
         db.add(Project(name=project_name, display_name="DP", path="/tmp/dp"))
+        db.flush()
     agent = Agent(
         id=agent_id,
         project=project_name,
@@ -55,6 +56,7 @@ def _setup_syncing_agent(db, *, agent_id="synctest1111", project_name="disp-proj
         session_id="sess-disp",
     )
     db.add(agent)
+    db.flush()
     pending = Message(
         agent_id=agent.id,
         role=MessageRole.USER,
@@ -78,6 +80,7 @@ def test_agent_status_transitions_starting_to_syncing(db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="st-proj", display_name="ST", path="/tmp/st"))
+    db.flush()
     agent = Agent(
         id="start2sync11",
         project="st-proj",
@@ -102,6 +105,7 @@ def test_agent_status_transitions_syncing_to_idle(db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="sy-proj", display_name="SY", path="/tmp/sy"))
+    db.flush()
     agent = Agent(
         id="sync2idle1111",
         project="sy-proj",
@@ -165,6 +169,7 @@ async def test_liveness_check_skips_cli_sync_agents(db_engine, monkeypatch):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="live-proj", display_name="LP", path="/tmp/lp"))
+    db.flush()
     agent = Agent(
         id="livecli11111",
         project="live-proj",
@@ -212,6 +217,7 @@ async def test_liveness_check_skips_idle_agents(db_engine, monkeypatch):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="idle-proj", display_name="IP", path="/tmp/ip"))
+    db.flush()
     agent = Agent(
         id="idleagent111",
         project="idle-proj",
@@ -255,6 +261,7 @@ async def test_liveness_check_skips_stopped_agents(db_engine, monkeypatch):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="stop-proj", display_name="SP", path="/tmp/sp"))
+    db.flush()
     agent = Agent(
         id="stopped11111",
         project="stop-proj",
@@ -399,6 +406,7 @@ def test_agent_cli_sync_default_false(db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="cs-proj", display_name="CS", path="/tmp/cs"))
+    db.flush()
     agent = Agent(
         id="clisyncdef11",
         project="cs-proj",
@@ -419,6 +427,7 @@ def test_agent_tmux_pane_nullable(db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="tp-proj", display_name="TP", path="/tmp/tp"))
+    db.flush()
     agent = Agent(
         id="tmuxpanenu11",
         project="tp-proj",
@@ -439,6 +448,7 @@ def test_agent_session_id_nullable(db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="si-proj", display_name="SI", path="/tmp/si"))
+    db.flush()
     agent = Agent(
         id="sessidnull11",
         project="si-proj",
@@ -459,6 +469,7 @@ def test_agent_timeout_default(db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="to-proj", display_name="TO", path="/tmp/to"))
+    db.flush()
     agent = Agent(
         id="timeoutdef11",
         project="to-proj",
@@ -479,6 +490,7 @@ def test_agent_parent_child_relationship(db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="pc-proj", display_name="PC", path="/tmp/pc"))
+    db.flush()
     parent = Agent(
         id="parentag1111",
         project="pc-proj",

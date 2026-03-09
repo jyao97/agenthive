@@ -126,6 +126,7 @@ async def test_project_worktrees_with_agents(client, db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="wt-proj", display_name="WT Proj", path="/tmp/wt-proj"))
+    db.flush()
     db.add(Agent(
         id="wtagent11111",
         project="wt-proj",

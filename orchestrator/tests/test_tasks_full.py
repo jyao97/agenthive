@@ -127,8 +127,15 @@ async def test_create_task_with_all_fields(client, db_engine):
 
 
 @pytest.mark.anyio
-async def test_create_task_project_validation(client):
-    """Project that doesn't exist still creates task (project_name is optional FK)."""
+async def test_create_task_project_validation(client, db_engine):
+    """Task with a valid project_name creates successfully."""
+    from sqlalchemy.orm import sessionmaker
+    Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+    db = Session()
+    db.add(Project(name="nonexistent-project", display_name="NE", path="/tmp/ne"))
+    db.commit()
+    db.close()
+
     resp = await client.post("/api/v2/tasks", json={
         "title": "Orphan task",
         "project_name": "nonexistent-project",

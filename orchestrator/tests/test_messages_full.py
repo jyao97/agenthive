@@ -28,6 +28,7 @@ def _seed_agent(db, *, agent_id, project_name="test-proj", status=AgentStatus.ID
     existing = db.get(Project, project_name)
     if not existing:
         db.add(Project(name=project_name, display_name=project_name.title(), path=f"/tmp/{project_name}"))
+        db.flush()
     db.add(Agent(
         id=agent_id,
         project=project_name,

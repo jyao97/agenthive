@@ -64,6 +64,7 @@ async def test_list_agents_with_data(client, db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="proj-b", display_name="B", path="/tmp/b"))
+    db.flush()
     db.add(Agent(
         id="bbbb11112222",
         project="proj-b",
@@ -90,6 +91,7 @@ async def test_list_agents_filter_by_project(client, db_engine):
     db = Session()
     db.add(Project(name="proj-x", display_name="X", path="/tmp/x"))
     db.add(Project(name="proj-y", display_name="Y", path="/tmp/y"))
+    db.flush()
     db.add(Agent(id="xxxx11111111", project="proj-x", name="AX", status=AgentStatus.IDLE))
     db.add(Agent(id="yyyy11111111", project="proj-y", name="AY", status=AgentStatus.IDLE))
     db.commit()
@@ -116,6 +118,7 @@ async def test_get_agent_found(client, db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="proj-g", display_name="G", path="/tmp/g"))
+    db.flush()
     db.add(Agent(id="gggg11112222", project="proj-g", name="Agent G", status=AgentStatus.IDLE))
     db.commit()
     db.close()
@@ -134,6 +137,7 @@ async def test_list_agents_excludes_subagents(client, db_engine):
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="proj-s", display_name="S", path="/tmp/s"))
+    db.flush()
     db.add(Agent(id="parent111111", project="proj-s", name="Parent", status=AgentStatus.IDLE, is_subagent=False))
     db.add(Agent(id="child1111111", project="proj-s", name="Child", status=AgentStatus.IDLE, is_subagent=True, parent_id="parent111111"))
     db.commit()
@@ -155,6 +159,7 @@ async def test_dispatch_pending_syncing_no_pane_grace_then_stop(db_engine, monke
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="sync-grace", display_name="SG", path="/tmp/sg"))
+    db.flush()
     agent = Agent(
         id="syncgrace1111",
         project="sync-grace",
@@ -165,6 +170,7 @@ async def test_dispatch_pending_syncing_no_pane_grace_then_stop(db_engine, monke
         session_id="sess-grace",
     )
     db.add(agent)
+    db.flush()
     pending = Message(
         agent_id=agent.id,
         role=MessageRole.USER,

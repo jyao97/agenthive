@@ -336,8 +336,8 @@ def test_dispatch_picks_up_pending_tasks(db_session, proj, dispatcher):
 
 
 def test_dispatch_skips_missing_project(db_session, dispatcher):
-    """Tasks with a non-existent project_name should be skipped."""
-    t = Task(title="Orphan task", project_name="ghost-project", status=TaskStatus.PENDING)
+    """Tasks with a NULL project_name should be skipped (no matching project)."""
+    t = Task(title="Orphan task", project_name=None, status=TaskStatus.PENDING)
     db_session.add(t)
     db_session.commit()
 
