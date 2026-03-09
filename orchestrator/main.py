@@ -147,7 +147,7 @@ def _graceful_kill_tmux(pane_id: str, session_name: str):
     try:
         _sp.run(["tmux", "kill-session", "-t", session_name], capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
     except Exception:
-        pass
+        logger.debug("tmux kill-session %s failed (may already be dead)", session_name)
 
 
 def _effective_task_status(msg: Message, agent: Agent) -> str:
@@ -2713,8 +2713,10 @@ def _stop_task_agents(db: Session, task, ad, reason, *, emit=True, add_message=F
                 import subprocess as _sp
                 agent.status = AgentStatus.STOPPED
                 if agent.tmux_pane:
-                    _sp.run(["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
+                    _kill = _sp.run(["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
                             capture_output=True, timeout=5)
+                    if _kill.returncode != 0:
+                        logger.debug("tmux kill-session failed for agent %s", agent.id[:8])
                     agent.tmux_pane = None
                 if emit:
                     asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
@@ -2725,8 +2727,10 @@ def _stop_task_agents(db: Session, task, ad, reason, *, emit=True, add_message=F
             import subprocess as _sp
             va.status = AgentStatus.STOPPED
             if va.tmux_pane:
-                _sp.run(["tmux", "kill-session", "-t", f"ah-{va.id[:8]}"],
+                _kill = _sp.run(["tmux", "kill-session", "-t", f"ah-{va.id[:8]}"],
                         capture_output=True, timeout=5)
+                if _kill.returncode != 0:
+                    logger.debug("tmux kill-session failed for agent %s", va.id[:8])
                 va.tmux_pane = None
             if emit:
                 asyncio.ensure_future(emit_agent_update(va.id, "STOPPED", va.project))

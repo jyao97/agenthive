@@ -2212,10 +2212,16 @@ class AgentDispatcher:
             return
         if kill_tmux:
             import subprocess as _sp
-            _sp.run(
+            result = _sp.run(
                 ["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
                 capture_output=True, timeout=5,
             )
+            if result.returncode != 0:
+                logger.warning(
+                    "tmux kill-session failed for agent %s (rc=%d): %s",
+                    agent.id[:8], result.returncode,
+                    result.stderr.decode(errors="replace").strip() if result.stderr else "",
+                )
         agent.tmux_pane = None
 
     def _refresh_pane_attached(self):
