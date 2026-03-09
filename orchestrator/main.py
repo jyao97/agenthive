@@ -5022,7 +5022,7 @@ def _patch_interactive_answer(
     db: Session, agent_id: str, tool_use_id: str,
     selected_index: int, answer_type: str,
     question_index: int = 0,
-):
+) -> bool:
     """Immediately mark an interactive item as answered in the DB.
 
     Builds an answer string from the selected option so the frontend can
@@ -5089,7 +5089,13 @@ def _patch_interactive_answer(
                 item["answer"] = _PLAN_LABELS[selected_index] if selected_index < len(_PLAN_LABELS) else str(selected_index)
             msg.meta_json = json.dumps(meta)
             db.commit()
-            return
+            return True
+
+    logger.debug(
+        "No interactive item found for tool_use_id=%s agent=%s (type=%s)",
+        tool_use_id, agent_id, answer_type,
+    )
+    return False
 
 
 def _count_interactive_questions(db: Session, agent_id: str, tool_use_id: str) -> int:
@@ -5148,7 +5154,9 @@ async def answer_agent_interactive(
             keys = []
 
         # Patch DB after successful key delivery (or immediately for non-tmux)
-        _patch_interactive_answer(db, agent_id, body.tool_use_id, body.selected_index, body.type, body.question_index)
+        patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, body.selected_index, body.type, body.question_index)
+        if not patched:
+            logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
 
         if has_tmux:
             # Multi-question TUI: after the last question, Claude Code shows a
@@ -5208,7 +5216,9 @@ async def answer_agent_interactive(
             # dismiss answer) and overwrite the metadata while our patch
             # hasn't landed yet.  With answer=null in the DB at that point,
             # _merge_interactive_meta cannot protect the user's selection.
-            _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+            patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+            if not patched:
+                logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
 
             # Capture pane content AFTER sending keys for diagnostics
             import asyncio
@@ -5224,7 +5234,9 @@ async def answer_agent_interactive(
 
         # Non-tmux: patch DB immediately (no keys to send)
         if not has_tmux:
-            _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+            patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+            if not patched:
+                logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
 
         return {"detail": "ok", "keys_sent": len(keys) if has_tmux else 0, "prompt_type": prompt_type, "auto_approved": not has_tmux}
 
