@@ -4867,18 +4867,27 @@ Here are the day's conversations (with timestamps):
         finally:
             db.close()
 
-        # Collect PIDs of OTHER agents currently being launched.
-        # Their sessions are not yet in active_sids (agent still in STARTING
-        # state with session_id=None), so we must exclude them explicitly
-        # to prevent cross-agent session theft.
+        # Collect session IDs and PIDs of OTHER agents currently being
+        # launched.  Their sessions are not yet in active_sids (agent still
+        # in STARTING state with session_id=None), so we must exclude them
+        # explicitly to prevent cross-agent session theft.
+        #
+        # Two methods: fd scan (works even without debug logs) + PID match
+        # (fallback for when fd scan doesn't find anything).
         launching_pids: set[int] = set()
+        launching_sids: set[str] = set()
         pane_map = _build_tmux_claude_map()
         for other_agent_id, other_pane_id in self._launching_panes.items():
             if other_agent_id == agent_id:
                 continue
             other_info = pane_map.get(other_pane_id)
             if other_info and other_info.get("pid"):
-                launching_pids.add(other_info["pid"])
+                other_pid = other_info["pid"]
+                launching_pids.add(other_pid)
+                # Also collect the session JSONL the launching process has open
+                other_sid = _detect_pid_session_jsonl(other_pid)
+                if other_sid:
+                    launching_sids.add(other_sid)
 
         # Strategy 0: direct fd scan — the most reliable method when
         # Claude Code keeps the JSONL open (not always the case).
@@ -4915,7 +4924,7 @@ Here are the day's conversations (with timestamps):
                     if not fname.endswith(".jsonl"):
                         continue
                     sid = fname.replace(".jsonl", "")
-                    if sid == current_sid or sid in active_sids:
+                    if sid == current_sid or sid in active_sids or sid in launching_sids:
                         continue
                     fpath = os.path.join(session_dir, fname)
                     mtime = os.path.getmtime(fpath)
