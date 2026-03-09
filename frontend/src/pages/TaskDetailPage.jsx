@@ -55,7 +55,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
   useEffect(() => {
     if (!agentId) return;
     sendWsMessage({ type: "viewing", agent_id: agentId });
-    return () => sendWsMessage({ type: "viewing", agent_id: null });
+    return () => sendWsMessage({ type: "viewing", agent_id: null, _unview: agentId });
   }, [agentId, sendWsMessage]);
 
   useEffect(() => {
