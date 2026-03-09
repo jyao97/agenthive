@@ -5061,12 +5061,18 @@ Here are the day's conversations (with timestamps):
                             if first_prompt:
                                 # Primary: check tagged marker for this agent
                                 marker_attrs = _parse_agenthive_marker(first_prompt)
-                                if marker_attrs and marker_attrs.get("agent_id") == agent_id:
-                                    if mtime < cwd_mtime:
-                                        cwd_sid, cwd_mtime = sid, mtime
+                                if marker_attrs is not None:
+                                    # Marker present → session is agenthive-managed.
+                                    # Only accept if agent_id tag matches; skip
+                                    # otherwise (even for old-format markers with
+                                    # no agent_id — they belong to some other agent).
+                                    if marker_attrs.get("agent_id") == agent_id:
+                                        if mtime < cwd_mtime:
+                                            cwd_sid, cwd_mtime = sid, mtime
                                     continue
-                                # Secondary: check if first JSONL entry uuid
-                                # matches a message in this agent's history
+                                # No marker — session started outside agenthive.
+                                # Fall back to JSONL uuid matching for backward
+                                # compat with pre-marker sessions.
                                 if agent_jsonl_uuids:
                                     first_uuid = _get_first_user_uuid(fpath)
                                     if first_uuid and first_uuid in agent_jsonl_uuids:
@@ -5109,6 +5115,28 @@ Here are the day's conversations (with timestamps):
                 "agent=%s candidate_sid=%s (earliest newer session)",
                 agent_id, cwd_sid[:12],
             )
+
+        # Cross-strategy marker guard: before accepting ANY result, verify
+        # the session doesn't have a marker tagging it for a different agent.
+        # This catches edge cases where Strategy 0/1/3 match by PID or slug
+        # but the session actually belongs to another agent being launched.
+        if result:
+            result_jsonl = _resolve_session_jsonl(
+                result, project_path, worktree,
+            )
+            result_content = _get_first_user_content(result_jsonl)
+            if result_content:
+                result_marker = _parse_agenthive_marker(result_content)
+                if result_marker is not None:
+                    tagged_agent = result_marker.get("agent_id")
+                    if tagged_agent and tagged_agent != agent_id:
+                        logger.warning(
+                            "_detect_successor_session: rejecting %s — "
+                            "marker tags agent_id=%s, not %s",
+                            result[:12], tagged_agent, agent_id,
+                        )
+                        return None
+
         return result
 
     def _spawn_successor_agent(
