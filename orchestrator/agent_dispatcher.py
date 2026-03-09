@@ -2668,6 +2668,21 @@ Here are the day's conversations (with timestamps):
                 logger.warning("Task %s: project %s not found, skipping", task.id, task.project_name)
                 continue
 
+            # Dedup: skip if another task with same title+project is already active
+            dup = (
+                db.query(Task)
+                .filter(
+                    Task.id != task.id,
+                    Task.title == task.title,
+                    Task.project_name == task.project_name,
+                    Task.status.in_((TaskStatus.EXECUTING, TaskStatus.PENDING)),
+                )
+                .first()
+            )
+            if dup:
+                logger.info("Task %s (%s): duplicate of active task %s, skipping", task.id, task.title, dup.id)
+                continue
+
             # Check project capacity (only count agents actively running)
             active = (
                 db.query(Agent)
@@ -2824,6 +2839,7 @@ Here are the day's conversations (with timestamps):
             "task is fully done and self-verified. Do not stop halfway and wait for feedback"
         )
         parts.append("- Avoid dangerous/destructive operations (force push, drop tables, rm -rf, etc.)")
+        parts.append("- Do NOT create tasks, send messages, or make HTTP requests to the AgentHive API (localhost:8080). You are a task worker — you must not spawn new tasks")
         parts.append("- Commit all changes with descriptive messages")
         parts.append("- Before your final message, append a short entry to PROGRESS.md with today's date, task title, and any lessons learned (gotchas, workarounds, or 'straightforward — no issues' if none)")
         parts.append("- Leave a summary of what was done as your final message")
