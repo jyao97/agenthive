@@ -98,8 +98,31 @@ class Task(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
-    # Legacy columns (kept for old dispatcher compatibility)
-    # NOTE: existing DB has NOT NULL on these — provide defaults for v2 inserts
+    # DEPRECATED: Legacy columns from v1 task system.
+    # These are superseded by v2 fields (title, description, project_name, branch_name, etc.).
+    # Kept for backward compatibility with old dispatcher and existing DB rows.
+    # Plan: migrate TaskDetail.jsx to v2 API, then drop these columns.
+    # See WS-6 in code quality audit for full removal plan.
+    #
+    # Remaining reads (as of 2026-03-09):
+    #   - task.prompt: dispatcher.py:140 (push notification body fallback),
+    #       worker_manager.py:115 (_build_prompt for v1 worker)
+    #   - task.project: dispatcher.py (entire v1 dispatch loop — harvest, timeouts, retry,
+    #       assign, recovery; ~20 refs), agent_dispatcher.py:2946,3017,3023 (fallback:
+    #       project_name or task.project), main.py:1076,1492,1677 (project rename/delete)
+    #   - task.mode: no reads outside model definition (Agent.mode used instead)
+    #   - task.container_id: dispatcher.py (v1 worker process tracking — harvest, timeout,
+    #       assign, recovery; ~12 refs)
+    #   - task.branch: no reads outside model definition (branch_name used instead)
+    #   - task.retries: dispatcher.py:188,194,203 (v1 auto-retry logic)
+    #   - task.result_summary: dispatcher.py:120 (v1 harvest)
+    #   - task.stream_log: dispatcher.py:115,173 (v1 harvest/timeout)
+    #   - task.error_message: dispatcher.py (v1 harvest/timeout/retry/assign/recovery),
+    #       agent_dispatcher.py (v2 task harvest — 2989,3029,3066,3098),
+    #       main.py (v2 merge flow — 3093,3100,3115,3127,3143),
+    #       schemas.py TaskOut (v2 API response)
+    #   NOTE: error_message is actively used by BOTH v1 and v2 systems.
+    # NOTE: existing DB has NOT NULL on prompt/project/mode — provide defaults for v2 inserts
     prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     project: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     mode: Mapped[AgentMode] = mapped_column(Enum(AgentMode), nullable=False, default=AgentMode.AUTO)
