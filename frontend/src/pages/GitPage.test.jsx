@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { ToastProvider } from "../contexts/ToastContext";
 import GitPage from "./GitPage";
 
 // --- Mock navigate ---
@@ -33,7 +34,9 @@ import {
 function renderGitPage() {
   return render(
     <MemoryRouter>
-      <GitPage theme="dark" onToggleTheme={() => {}} />
+      <ToastProvider>
+        <GitPage theme="dark" onToggleTheme={() => {}} />
+      </ToastProvider>
     </MemoryRouter>
   );
 }
