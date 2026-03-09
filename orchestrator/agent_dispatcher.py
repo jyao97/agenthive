@@ -1233,13 +1233,21 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, s
     # producing many copies of "You are working in project: ..." etc.
     # Keep only the first occurrence of each unique user message.
     if turns:
-        seen_user: set[str] = set()
+        seen_uuids: set[str] = set()
+        seen_content: set[str] = set()
         deduped: list[tuple[str, str, dict | None, str | None]] = []
         for role, content, meta, uuid in turns:
             if role == "user":
-                if content in seen_user:
-                    continue
-                seen_user.add(content)
+                # Primary: UUID-based dedup
+                if uuid:
+                    if uuid in seen_uuids:
+                        continue
+                    seen_uuids.add(uuid)
+                # Secondary: content fallback for turns without UUID
+                else:
+                    if content in seen_content:
+                        continue
+                    seen_content.add(content)
             deduped.append((role, content, meta, uuid))
         turns = deduped
 
@@ -1306,7 +1314,7 @@ def _update_stale_interactive_metadata(
     #    GUARD: skip if another message already carries the same tool_use_id
     #    to prevent duplicate interactive bubbles.
     turns_with_meta = [
-        (content, meta)
+        (content, meta, _rest[0] if _rest else None)
         for _role, content, meta, *_rest in turns
         if _role == "assistant" and meta and meta.get("interactive")
     ]
@@ -1328,7 +1336,7 @@ def _update_stale_interactive_metadata(
             Message.meta_json.is_(None),
         ).all()
         for msg in agent_msgs:
-            for turn_content, turn_meta in turns_with_meta:
+            for turn_content, turn_meta, turn_uuid in turns_with_meta:
                 # Skip if this interactive item already exists on another message
                 turn_tids = {
                     it.get("tool_use_id")
@@ -1337,7 +1345,13 @@ def _update_stale_interactive_metadata(
                 }
                 if turn_tids & existing_tids:
                     continue
-                # Match by content prefix (DB msg may be truncated/shorter)
+                # Primary: UUID match
+                if turn_uuid and msg.jsonl_uuid and turn_uuid == msg.jsonl_uuid:
+                    msg.meta_json = json.dumps(turn_meta)
+                    existing_tids.update(turn_tids)
+                    updated = True
+                    break
+                # Secondary: content prefix fallback
                 if (
                     msg.content
                     and turn_content
@@ -5475,6 +5489,18 @@ Here are the day's conversations (with timestamps):
                             # since last sync).
                             updated = False
                             for existing in _existing_agent_msgs:
+                                # Primary: UUID match
+                                if uuid and existing.jsonl_uuid == uuid:
+                                    if len(existing.content) < len(content):
+                                        existing.content = content
+                                        existing.completed_at = _utcnow()
+                                        if meta is not None:
+                                            existing.meta_json = _merge_interactive_meta(
+                                                existing.meta_json, meta,
+                                            )
+                                    updated = True
+                                    break
+                                # Secondary: content prefix fallback
                                 if (
                                     len(existing.content) < len(content)
                                     and content.startswith(
@@ -5520,20 +5546,32 @@ Here are the day's conversations (with timestamps):
                     ).order_by(Message.created_at.desc()).first()
                     last_assistant = None
                     last_assistant_meta = None
-                    for role, content, meta in reversed(conv_turns):
+                    last_assistant_uuid = None
+                    for role, content, meta, uuid in reversed(conv_turns):
                         if role == "assistant":
                             last_assistant = content
                             last_assistant_meta = meta
+                            last_assistant_uuid = uuid
                             break
-                    if (
-                        last_agent_msg and last_assistant
-                        and len(last_agent_msg.content) < len(last_assistant)
-                        and last_assistant.startswith(
-                            last_agent_msg.content[:200]
-                        )
-                    ):
+                    _should_update = False
+                    if last_agent_msg and last_assistant:
+                        # Primary: UUID match
+                        if (last_assistant_uuid and last_agent_msg.jsonl_uuid
+                                and last_assistant_uuid == last_agent_msg.jsonl_uuid):
+                            _should_update = len(last_agent_msg.content) < len(last_assistant)
+                        # Secondary: content prefix fallback
+                        elif (
+                            len(last_agent_msg.content) < len(last_assistant)
+                            and last_assistant.startswith(
+                                last_agent_msg.content[:200]
+                            )
+                        ):
+                            _should_update = True
+                    if _should_update:
                         last_agent_msg.content = last_assistant
                         last_agent_msg.completed_at = _utcnow()
+                        if last_assistant_uuid and not last_agent_msg.jsonl_uuid:
+                            last_agent_msg.jsonl_uuid = last_assistant_uuid
                         if last_assistant_meta is not None:
                             last_agent_msg.meta_json = _merge_interactive_meta(
                                 last_agent_msg.meta_json, last_assistant_meta,
@@ -5898,18 +5936,26 @@ Here are the day's conversations (with timestamps):
                     if last_turn_count > 0 and new_turns:
                         prev_role, prev_content, *prev_rest = turns[last_turn_count - 1]
                         prev_meta = prev_rest[0] if prev_rest else None
+                        prev_uuid = prev_rest[1] if len(prev_rest) > 1 else None
                         if prev_role == "assistant":
                             last_agent_msg = db.query(Message).filter(
                                 Message.agent_id == agent_id,
                                 Message.role == MessageRole.AGENT,
                             ).order_by(Message.created_at.desc()).first()
-                            if (
-                                last_agent_msg
-                                and len(last_agent_msg.content) < len(prev_content)
-                            ):
+                            # Verify match: UUID primary, length fallback
+                            _is_match = False
+                            if last_agent_msg:
+                                if (prev_uuid and last_agent_msg.jsonl_uuid
+                                        and prev_uuid == last_agent_msg.jsonl_uuid):
+                                    _is_match = True
+                                elif len(last_agent_msg.content) < len(prev_content):
+                                    _is_match = True
+                            if _is_match and len(last_agent_msg.content) < len(prev_content):
                                 old_len = len(last_agent_msg.content)
                                 last_agent_msg.content = prev_content
                                 last_agent_msg.completed_at = _utcnow()
+                                if prev_uuid and not last_agent_msg.jsonl_uuid:
+                                    last_agent_msg.jsonl_uuid = prev_uuid
                                 if prev_meta is not None:
                                     last_agent_msg.meta_json = _merge_interactive_meta(
                                         last_agent_msg.meta_json, prev_meta,
