@@ -242,18 +242,22 @@ def _merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> 
     return json.dumps(merged)
 
 
-# Marker prefix embedded in _build_agent_prompt output — sync loop uses this
-# to skip wrapped prompts (already stored as the original user message).
-# New format: <!-- agenthive-prompt agent_id=... msg_id=... -->
-# Old format (compat): <!-- agenthive-prompt -->
+# Legacy marker prefix — kept for backward-compat parsing of old sessions.
+# New prompts no longer embed this; ownership is tracked via .owner sidecar
+# files instead.
 _AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt"
+
+# Preamble prefix used to detect system-wrapped prompts in JSONL content.
+# This is the first line of the preamble injected by _build_agent_prompt.
+_PREAMBLE_PREFIX = "You are working in project:"
 
 
 def _parse_agenthive_marker(text: str) -> dict | None:
-    """Extract agent_id and msg_id from an agenthive-prompt marker.
+    """Extract agent_id and msg_id from a legacy agenthive-prompt marker.
 
     Returns dict of attributes if marker found, None otherwise.
     Old-format markers (no attributes) return an empty dict.
+    Kept for backward compat with sessions created before the sidecar system.
     """
     prefix = _AGENTHIVE_PROMPT_MARKER
     pos = text[:200].find(prefix)
@@ -269,6 +273,43 @@ def _parse_agenthive_marker(text: str) -> dict | None:
             k, _, v = part.partition("=")
             attrs[k] = v
     return attrs
+
+
+def _is_wrapped_prompt(content: str) -> bool:
+    """Check if content is a system-wrapped prompt from _build_agent_prompt.
+
+    Detects both new-style (preamble prefix) and old-style (marker tag).
+    """
+    head = content[:80]
+    return _PREAMBLE_PREFIX in head or _AGENTHIVE_PROMPT_MARKER in head
+
+
+def _write_session_owner(session_dir: str, sid: str, agent_id: str):
+    """Write ownership sidecar file next to a session JSONL.
+
+    Creates ``{session_dir}/{sid}.owner`` containing just the agent_id.
+    This allows deterministic session→agent mapping without embedding
+    metadata in the prompt content.
+    """
+    path = os.path.join(session_dir, f"{sid}.owner")
+    try:
+        with open(path, "w") as f:
+            f.write(agent_id)
+    except OSError:
+        pass
+
+
+def _read_session_owner(session_dir: str, sid: str) -> str | None:
+    """Read ownership sidecar file for a session.
+
+    Returns the agent_id if the sidecar exists, None otherwise.
+    """
+    path = os.path.join(session_dir, f"{sid}.owner")
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
 
 # Image metadata injected by Claude Code's Read tool — internal only, hide from UI
 _IMAGE_META_RE = re.compile(
@@ -4032,7 +4073,6 @@ Here are the day's conversations (with timestamps):
                 agent, project, content,
                 include_history=include_history, db=db,
                 insights_list=insights_list,
-                msg_id=msg.id,
             )
 
         # 5. Update agent preview
@@ -4045,13 +4085,15 @@ Here are the day's conversations (with timestamps):
         self, agent: Agent, project: Project, user_message: str,
         include_history: bool = False, db: Session | None = None,
         insights_list: list[str] | None = None,
-        msg_id: str | None = None,
     ) -> str:
         """Build the wrapped prompt sent to Claude for an agent message.
 
         When *insights_list* is provided, uses it directly instead of
         querying the DB (avoids duplicate queries when called from
         ``_prepare_dispatch``).
+
+        Agent/message ownership is tracked via .owner sidecar files,
+        NOT embedded in the prompt content.
         """
         history_block = ""
         if include_history and db:
@@ -4067,14 +4109,7 @@ Here are the day's conversations (with timestamps):
                 f"Relevant past insights for this project:\n{items}\n"
             )
 
-        # Build marker with agent/message tags for deterministic dedup
-        marker = f"{_AGENTHIVE_PROMPT_MARKER} agent_id={agent.id}"
-        if msg_id:
-            marker += f" msg_id={msg_id}"
-        marker += " -->"
-
         return (
-            f"{marker}\n"
             f"You are working in project: {project.display_name}\n"
             f"Project path: {project.path}\n"
             f"\n"
@@ -4403,7 +4438,7 @@ Here are the day's conversations (with timestamps):
                     for role, content, *_rest in turns:
                         if role == "user" and content:
                             # Skip system-wrapped prompts — use real user message
-                            if _AGENTHIVE_PROMPT_MARKER in content[:80]:
+                            if _is_wrapped_prompt(content):
                                 continue
                             agent_name = (content or "")[:80]
                             break
@@ -4778,6 +4813,11 @@ Here are the day's conversations (with timestamps):
 
     def start_session_sync(self, agent_id: str, session_id: str, project_path: str):
         """Start a background task to live-sync a CLI session JSONL."""
+        # Write ownership sidecar so _detect_successor_session can
+        # determine which agent owns this session without parsing content.
+        _write_session_owner(
+            session_source_dir(project_path), session_id, agent_id,
+        )
         self._cancel_sync_task(agent_id)
         task = asyncio.ensure_future(
             self._sync_session_loop(agent_id, session_id, project_path)
@@ -5050,29 +5090,32 @@ Here are the day's conversations (with timestamps):
                                 best_sid, best_mtime = sid, mtime
                             continue
 
-                    # Strategy 2: CWD + agent-tag match — earliest wins
-                    # Uses the agenthive-prompt marker (which embeds agent_id)
-                    # for deterministic ownership.  Falls back to JSONL uuid
-                    # matching for sessions started before tagged markers.
+                    # Strategy 2: CWD + ownership sidecar match — earliest wins
+                    # Primary: .owner sidecar file (written by start_session_sync)
+                    # Secondary: legacy marker tag (backward compat with old sessions)
+                    # Tertiary: JSONL uuid matching (pre-marker sessions)
                     if claude_cwd and claude_cwd.startswith(project_path):
                         candidate_cwd = _get_session_cwd(fpath)
                         if candidate_cwd and candidate_cwd.startswith(project_path):
+                            # Primary: check .owner sidecar file
+                            owner = _read_session_owner(session_dir, sid)
+                            if owner is not None:
+                                if owner == agent_id:
+                                    if mtime < cwd_mtime:
+                                        cwd_sid, cwd_mtime = sid, mtime
+                                continue  # owned by someone — skip either way
+
+                            # Secondary: legacy marker tag (old sessions)
                             first_prompt = _get_first_user_content(fpath)
                             if first_prompt:
-                                # Primary: check tagged marker for this agent
                                 marker_attrs = _parse_agenthive_marker(first_prompt)
                                 if marker_attrs is not None:
-                                    # Marker present → session is agenthive-managed.
-                                    # Only accept if agent_id tag matches; skip
-                                    # otherwise (even for old-format markers with
-                                    # no agent_id — they belong to some other agent).
                                     if marker_attrs.get("agent_id") == agent_id:
                                         if mtime < cwd_mtime:
                                             cwd_sid, cwd_mtime = sid, mtime
                                     continue
-                                # No marker — session started outside agenthive.
-                                # Fall back to JSONL uuid matching for backward
-                                # compat with pre-marker sessions.
+
+                                # Tertiary: JSONL uuid matching
                                 if agent_jsonl_uuids:
                                     first_uuid = _get_first_user_uuid(fpath)
                                     if first_uuid and first_uuid in agent_jsonl_uuids:
@@ -5116,26 +5159,39 @@ Here are the day's conversations (with timestamps):
                 agent_id, cwd_sid[:12],
             )
 
-        # Cross-strategy marker guard: before accepting ANY result, verify
-        # the session doesn't have a marker tagging it for a different agent.
-        # This catches edge cases where Strategy 0/1/3 match by PID or slug
-        # but the session actually belongs to another agent being launched.
+        # Cross-strategy ownership guard: before accepting ANY result, verify
+        # the session isn't owned by a different agent.  Checks sidecar first,
+        # falls back to legacy marker for old sessions.
         if result:
-            result_jsonl = _resolve_session_jsonl(
-                result, project_path, worktree,
-            )
-            result_content = _get_first_user_content(result_jsonl)
-            if result_content:
-                result_marker = _parse_agenthive_marker(result_content)
-                if result_marker is not None:
-                    tagged_agent = result_marker.get("agent_id")
-                    if tagged_agent and tagged_agent != agent_id:
+            # Check sidecar in all session dirs
+            for _sd in session_dirs:
+                owner = _read_session_owner(_sd, result)
+                if owner is not None:
+                    if owner != agent_id:
                         logger.warning(
                             "_detect_successor_session: rejecting %s — "
-                            "marker tags agent_id=%s, not %s",
-                            result[:12], tagged_agent, agent_id,
+                            "sidecar says agent_id=%s, not %s",
+                            result[:12], owner, agent_id,
                         )
                         return None
+                    break  # owned by us — OK
+            else:
+                # No sidecar — check legacy marker
+                result_jsonl = _resolve_session_jsonl(
+                    result, project_path, worktree,
+                )
+                result_content = _get_first_user_content(result_jsonl)
+                if result_content:
+                    result_marker = _parse_agenthive_marker(result_content)
+                    if result_marker is not None:
+                        tagged_agent = result_marker.get("agent_id")
+                        if tagged_agent and tagged_agent != agent_id:
+                            logger.warning(
+                                "_detect_successor_session: rejecting %s — "
+                                "marker tags agent_id=%s, not %s",
+                                result[:12], tagged_agent, agent_id,
+                            )
+                            return None
 
         return result
 
@@ -5175,7 +5231,7 @@ Here are the day's conversations (with timestamps):
             for role, content, *_rest in turns:
                 if role == "user" and content:
                     # Skip system-wrapped prompts — use real user message
-                    if _AGENTHIVE_PROMPT_MARKER in content[:80]:
+                    if _is_wrapped_prompt(content):
                         continue
                     agent_name = (content or "")[:80]
                     break
@@ -5445,7 +5501,7 @@ Here are the day's conversations (with timestamps):
                 if t[0] in ("user", "assistant")
                 # Skip system-wrapped prompts injected by _build_agent_prompt —
                 # the original user message is already stored in the DB.
-                and not (t[0] == "user" and _AGENTHIVE_PROMPT_MARKER in t[1][:80])
+                and not (t[0] == "user" and _is_wrapped_prompt(t[1]))
             ]
 
             if conv_turns:
@@ -6001,17 +6057,19 @@ Here are the day's conversations (with timestamps):
                         meta_json = json.dumps(meta) if meta else None
                         if role == "user":
                             # Skip system-wrapped prompts from _build_agent_prompt.
-                            # New tagged markers carry agent_id/msg_id for
-                            # deterministic dedup; old markers are also caught
-                            # by the prefix check.
-                            if _AGENTHIVE_PROMPT_MARKER in content[:80]:
-                                # Extract msg_id from marker if present —
-                                # backfill jsonl_uuid onto the original web
-                                # message so future syncs use UUID dedup.
-                                marker_attrs = _parse_agenthive_marker(content)
-                                if marker_attrs and marker_attrs.get("msg_id") and jsonl_uuid:
-                                    _web_msg = db.get(Message, marker_attrs["msg_id"])
-                                    if _web_msg and not _web_msg.jsonl_uuid:
+                            # Detects both new preamble prefix and legacy markers.
+                            if _is_wrapped_prompt(content):
+                                # Backfill jsonl_uuid onto the most recent
+                                # unlinked web message for this agent, so
+                                # future syncs use UUID dedup.
+                                if jsonl_uuid:
+                                    _web_msg = db.query(Message).filter(
+                                        Message.agent_id == agent_id,
+                                        Message.role == MessageRole.USER,
+                                        Message.source == "web",
+                                        Message.jsonl_uuid.is_(None),
+                                    ).order_by(Message.created_at.desc()).first()
+                                    if _web_msg:
                                         _web_msg.jsonl_uuid = jsonl_uuid
                                 continue
                             # Primary: UUID-based dedup — skip if jsonl_uuid
