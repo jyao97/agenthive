@@ -1710,6 +1710,7 @@ async def delete_project(name: str, request: Request, db: Session = Depends(get_
 
 @app.get("/api/projects/{name}/agents", response_model=list[AgentBrief])
 async def list_project_agents(
+    request: Request,
     name: str,
     status: AgentStatus | None = None,
     limit: int = 50,
@@ -1719,7 +1720,8 @@ async def list_project_agents(
     q = db.query(Agent).filter(Agent.project == name)
     if status:
         q = q.filter(Agent.status == status)
-    return q.order_by(Agent.last_message_at.desc().nulls_last(), Agent.created_at.desc()).limit(limit).all()
+    rows = q.order_by(Agent.last_message_at.desc().nulls_last(), Agent.created_at.desc()).limit(limit).all()
+    return _enrich_agent_briefs(rows, request)
 
 
 # ---- Sessions (from ~/.claude/history.jsonl) ----
@@ -4268,6 +4270,19 @@ async def scan_agents(request: Request, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+def _enrich_agent_briefs(rows, request) -> list[AgentBrief]:
+    """Convert Agent ORM rows to AgentBrief with live is_generating state."""
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    generating = ad._generating_agents if ad else set()
+    results = []
+    for row in rows:
+        brief = AgentBrief.model_validate(row)
+        if row.id in generating:
+            brief.is_generating = True
+        results.append(brief)
+    return results
+
+
 @app.get("/api/agents", response_model=list[AgentBrief])
 async def list_agents(
     request: Request,
@@ -4287,16 +4302,7 @@ async def list_agents(
         .limit(limit)
         .all()
     )
-    # Enrich with live generating state from dispatcher runtime
-    ad = getattr(request.app.state, "agent_dispatcher", None)
-    generating = ad._generating_agents if ad else set()
-    results = []
-    for row in rows:
-        brief = AgentBrief.model_validate(row)
-        if row.id in generating:
-            brief.is_generating = True
-        results.append(brief)
-    return results
+    return _enrich_agent_briefs(rows, request)
 
 
 @app.get("/api/agents/unread")
