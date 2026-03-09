@@ -4106,7 +4106,10 @@ Here are the day's conversations (with timestamps):
         insights_list: list[str] = []
         if content and self._is_first_user_message(db, agent.id):
             try:
-                insights_list = query_insights(db, project.name, content, limit=10)
+                if project.ai_insights:
+                    insights_list = query_insights_ai(db, project.name, content)
+                else:
+                    insights_list = query_insights(db, project.name, content, limit=10)
             except Exception:
                 logger.debug("query_insights failed in _prepare_dispatch", exc_info=True)
 
