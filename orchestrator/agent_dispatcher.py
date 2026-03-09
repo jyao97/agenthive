@@ -1647,6 +1647,62 @@ def _build_tmux_claude_map() -> dict[str, dict]:
     return pane_map
 
 
+def _build_tmux_idle_shell_map(claude_pane_ids: set[str]) -> dict[str, dict]:
+    """Build a map of tmux panes with an idle shell (no claude child).
+
+    Only returns panes NOT already in *claude_pane_ids*.
+    Returns: {pane_id: {"shell_pid": int, "cwd": str, "session_name": str}}
+    """
+    try:
+        result = _sp.run(
+            ["tmux", "list-panes", "-a", "-F",
+             "#{pane_id} #{pane_pid} #{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return {}
+    except (_sp.TimeoutExpired, FileNotFoundError, OSError):
+        return {}
+
+    idle_map = {}
+    for line in result.stdout.strip().splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 2:
+            continue
+        pane_id, shell_pid_str = parts[0], parts[1]
+        session_name = parts[2] if len(parts) > 2 else ""
+
+        # Skip panes that already have claude running
+        if pane_id in claude_pane_ids:
+            continue
+
+        # Check that the shell has NO child processes (idle prompt)
+        try:
+            children = _sp.run(
+                ["ps", "--ppid", shell_pid_str, "-o", "pid="],
+                capture_output=True, text=True, timeout=5,
+            )
+            if children.stdout.strip():
+                continue  # shell has children — not idle
+        except (_sp.TimeoutExpired, OSError):
+            continue
+
+        # Read CWD from the shell process itself
+        try:
+            shell_pid = int(shell_pid_str)
+            cwd = os.path.realpath(os.readlink(f"/proc/{shell_pid}/cwd"))
+        except (OSError, ValueError):
+            continue
+
+        idle_map[pane_id] = {
+            "shell_pid": shell_pid,
+            "cwd": cwd,
+            "session_name": session_name,
+        }
+
+    return idle_map
+
+
 def _get_pane_owner(pane_id: str, exclude_agent_id: str | None = None) -> "Agent | None":
     """Return any non-STOPPED agent that owns *pane_id*, or None."""
     db = SessionLocal()
@@ -4358,6 +4414,73 @@ Here are the day's conversations (with timestamps):
                 db.commit()
                 agents_to_sync.append((agent.id, best_sid, proj.path))
                 self._emit(emit_agent_update(agent.id, agent.status.value, proj.name))
+
+        # --- Auto-launch claude in idle shell panes in project directories ---
+        idle_shells = _build_tmux_idle_shell_map(set(pane_map.keys()) | active_tmux_panes)
+        for pane_id, info in idle_shells.items():
+            cwd = info["cwd"]
+            sname = info["session_name"]
+            # Skip orchestrator-managed sessions (ah-*) — those are handled above
+            if sname.startswith("ah-"):
+                continue
+            # Match CWD to a registered project
+            matched_proj_path = None
+            if cwd in proj_by_path:
+                matched_proj_path = cwd
+            else:
+                for pp in proj_by_path:
+                    if cwd.startswith(pp + "/"):
+                        matched_proj_path = pp
+                        break
+            if not matched_proj_path:
+                continue
+
+            proj = proj_by_path[matched_proj_path]
+
+            # Build claude command and launch it in the pane
+            import shlex
+            from config import CLAUDE_BIN
+            cmd_parts = [CLAUDE_BIN,
+                         "--output-format", "stream-json", "--verbose",
+                         "--dangerously-skip-permissions"]
+            if proj.default_model:
+                cmd_parts += ["--model", proj.default_model]
+            claude_cmd = " ".join(shlex.quote(p) for p in cmd_parts)
+
+            try:
+                # Pre-accept trust dialog
+                from main import _preflight_claude_project
+                _preflight_claude_project(proj.path)
+
+                _sp.run(
+                    ["tmux", "send-keys", "-t", pane_id,
+                     "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED", "Enter"],
+                    capture_output=True, timeout=5,
+                )
+                _sp.run(
+                    ["tmux", "send-keys", "-t", pane_id, claude_cmd, "Enter"],
+                    capture_output=True, timeout=5,
+                )
+            except (_sp.TimeoutExpired, OSError) as e:
+                logger.warning(
+                    "Failed to auto-launch claude in pane %s: %s", pane_id, e,
+                )
+                continue
+
+            # Track pane so subsequent loop iterations skip it
+            active_tmux_panes.add(pane_id)
+
+            # Schedule a detect run in ~10s (5 ticks) so the claude process
+            # has time to boot before the next scan picks it up.
+            self._cli_detect_counter = max(
+                self._cli_detect_counter, self._cli_detect_interval - 5,
+            )
+
+            logger.info(
+                "Auto-launched claude in idle tmux pane %s (session=%s, project=%s) — "
+                "next detect cycle will pick it up",
+                pane_id, sname, proj.name,
+            )
 
         # Start sync tasks (after commit)
         for aid, sid, ppath in agents_to_sync:
