@@ -242,9 +242,9 @@ def _merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> 
     return json.dumps(merged)
 
 
-# Marker embedded in _build_agent_prompt output — sync loop uses this to skip
+# Prefix used by _build_agent_prompt — sync loop checks for this to skip
 # wrapped prompts (which are already stored as the original user message).
-_AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt -->"
+_WRAPPED_PROMPT_PREFIX = "You are working in project:"
 
 # Image metadata injected by Claude Code's Read tool — internal only, hide from UI
 _IMAGE_META_RE = re.compile(
@@ -3840,8 +3840,7 @@ Here are the day's conversations (with timestamps):
                     wrap_prompt=False,
                 )
 
-            _tagged = f"{_AGENTHIVE_PROMPT_MARKER}\n{due_msg.content}"
-            ok = send_tmux_message(agent.tmux_pane, _tagged)
+            ok = send_tmux_message(agent.tmux_pane, due_msg.content)
             if ok:
                 due_msg.status = MessageStatus.COMPLETED
                 due_msg.completed_at = _utcnow()
@@ -3971,7 +3970,6 @@ Here are the day's conversations (with timestamps):
             )
 
         return (
-            f"{_AGENTHIVE_PROMPT_MARKER}\n"
             f"You are working in project: {project.display_name}\n"
             f"Project path: {project.path}\n"
             f"\n"
@@ -5232,7 +5230,7 @@ Here are the day's conversations (with timestamps):
                 if r in ("user", "assistant")
                 # Skip system-wrapped prompts injected by _build_agent_prompt —
                 # the original user message is already stored in the DB.
-                and not (r == "user" and _AGENTHIVE_PROMPT_MARKER in c[:80])
+                and not (r == "user" and c.lstrip().startswith(_WRAPPED_PROMPT_PREFIX))
             ]
 
             if conv_turns:
@@ -5742,7 +5740,7 @@ Here are the day's conversations (with timestamps):
                         meta_json = json.dumps(meta) if meta else None
                         if role == "user":
                             # Skip system-wrapped prompts from _build_agent_prompt
-                            if _AGENTHIVE_PROMPT_MARKER in content[:80]:
+                            if content.lstrip().startswith(_WRAPPED_PROMPT_PREFIX):
                                 continue
                             # Dedup: skip if a matching web-sent (or sourceless)
                             # message already exists.  Use whitespace-normalised
