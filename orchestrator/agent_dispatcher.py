@@ -612,9 +612,12 @@ _detect_session_model = _parse_session_model
 import re as _re
 
 _PREAMBLE_RE = _re.compile(
-    r"^You are working in project: .+?\n"
+    r"^(?:<!-- agenthive-prompt[^>]*-->\n)?"        # optional marker line
+    r"You are working in project: .+?\n"
     r"Project path: .+?\n\n"
-    r"First read the project's CLAUDE\.md to understand project conventions\.\n\n",
+    r"First read the project's CLAUDE\.md to understand project conventions\.\n"
+    r"(?:Relevant past insights[^\n]*\n(?:  - [^\n]*\n)*\n?)?"  # optional insights
+    r"(?:## Recent conversation context[^\n]*\n(?:.*?\n)*?\n)?",  # optional history
     _re.DOTALL,
 )
 _POSTAMBLE_RE = _re.compile(
@@ -4385,6 +4388,9 @@ Here are the day's conversations (with timestamps):
                     turns = _parse_session_turns(best_fpath)
                     for role, content, *_rest in turns:
                         if role == "user" and content:
+                            # Skip system-wrapped prompts — use real user message
+                            if _AGENTHIVE_PROMPT_MARKER in content[:80]:
+                                continue
                             agent_name = (content or "")[:80]
                             break
                     detected_model = _detect_session_model(best_fpath)
@@ -5126,6 +5132,9 @@ Here are the day's conversations (with timestamps):
             detected_model = _detect_session_model(new_fpath) or model
             for role, content, *_rest in turns:
                 if role == "user" and content:
+                    # Skip system-wrapped prompts — use real user message
+                    if _AGENTHIVE_PROMPT_MARKER in content[:80]:
+                        continue
                     agent_name = (content or "")[:80]
                     break
 
