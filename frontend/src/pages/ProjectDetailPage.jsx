@@ -699,6 +699,16 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     }
   }, [name, showToast]);
 
+  const handleToggleAiInsights = useCallback(async (enabled) => {
+    try {
+      const updated = await updateProjectSettings(name, { ai_insights: enabled });
+      setProject((prev) => prev ? { ...prev, ai_insights: updated.ai_insights } : prev);
+      showToast(enabled ? "AI-filtered insights enabled" : "AI-filtered insights disabled");
+    } catch (err) {
+      showToast(err.message || "Failed to update setting", "error");
+    }
+  }, [name, showToast]);
+
   useEffect(() => {
     if (!visible) return;
     loadData();
@@ -1488,6 +1498,23 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           >
             <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
               project.auto_progress_summary ? "translate-x-4" : "translate-x-0"
+            }`} />
+          </button>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm text-body">AI-Filtered Insights</p>
+            <p className="text-xs text-dim">Use AI to select relevant insights for new agents</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleToggleAiInsights(!project.ai_insights)}
+            className={`shrink-0 w-9 h-5 rounded-full transition-colors relative ${
+              project.ai_insights ? "bg-cyan-500" : "bg-zinc-600"
+            }`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+              project.ai_insights ? "translate-x-4" : "translate-x-0"
             }`} />
           </button>
         </div>
