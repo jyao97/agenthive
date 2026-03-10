@@ -28,7 +28,7 @@ export default function ReviewView({ tasks, loading, onRefresh, selectedTaskId, 
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <ErrorAlert error={error} onDismiss={() => setError(null)} />
       {sorted.map((task) => (
         <ReviewCard

@@ -26,7 +26,7 @@ export default memo(function DoneCard({ task }) {
 
   return (
     <div
-      className="relative w-full text-left rounded-xl bg-surface shadow-card overflow-hidden transition-all hover:ring-1 hover:ring-ring-hover cursor-pointer"
+      className="relative w-full text-left rounded-[12px] bg-surface shadow-card overflow-hidden cursor-pointer"
       onClick={() => navigate(`/tasks/${task.id}`)}
       role="button"
       tabIndex={0}
@@ -35,29 +35,29 @@ export default memo(function DoneCard({ task }) {
       {/* Left accent bar */}
       <div className={`absolute left-0 top-0 bottom-0 w-[3px] ${accent}`} />
 
-      <div className="flex items-start gap-3 pl-5 pr-4 py-3.5">
-        {/* Filled checkbox indicator */}
-        <div className="shrink-0 mt-0.5">
-          <div className={`w-7 h-7 rounded-full border-2 flex items-center justify-center ${si.color}`}>
-            <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+      <div className="flex items-center gap-3.5 pl-5 pr-4 py-4">
+        {/* Filled checkbox — 24px */}
+        <div className="shrink-0">
+          <div className={`w-6 h-6 rounded-full border-[2px] flex items-center justify-center ${si.color}`}>
+            <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d={si.icon} />
             </svg>
           </div>
         </div>
 
-        {/* Content area */}
+        {/* Content */}
         <div className="flex-1 min-w-0">
-          <p className={`text-[15px] font-semibold leading-snug truncate ${isCancelled ? "text-faint line-through" : "text-heading"}`}>
+          <p className={`text-base font-semibold leading-snug truncate ${isCancelled ? "text-faint line-through" : "text-heading"}`}>
             {task.title}
           </p>
         </div>
 
-        {/* Right side: duration + time */}
-        <div className="shrink-0 text-right mt-0.5">
+        {/* Duration + time */}
+        <div className="shrink-0 text-right">
           {task.started_at && task.completed_at && (
-            <p className="text-[10px] text-dim">{durationDisplay(task.started_at, task.completed_at)}</p>
+            <p className="text-xs text-dim">{durationDisplay(task.started_at, task.completed_at)}</p>
           )}
-          <p className="text-[10px] text-faint">{relativeTime(task.completed_at || task.created_at)}</p>
+          <p className="text-xs text-faint">{relativeTime(task.completed_at || task.created_at)}</p>
         </div>
       </div>
     </div>

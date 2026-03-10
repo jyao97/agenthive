@@ -14,36 +14,34 @@ export default memo(function ActiveCard({ task, selected, onSelect, onCancel, on
 
   return (
     <div
-      className={`relative w-full text-left rounded-xl bg-surface shadow-card overflow-hidden transition-all ${
-        selected
-          ? "ring-2 ring-cyan-500/50 dark:ring-cyan-400/40"
-          : "hover:ring-1 hover:ring-ring-hover"
+      className={`relative w-full text-left rounded-[12px] bg-surface shadow-card overflow-hidden transition-all ${
+        selected ? "ring-2 ring-cyan-500/50 dark:ring-cyan-400/40" : ""
       }`}
     >
       {/* Left accent bar */}
       <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-cyan-500" />
 
-      <div className="flex items-start gap-3 pl-5 pr-4 py-3.5">
+      <div className="flex items-center gap-3.5 pl-5 pr-4 py-4">
         {/* Pulsing checkbox */}
         <button
           type="button"
           onClick={() => onSelect?.(task.id)}
-          className="shrink-0 mt-0.5 group"
+          className="shrink-0 group"
           aria-label="Select task"
         >
           <div
-            className={`w-7 h-7 rounded-full border-2 transition-all flex items-center justify-center ${
+            className={`w-6 h-6 rounded-full border-[2px] transition-all duration-200 flex items-center justify-center ${
               selected
                 ? "border-cyan-500 bg-cyan-500"
                 : "border-cyan-400 dark:border-cyan-500/40"
             }`}
           >
             {selected ? (
-              <svg className="w-3.5 h-3.5 text-white animate-checkbox-pop" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+              <svg className="w-3 h-3 text-white animate-checkbox-pop" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
             ) : (
-              <span className="w-2.5 h-2.5 rounded-full bg-cyan-500 animate-pulse" />
+              <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
             )}
           </div>
         </button>
@@ -56,21 +54,24 @@ export default memo(function ActiveCard({ task, selected, onSelect, onCancel, on
           tabIndex={0}
           onKeyDown={(e) => { if (e.key === "Enter") navigate(`/tasks/${task.id}`); }}
         >
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs font-medium text-cyan-400">Running</span>
-            <span className="ml-auto text-xs font-mono text-dim">{elapsedDisplay(elapsed)}</span>
+          {/* Row 1: Title + elapsed */}
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-base font-semibold text-heading leading-snug truncate">
+              {task.title}
+            </p>
+            <span className="text-xs font-mono text-dim shrink-0 mt-0.5">{elapsedDisplay(elapsed)}</span>
           </div>
 
-          <p className="text-[15px] font-semibold text-heading leading-snug truncate">
-            {task.title}
-          </p>
+          {/* Row 2: Status + last message */}
+          <div className="mt-1">
+            <span className="text-sm text-cyan-400 font-medium">Running</span>
+            {task.last_agent_message && (
+              <p className="text-sm text-dim leading-relaxed mt-0.5 line-clamp-2">{task.last_agent_message}</p>
+            )}
+          </div>
 
-          {task.last_agent_message && (
-            <p className="text-xs text-dim truncate mt-1">{task.last_agent_message}</p>
-          )}
-
-          {/* Inline actions for active tasks (these are primary workflow actions) */}
-          <div className="flex items-center gap-2 mt-2">
+          {/* Row 3: Actions */}
+          <div className="flex items-center gap-2 mt-2.5">
             {task.agent_id && (
               <button
                 type="button"

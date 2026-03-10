@@ -31,7 +31,7 @@ export default function ExecutingView({ tasks, loading, onRefresh, selectedTaskI
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <ErrorAlert error={error} onDismiss={() => setError(null)} />
 
       {active.length > 0 && (
