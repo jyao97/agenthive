@@ -82,34 +82,51 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
   }
 
   return (
-    <div className="border-t border-divider mx-4 pb-4 pt-3 space-y-3" onClick={(e) => e.stopPropagation()}>
-      {/* EDITABLE FORM — always visible for INBOX/PLANNING */}
+    <div
+      className={canEdit ? "px-5 pb-4 pt-1 space-y-2" : "border-t border-divider mx-4 pb-4 pt-3 space-y-3"}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* ── COMPACT INLINE EDITOR for INBOX/PLANNING ── */}
       {canEdit ? (
         <>
-          <div className="space-y-3">
-            <div>
-              <label className="block text-xs font-medium text-label mb-1">Title</label>
-              <input type="text" value={editTitle} onChange={(e) => setEditTitle(e.target.value)}
-                className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-heading text-sm focus:border-cyan-500 focus:outline-none" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-label mb-1">Description</label>
-              <textarea value={editDesc} onChange={(e) => setEditDesc(e.target.value)} rows={3}
-                className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-heading text-sm resize-none focus:border-cyan-500 focus:outline-none" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-label mb-1">Project</label>
-              <ProjectSelector value={editProject} onChange={setEditProject} />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-label mb-1">Remind At</label>
-              <input type="datetime-local" value={editNotifyAt} onChange={(e) => setEditNotifyAt(e.target.value)}
-                className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-heading text-sm focus:border-cyan-500 focus:outline-none" />
+          <div className="space-y-2">
+            {/* Title — bold inline text, no label */}
+            <input
+              type="text"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              className="w-full text-base font-semibold text-heading bg-transparent px-0 py-0.5 border-0 border-b border-transparent focus:border-cyan-500 focus:outline-none transition-colors"
+              placeholder="Task title"
+            />
+
+            {/* Description — textarea, no label */}
+            <textarea
+              value={editDesc}
+              onChange={(e) => setEditDesc(e.target.value)}
+              rows={2}
+              className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-sm text-body resize-none focus:border-cyan-500 focus:outline-none placeholder-hint"
+              placeholder="Add description..."
+            />
+
+            {/* Project — no label, compact selector */}
+            <ProjectSelector value={editProject} onChange={setEditProject} />
+
+            {/* Remind At — compact row with clock icon */}
+            <div className="flex items-center gap-1.5 rounded-lg bg-input border border-edge px-2.5 py-1.5">
+              <svg className="w-3.5 h-3.5 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <input
+                type="datetime-local"
+                value={editNotifyAt}
+                onChange={(e) => setEditNotifyAt(e.target.value)}
+                className="flex-1 min-w-0 text-sm text-heading bg-transparent border-0 focus:outline-none"
+              />
             </div>
           </div>
 
-          {/* Action buttons — Save + Plan/Dispatch/Delete */}
-          <div className="flex flex-wrap items-center gap-2 pt-1">
+          {/* Action buttons */}
+          <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => saveAndAction()} disabled={actionLoading}
               className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 disabled:opacity-50 transition-colors">
               Save
@@ -141,14 +158,12 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
         </>
       ) : (
         <>
-          {/* Read-only content for non-editable statuses */}
+          {/* ── READ-ONLY CONTENT for non-editable statuses ── */}
 
-          {/* Full description — skip if same as title */}
           {task.description && task.description !== task.title && (
             <div className="text-sm text-body whitespace-pre-wrap">{task.description}</div>
           )}
 
-          {/* Branch */}
           {task.branch_name && (
             <div className="flex items-center gap-2">
               <svg className="w-3.5 h-3.5 text-purple-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -158,7 +173,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </div>
           )}
 
-          {/* EXECUTING: agent link */}
           {task.status === "EXECUTING" && task.agent_id && (
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
@@ -170,7 +184,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </div>
           )}
 
-          {/* REVIEW: full summary + verify result */}
           {task.status === "REVIEW" && (
             <div className="space-y-2">
               {task.agent_summary && (
@@ -192,7 +205,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </div>
           )}
 
-          {/* MERGING */}
           {task.status === "MERGING" && (
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
@@ -200,12 +212,10 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </div>
           )}
 
-          {/* CONFLICT */}
           {task.status === "CONFLICT" && task.error_message && (
             <pre className="text-xs text-body bg-inset rounded-lg p-3 overflow-x-auto whitespace-pre-wrap">{task.error_message}</pre>
           )}
 
-          {/* COMPLETE */}
           {task.status === "COMPLETE" && (
             <div className="space-y-2">
               {task.completed_at && (
@@ -223,7 +233,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </div>
           )}
 
-          {/* CANCELLED */}
           {task.status === "CANCELLED" && task.agent_id && (
             <button type="button" onClick={() => navigate(`/agents/${task.agent_id}`)}
               className="inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300">
@@ -231,7 +240,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </button>
           )}
 
-          {/* REJECTED */}
           {task.status === "REJECTED" && (
             <div className="space-y-2">
               {task.rejection_reason && <p className="text-sm text-body">{task.rejection_reason}</p>}
@@ -244,7 +252,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </div>
           )}
 
-          {/* FAILED/TIMEOUT */}
           {(task.status === "FAILED" || task.status === "TIMEOUT") && (
             <div className="space-y-2">
               {task.error_message && <p className="text-sm text-body">{task.error_message}</p>}
@@ -257,7 +264,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </div>
           )}
 
-          {/* REJECT REASON INPUT */}
           {rejectOpen && (
             <div className="space-y-2">
               <textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)}
@@ -277,10 +283,8 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </div>
           )}
 
-          {/* ACTION BUTTONS for non-editable statuses */}
           {!rejectOpen && (
             <div className="flex flex-wrap items-center gap-2 pt-1">
-              {/* PENDING */}
               {task.status === "PENDING" && (
                 <button type="button" onClick={doDelete} disabled={actionLoading}
                   className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors">
@@ -288,7 +292,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
                 </button>
               )}
 
-              {/* EXECUTING */}
               {task.status === "EXECUTING" && (
                 <button type="button" onClick={() => { if (confirm("Cancel this task?")) doAction(cancelTask, task.id); }}
                   disabled={actionLoading}
@@ -297,7 +300,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
                 </button>
               )}
 
-              {/* REVIEW */}
               {task.status === "REVIEW" && (
                 <>
                   {verifyStatus === "running" ? (
@@ -340,7 +342,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
                 </>
               )}
 
-              {/* CONFLICT */}
               {task.status === "CONFLICT" && (
                 <>
                   <button type="button" onClick={() => doAction(approveTask, task.id)} disabled={actionLoading}
@@ -354,7 +355,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
                 </>
               )}
 
-              {/* REJECTED/FAILED/TIMEOUT */}
               {(task.status === "REJECTED" || task.status === "FAILED" || task.status === "TIMEOUT") && (
                 <>
                   <button type="button" onClick={() => doAction(dispatchTask, task.id)}

@@ -287,32 +287,30 @@ export default function TasksPage({ theme, onToggleTheme }) {
         onToggleTheme={onToggleTheme}
         showTaskRing
         actions={!selecting ? (
-          <div className="flex items-center gap-1 shrink-0">
-            {tasks.length > 0 && (
-              <button
-                type="button"
-                onClick={enterSelectMode}
-                title="Select tasks"
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-dim hover:text-heading hover:bg-input transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                </svg>
-              </button>
+          <button
+            type="button"
+            onClick={handleToggleTaskNotifs}
+            title={taskNotifsOn ? "Mute all task notifications" : "Unmute all task notifications"}
+            className={`w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${taskNotifsOn ? "text-cyan-400" : "text-dim"}`}
+          >
+            {taskNotifsOn ? (
+              <Bell className="w-4 h-4" />
+            ) : (
+              <BellOff className="w-4 h-4" />
             )}
-            <button
-              type="button"
-              onClick={handleToggleTaskNotifs}
-              title={taskNotifsOn ? "Mute all task notifications" : "Unmute all task notifications"}
-              className={`w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${taskNotifsOn ? "text-cyan-400" : "text-dim"}`}
-            >
-              {taskNotifsOn ? (
-                <Bell className="w-4 h-4" />
-              ) : (
-                <BellOff className="w-4 h-4" />
-              )}
-            </button>
-          </div>
+          </button>
+        ) : undefined}
+        selectAction={!selecting && tasks.length > 0 ? (
+          <button
+            type="button"
+            onClick={enterSelectMode}
+            title="Select tasks"
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-dim hover:text-heading hover:bg-input transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+            </svg>
+          </button>
         ) : undefined}
       >
         {!selecting ? (

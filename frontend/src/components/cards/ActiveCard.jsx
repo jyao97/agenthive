@@ -19,41 +19,44 @@ export default memo(function ActiveCard({ task, selecting, selected, onToggle, o
   };
 
   return (
-    <div
-      className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden transition-all ${
-        selecting && selected ? "ring-1 ring-cyan-500" : ""
-      }`}
-    >
+    <div className="relative">
+      {selecting && (
+        <div
+          className="absolute left-0 top-[29px] -translate-x-1/2 -translate-y-1/2 z-10 cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); onToggle?.(task.id); }}
+        >
+          <div className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
+            selected ? "bg-cyan-500 border-cyan-500" : "border-edge bg-surface"
+          }`}>
+            {selected && (
+              <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+          </div>
+        </div>
+      )}
       <div
-        className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
-        onClick={handleClick}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
+        className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden transition-all ${
+          selecting && selected ? "ring-1 ring-cyan-500" : ""
+        }`}
       >
-        {/* Checkbox in selection mode, pulsing dot otherwise */}
-        {selecting ? (
-          <div className="shrink-0 mt-0.5">
-            <div
-              className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
-                selected ? "bg-cyan-500 border-cyan-500" : "border-edge"
-              }`}
-            >
-              {selected && (
-                <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              )}
+        <div
+          className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
+          onClick={handleClick}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
+        >
+          {/* Pulsing dot — only when not selecting */}
+          {!selecting && (
+            <div className="shrink-0 mt-[7px]">
+              <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse block" />
             </div>
-          </div>
-        ) : (
-          <div className="shrink-0 mt-[7px]">
-            <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse block" />
-          </div>
-        )}
+          )}
 
-        {/* Content area */}
-        <div className="flex-1 min-w-0">
+          {/* Content area */}
+          <div className="flex-1 min-w-0">
           {/* Row 1: Title + elapsed */}
           <div className="flex items-start justify-between gap-3">
             <p className="text-base font-semibold text-heading leading-snug truncate">
@@ -72,7 +75,8 @@ export default memo(function ActiveCard({ task, selecting, selected, onToggle, o
         </div>
       </div>
 
-      {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+        {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+      </div>
     </div>
   );
 });

@@ -9,37 +9,37 @@ export default memo(function QueueCard({ task, position, selecting, selected, on
   };
 
   return (
-    <div
-      className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden transition-all ${
-        selecting && selected ? "ring-1 ring-cyan-500" : ""
-      }`}
-    >
-      <div
-        className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
-        onClick={handleClick}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
-      >
-        {/* Checkbox in selection mode */}
-        {selecting && (
-          <div className="shrink-0 mt-0.5">
-            <div
-              className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
-                selected ? "bg-cyan-500 border-cyan-500" : "border-edge"
-              }`}
-            >
-              {selected && (
-                <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              )}
-            </div>
+    <div className="relative">
+      {selecting && (
+        <div
+          className="absolute left-0 top-[29px] -translate-x-1/2 -translate-y-1/2 z-10 cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); onToggle?.(task.id); }}
+        >
+          <div className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
+            selected ? "bg-cyan-500 border-cyan-500" : "border-edge bg-surface"
+          }`}>
+            {selected && (
+              <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
           </div>
-        )}
-
-        {/* Content area */}
-        <div className="flex-1 min-w-0">
+        </div>
+      )}
+      <div
+        className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden transition-all ${
+          selecting && selected ? "ring-1 ring-cyan-500" : ""
+        }`}
+      >
+        <div
+          className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
+          onClick={handleClick}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
+        >
+          {/* Content area */}
+          <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             {!selecting && (
               <span className="shrink-0 w-5 h-5 rounded-full bg-elevated flex items-center justify-center text-[9px] font-bold text-dim">
@@ -77,7 +77,8 @@ export default memo(function QueueCard({ task, position, selecting, selected, on
         </div>
       </div>
 
-      {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+        {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+      </div>
     </div>
   );
 });

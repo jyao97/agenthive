@@ -10,7 +10,7 @@ export default function ProjectSelector({ value, onChange }) {
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full min-h-[44px] rounded-lg bg-input border border-edge px-3 py-2 text-heading focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors"
+      className="w-full rounded-lg bg-input border border-edge px-2.5 py-1.5 text-sm text-heading focus:border-cyan-500 focus:outline-none transition-colors"
     >
       <option value="">Select a project...</option>
       {projects.map((p) => (

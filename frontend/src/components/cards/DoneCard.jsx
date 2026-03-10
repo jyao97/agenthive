@@ -20,40 +20,43 @@ export default memo(function DoneCard({ task, selecting, selected, onToggle, exp
   };
 
   return (
-    <div
-      className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden cursor-pointer transition-all ${
-        selecting && selected ? "ring-1 ring-cyan-500" : ""
-      }`}
-      onClick={handleClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
-    >
-      <div className="flex items-center gap-3 px-5 py-[18px]">
-        {/* Checkbox in selection mode, status icon otherwise */}
-        {selecting ? (
-          <div className="shrink-0">
-            <div
-              className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
-                selected ? "bg-cyan-500 border-cyan-500" : "border-edge"
-              }`}
-            >
-              {selected && (
-                <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="shrink-0">
-            <div className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center ${si.color}`}>
+    <div className="relative">
+      {selecting && (
+        <div
+          className="absolute left-0 top-[29px] -translate-x-1/2 -translate-y-1/2 z-10 cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); onToggle?.(task.id); }}
+        >
+          <div className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
+            selected ? "bg-cyan-500 border-cyan-500" : "border-edge bg-surface"
+          }`}>
+            {selected && (
               <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d={si.icon} />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
-            </div>
+            )}
           </div>
-        )}
+        </div>
+      )}
+      <div
+        className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden cursor-pointer transition-all ${
+          selecting && selected ? "ring-1 ring-cyan-500" : ""
+        }`}
+        onClick={handleClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
+      >
+        <div className="flex items-center gap-3 px-5 py-[18px]">
+          {/* Status icon — only when not selecting */}
+          {!selecting && (
+            <div className="shrink-0">
+              <div className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center ${si.color}`}>
+                <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d={si.icon} />
+                </svg>
+              </div>
+            </div>
+          )}
 
         <div className="flex-1 min-w-0">
           <p className={`text-base font-semibold leading-snug truncate ${isCancelled ? "text-faint line-through" : "text-heading"}`}>
@@ -69,7 +72,8 @@ export default memo(function DoneCard({ task, selecting, selected, onToggle, exp
         </div>
       </div>
 
-      {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+        {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+      </div>
     </div>
   );
 });
