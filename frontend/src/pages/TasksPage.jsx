@@ -52,28 +52,52 @@ export default function TasksPage({ theme, onToggleTheme }) {
   const visible = usePageVisible();
   const { lastEvent } = useWebSocket();
 
-  // --- Selection & expansion state ---
-  const [selectedTaskId, setSelectedTaskId] = useState(null);
+  // --- Multi-select state ---
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState(new Set());
   const [expandedTaskId, setExpandedTaskId] = useState(null);
-  const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
   // Clear selection & expansion when perspective changes
-  useEffect(() => { setSelectedTaskId(null); setExpandedTaskId(null); setShowMoveMenu(false); }, [perspective]);
+  useEffect(() => {
+    setSelecting(false);
+    setSelected(new Set());
+    setExpandedTaskId(null);
+  }, [perspective]);
 
-  const handleSelectTask = useCallback((taskId) => {
-    setSelectedTaskId((prev) => prev === taskId ? null : taskId);
-    setShowMoveMenu(false);
+  const enterSelectMode = useCallback(() => {
+    setSelecting(true);
+    setSelected(new Set());
+    setExpandedTaskId(null);
   }, []);
+
+  const exitSelectMode = useCallback(() => {
+    setSelecting(false);
+    setSelected(new Set());
+  }, []);
+
+  const toggleOne = useCallback((id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAll = useCallback(() => {
+    setSelected(new Set(tasks.map((t) => t.id)));
+  }, [tasks]);
+
+  const deselectAll = useCallback(() => {
+    setSelected(new Set());
+  }, []);
+
+  const allSelected = tasks.length > 0 && selected.size === tasks.length;
 
   const handleExpandTask = useCallback((taskId) => {
     setExpandedTaskId((prev) => prev === taskId ? null : taskId);
   }, []);
-
-  const selectedTask = useMemo(
-    () => selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : null,
-    [selectedTaskId, tasks]
-  );
 
   // Fetch counts for all perspectives (server-side)
   const loadCounts = useCallback(async () => {
@@ -192,59 +216,60 @@ export default function TasksPage({ theme, onToggleTheme }) {
     return () => window.removeEventListener("task-notifs-changed", onNotifsChanged);
   }, []);
 
-  // --- Floating action bar handlers ---
-  const handleMove = useCallback(async (targetStatus) => {
-    if (!selectedTaskId || actionLoading) return;
+  // --- Bulk action handlers ---
+  const moveOptions = MOVE_OPTIONS[perspective] || [];
+
+  const dispatchableCount = useMemo(() => {
+    if (perspective !== "INBOX" && perspective !== "PLANNING") return 0;
+    return tasks.filter((t) => selected.has(t.id) && t.project_name).length;
+  }, [perspective, tasks, selected]);
+
+  const handleBulkMove = useCallback(async (targetStatus) => {
+    if (selected.size === 0 || actionLoading) return;
     setActionLoading(true);
     try {
-      await updateTaskV2(selectedTaskId, { status: targetStatus });
-      showToast(`Moved to ${targetStatus.charAt(0) + targetStatus.slice(1).toLowerCase()}`);
-      setSelectedTaskId(null);
-      setShowMoveMenu(false);
+      await Promise.all([...selected].map(id => updateTaskV2(id, { status: targetStatus })));
+      showToast(`Moved ${selected.size} task${selected.size > 1 ? "s" : ""}`);
+      exitSelectMode();
       onRefresh();
     } catch (err) {
       showToast(`Move failed: ${err.message}`, "error");
     } finally {
       setActionLoading(false);
     }
-  }, [selectedTaskId, actionLoading, showToast, onRefresh]);
+  }, [selected, actionLoading, exitSelectMode, showToast, onRefresh]);
 
-  const handleDispatch = useCallback(async () => {
-    if (!selectedTaskId || actionLoading) return;
+  const handleBulkDispatch = useCallback(async () => {
+    const dispatchable = tasks.filter((t) => selected.has(t.id) && t.project_name);
+    if (dispatchable.length === 0 || actionLoading) return;
     setActionLoading(true);
     try {
-      await dispatchTask(selectedTaskId);
-      showToast("Task dispatched");
-      setSelectedTaskId(null);
+      await Promise.all(dispatchable.map(t => dispatchTask(t.id)));
+      showToast(`Dispatched ${dispatchable.length} task${dispatchable.length > 1 ? "s" : ""}`);
+      exitSelectMode();
       onRefresh();
     } catch (err) {
       showToast(`Dispatch failed: ${err.message}`, "error");
     } finally {
       setActionLoading(false);
     }
-  }, [selectedTaskId, actionLoading, showToast, onRefresh]);
+  }, [tasks, selected, actionLoading, exitSelectMode, showToast, onRefresh]);
 
-  const handleDelete = useCallback(async () => {
-    if (!selectedTaskId || actionLoading) return;
-    if (!confirm("Delete this task?")) return;
+  const handleBulkDelete = useCallback(async () => {
+    if (selected.size === 0 || actionLoading) return;
+    if (!confirm(`Delete ${selected.size} task${selected.size > 1 ? "s" : ""}?`)) return;
     setActionLoading(true);
     try {
-      await cancelTask(selectedTaskId);
-      showToast("Task deleted");
-      setSelectedTaskId(null);
+      await Promise.all([...selected].map(id => cancelTask(id)));
+      showToast(`Deleted ${selected.size} task${selected.size > 1 ? "s" : ""}`);
+      exitSelectMode();
       onRefresh();
     } catch (err) {
       showToast(`Delete failed: ${err.message}`, "error");
     } finally {
       setActionLoading(false);
     }
-  }, [selectedTaskId, actionLoading, showToast, onRefresh]);
-
-  const handleEdit = useCallback(() => {
-    if (!selectedTaskId) return;
-    setExpandedTaskId(selectedTaskId);
-    setSelectedTaskId(null);
-  }, [selectedTaskId]);
+  }, [selected, actionLoading, exitSelectMode, showToast, onRefresh]);
 
   const ViewComponent = {
     INBOX: InboxView,
@@ -254,9 +279,6 @@ export default function TasksPage({ theme, onToggleTheme }) {
     DONE: DoneView,
   }[perspective] || InboxView;
 
-  const moveOptions = MOVE_OPTIONS[perspective] || [];
-  const canDispatch = (perspective === "INBOX" || perspective === "PLANNING") && selectedTask?.project_name;
-
   return (
     <div className="h-full flex flex-col">
       <PageHeader
@@ -264,8 +286,20 @@ export default function TasksPage({ theme, onToggleTheme }) {
         theme={theme}
         onToggleTheme={onToggleTheme}
         showTaskRing
-        actions={
+        actions={!selecting ? (
           <div className="flex items-center gap-1 shrink-0">
+            {tasks.length > 0 && (
+              <button
+                type="button"
+                onClick={enterSelectMode}
+                title="Select tasks"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-dim hover:text-heading hover:bg-input transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                </svg>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleToggleTaskNotifs}
@@ -279,14 +313,36 @@ export default function TasksPage({ theme, onToggleTheme }) {
               )}
             </button>
           </div>
-        }
+        ) : undefined}
       >
-        <FilterTabs
-          tabs={TASK_PERSPECTIVE_TABS}
-          active={perspective}
-          onChange={setPerspective}
-          counts={counts}
-        />
+        {!selecting ? (
+          <FilterTabs
+            tabs={TASK_PERSPECTIVE_TABS}
+            active={perspective}
+            onChange={setPerspective}
+            counts={counts}
+          />
+        ) : (
+          <div className="flex items-center justify-between px-4 pb-2">
+            <button
+              type="button"
+              onClick={allSelected ? deselectAll : selectAll}
+              className="text-sm font-medium text-cyan-400 hover:text-cyan-300 transition-colors px-2 py-1"
+            >
+              {allSelected ? "Deselect All" : "Select All"}
+            </button>
+            <span className="text-sm text-label">
+              {selected.size > 0 ? `${selected.size} selected` : "Select items"}
+            </span>
+            <button
+              type="button"
+              onClick={exitSelectMode}
+              className="text-sm font-semibold text-cyan-400 hover:text-cyan-300 transition-colors px-2 py-1"
+            >
+              Done
+            </button>
+          </div>
+        )}
       </PageHeader>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
@@ -302,8 +358,9 @@ export default function TasksPage({ theme, onToggleTheme }) {
                 tasks={tasks}
                 loading={loading}
                 onRefresh={onRefresh}
-                selectedTaskId={selectedTaskId}
-                onSelectTask={handleSelectTask}
+                selecting={selecting}
+                selected={selected}
+                onToggle={toggleOne}
                 expandedTaskId={expandedTaskId}
                 onExpandTask={handleExpandTask}
               />
@@ -312,100 +369,40 @@ export default function TasksPage({ theme, onToggleTheme }) {
         </div>
       </div>
 
-      {/* ── Floating Action Bar ── */}
-      {selectedTask && perspective !== "DONE" && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 animate-bar-slide-up">
-          <div className="relative flex items-center gap-0.5 bg-gray-900 dark:bg-gray-800 rounded-2xl px-1.5 py-1.5 shadow-2xl border border-gray-700/50">
-
+      {/* ── Bulk Action Bar ── */}
+      {selecting && selected.size > 0 && (
+        <div className="fixed bottom-20 left-0 right-0 z-20 px-4 pb-2 animate-bar-slide-up">
+          <div className="max-w-xl mx-auto bg-surface border border-divider rounded-xl shadow-lg p-3 flex items-center justify-center gap-3">
             {/* Move */}
             {moveOptions.length > 0 && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setShowMoveMenu((v) => !v)}
-                  disabled={actionLoading}
-                  className="px-3 py-2 rounded-xl text-sm text-gray-200 hover:bg-gray-700/60 transition-colors flex items-center gap-1.5 disabled:opacity-50"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7h2l2 13h10l2-13h2M8 7V5a2 2 0 012-2h4a2 2 0 012 2v2" />
-                  </svg>
-                  Move
-                </button>
-
-                {/* Move submenu */}
-                {showMoveMenu && (
-                  <div className="absolute bottom-full mb-2 left-0 bg-gray-800 dark:bg-gray-700 rounded-xl p-1 shadow-xl min-w-[140px] border border-gray-600/50">
-                    {moveOptions.map((opt) => (
-                      <button
-                        key={opt.status}
-                        type="button"
-                        onClick={() => handleMove(opt.status)}
-                        className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-600/50 rounded-lg transition-colors"
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <button
+                type="button"
+                onClick={() => handleBulkMove(moveOptions[0].status)}
+                disabled={actionLoading}
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-50 transition-colors"
+              >
+                {moveOptions[0].label} {selected.size}
+              </button>
             )}
-
             {/* Dispatch */}
-            {canDispatch && (
-              <>
-                <div className="w-px h-5 bg-gray-700" />
-                <button
-                  type="button"
-                  onClick={handleDispatch}
-                  disabled={actionLoading}
-                  className="px-3 py-2 rounded-xl text-sm text-cyan-400 hover:bg-gray-700/60 transition-colors flex items-center gap-1.5 disabled:opacity-50"
-                >
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                  Dispatch
-                </button>
-              </>
+            {dispatchableCount > 0 && (
+              <button
+                type="button"
+                onClick={handleBulkDispatch}
+                disabled={actionLoading}
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+              >
+                Dispatch {dispatchableCount}
+              </button>
             )}
-
             {/* Delete */}
-            <div className="w-px h-5 bg-gray-700" />
             <button
               type="button"
-              onClick={handleDelete}
+              onClick={handleBulkDelete}
               disabled={actionLoading}
-              className="px-3 py-2 rounded-xl text-sm text-red-400 hover:bg-gray-700/60 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-500 disabled:opacity-50 transition-colors"
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-              Delete
-            </button>
-
-            {/* Edit (More) */}
-            <div className="w-px h-5 bg-gray-700" />
-            <button
-              type="button"
-              onClick={handleEdit}
-              className="px-3 py-2 rounded-xl text-sm text-gray-200 hover:bg-gray-700/60 transition-colors flex items-center gap-1.5"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-              Edit
-            </button>
-
-            {/* Dismiss */}
-            <div className="w-px h-5 bg-gray-700" />
-            <button
-              type="button"
-              onClick={() => { setSelectedTaskId(null); setShowMoveMenu(false); }}
-              className="px-2 py-2 rounded-xl text-sm text-gray-400 hover:bg-gray-700/60 transition-colors"
-              aria-label="Dismiss"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              Delete {selected.size}
             </button>
           </div>
         </div>

@@ -3,52 +3,50 @@ import { projectBadgeColor, modelDisplayName } from "../../lib/constants";
 import { relativeTime } from "../../lib/formatters";
 import TaskExpandedContent from "./TaskExpandedContent";
 
-export default memo(function InboxCard({ task, selected, onSelect, expanded, onExpand, onRefresh }) {
+export default memo(function InboxCard({ task, selecting, selected, onToggle, expanded, onExpand, onRefresh }) {
   const projColor = task.project_name ? projectBadgeColor(task.project_name) : "";
   const preview = task.description && task.description !== task.title
     ? task.description
     : task.project_name || null;
   const isHigh = task.priority >= 1;
 
+  const handleClick = () => {
+    if (selecting) onToggle?.(task.id);
+    else onExpand?.(task.id);
+  };
+
   return (
     <div
       className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden transition-all ${
-        selected ? "ring-2 ring-cyan-500/40" : ""
+        selecting && selected ? "ring-1 ring-cyan-500" : ""
       }`}
     >
-      <div className="flex items-start gap-3 px-5 py-[18px]">
-        {/* Checkbox */}
-        <button
-          type="button"
-          onClick={() => onSelect?.(task.id)}
-          className="shrink-0 mt-0.5 group"
-          aria-label="Select task"
-        >
-          <div
-            className={`w-5 h-5 rounded-full border-[1.5px] transition-all duration-200 flex items-center justify-center ${
-              selected
-                ? "border-cyan-500 bg-cyan-500"
-                : isHigh
-                  ? "border-amber-400 group-hover:border-amber-300"
-                  : "border-gray-300 dark:border-gray-600 group-hover:border-cyan-400 dark:group-hover:border-cyan-400"
-            }`}
-          >
-            {selected && (
-              <svg className="w-2.5 h-2.5 text-white animate-checkbox-pop" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            )}
+      <div
+        className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
+        onClick={handleClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
+      >
+        {/* Checkbox — only in selection mode */}
+        {selecting && (
+          <div className="shrink-0 mt-0.5">
+            <div
+              className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
+                selected ? "bg-cyan-500 border-cyan-500" : "border-edge"
+              }`}
+            >
+              {selected && (
+                <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </div>
           </div>
-        </button>
+        )}
 
         {/* Content area */}
-        <div
-          className="flex-1 min-w-0 cursor-pointer"
-          onClick={() => onExpand?.(task.id)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => { if (e.key === "Enter") onExpand?.(task.id); }}
-        >
+        <div className="flex-1 min-w-0">
           {/* Row 1: Title + time */}
           <div className="flex items-start justify-between gap-3">
             <p className="text-base font-semibold text-heading leading-snug truncate">
@@ -100,8 +98,8 @@ export default memo(function InboxCard({ task, selected, onSelect, expanded, onE
         </div>
       </div>
 
-      {/* Expanded detail */}
-      {expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+      {/* Expanded detail — hidden in selection mode */}
+      {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
     </div>
   );
 });

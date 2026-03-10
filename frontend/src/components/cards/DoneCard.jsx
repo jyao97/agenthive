@@ -10,36 +10,57 @@ const STATUS_ICON = {
   TIMEOUT:   { color: "border-orange-500 bg-orange-500", icon: "M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" },
 };
 
-export default memo(function DoneCard({ task, expanded, onExpand, onRefresh }) {
+export default memo(function DoneCard({ task, selecting, selected, onToggle, expanded, onExpand, onRefresh }) {
   const si = STATUS_ICON[task.status] || STATUS_ICON.COMPLETE;
   const isCancelled = task.status === "CANCELLED";
 
+  const handleClick = () => {
+    if (selecting) onToggle?.(task.id);
+    else onExpand?.(task.id);
+  };
+
   return (
     <div
-      className="w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden cursor-pointer transition-all"
-      onClick={() => onExpand?.(task.id)}
+      className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden cursor-pointer transition-all ${
+        selecting && selected ? "ring-1 ring-cyan-500" : ""
+      }`}
+      onClick={handleClick}
       role="button"
       tabIndex={0}
-      onKeyDown={(e) => { if (e.key === "Enter") onExpand?.(task.id); }}
+      onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
     >
       <div className="flex items-center gap-3 px-5 py-[18px]">
-        {/* Status icon */}
-        <div className="shrink-0">
-          <div className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center ${si.color}`}>
-            <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d={si.icon} />
-            </svg>
+        {/* Checkbox in selection mode, status icon otherwise */}
+        {selecting ? (
+          <div className="shrink-0">
+            <div
+              className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
+                selected ? "bg-cyan-500 border-cyan-500" : "border-edge"
+              }`}
+            >
+              {selected && (
+                <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="shrink-0">
+            <div className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center ${si.color}`}>
+              <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d={si.icon} />
+              </svg>
+            </div>
+          </div>
+        )}
 
-        {/* Title */}
         <div className="flex-1 min-w-0">
           <p className={`text-base font-semibold leading-snug truncate ${isCancelled ? "text-faint line-through" : "text-heading"}`}>
             {task.title}
           </p>
         </div>
 
-        {/* Duration + time */}
         <div className="shrink-0 text-right">
           {task.started_at && task.completed_at && (
             <p className="text-[11px] text-dim">{durationDisplay(task.started_at, task.completed_at)}</p>
@@ -48,8 +69,7 @@ export default memo(function DoneCard({ task, expanded, onExpand, onRefresh }) {
         </div>
       </div>
 
-      {/* Expanded detail */}
-      {expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+      {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
     </div>
   );
 });

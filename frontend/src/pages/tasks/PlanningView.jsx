@@ -3,53 +3,48 @@ import { projectBadgeColor, modelDisplayName } from "../../lib/constants";
 import { relativeTime } from "../../lib/formatters";
 import TaskExpandedContent from "../../components/cards/TaskExpandedContent";
 
-function PlanningCard({ task, selected, onSelect, expanded, onExpand, onRefresh }) {
+function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand, onRefresh }) {
   const projColor = task.project_name ? projectBadgeColor(task.project_name) : "";
   const preview = task.description && task.description !== task.title
     ? task.description
     : task.project_name || null;
   const isHigh = task.priority >= 1;
 
+  const handleClick = () => {
+    if (selecting) onToggle?.(task.id);
+    else onExpand?.(task.id);
+  };
+
   return (
     <div
       className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden transition-all ${
-        selected ? "ring-2 ring-cyan-500/40" : ""
+        selecting && selected ? "ring-1 ring-cyan-500" : ""
       }`}
     >
-      <div className="flex items-start gap-3 px-5 py-[18px]">
-        {/* Checkbox */}
-        <button
-          type="button"
-          onClick={() => onSelect?.(task.id)}
-          className="shrink-0 mt-0.5 group"
-          aria-label="Select task"
-        >
-          <div
-            className={`w-5 h-5 rounded-full border-[1.5px] transition-all duration-200 flex items-center justify-center ${
-              selected
-                ? "border-cyan-500 bg-cyan-500"
-                : isHigh
-                  ? "border-amber-400 group-hover:border-amber-300"
-                  : "border-gray-300 dark:border-gray-600 group-hover:border-cyan-400 dark:group-hover:border-cyan-400"
-            }`}
-          >
-            {selected && (
-              <svg className="w-2.5 h-2.5 text-white animate-checkbox-pop" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            )}
+      <div
+        className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
+        onClick={handleClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
+      >
+        {selecting && (
+          <div className="shrink-0 mt-0.5">
+            <div
+              className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
+                selected ? "bg-cyan-500 border-cyan-500" : "border-edge"
+              }`}
+            >
+              {selected && (
+                <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </div>
           </div>
-        </button>
+        )}
 
-        {/* Content area */}
-        <div
-          className="flex-1 min-w-0 cursor-pointer"
-          onClick={() => onExpand?.(task.id)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => { if (e.key === "Enter") onExpand?.(task.id); }}
-        >
-          {/* Row 1: Title + time */}
+        <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
             <p className="text-base font-semibold text-heading leading-snug truncate">
               {task.title}
@@ -59,14 +54,12 @@ function PlanningCard({ task, selected, onSelect, expanded, onExpand, onRefresh 
             </span>
           </div>
 
-          {/* Row 2: Preview — hidden when expanded */}
           {!expanded && preview && (
             <p className="text-sm text-dim leading-relaxed mt-1.5 line-clamp-2">
               {preview.slice(0, 200)}
             </p>
           )}
 
-          {/* Row 3: Metadata pills */}
           <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
             {task.project_name && (
               <span className={`text-[11px] font-medium rounded-full px-2 py-0.5 ${projColor}`}>
@@ -100,13 +93,12 @@ function PlanningCard({ task, selected, onSelect, expanded, onExpand, onRefresh 
         </div>
       </div>
 
-      {/* Expanded detail */}
-      {expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+      {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
     </div>
   );
 }
 
-export default function PlanningView({ tasks, loading, selectedTaskId, onSelectTask, expandedTaskId, onExpandTask, onRefresh }) {
+export default function PlanningView({ tasks, loading, selecting, selected, onToggle, expandedTaskId, onExpandTask, onRefresh }) {
   const sorted = [...tasks].sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
     return new Date(a.created_at) - new Date(b.created_at);
@@ -130,8 +122,9 @@ export default function PlanningView({ tasks, loading, selectedTaskId, onSelectT
         <PlanningCard
           key={task.id}
           task={task}
-          selected={selectedTaskId === task.id}
-          onSelect={onSelectTask}
+          selecting={selecting}
+          selected={selected.has(task.id)}
+          onToggle={onToggle}
           expanded={expandedTaskId === task.id}
           onExpand={onExpandTask}
           onRefresh={onRefresh}
