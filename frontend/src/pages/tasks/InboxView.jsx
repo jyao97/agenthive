@@ -1,13 +1,6 @@
-import { useNavigate } from "react-router-dom";
-import useAsyncHandler from "../../hooks/useAsyncHandler";
-import ErrorAlert from "../../components/ErrorAlert";
 import InboxCard from "../../components/cards/InboxCard";
-import { dispatchTask, cancelTask } from "../../lib/api";
 
-export default function InboxView({ tasks, loading, onRefresh }) {
-  const navigate = useNavigate();
-  const { loadingIds, error, setError, handle } = useAsyncHandler();
-
+export default function InboxView({ tasks, loading, selectedTaskId, onSelectTask }) {
   const sorted = [...tasks].sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
     return new Date(b.created_at) - new Date(a.created_at);
@@ -27,15 +20,12 @@ export default function InboxView({ tasks, loading, onRefresh }) {
 
   return (
     <div className="space-y-3">
-      <ErrorAlert error={error} onDismiss={() => setError(null)} />
       {sorted.map((task) => (
         <InboxCard
           key={task.id}
           task={task}
-          onDispatch={(t) => handle(t.id, () => dispatchTask(t.id).then(() => onRefresh?.()), "Dispatch failed")}
-          onDelete={(t) => handle(t.id, () => cancelTask(t.id).then(() => onRefresh?.()), "Delete failed")}
-          loading={loadingIds.has(task.id)}
-          onEdit={(t) => navigate(`/tasks/${t.id}`)}
+          selected={selectedTaskId === task.id}
+          onSelect={onSelectTask}
         />
       ))}
     </div>

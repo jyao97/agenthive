@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { Bell, BellOff } from "lucide-react";
-import { fetchTasksV2, fetchTaskCounts, updateNotificationSettings } from "../lib/api";
+import { fetchTasksV2, fetchTaskCounts, updateNotificationSettings, dispatchTask, cancelTask, updateTaskV2 } from "../lib/api";
 import { TASK_PERSPECTIVE_TABS } from "../lib/constants";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
@@ -30,7 +31,17 @@ const POLL_INTERVALS = {
   DONE: 10000,
 };
 
+// Move targets per perspective
+const MOVE_OPTIONS = {
+  INBOX:     [{ label: "Planning", status: "PLANNING" }],
+  PLANNING:  [{ label: "Inbox", status: "INBOX" }],
+  EXECUTING: [],
+  REVIEW:    [],
+  DONE:      [{ label: "Inbox", status: "INBOX" }],
+};
+
 export default function TasksPage({ theme, onToggleTheme }) {
+  const navigate = useNavigate();
   const [rawPerspective, setRawPerspective] = useDraft("ui:tasks-v2:perspective", "INBOX");
   // Migrate stale localStorage values from old QUEUE/ACTIVE tabs
   const perspective = (rawPerspective === "QUEUE" || rawPerspective === "ACTIVE") ? "EXECUTING" : rawPerspective;
@@ -42,6 +53,24 @@ export default function TasksPage({ theme, onToggleTheme }) {
   const countPollRef = useRef(null);
   const visible = usePageVisible();
   const { lastEvent } = useWebSocket();
+
+  // --- Selection state for floating action bar ---
+  const [selectedTaskId, setSelectedTaskId] = useState(null);
+  const [showMoveMenu, setShowMoveMenu] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+
+  // Clear selection when perspective changes
+  useEffect(() => { setSelectedTaskId(null); setShowMoveMenu(false); }, [perspective]);
+
+  const handleSelectTask = useCallback((taskId) => {
+    setSelectedTaskId((prev) => prev === taskId ? null : taskId);
+    setShowMoveMenu(false);
+  }, []);
+
+  const selectedTask = useMemo(
+    () => selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : null,
+    [selectedTaskId, tasks]
+  );
 
   // Fetch counts for all perspectives (server-side)
   const loadCounts = useCallback(async () => {
@@ -160,6 +189,60 @@ export default function TasksPage({ theme, onToggleTheme }) {
     return () => window.removeEventListener("task-notifs-changed", onNotifsChanged);
   }, []);
 
+  // --- Floating action bar handlers ---
+  const handleMove = useCallback(async (targetStatus) => {
+    if (!selectedTaskId || actionLoading) return;
+    setActionLoading(true);
+    try {
+      await updateTaskV2(selectedTaskId, { status: targetStatus });
+      showToast(`Moved to ${targetStatus.charAt(0) + targetStatus.slice(1).toLowerCase()}`);
+      setSelectedTaskId(null);
+      setShowMoveMenu(false);
+      onRefresh();
+    } catch (err) {
+      showToast(`Move failed: ${err.message}`, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  }, [selectedTaskId, actionLoading, showToast, onRefresh]);
+
+  const handleDispatch = useCallback(async () => {
+    if (!selectedTaskId || actionLoading) return;
+    setActionLoading(true);
+    try {
+      await dispatchTask(selectedTaskId);
+      showToast("Task dispatched");
+      setSelectedTaskId(null);
+      onRefresh();
+    } catch (err) {
+      showToast(`Dispatch failed: ${err.message}`, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  }, [selectedTaskId, actionLoading, showToast, onRefresh]);
+
+  const handleDelete = useCallback(async () => {
+    if (!selectedTaskId || actionLoading) return;
+    if (!confirm("Delete this task?")) return;
+    setActionLoading(true);
+    try {
+      await cancelTask(selectedTaskId);
+      showToast("Task deleted");
+      setSelectedTaskId(null);
+      onRefresh();
+    } catch (err) {
+      showToast(`Delete failed: ${err.message}`, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  }, [selectedTaskId, actionLoading, showToast, onRefresh]);
+
+  const handleEdit = useCallback(() => {
+    if (!selectedTaskId) return;
+    navigate(`/tasks/${selectedTaskId}`);
+    setSelectedTaskId(null);
+  }, [selectedTaskId, navigate]);
+
   const ViewComponent = {
     INBOX: InboxView,
     PLANNING: PlanningView,
@@ -167,6 +250,9 @@ export default function TasksPage({ theme, onToggleTheme }) {
     REVIEW: ReviewView,
     DONE: DoneView,
   }[perspective] || InboxView;
+
+  const moveOptions = MOVE_OPTIONS[perspective] || [];
+  const canDispatch = (perspective === "INBOX" || perspective === "PLANNING") && selectedTask?.project_name;
 
   return (
     <div className="h-full flex flex-col">
@@ -208,10 +294,117 @@ export default function TasksPage({ theme, onToggleTheme }) {
                 <span className="text-dim text-sm animate-pulse">Loading...</span>
               </div>
             )}
-            {!loading && <ViewComponent tasks={tasks} loading={loading} onRefresh={onRefresh} />}
+            {!loading && (
+              <ViewComponent
+                tasks={tasks}
+                loading={loading}
+                onRefresh={onRefresh}
+                selectedTaskId={selectedTaskId}
+                onSelectTask={handleSelectTask}
+              />
+            )}
           </div>
         </div>
       </div>
+
+      {/* ── Floating Action Bar ── */}
+      {selectedTask && perspective !== "DONE" && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 animate-bar-slide-up">
+          <div className="relative flex items-center gap-0.5 bg-gray-900 dark:bg-gray-800 rounded-2xl px-1.5 py-1.5 shadow-2xl border border-gray-700/50">
+
+            {/* Move */}
+            {moveOptions.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowMoveMenu((v) => !v)}
+                  disabled={actionLoading}
+                  className="px-3 py-2 rounded-xl text-sm text-gray-200 hover:bg-gray-700/60 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7h2l2 13h10l2-13h2M8 7V5a2 2 0 012-2h4a2 2 0 012 2v2" />
+                  </svg>
+                  Move
+                </button>
+
+                {/* Move submenu */}
+                {showMoveMenu && (
+                  <div className="absolute bottom-full mb-2 left-0 bg-gray-800 dark:bg-gray-700 rounded-xl p-1 shadow-xl min-w-[140px] border border-gray-600/50">
+                    {moveOptions.map((opt) => (
+                      <button
+                        key={opt.status}
+                        type="button"
+                        onClick={() => handleMove(opt.status)}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-600/50 rounded-lg transition-colors"
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Dispatch */}
+            {canDispatch && (
+              <>
+                <div className="w-px h-5 bg-gray-700" />
+                <button
+                  type="button"
+                  onClick={handleDispatch}
+                  disabled={actionLoading}
+                  className="px-3 py-2 rounded-xl text-sm text-cyan-400 hover:bg-gray-700/60 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                  Dispatch
+                </button>
+              </>
+            )}
+
+            {/* Delete */}
+            <div className="w-px h-5 bg-gray-700" />
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={actionLoading}
+              className="px-3 py-2 rounded-xl text-sm text-red-400 hover:bg-gray-700/60 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              Delete
+            </button>
+
+            {/* Edit (More) */}
+            <div className="w-px h-5 bg-gray-700" />
+            <button
+              type="button"
+              onClick={handleEdit}
+              className="px-3 py-2 rounded-xl text-sm text-gray-200 hover:bg-gray-700/60 transition-colors flex items-center gap-1.5"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              Edit
+            </button>
+
+            {/* Dismiss */}
+            <div className="w-px h-5 bg-gray-700" />
+            <button
+              type="button"
+              onClick={() => { setSelectedTaskId(null); setShowMoveMenu(false); }}
+              className="px-2 py-2 rounded-xl text-sm text-gray-400 hover:bg-gray-700/60 transition-colors"
+              aria-label="Dismiss"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
