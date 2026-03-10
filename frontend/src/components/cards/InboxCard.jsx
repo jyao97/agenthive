@@ -42,7 +42,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
       >
         <div
           className={`flex items-start gap-3 px-5 cursor-pointer transition-[padding] duration-300 ease-in-out ${
-            expanded && !selecting ? "py-6" : "py-[18px]"
+            expanded && !selecting ? "pt-6 pb-10" : "py-[18px]"
           }`}
           onClick={handleClick}
           role="button"

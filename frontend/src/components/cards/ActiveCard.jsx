@@ -44,7 +44,9 @@ export default memo(function ActiveCard({ task, selecting, selected, onToggle, o
         } ${selecting && selected ? "ring-1 ring-cyan-500" : ""}`}
       >
         <div
-          className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
+          className={`flex items-start gap-3 px-5 cursor-pointer transition-[padding] duration-300 ease-in-out ${
+            expanded && !selecting ? "pt-6 pb-10" : "py-[18px]"
+          }`}
           onClick={handleClick}
           role="button"
           tabIndex={0}
