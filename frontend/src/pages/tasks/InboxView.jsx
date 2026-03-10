@@ -5,8 +5,14 @@ import { CSS } from "@dnd-kit/utilities";
 import InboxCard from "../../components/cards/InboxCard";
 import { reorderTasks } from "../../lib/api";
 
+// Disable the snap-back animation when dropping — our optimistic update handles the new order
+const noDropAnimation = ({ wasDragging }) => !wasDragging;
+
 function SortableTaskCard(props) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props.task.id });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: props.task.id,
+    animateLayoutChanges: noDropAnimation,
+  });
   const isGroupDragged = props.isGroupDragged && !isDragging;
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -58,10 +64,12 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
 
   const handleDragStart = useCallback((event) => setActiveDragId(event.active.id), []);
 
-  const handleDragEnd = useCallback(async (event) => {
-    setActiveDragId(null);
+  const handleDragEnd = useCallback((event) => {
     const { active, over } = event;
-    if (!over || active.id === over.id) return;
+    if (!over || active.id === over.id) {
+      setActiveDragId(null);
+      return;
+    }
 
     const ids = sorted.map(t => t.id);
     let newIds;
@@ -80,12 +88,13 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
       // Single drag
       const oldIdx = ids.indexOf(active.id);
       const newIdx = ids.indexOf(over.id);
-      if (oldIdx === -1 || newIdx === -1) return;
+      if (oldIdx === -1 || newIdx === -1) { setActiveDragId(null); return; }
       newIds = arrayMove(ids, oldIdx, newIdx);
     }
 
-    // Optimistic update: apply new order instantly
+    // Optimistic update + clear drag in same batch — no snap-back
     setOptimisticIds(newIds);
+    setActiveDragId(null);
 
     // Persist to server in background, then refresh
     reorderTasks(newIds).then(() => onRefresh?.());
@@ -132,7 +141,7 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
           ))}
         </div>
       </SortableContext>
-      <DragOverlay>
+      <DragOverlay dropAnimation={null}>
         {activeTask ? (
           <div className="relative opacity-90 scale-[1.02] shadow-xl rounded-xl">
             {isMultiDrag && (

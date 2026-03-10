@@ -2,14 +2,9 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 
 /**
- * A tag badge that, when tapped, shows a floating pill-selector popover
- * with all available options. Smooth spring enter/exit animation.
- *
- * @param {Array<{value:*, label:string}>} options
- * @param {*} value - currently selected value
- * @param {(value:*) => void} onSelect - called when user picks an option
- * @param {string} className - classes for the tag badge
- * @param {React.ReactNode} children - tag badge content
+ * A tag badge that, when tapped, shows a floating pill-selector popover.
+ * Uses portal + absolute positioning (page coords) to avoid both
+ * stacking-context clipping and iOS keyboard viewport issues.
  */
 export default function TagPicker({ options, value, onSelect, className, children, extra }) {
   const [open, setOpen] = useState(false);
@@ -19,16 +14,10 @@ export default function TagPicker({ options, value, onSelect, className, childre
   const popRef = useRef(null);
   const closeTimer = useRef(null);
 
-  const viewportH = useRef(0);
-
   const handleOpen = (e) => {
     e.stopPropagation();
     if (open) { handleClose(); return; }
-    const rect = ref.current.getBoundingClientRect();
-    viewportH.current = window.innerHeight;
-    setPos(rect);
     setOpen(true);
-    // Next frame: trigger the enter transition
     requestAnimationFrame(() => requestAnimationFrame(() => setVisible(true)));
   };
 
@@ -56,6 +45,28 @@ export default function TagPicker({ options, value, onSelect, className, childre
     return () => document.removeEventListener("pointerdown", onOutside, true);
   }, [open, handleClose]);
 
+  // Track tag position via RAF — uses page-absolute coords (scrollY)
+  // so keyboard open/close doesn't affect positioning
+  useEffect(() => {
+    if (!open) return;
+    let raf;
+    const track = () => {
+      const el = ref.current;
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        const top = rect.bottom + window.scrollY + 6;
+        const left = rect.left + window.scrollX;
+        setPos(prev => {
+          if (prev && Math.abs(prev.top - top) < 0.5 && Math.abs(prev.left - left) < 0.5) return prev;
+          return { top, left };
+        });
+      }
+      raf = requestAnimationFrame(track);
+    };
+    raf = requestAnimationFrame(track);
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
+
   useEffect(() => () => clearTimeout(closeTimer.current), []);
 
   return (
@@ -66,13 +77,12 @@ export default function TagPicker({ options, value, onSelect, className, childre
       {open && pos && createPortal(
         <div
           ref={popRef}
-          className={`fixed z-[100] rounded-xl bg-surface shadow-lg ring-1 ring-edge/40 p-1 transform-gpu transition-[transform,opacity] duration-250 ease-[cubic-bezier(0.22,1.15,0.36,1)] origin-bottom-left ${
-            visible ? "opacity-100" : "opacity-0"
+          className={`absolute z-[9999] rounded-xl bg-surface shadow-lg ring-1 ring-edge/40 p-1 transform-gpu transition-[transform,opacity] duration-250 ease-[cubic-bezier(0.22,1.15,0.36,1)] origin-top-left ${
+            visible ? "opacity-100 scale-100" : "opacity-0 scale-95"
           }`}
           style={{
-            top: pos.top - 6,
-            left: Math.min(pos.left, window.innerWidth - 200),
-            transform: visible ? "translateY(-100%) scale(1)" : "translateY(-100%) scale(0.95)",
+            top: pos.top,
+            left: pos.left,
             width: extra ? "min(180px, 70vw)" : undefined,
             maxWidth: extra ? undefined : "min(280px, 85vw)",
           }}
