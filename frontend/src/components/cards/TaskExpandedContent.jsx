@@ -14,13 +14,9 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
 
   const canEdit = task.status === "INBOX" || task.status === "PLANNING";
 
-  // Single prompt field — merges title + description
-  const [editPrompt, setEditPrompt] = useState(() => {
-    if (task.description && task.description !== task.title) {
-      return task.title + "\n\n" + task.description;
-    }
-    return task.title || "";
-  });
+  // Editable fields — initialized from task, always shown for INBOX/PLANNING
+  const [editTitle, setEditTitle] = useState(task.title);
+  const [editDesc, setEditDesc] = useState(task.description || "");
   const [editProject, setEditProject] = useState(task.project_name || "");
   const [editNotifyAt, setEditNotifyAt] = useState(
     task.notify_at ? new Date(task.notify_at).toISOString().slice(0, 16) : ""
@@ -55,12 +51,10 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
   const saveAndAction = async (actionFn, ...actionArgs) => {
     setActionLoading(true);
     try {
-      // Collect changes — split prompt into title (first line) + description (full text)
+      // Collect changes
       const updates = {};
-      const promptText = editPrompt.trim();
-      const firstLine = promptText.split("\n")[0] || "";
-      if (firstLine !== task.title) updates.title = firstLine;
-      if (promptText !== (task.description || "")) updates.description = promptText;
+      if (editTitle && editTitle !== task.title) updates.title = editTitle;
+      if (editDesc !== (task.description || "")) updates.description = editDesc;
       if (editProject && editProject !== task.project_name) updates.project_name = editProject;
       const origNotify = task.notify_at ? new Date(task.notify_at).toISOString().slice(0, 16) : "";
       if (editNotifyAt !== origNotify) updates.notify_at = editNotifyAt ? new Date(editNotifyAt).toISOString() : null;
@@ -95,20 +89,30 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
       {/* ── COMPACT INLINE EDITOR for INBOX/PLANNING ── */}
       {canEdit ? (
         <>
-          {/* Prompt capsule — single field replacing title + description */}
-          <textarea
-            value={editPrompt}
-            onChange={(e) => setEditPrompt(e.target.value)}
-            rows={4}
-            className="w-full rounded-xl bg-input border border-edge px-4 py-3 text-sm text-body resize-none focus:border-cyan-500 focus:outline-none placeholder-hint leading-relaxed"
-            placeholder="What should the agent do?"
-          />
+          <div className="space-y-2">
+            {/* Title — bold inline text, no label */}
+            <input
+              type="text"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              className="w-full text-base font-semibold text-heading bg-transparent px-0 py-0.5 border-0 border-b border-transparent focus:border-cyan-500 focus:outline-none transition-colors"
+              placeholder="Task title"
+            />
 
-          <div className="flex items-center gap-2">
-            <div className="flex-1 min-w-0">
-              <ProjectSelector value={editProject} onChange={setEditProject} />
-            </div>
-            <div className="flex items-center gap-1.5 rounded-lg bg-input border border-edge px-2.5 py-1.5 shrink-0">
+            {/* Description — textarea, no label */}
+            <textarea
+              value={editDesc}
+              onChange={(e) => setEditDesc(e.target.value)}
+              rows={2}
+              className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-sm text-body resize-none focus:border-cyan-500 focus:outline-none placeholder-hint"
+              placeholder="Add description..."
+            />
+
+            {/* Project — no label, compact selector */}
+            <ProjectSelector value={editProject} onChange={setEditProject} />
+
+            {/* Remind At — compact row with clock icon */}
+            <div className="flex items-center gap-1.5 rounded-lg bg-input border border-edge px-2.5 py-1.5">
               <svg className="w-3.5 h-3.5 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
