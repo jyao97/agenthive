@@ -48,7 +48,9 @@ export default memo(function DoneCard({ task, selecting, selected, onToggle, exp
         tabIndex={0}
         onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
       >
-        <div className="flex items-center gap-3 px-5 py-[18px]">
+        <div className={`flex items-center gap-3 px-5 transition-[padding] duration-300 ease-in-out ${
+          expanded && !selecting ? "pt-6 pb-10" : "py-[18px]"
+        }`}>
           {/* Status icon — only when not selecting */}
           {!selecting && (
             <div className="shrink-0">
