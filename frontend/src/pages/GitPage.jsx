@@ -107,6 +107,7 @@ export default function GitPage({ theme, onToggleTheme }) {
   const [mergingBranch, setMergingBranch] = useState(null);
   const [mergingAll, setMergingAll] = useState(false);
   const [checkingOut, setCheckingOut] = useState(null);
+  const [pushing, setPushing] = useState(false);
   const [error, setError] = useState(null);
   const toast = useToast();
   const addToast = useCallback((message, type) => type === "error" ? toast.error(message) : toast.success(message), [toast]);
@@ -241,6 +242,32 @@ export default function GitPage({ theme, onToggleTheme }) {
     },
     [selectedProject, checkingOut, addToast]
   );
+
+  // --- Stage, commit & push handler (spawns an agent) ---
+  const handlePush = useCallback(async () => {
+    if (!selectedProject || pushing) return;
+    const currentBranch = branches.find((b) => b.current)?.name || "current branch";
+    setPushing(true);
+    try {
+      const agent = await createAgent({
+        project: selectedProject,
+        mode: "AUTO",
+        skip_permissions: true,
+        prompt:
+          `Review the uncommitted changes, stage them, commit, and push. ` +
+          `Steps: 1) Run git diff and git status to review all changes. ` +
+          `2) Stage all relevant changes with git add (skip secrets/.env files). ` +
+          `3) Write a clear, concise commit message summarizing the changes. ` +
+          `4) Commit and push to origin/${currentBranch}. ` +
+          `Report what was committed and pushed.`,
+      });
+      navigate(`/agents/${agent.id}`);
+    } catch (err) {
+      addToast(`Push error: ${err.message}`, "error");
+    } finally {
+      setPushing(false);
+    }
+  }, [selectedProject, pushing, branches, addToast, navigate]);
 
   // --- Merge All worktrees handler ---
   const handleMergeAll = useCallback(async () => {
@@ -504,9 +531,34 @@ export default function GitPage({ theme, onToggleTheme }) {
       {/* Working tree status */}
       {selectedProject && (
         <div className="rounded-xl bg-surface shadow-card p-4 space-y-3">
-          <h2 className="text-sm font-semibold text-body uppercase tracking-wide">
-            Status
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-body uppercase tracking-wide">
+              Status
+            </h2>
+            {!loadingStatus && status && !status.clean && (
+              <button
+                onClick={handlePush}
+                disabled={pushing}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors flex items-center gap-1.5 ${
+                  pushing
+                    ? "bg-cyan-500/10 text-cyan-400 cursor-wait"
+                    : "bg-cyan-500/15 text-cyan-600 hover:bg-cyan-500/25 active:bg-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-400 dark:hover:bg-cyan-500/20 dark:active:bg-cyan-500/25"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {pushing ? (
+                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0-12l-4 4m4-4l4 4" />
+                  </svg>
+                )}
+                {pushing ? "Creating..." : "Commit & Push"}
+              </button>
+            )}
+          </div>
           {loadingStatus ? (
             <div className="h-6 w-40 bg-skel rounded animate-pulse" />
           ) : !status ? (
