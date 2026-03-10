@@ -109,8 +109,11 @@ export default function GitPage({ theme, onToggleTheme }) {
   const [checkingOut, setCheckingOut] = useState(null);
   const [pushing, setPushing] = useState(false);
   const [cleaning, setCleaning] = useState(false);
-  const [cleanupMode, setCleanupMode] = useState(false);       // selection mode active
-  const [selectedCleanup, setSelectedCleanup] = useState(new Set()); // selected branch names / worktree paths
+  const [cleanupMode, setCleanupMode] = useState(false);       // branch selection mode
+  const [selectedCleanup, setSelectedCleanup] = useState(new Set()); // selected branch names
+  const [cleaningWt, setCleaningWt] = useState(false);
+  const [cleanupModeWt, setCleanupModeWt] = useState(false);   // worktree selection mode
+  const [selectedCleanupWt, setSelectedCleanupWt] = useState(new Set()); // selected worktree paths
   const [error, setError] = useState(null);
   const toast = useToast();
   const addToast = useCallback((message, type) => type === "error" ? toast.error(message) : toast.success(message), [toast]);
@@ -305,12 +308,56 @@ export default function GitPage({ theme, onToggleTheme }) {
     }
   }, [selectedProject, mergingAll, worktrees, addToast, navigate]);
 
-  // --- Cleanup: toggle selection mode ---
-  const toggleCleanupMode = useCallback(() => {
-    setCleanupMode((v) => {
-      if (!v) setSelectedCleanup(new Set()); // reset selection on enter
-      return !v;
+  // --- Worktree cleanup: toggle / select / confirm ---
+  const toggleCleanupModeWt = useCallback(() => {
+    setCleanupModeWt((v) => { if (!v) setSelectedCleanupWt(new Set()); return !v; });
+  }, []);
+
+  const toggleCleanupItemWt = useCallback((key) => {
+    setSelectedCleanupWt((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
     });
+  }, []);
+
+  const handleCleanupConfirmWt = useCallback(async () => {
+    if (!selectedProject || cleaningWt || selectedCleanupWt.size === 0) return;
+    const currentBranch = branches.find((b) => b.current)?.name || "main";
+    const wtPaths = [...selectedCleanupWt];
+    const wtList = wtPaths.join(", ");
+
+    setCleaningWt(true);
+    try {
+      const agent = await createAgent({
+        project: selectedProject,
+        mode: "AUTO",
+        skip_permissions: true,
+        prompt:
+          `Clean up the selected worktrees for this project. The main branch is "${currentBranch}".` +
+          `\n\nWorktrees to remove: ${wtList}` +
+          `\n\nSteps:` +
+          `\n1) For each selected worktree, run 'git worktree remove <path> --force'.` +
+          `\n2) Run 'git worktree prune' to clean up stale refs.` +
+          `\n3) For each worktree's branch, check if it has useful changes not yet in ${currentBranch} using 'git log ${currentBranch}..<branch> --oneline'. ` +
+          `If it has commits, checkout ${currentBranch} and try 'git merge <branch> --no-edit'. If merge conflicts occur, abort with 'git merge --abort' and skip. ` +
+          `Then delete the branch with 'git branch -D <branch>'.` +
+          `\n4) Run 'git worktree list' and 'git branch -a' to show the final state.` +
+          `\nReport a summary of what was removed, merged, deleted, and skipped.`,
+      });
+      navigate(`/agents/${agent.id}`);
+    } catch (err) {
+      addToast(`Cleanup error: ${err.message}`, "error");
+    } finally {
+      setCleaningWt(false);
+      setCleanupModeWt(false);
+      setSelectedCleanupWt(new Set());
+    }
+  }, [selectedProject, cleaningWt, selectedCleanupWt, branches, addToast, navigate]);
+
+  // --- Branch cleanup: toggle / select / confirm ---
+  const toggleCleanupMode = useCallback(() => {
+    setCleanupMode((v) => { if (!v) setSelectedCleanup(new Set()); return !v; });
   }, []);
 
   const toggleCleanupItem = useCallback((key) => {
@@ -321,24 +368,10 @@ export default function GitPage({ theme, onToggleTheme }) {
     });
   }, []);
 
-  // --- Cleanup: confirm and spawn agent ---
   const handleCleanupConfirm = useCallback(async () => {
     if (!selectedProject || cleaning || selectedCleanup.size === 0) return;
     const currentBranch = branches.find((b) => b.current)?.name || "main";
-
-    // Separate selected items into branches and worktrees
-    const selectedBranches = [];
-    const selectedWorktrees = [];
-    for (const key of selectedCleanup) {
-      if (key.startsWith("wt:")) {
-        selectedWorktrees.push(key.slice(3));
-      } else {
-        selectedBranches.push(key);
-      }
-    }
-
-    const branchList = selectedBranches.join(", ") || "(none)";
-    const wtList = selectedWorktrees.join(", ") || "(none)";
+    const branchList = [...selectedCleanup].join(", ");
 
     setCleaning(true);
     try {
@@ -347,22 +380,15 @@ export default function GitPage({ theme, onToggleTheme }) {
         mode: "AUTO",
         skip_permissions: true,
         prompt:
-          `Clean up the selected branches and worktrees for this project. ` +
-          `The main branch is "${currentBranch}". ` +
+          `Clean up the selected branches for this project. The main branch is "${currentBranch}".` +
           `\n\nBranches to process: ${branchList}` +
-          `\nWorktrees to remove: ${wtList}` +
           `\n\nSteps:` +
-          (selectedWorktrees.length > 0
-            ? `\n1) For each selected worktree, run 'git worktree remove <path> --force'. Then run 'git worktree prune'.`
-            : "") +
-          (selectedBranches.length > 0
-            ? `\n2) Checkout ${currentBranch}: 'git checkout ${currentBranch}'.` +
-              `\n3) For each selected branch: ` +
-              `check if it has useful changes not yet in ${currentBranch} using 'git log ${currentBranch}..<branch> --oneline'. ` +
-              `If it has commits, try 'git merge <branch> --no-edit'. If merge conflicts occur, abort with 'git merge --abort' and skip that branch. ` +
-              `\n4) After merging (or skipping), delete each selected branch with 'git branch -D <branch>'.`
-            : "") +
-          `\n5) Finally, run 'git branch -a' and 'git worktree list' to show the final state.` +
+          `\n1) Checkout ${currentBranch}: 'git checkout ${currentBranch}'.` +
+          `\n2) For each selected branch: ` +
+          `check if it has useful changes not yet in ${currentBranch} using 'git log ${currentBranch}..<branch> --oneline'. ` +
+          `If it has commits, try 'git merge <branch> --no-edit'. If merge conflicts occur, abort with 'git merge --abort' and skip that branch. ` +
+          `\n3) After merging (or skipping), delete each selected branch with 'git branch -D <branch>'.` +
+          `\n4) Run 'git branch -a' to show the final state.` +
           `\nReport a summary of what was merged, deleted, and skipped.`,
       });
       navigate(`/agents/${agent.id}`);
@@ -447,27 +473,67 @@ export default function GitPage({ theme, onToggleTheme }) {
               Worktrees
             </h2>
             {!loadingWorktrees && worktrees.length > 1 && (
-              <button
-                onClick={handleMergeAll}
-                disabled={mergingAll}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                  mergingAll
-                    ? "bg-purple-400 text-white cursor-wait dark:bg-purple-700/50 dark:text-purple-300"
-                    : "bg-purple-600 text-white hover:bg-purple-700 dark:bg-purple-600 dark:text-white dark:hover:bg-purple-500"
-                }`}
-              >
-                {mergingAll ? (
-                  <span className="flex items-center gap-1">
-                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    Creating...
-                  </span>
-                ) : (
-                  "Merge All"
+              <div className="flex items-center gap-1.5">
+                {!cleanupModeWt && (
+                  <button
+                    onClick={handleMergeAll}
+                    disabled={mergingAll}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                      mergingAll
+                        ? "bg-purple-400 text-white cursor-wait dark:bg-purple-700/50 dark:text-purple-300"
+                        : "bg-purple-600 text-white hover:bg-purple-700 dark:bg-purple-600 dark:text-white dark:hover:bg-purple-500"
+                    }`}
+                  >
+                    {mergingAll ? (
+                      <span className="flex items-center gap-1">
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Creating...
+                      </span>
+                    ) : (
+                      "Merge All"
+                    )}
+                  </button>
                 )}
-              </button>
+                {cleanupModeWt && (
+                  <button
+                    onClick={handleCleanupConfirmWt}
+                    disabled={cleaningWt || selectedCleanupWt.size === 0}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                      cleaningWt
+                        ? "bg-red-400/20 text-red-400 cursor-wait"
+                        : selectedCleanupWt.size === 0
+                          ? "bg-gray-500/10 text-gray-400 cursor-not-allowed"
+                          : "bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-500"
+                    }`}
+                  >
+                    {cleaningWt ? (
+                      <span className="flex items-center gap-1">
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Creating...
+                      </span>
+                    ) : (
+                      `Confirm (${selectedCleanupWt.size})`
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={toggleCleanupModeWt}
+                  disabled={cleaningWt}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                    cleanupModeWt
+                      ? "bg-gray-500/15 text-body hover:bg-gray-500/25 dark:bg-gray-500/10 dark:hover:bg-gray-500/20"
+                      : "bg-red-500/15 text-red-500 hover:bg-red-500/25 active:bg-red-500/30 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20 dark:active:bg-red-500/25"
+                  }`}
+                >
+                  {cleanupModeWt ? "Cancel" : "Clean"}
+                </button>
+              </div>
             )}
           </div>
           {loadingWorktrees ? (
@@ -483,28 +549,27 @@ export default function GitPage({ theme, onToggleTheme }) {
               {worktrees.map((wt, idx) => {
                 const isMain = idx === 0;
                 const name = wt.path ? wt.path.split("/").pop() : "unknown";
-                const wtKey = `wt:${wt.path}`;
-                const isSelected = selectedCleanup.has(wtKey);
+                const isSelected = selectedCleanupWt.has(wt.path);
                 return (
                   <div
                     key={wt.path || idx}
-                    onClick={cleanupMode && !isMain ? () => toggleCleanupItem(wtKey) : undefined}
+                    onClick={cleanupModeWt && !isMain ? () => toggleCleanupItemWt(wt.path) : undefined}
                     className={`flex items-center gap-2 rounded-lg text-sm px-3 py-2 border transition-colors ${
-                      cleanupMode && isSelected
+                      cleanupModeWt && isSelected
                         ? "bg-red-50 border-red-400 text-heading dark:bg-red-600/15 dark:border-red-500/50 dark:text-red-300"
                         : isMain
                           ? "bg-cyan-50 border-cyan-300 text-heading dark:bg-cyan-600/20 dark:border-cyan-500/50 dark:text-cyan-300"
-                          : cleanupMode
+                          : cleanupModeWt
                             ? "bg-purple-50 border-purple-300 text-heading cursor-pointer hover:border-red-400/50 dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-300 dark:hover:border-red-500/30"
                             : "bg-purple-50 border-purple-300 text-heading dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-300"
                     }`}
                   >
-                    {cleanupMode ? (
+                    {cleanupModeWt ? (
                       <input
                         type="checkbox"
                         checked={isSelected}
                         disabled={isMain}
-                        onChange={() => !isMain && toggleCleanupItem(wtKey)}
+                        onChange={() => !isMain && toggleCleanupItemWt(wt.path)}
                         onClick={(e) => e.stopPropagation()}
                         className="w-3.5 h-3.5 shrink-0 rounded accent-red-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                       />
