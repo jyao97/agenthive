@@ -10,6 +10,7 @@ import {
   fetchGitStatus,
   fetchGitWorktrees,
   checkoutBranch,
+  cleanupBranches,
   createAgent,
 } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
@@ -108,6 +109,7 @@ export default function GitPage({ theme, onToggleTheme }) {
   const [mergingAll, setMergingAll] = useState(false);
   const [checkingOut, setCheckingOut] = useState(null);
   const [pushing, setPushing] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
   const [error, setError] = useState(null);
   const toast = useToast();
   const addToast = useCallback((message, type) => type === "error" ? toast.error(message) : toast.success(message), [toast]);
@@ -302,6 +304,35 @@ export default function GitPage({ theme, onToggleTheme }) {
     }
   }, [selectedProject, mergingAll, worktrees, addToast, navigate]);
 
+  // --- Cleanup handler (merge useful branches into main, delete rest, remove worktrees) ---
+  const handleCleanup = useCallback(async () => {
+    if (!selectedProject || cleaning) return;
+    setCleaning(true);
+    try {
+      const result = await cleanupBranches(selectedProject);
+      const parts = [];
+      if (result.merged?.length) parts.push(`Merged: ${result.merged.join(", ")}`);
+      if (result.deleted?.length) parts.push(`Deleted: ${result.deleted.join(", ")}`);
+      if (result.removed_worktrees?.length) parts.push(`Removed worktrees: ${result.removed_worktrees.join(", ")}`);
+      if (result.skipped?.length) parts.push(`Skipped: ${result.skipped.map((s) => s.branch).join(", ")}`);
+      if (result.errors?.length) parts.push(`Errors: ${result.errors.join("; ")}`);
+      addToast(parts.length ? parts.join(" | ") : "Nothing to clean up", parts.some((p) => p.startsWith("Error")) ? "error" : "success");
+      // Refresh git data
+      const [branchRes, wtRes, statusRes] = await Promise.allSettled([
+        fetchGitBranches(selectedProject).catch(() => []),
+        fetchGitWorktrees(selectedProject).catch(() => []),
+        fetchGitStatus(selectedProject).catch(() => null),
+      ]);
+      setBranches(branchRes.status === "fulfilled" ? branchRes.value : []);
+      setWorktrees(wtRes.status === "fulfilled" ? wtRes.value : []);
+      setStatus(statusRes.status === "fulfilled" ? statusRes.value : null);
+    } catch (err) {
+      addToast(`Cleanup error: ${err.message}`, "error");
+    } finally {
+      setCleaning(false);
+    }
+  }, [selectedProject, cleaning, addToast]);
+
   // --- Loading skeleton for commits ---
   function CommitSkeleton() {
     return (
@@ -445,9 +476,34 @@ export default function GitPage({ theme, onToggleTheme }) {
       {/* Branches section */}
       {selectedProject && (
         <div className="rounded-xl bg-surface shadow-card p-4 space-y-3">
-          <h2 className="text-sm font-semibold text-body uppercase tracking-wide">
-            Branches
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-body uppercase tracking-wide">
+              Branches
+            </h2>
+            {!loadingBranches && branches.length > 1 && (
+              <button
+                onClick={handleCleanup}
+                disabled={cleaning}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                  cleaning
+                    ? "bg-red-400/20 text-red-400 cursor-wait"
+                    : "bg-red-500/15 text-red-500 hover:bg-red-500/25 active:bg-red-500/30 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20 dark:active:bg-red-500/25"
+                }`}
+              >
+                {cleaning ? (
+                  <span className="flex items-center gap-1">
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Cleaning...
+                  </span>
+                ) : (
+                  "Clean"
+                )}
+              </button>
+            )}
+          </div>
           {loadingBranches ? (
             <BranchSkeleton />
           ) : branches.length === 0 ? (
