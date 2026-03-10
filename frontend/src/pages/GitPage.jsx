@@ -109,6 +109,8 @@ export default function GitPage({ theme, onToggleTheme }) {
   const [checkingOut, setCheckingOut] = useState(null);
   const [pushing, setPushing] = useState(false);
   const [cleaning, setCleaning] = useState(false);
+  const [cleanupMode, setCleanupMode] = useState(false);       // selection mode active
+  const [selectedCleanup, setSelectedCleanup] = useState(new Set()); // selected branch names / worktree paths
   const [error, setError] = useState(null);
   const toast = useToast();
   const addToast = useCallback((message, type) => type === "error" ? toast.error(message) : toast.success(message), [toast]);
@@ -303,22 +305,40 @@ export default function GitPage({ theme, onToggleTheme }) {
     }
   }, [selectedProject, mergingAll, worktrees, addToast, navigate]);
 
-  // --- Cleanup handler (spawns an agent to merge useful branches into main + delete temp branches/worktrees) ---
-  const handleCleanup = useCallback(async () => {
-    if (!selectedProject || cleaning) return;
-    const currentBranch = branches.find((b) => b.current)?.name || "main";
-    const nonCurrentBranches = branches
-      .filter((b) => !b.current && !b.name.startsWith("origin/"))
-      .map((b) => b.name);
-    const nonMainWt = worktrees.filter((_, i) => i !== 0);
+  // --- Cleanup: toggle selection mode ---
+  const toggleCleanupMode = useCallback(() => {
+    setCleanupMode((v) => {
+      if (!v) setSelectedCleanup(new Set()); // reset selection on enter
+      return !v;
+    });
+  }, []);
 
-    if (nonCurrentBranches.length === 0 && nonMainWt.length === 0) {
-      addToast("Nothing to clean up", "success");
-      return;
+  const toggleCleanupItem = useCallback((key) => {
+    setSelectedCleanup((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // --- Cleanup: confirm and spawn agent ---
+  const handleCleanupConfirm = useCallback(async () => {
+    if (!selectedProject || cleaning || selectedCleanup.size === 0) return;
+    const currentBranch = branches.find((b) => b.current)?.name || "main";
+
+    // Separate selected items into branches and worktrees
+    const selectedBranches = [];
+    const selectedWorktrees = [];
+    for (const key of selectedCleanup) {
+      if (key.startsWith("wt:")) {
+        selectedWorktrees.push(key.slice(3));
+      } else {
+        selectedBranches.push(key);
+      }
     }
 
-    const branchList = nonCurrentBranches.join(", ") || "(none)";
-    const wtList = nonMainWt.map((wt) => `${wt.branch || wt.path}`).join(", ") || "(none)";
+    const branchList = selectedBranches.join(", ") || "(none)";
+    const wtList = selectedWorktrees.join(", ") || "(none)";
 
     setCleaning(true);
     try {
@@ -327,19 +347,22 @@ export default function GitPage({ theme, onToggleTheme }) {
         mode: "AUTO",
         skip_permissions: true,
         prompt:
-          `Clean up all temporary branches and worktrees for this project. ` +
+          `Clean up the selected branches and worktrees for this project. ` +
           `The main branch is "${currentBranch}". ` +
-          `\n\nLocal branches to process: ${branchList}` +
-          `\nWorktrees to process: ${wtList}` +
+          `\n\nBranches to process: ${branchList}` +
+          `\nWorktrees to remove: ${wtList}` +
           `\n\nSteps:` +
-          `\n1) First run 'git worktree list' to see all worktrees. For each non-main worktree, run 'git worktree remove <path> --force' to remove it.` +
-          `\n2) Run 'git worktree prune' to clean up stale refs.` +
-          `\n3) Checkout ${currentBranch}: 'git checkout ${currentBranch}'.` +
-          `\n4) For each local branch (not ${currentBranch}): ` +
-          `check if it has useful changes not yet in ${currentBranch} using 'git log ${currentBranch}..<branch> --oneline'. ` +
-          `If it has commits, try 'git merge <branch> --no-edit'. If merge conflicts occur, abort with 'git merge --abort' and skip that branch. ` +
-          `\n5) After merging (or skipping), delete each processed branch with 'git branch -D <branch>'.` +
-          `\n6) Finally, run 'git branch -a' and 'git worktree list' to show the final state.` +
+          (selectedWorktrees.length > 0
+            ? `\n1) For each selected worktree, run 'git worktree remove <path> --force'. Then run 'git worktree prune'.`
+            : "") +
+          (selectedBranches.length > 0
+            ? `\n2) Checkout ${currentBranch}: 'git checkout ${currentBranch}'.` +
+              `\n3) For each selected branch: ` +
+              `check if it has useful changes not yet in ${currentBranch} using 'git log ${currentBranch}..<branch> --oneline'. ` +
+              `If it has commits, try 'git merge <branch> --no-edit'. If merge conflicts occur, abort with 'git merge --abort' and skip that branch. ` +
+              `\n4) After merging (or skipping), delete each selected branch with 'git branch -D <branch>'.`
+            : "") +
+          `\n5) Finally, run 'git branch -a' and 'git worktree list' to show the final state.` +
           `\nReport a summary of what was merged, deleted, and skipped.`,
       });
       navigate(`/agents/${agent.id}`);
@@ -347,8 +370,10 @@ export default function GitPage({ theme, onToggleTheme }) {
       addToast(`Cleanup error: ${err.message}`, "error");
     } finally {
       setCleaning(false);
+      setCleanupMode(false);
+      setSelectedCleanup(new Set());
     }
-  }, [selectedProject, cleaning, branches, worktrees, addToast, navigate]);
+  }, [selectedProject, cleaning, selectedCleanup, branches, addToast, navigate]);
 
   // --- Loading skeleton for commits ---
   function CommitSkeleton() {
@@ -458,18 +483,36 @@ export default function GitPage({ theme, onToggleTheme }) {
               {worktrees.map((wt, idx) => {
                 const isMain = idx === 0;
                 const name = wt.path ? wt.path.split("/").pop() : "unknown";
+                const wtKey = `wt:${wt.path}`;
+                const isSelected = selectedCleanup.has(wtKey);
                 return (
                   <div
                     key={wt.path || idx}
+                    onClick={cleanupMode && !isMain ? () => toggleCleanupItem(wtKey) : undefined}
                     className={`flex items-center gap-2 rounded-lg text-sm px-3 py-2 border transition-colors ${
-                      isMain
-                        ? "bg-cyan-50 border-cyan-300 text-heading dark:bg-cyan-600/20 dark:border-cyan-500/50 dark:text-cyan-300"
-                        : "bg-purple-50 border-purple-300 text-heading dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-300"
+                      cleanupMode && isSelected
+                        ? "bg-red-50 border-red-400 text-heading dark:bg-red-600/15 dark:border-red-500/50 dark:text-red-300"
+                        : isMain
+                          ? "bg-cyan-50 border-cyan-300 text-heading dark:bg-cyan-600/20 dark:border-cyan-500/50 dark:text-cyan-300"
+                          : cleanupMode
+                            ? "bg-purple-50 border-purple-300 text-heading cursor-pointer hover:border-red-400/50 dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-300 dark:hover:border-red-500/30"
+                            : "bg-purple-50 border-purple-300 text-heading dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-300"
                     }`}
                   >
-                    <svg className="w-3.5 h-3.5 shrink-0 opacity-60" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
-                    </svg>
+                    {cleanupMode ? (
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        disabled={isMain}
+                        onChange={() => !isMain && toggleCleanupItem(wtKey)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-3.5 h-3.5 shrink-0 rounded accent-red-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                      />
+                    ) : (
+                      <svg className="w-3.5 h-3.5 shrink-0 opacity-60" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
+                      </svg>
+                    )}
                     <span className="font-mono text-xs truncate">{name}</span>
                     {wt.branch && (
                       <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${isMain ? "bg-cyan-600 text-white dark:bg-cyan-600 dark:text-white" : "bg-purple-600 text-white dark:bg-purple-600 dark:text-white"}`}>
@@ -498,27 +541,44 @@ export default function GitPage({ theme, onToggleTheme }) {
               Branches
             </h2>
             {!loadingBranches && branches.length > 1 && (
-              <button
-                onClick={handleCleanup}
-                disabled={cleaning}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                  cleaning
-                    ? "bg-red-400/20 text-red-400 cursor-wait"
-                    : "bg-red-500/15 text-red-500 hover:bg-red-500/25 active:bg-red-500/30 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20 dark:active:bg-red-500/25"
-                }`}
-              >
-                {cleaning ? (
-                  <span className="flex items-center gap-1">
-                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    Cleaning...
-                  </span>
-                ) : (
-                  "Clean"
+              <div className="flex items-center gap-1.5">
+                {cleanupMode && (
+                  <button
+                    onClick={handleCleanupConfirm}
+                    disabled={cleaning || selectedCleanup.size === 0}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                      cleaning
+                        ? "bg-red-400/20 text-red-400 cursor-wait"
+                        : selectedCleanup.size === 0
+                          ? "bg-gray-500/10 text-gray-400 cursor-not-allowed"
+                          : "bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-500"
+                    }`}
+                  >
+                    {cleaning ? (
+                      <span className="flex items-center gap-1">
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Creating...
+                      </span>
+                    ) : (
+                      `Confirm (${selectedCleanup.size})`
+                    )}
+                  </button>
                 )}
-              </button>
+                <button
+                  onClick={toggleCleanupMode}
+                  disabled={cleaning}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                    cleanupMode
+                      ? "bg-gray-500/15 text-body hover:bg-gray-500/25 dark:bg-gray-500/10 dark:hover:bg-gray-500/20"
+                      : "bg-red-500/15 text-red-500 hover:bg-red-500/25 active:bg-red-500/30 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20 dark:active:bg-red-500/25"
+                  }`}
+                >
+                  {cleanupMode ? "Cancel" : "Clean"}
+                </button>
+              </div>
             )}
           </div>
           {loadingBranches ? (
@@ -532,37 +592,54 @@ export default function GitPage({ theme, onToggleTheme }) {
                 const isMerging = mergingBranch === branch.name;
                 const isCheckingOut = checkingOut === branch.name;
                 const currentName = branches.find((b) => b.current)?.name || "current";
+                const isSelected = selectedCleanup.has(branch.name);
                 return (
                   <div
                     key={branch.name}
-                    onDoubleClick={() => !isCurrent && handleCheckout(branch.name)}
+                    onClick={cleanupMode && !isCurrent ? () => toggleCleanupItem(branch.name) : undefined}
+                    onDoubleClick={!cleanupMode && !isCurrent ? () => handleCheckout(branch.name) : undefined}
                     className={`flex items-center gap-2 rounded-lg text-sm px-3 py-2 border transition-colors ${
-                      isCurrent
-                        ? "bg-cyan-50 border-cyan-400 text-heading dark:bg-cyan-600/20 dark:border-cyan-500/50 dark:text-cyan-300"
-                        : "bg-input border-edge text-heading cursor-pointer hover:border-cyan-400/50 dark:hover:border-cyan-500/30"
+                      cleanupMode && isSelected
+                        ? "bg-red-50 border-red-400 text-heading dark:bg-red-600/15 dark:border-red-500/50 dark:text-red-300"
+                        : isCurrent
+                          ? "bg-cyan-50 border-cyan-400 text-heading dark:bg-cyan-600/20 dark:border-cyan-500/50 dark:text-cyan-300"
+                          : cleanupMode && !isCurrent
+                            ? "bg-input border-edge text-heading cursor-pointer hover:border-red-400/50 dark:hover:border-red-500/30"
+                            : "bg-input border-edge text-heading cursor-pointer hover:border-cyan-400/50 dark:hover:border-cyan-500/30"
                     }`}
-                    title={isCurrent ? "Current branch" : "Double-click to checkout"}
+                    title={cleanupMode ? (isCurrent ? "Current branch (cannot clean)" : "Click to select for cleanup") : (isCurrent ? "Current branch" : "Double-click to checkout")}
                   >
-                    {/* Branch icon */}
-                    <svg
-                      className="w-3.5 h-3.5 shrink-0 opacity-60"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z"
+                    {/* Checkbox in cleanup mode, branch icon otherwise */}
+                    {cleanupMode ? (
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        disabled={isCurrent}
+                        onChange={() => !isCurrent && toggleCleanupItem(branch.name)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-3.5 h-3.5 shrink-0 rounded accent-red-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                       />
-                    </svg>
+                    ) : (
+                      <svg
+                        className="w-3.5 h-3.5 shrink-0 opacity-60"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z"
+                        />
+                      </svg>
+                    )}
 
                     <span className="font-mono text-xs truncate max-w-[160px]">
                       {branch.name}
                     </span>
 
-                    {isCurrent && (
+                    {isCurrent && !cleanupMode && (
                       <svg
                         className="w-4 h-4 text-cyan-600 dark:text-cyan-400 shrink-0"
                         fill="none"
@@ -574,7 +651,7 @@ export default function GitPage({ theme, onToggleTheme }) {
                       </svg>
                     )}
 
-                    {isCheckingOut && (
+                    {!cleanupMode && isCheckingOut && (
                       <span className="ml-auto flex items-center gap-1 text-xs text-dim">
                         <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
                           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -584,7 +661,7 @@ export default function GitPage({ theme, onToggleTheme }) {
                       </span>
                     )}
 
-                    {!isCurrent && !isCheckingOut && (
+                    {!cleanupMode && !isCurrent && !isCheckingOut && (
                       <MergeDropdown
                         branchName={branch.name}
                         currentName={currentName}
