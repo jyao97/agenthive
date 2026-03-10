@@ -2,9 +2,9 @@ import { memo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 const STATUS_STYLE = {
-  MERGING:  { dot: "bg-purple-500 animate-pulse", label: "Merging...",    color: "text-purple-400" },
-  REVIEW:   { dot: "bg-amber-500",                label: "Needs Review",  color: "text-amber-400" },
-  CONFLICT: { dot: "bg-red-500",                  label: "Conflict",      color: "text-red-400" },
+  MERGING:  { label: "Merging...",   color: "text-purple-400" },
+  REVIEW:   { label: "Needs Review", color: "text-amber-400" },
+  CONFLICT: { label: "Conflict",     color: "text-red-400" },
 };
 
 export default memo(function ReviewCard({ task, selected, onSelect, merging, verifying, onApprove, onReject, onRetryMerge, onCancel, onVerify }) {
@@ -13,7 +13,6 @@ export default memo(function ReviewCard({ task, selected, onSelect, merging, ver
   const [reason, setReason] = useState("");
 
   const isMerging = merging || task.status === "MERGING";
-
   const { label: statusLabel, color: statusColor } =
     STATUS_STYLE[isMerging ? "MERGING" : task.status] || STATUS_STYLE.MERGING;
 
@@ -25,32 +24,30 @@ export default memo(function ReviewCard({ task, selected, onSelect, merging, ver
   return (
     <div
       data-review-task={task.id}
-      className={`relative w-full text-left rounded-xl bg-surface shadow-card overflow-hidden transition-all ${
-        selected
-          ? "ring-2 ring-purple-500/50 dark:ring-purple-400/40"
-          : "hover:ring-1 hover:ring-ring-hover"
+      className={`relative w-full text-left rounded-[12px] bg-surface shadow-card overflow-hidden transition-all ${
+        selected ? "ring-2 ring-purple-500/50 dark:ring-purple-400/40" : ""
       }`}
     >
       {/* Left accent bar */}
       <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-purple-500" />
 
-      <div className="flex items-start gap-3 pl-5 pr-4 py-3.5">
+      <div className="flex items-center gap-3.5 pl-5 pr-4 py-4">
         {/* Checkbox */}
         <button
           type="button"
           onClick={() => onSelect?.(task.id)}
-          className="shrink-0 mt-0.5 group"
+          className="shrink-0 group"
           aria-label="Select task"
         >
           <div
-            className={`w-7 h-7 rounded-full border-2 transition-all flex items-center justify-center ${
+            className={`w-6 h-6 rounded-full border-[2px] transition-all duration-200 flex items-center justify-center ${
               selected
-                ? "border-purple-500 bg-purple-500"
-                : "border-purple-300 dark:border-purple-500/40 group-hover:border-purple-400 dark:group-hover:border-purple-400"
+                ? "border-cyan-500 bg-cyan-500"
+                : "border-gray-300 dark:border-gray-500 group-hover:border-cyan-400 dark:group-hover:border-cyan-400"
             }`}
           >
             {selected && (
-              <svg className="w-3.5 h-3.5 text-white animate-checkbox-pop" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+              <svg className="w-3 h-3 text-white animate-checkbox-pop" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
             )}
@@ -65,25 +62,27 @@ export default memo(function ReviewCard({ task, selected, onSelect, merging, ver
           tabIndex={0}
           onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && !rejecting) { e.preventDefault(); navigate(`/tasks/${task.id}`); } }}
         >
-          <div className="flex items-center gap-2 mb-1">
-            <span className={`text-xs font-medium ${statusColor}`}>{statusLabel}</span>
+          {/* Row 1: Title */}
+          <p className="text-base font-semibold text-heading leading-snug truncate">{task.title}</p>
+
+          {/* Row 2: Status + summary */}
+          <div className="mt-1">
+            <span className={`text-sm font-medium ${statusColor}`}>{statusLabel}</span>
             {task.attempt_number > 1 && (
-              <span className="text-xs text-orange-400 font-medium">Attempt #{task.attempt_number}</span>
+              <span className="text-sm text-orange-400 font-medium ml-2">Attempt #{task.attempt_number}</span>
             )}
           </div>
 
-          <p className="text-[15px] font-semibold text-heading leading-snug truncate">{task.title}</p>
-
           {task.status === "REVIEW" && task.agent_summary && (
-            <p className="text-xs text-dim mt-1 line-clamp-3">{task.agent_summary.slice(0, 200)}</p>
+            <p className="text-sm text-dim leading-relaxed mt-1 line-clamp-2">{task.agent_summary.slice(0, 200)}</p>
           )}
 
           {task.status === "CONFLICT" && task.error_message && (
-            <p className="text-xs text-red-400/80 mt-1 line-clamp-2">{task.error_message.slice(0, 150)}</p>
+            <p className="text-sm text-red-400/80 leading-relaxed mt-1 line-clamp-2">{task.error_message.slice(0, 150)}</p>
           )}
 
-          {/* Action buttons (primary workflow) */}
-          <div className="flex items-center gap-2 mt-2">
+          {/* Row 3: Action buttons */}
+          <div className="flex flex-wrap items-center gap-2 mt-2.5">
             {isMerging && (
               <span className="text-xs text-purple-400 font-medium">Merging branch...</span>
             )}
@@ -149,7 +148,7 @@ export default memo(function ReviewCard({ task, selected, onSelect, merging, ver
 
           {/* Inline reject textarea */}
           {rejecting && (
-            <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
+            <div className="mt-2.5 space-y-2" onClick={(e) => e.stopPropagation()}>
               <textarea
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}

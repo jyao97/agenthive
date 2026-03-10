@@ -7,34 +7,36 @@ function PlanningCard({ task, selected, onSelect }) {
   const navigate = useNavigate();
   const projColor = task.project_name ? projectBadgeColor(task.project_name) : "";
 
+  const preview = task.description && task.description !== task.title
+    ? task.description
+    : task.project_name || null;
+
   return (
     <div
-      className={`relative w-full text-left rounded-xl bg-surface shadow-card overflow-hidden transition-all ${
-        selected
-          ? "ring-2 ring-violet-500/50 dark:ring-violet-400/40"
-          : "hover:ring-1 hover:ring-ring-hover"
+      className={`relative w-full text-left rounded-[12px] bg-surface shadow-card overflow-hidden transition-all ${
+        selected ? "ring-2 ring-violet-500/50 dark:ring-violet-400/40" : ""
       }`}
     >
       {/* Left accent bar */}
-      <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-orange-500" />
+      <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-amber-500" />
 
-      <div className="flex items-start gap-3 pl-5 pr-4 py-3.5">
+      <div className="flex items-center gap-3.5 pl-5 pr-4 py-4">
         {/* Checkbox */}
         <button
           type="button"
           onClick={() => onSelect?.(task.id)}
-          className="shrink-0 mt-0.5 group"
+          className="shrink-0 group"
           aria-label="Select task"
         >
           <div
-            className={`w-7 h-7 rounded-full border-2 transition-all flex items-center justify-center ${
+            className={`w-6 h-6 rounded-full border-[2px] transition-all duration-200 flex items-center justify-center ${
               selected
-                ? "border-violet-500 bg-violet-500"
-                : "border-violet-300 dark:border-violet-500/40 group-hover:border-violet-400 dark:group-hover:border-violet-400"
+                ? "border-cyan-500 bg-cyan-500"
+                : "border-gray-300 dark:border-gray-500 group-hover:border-cyan-400 dark:group-hover:border-cyan-400"
             }`}
           >
             {selected && (
-              <svg className="w-3.5 h-3.5 text-white animate-checkbox-pop" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+              <svg className="w-3 h-3 text-white animate-checkbox-pop" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
             )}
@@ -49,8 +51,9 @@ function PlanningCard({ task, selected, onSelect }) {
           tabIndex={0}
           onKeyDown={(e) => { if (e.key === "Enter") navigate(`/tasks/${task.id}`); }}
         >
-          <div className="flex items-start justify-between gap-2">
-            <p className="text-[15px] font-semibold text-heading leading-snug truncate">
+          {/* Row 1: Title + time */}
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-base font-semibold text-heading leading-snug truncate">
               {task.title}
             </p>
             <span className="text-xs text-faint shrink-0 mt-0.5">
@@ -58,24 +61,31 @@ function PlanningCard({ task, selected, onSelect }) {
             </span>
           </div>
 
-          {task.notify_at && (
-            <p className="text-[10px] text-amber-400 mt-1">Remind {relativeTime(task.notify_at)}</p>
+          {/* Row 2: Description preview */}
+          {preview && (
+            <p className="text-sm text-dim leading-relaxed mt-1 line-clamp-2">
+              {preview.slice(0, 200)}
+            </p>
           )}
 
-          {/* Tags row */}
-          <div className="flex items-center gap-1.5 mt-2">
+          {task.notify_at && (
+            <p className="text-xs text-amber-400 mt-1">Remind {relativeTime(task.notify_at)}</p>
+          )}
+
+          {/* Row 3: Tags */}
+          <div className="flex flex-wrap items-center gap-1.5 mt-2">
             {task.project_name && (
-              <span className={`text-[10px] font-medium rounded-full px-1.5 py-px ${projColor}`}>
+              <span className={`text-[11px] font-medium rounded-full px-2 py-0.5 ${projColor}`}>
                 {task.project_name}
               </span>
             )}
             {task.model && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-dim">
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-elevated text-dim">
                 {modelDisplayName(task.model)}
               </span>
             )}
             {task.effort && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-dim uppercase">
+              <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-elevated text-dim uppercase">
                 {task.effort[0]}
               </span>
             )}
@@ -105,7 +115,7 @@ export default function PlanningView({ tasks, loading, selectedTaskId, onSelectT
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {sorted.map((task) => (
         <PlanningCard
           key={task.id}
