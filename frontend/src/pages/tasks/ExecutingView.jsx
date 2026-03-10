@@ -1,10 +1,11 @@
 import useAsyncHandler from "../../hooks/useAsyncHandler";
 import ErrorAlert from "../../components/ErrorAlert";
-import TaskRow from "../../components/cards/TaskRow";
+import QueueCard from "../../components/cards/QueueCard";
+import ActiveCard from "../../components/cards/ActiveCard";
 import { cancelTask } from "../../lib/api";
 
 export default function ExecutingView({ tasks, loading, onRefresh, selecting, selected, onToggle, expandedTaskId, onExpandTask }) {
-  const { error, setError } = useAsyncHandler();
+  const { error, setError, handle } = useAsyncHandler();
 
   const active = tasks
     .filter((t) => t.status === "EXECUTING")
@@ -30,56 +31,53 @@ export default function ExecutingView({ tasks, loading, onRefresh, selecting, se
   }
 
   return (
-    <div>
+    <div className="space-y-3">
       <ErrorAlert error={error} onDismiss={() => setError(null)} />
 
       {active.length > 0 && (
         <>
-          <div className="flex items-center gap-2 px-5 py-2">
+          <div className="flex items-center gap-2 px-1 pt-1">
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-500 opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500" />
             </span>
-            <span className="text-xs font-medium text-cyan-400">Running &middot; {active.length}</span>
+            <span className="text-xs font-medium text-cyan-400">Running · {active.length}</span>
           </div>
-          <div className="divide-y divide-divider">
-            {active.map((task) => (
-              <TaskRow
-                key={task.id}
-                task={task}
-                selecting={selecting}
-                selected={selected.has(task.id)}
-                onToggle={onToggle}
-                expanded={expandedTaskId === task.id}
-                onExpand={onExpandTask}
-                onRefresh={onRefresh}
-              />
-            ))}
-          </div>
+          {active.map((task) => (
+            <ActiveCard
+              key={task.id}
+              task={task}
+              selecting={selecting}
+              selected={selected.has(task.id)}
+              onToggle={onToggle}
+              expanded={expandedTaskId === task.id}
+              onExpand={onExpandTask}
+              onRefresh={onRefresh}
+              onCancel={(t) => handle(t.id, () => cancelTask(t.id).then(() => onRefresh?.()), "Cancel failed")}
+            />
+          ))}
         </>
       )}
 
       {queued.length > 0 && (
         <>
-          <div className="flex items-center gap-2 px-5 py-2 mt-1">
+          <div className="flex items-center gap-2 px-1 pt-1">
             <span className="inline-flex rounded-full h-2 w-2 bg-gray-500" />
-            <span className="text-xs font-medium text-dim">Queued &middot; {queued.length}</span>
+            <span className="text-xs font-medium text-dim">Queued · {queued.length}</span>
           </div>
-          <div className="divide-y divide-divider">
-            {queued.map((task, i) => (
-              <TaskRow
-                key={task.id}
-                task={task}
-                position={i + 1}
-                selecting={selecting}
-                selected={selected.has(task.id)}
-                onToggle={onToggle}
-                expanded={expandedTaskId === task.id}
-                onExpand={onExpandTask}
-                onRefresh={onRefresh}
-              />
-            ))}
-          </div>
+          {queued.map((task, i) => (
+            <QueueCard
+              key={task.id}
+              task={task}
+              position={i + 1}
+              selecting={selecting}
+              selected={selected.has(task.id)}
+              onToggle={onToggle}
+              expanded={expandedTaskId === task.id}
+              onExpand={onExpandTask}
+              onRefresh={onRefresh}
+            />
+          ))}
         </>
       )}
     </div>

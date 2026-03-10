@@ -85,20 +85,6 @@ export function projectBadgeColor(name) {
   return PROJECT_PALETTE[Math.abs(hash) % PROJECT_PALETTE.length];
 }
 
-/** Deterministic dot color for project indicators (Todoist-style). */
-const PROJECT_DOT_PALETTE = [
-  "bg-cyan-500", "bg-violet-500", "bg-amber-500", "bg-emerald-500",
-  "bg-rose-500", "bg-sky-500", "bg-orange-500", "bg-indigo-500",
-];
-
-export function projectDotColor(name) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
-  }
-  return PROJECT_DOT_PALETTE[Math.abs(hash) % PROJECT_DOT_PALETTE.length];
-}
-
 export const POLL_INTERVAL = 5000;
 
 // ---- Timing constants (ms) ----

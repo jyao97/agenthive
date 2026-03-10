@@ -1,4 +1,4 @@
-import TaskRow from "../../components/cards/TaskRow";
+import DoneCard from "../../components/cards/DoneCard";
 
 export default function DoneView({ tasks, loading, selecting, selected, onToggle, expandedTaskId, onExpandTask, onRefresh }) {
   const sorted = [...tasks].sort((a, b) =>
@@ -18,29 +18,27 @@ export default function DoneView({ tasks, loading, selecting, selected, onToggle
   }
 
   return (
-    <div>
+    <div className="space-y-3">
       {completedCount > 0 && (
-        <div className="flex items-center gap-2 px-5 py-2 text-sm text-green-500">
+        <div className="flex items-center gap-2 px-1 py-2 text-sm text-green-500">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
           </svg>
           <span className="font-medium">{completedCount} task{completedCount !== 1 ? "s" : ""} completed</span>
         </div>
       )}
-      <div className="divide-y divide-divider">
-        {sorted.map((task) => (
-          <TaskRow
-            key={task.id}
-            task={task}
-            selecting={selecting}
-            selected={selected.has(task.id)}
-            onToggle={onToggle}
-            expanded={expandedTaskId === task.id}
-            onExpand={onExpandTask}
-            onRefresh={onRefresh}
-          />
-        ))}
-      </div>
+      {sorted.map((task) => (
+        <DoneCard
+          key={task.id}
+          task={task}
+          selecting={selecting}
+          selected={selected.has(task.id)}
+          onToggle={onToggle}
+          expanded={expandedTaskId === task.id}
+          onExpand={onExpandTask}
+          onRefresh={onRefresh}
+        />
+      ))}
     </div>
   );
 }
