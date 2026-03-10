@@ -58,7 +58,7 @@ function MergeDropdown({ branchName, currentName, isMerging, disabled, onMerge }
         aria-haspopup="true"
         aria-expanded={open}
         aria-controls={id}
-        className="px-2 py-0.5 rounded-full text-xs font-medium transition-colors bg-teal-500/15 text-teal-600 hover:bg-teal-500/25 active:bg-teal-500/30 dark:bg-teal-500/10 dark:text-teal-400 dark:hover:bg-teal-500/20 dark:active:bg-teal-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
+        className="px-2 py-0.5 rounded-full text-xs font-medium transition-colors bg-cyan-500/15 text-cyan-600 hover:bg-cyan-500/25 active:bg-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-400 dark:hover:bg-cyan-500/20 dark:active:bg-cyan-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         Merge…
       </button>
