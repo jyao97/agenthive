@@ -1807,7 +1807,11 @@ async def list_project_sessions(name: str, db: Session = Depends(get_db)):
         seen_session_ids.add(sid)
 
     # Also include orchestrator agents not found in history.jsonl
-    all_agents = db.query(Agent).filter(Agent.project == name).all()
+    # Exclude subagents — their conversations are part of the parent session
+    all_agents = db.query(Agent).filter(
+        Agent.project == name,
+        Agent.is_subagent == False,  # noqa: E712
+    ).all()
     for agent in all_agents:
         # Skip agents whose session_id is already covered by history.jsonl
         if agent.session_id and agent.session_id in seen_session_ids:
