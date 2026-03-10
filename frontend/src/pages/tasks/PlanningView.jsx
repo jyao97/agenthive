@@ -5,9 +5,6 @@ import TaskExpandedContent from "../../components/cards/TaskExpandedContent";
 
 function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand, onRefresh }) {
   const projColor = task.project_name ? projectBadgeColor(task.project_name) : "";
-  const preview = task.description && task.description !== task.title
-    ? task.description
-    : task.project_name || null;
   const isHigh = task.priority >= 1;
 
   const handleClick = () => {
@@ -38,23 +35,14 @@ function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand,
           selecting && selected ? "ring-1 ring-cyan-500" : ""
         }`}
       >
-        {/* Minimal collapse header when expanded */}
-        {!selecting && expanded ? (
-          <div className="flex items-center justify-between px-5 pt-4 pb-0 cursor-pointer" onClick={handleClick}>
-            <span className="text-[11px] text-faint">{relativeTime(task.created_at)}</span>
-            <svg className="w-4 h-4 text-faint" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
-            </svg>
-          </div>
-        ) : (
-          <div
-            className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
-            onClick={handleClick}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
-          >
-            <div className="flex-1 min-w-0">
+        <div
+          className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
+          onClick={handleClick}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
+        >
+          <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3">
               <p className="text-base font-semibold text-heading leading-snug truncate">
                 {task.title}
@@ -64,13 +52,7 @@ function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand,
               </span>
             </div>
 
-            {preview && (
-              <p className="text-sm text-dim leading-relaxed mt-1.5 line-clamp-2">
-                {preview.slice(0, 200)}
-              </p>
-            )}
-
-            <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+            <div className="flex flex-wrap items-center gap-1.5 mt-2">
               {task.project_name && (
                 <span className={`text-[11px] font-medium rounded-full px-2 py-0.5 ${projColor}`}>
                   {task.project_name}
@@ -102,7 +84,6 @@ function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand,
             </div>
           </div>
         </div>
-      )}
 
         {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
       </div>
