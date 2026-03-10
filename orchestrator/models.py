@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from utils import utcnow as _utcnow
 
@@ -172,6 +172,23 @@ class Agent(Base):
     )
     is_subagent: Mapped[bool] = mapped_column(Boolean, default=False)
     claude_agent_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+    # Parent → child subagent relationship (self-referential)
+    subagents: Mapped[list["Agent"]] = relationship(
+        "Agent",
+        back_populates="parent_agent",
+        foreign_keys="[Agent.parent_id]",
+        viewonly=True,
+        lazy="select",
+    )
+    parent_agent: Mapped["Agent | None"] = relationship(
+        "Agent",
+        back_populates="subagents",
+        foreign_keys="[Agent.parent_id]",
+        remote_side="[Agent.id]",
+        viewonly=True,
+        lazy="select",
+    )
 
 
 class Message(Base):

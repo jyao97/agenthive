@@ -780,6 +780,31 @@ async def system_orphan_clean():
     return await asyncio.get_event_loop().run_in_executor(None, _clean)
 
 
+@app.get("/api/system/stale-agents/scan")
+async def system_stale_agents_scan(
+    max_age_days: int = 30,
+    db: Session = Depends(get_db),
+):
+    """Scan for stale stopped/error agents older than max_age_days."""
+    from orphan_cleanup import scan_stale_agents
+
+    result = scan_stale_agents(db, max_age_days=max_age_days)
+    # Strip detailed agent list from response (only return counts)
+    return {k: v for k, v in result.items() if k not in ("eligible_agents", "orphan_subagent_ids")}
+
+
+@app.post("/api/system/stale-agents/clean")
+async def system_stale_agents_clean(
+    max_age_days: int = 30,
+    db: Session = Depends(get_db),
+):
+    """Scan and delete stale agents (stopped/error, older than max_age_days)."""
+    from orphan_cleanup import scan_stale_agents, delete_stale_agents
+
+    scan = scan_stale_agents(db, max_age_days=max_age_days)
+    return delete_stale_agents(db, scan)
+
+
 @app.get("/api/system/backup")
 async def get_backup_status():
     """Return current backup config and on-disk stats."""
@@ -4522,18 +4547,27 @@ async def permanently_delete_agent(agent_id: str, request: Request, db: Session 
         ad._stale_session_retries.pop(agent.id, None)
         ad._known_subagents.pop(agent.id, None)
 
-    # 1. Delete DB records FIRST (so if this fails, no files are orphaned)
-    # Collect file info before deleting DB records
-    session_id = agent.session_id
-    agent_project = agent.project
-    agent_worktree = agent.worktree
-    msg_ids = [m.id for m in db.query(Message.id).filter(Message.agent_id == agent_id).all()]
+    # 1. Collect all agents to delete (parent + subagents cascade)
+    child_agents = db.query(Agent).filter(
+        Agent.parent_id == agent_id,
+        Agent.is_subagent == True,  # noqa: E712
+    ).all()
+    agents_to_delete = [agent] + child_agents
 
-    deleted_msgs = db.query(Message).filter(Message.agent_id == agent_id).delete(synchronize_session=False)
-    # Unlink Tasks that reference this agent (SET NULL, don't delete the tasks)
-    db.query(Task).filter(Task.agent_id == agent_id).update(
+    # Collect file info before deleting DB records
+    all_agent_ids = [a.id for a in agents_to_delete]
+    session_infos = [(a.session_id, a.project, a.worktree) for a in agents_to_delete if a.session_id]
+    msg_ids = [m.id for m in db.query(Message.id).filter(Message.agent_id.in_(all_agent_ids)).all()]
+
+    # 2. Delete DB records FIRST (so if this fails, no files are orphaned)
+    deleted_msgs = db.query(Message).filter(Message.agent_id.in_(all_agent_ids)).delete(synchronize_session=False)
+    # Unlink Tasks that reference these agents (SET NULL, don't delete the tasks)
+    db.query(Task).filter(Task.agent_id.in_(all_agent_ids)).update(
         {Task.agent_id: None}, synchronize_session=False
     )
+    # Delete children first (FK ordering), then parent
+    for child in child_agents:
+        db.delete(child)
     db.delete(agent)
     try:
         db.commit()
@@ -4542,16 +4576,16 @@ async def permanently_delete_agent(agent_id: str, request: Request, db: Session 
         logger.error("Failed to delete agent %s from DB: %s", agent_id, e)
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    # 2. Delete session source files (.jsonl + subdir) and cache (safe: DB already committed)
+    # 3. Delete session source files (.jsonl + subdir) and cache (safe: DB already committed)
     cleaned_files = []
-    if session_id:
-        project = db.query(Project).filter(Project.name == agent_project).first()
+    for sid, proj_name, worktree in session_infos:
+        project = db.query(Project).filter(Project.name == proj_name).first()
         if project:
-            if cleanup_source_session(session_id, project.path, agent_worktree):
-                cleaned_files.append(f"{session_id}.jsonl")
-            evict_session(session_id, project.path, agent_worktree)
+            if cleanup_source_session(sid, project.path, worktree):
+                cleaned_files.append(f"{sid}.jsonl")
+            evict_session(sid, project.path, worktree)
 
-    # 3. Delete output log files for all messages
+    # 4. Delete output log files for all messages
     for mid in msg_ids:
         log_path = f"/tmp/claude-output-{mid}.log"
         if os.path.isfile(log_path):
@@ -4561,9 +4595,14 @@ async def permanently_delete_agent(agent_id: str, request: Request, db: Session 
             except OSError as e:
                 logger.warning("Failed to delete output log %s: %s", log_path, e)
 
-    logger.info("Permanently deleted agent %s (%d messages, %d files cleaned)",
-                agent_id, deleted_msgs, len(cleaned_files))
-    return {"detail": "ok", "deleted_messages": deleted_msgs, "cleaned_files": len(cleaned_files)}
+    logger.info("Permanently deleted agent %s (+%d subagents, %d messages, %d files cleaned)",
+                agent_id, len(child_agents), deleted_msgs, len(cleaned_files))
+    return {
+        "detail": "ok",
+        "deleted_messages": deleted_msgs,
+        "deleted_subagents": len(child_agents),
+        "cleaned_files": len(cleaned_files),
+    }
 
 
 @app.post("/api/agents/{agent_id}/resume", response_model=AgentOut)
