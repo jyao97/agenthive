@@ -5442,18 +5442,6 @@ async def git_checkout(project: str, branch: str, request: Request, db: Session 
     return {"success": True, "branch": branch, "message": result}
 
 
-@app.post("/api/git/{project}/cleanup")
-async def git_cleanup(project: str, request: Request, db: Session = Depends(get_db)):
-    """Clean up temporary branches and worktrees, merging useful ones into main."""
-    proj = db.get(Project, project)
-    if not proj:
-        raise HTTPException(status_code=404, detail=f"Project '{project}' not found")
-    gm = getattr(request.app.state, "git_manager", None)
-    if not gm:
-        raise HTTPException(status_code=503, detail="Git manager not available")
-    return gm.cleanup(proj.path)
-
-
 # ---- Files ----
 
 def _serve_file_with_range(full_path: str, media_type: str, request: Request):

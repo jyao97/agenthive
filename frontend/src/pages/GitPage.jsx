@@ -10,7 +10,6 @@ import {
   fetchGitStatus,
   fetchGitWorktrees,
   checkoutBranch,
-  cleanupBranches,
   createAgent,
 } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
@@ -304,34 +303,52 @@ export default function GitPage({ theme, onToggleTheme }) {
     }
   }, [selectedProject, mergingAll, worktrees, addToast, navigate]);
 
-  // --- Cleanup handler (merge useful branches into main, delete rest, remove worktrees) ---
+  // --- Cleanup handler (spawns an agent to merge useful branches into main + delete temp branches/worktrees) ---
   const handleCleanup = useCallback(async () => {
     if (!selectedProject || cleaning) return;
+    const currentBranch = branches.find((b) => b.current)?.name || "main";
+    const nonCurrentBranches = branches
+      .filter((b) => !b.current && !b.name.startsWith("origin/"))
+      .map((b) => b.name);
+    const nonMainWt = worktrees.filter((_, i) => i !== 0);
+
+    if (nonCurrentBranches.length === 0 && nonMainWt.length === 0) {
+      addToast("Nothing to clean up", "success");
+      return;
+    }
+
+    const branchList = nonCurrentBranches.join(", ") || "(none)";
+    const wtList = nonMainWt.map((wt) => `${wt.branch || wt.path}`).join(", ") || "(none)";
+
     setCleaning(true);
     try {
-      const result = await cleanupBranches(selectedProject);
-      const parts = [];
-      if (result.merged?.length) parts.push(`Merged: ${result.merged.join(", ")}`);
-      if (result.deleted?.length) parts.push(`Deleted: ${result.deleted.join(", ")}`);
-      if (result.removed_worktrees?.length) parts.push(`Removed worktrees: ${result.removed_worktrees.join(", ")}`);
-      if (result.skipped?.length) parts.push(`Skipped: ${result.skipped.map((s) => s.branch).join(", ")}`);
-      if (result.errors?.length) parts.push(`Errors: ${result.errors.join("; ")}`);
-      addToast(parts.length ? parts.join(" | ") : "Nothing to clean up", parts.some((p) => p.startsWith("Error")) ? "error" : "success");
-      // Refresh git data
-      const [branchRes, wtRes, statusRes] = await Promise.allSettled([
-        fetchGitBranches(selectedProject).catch(() => []),
-        fetchGitWorktrees(selectedProject).catch(() => []),
-        fetchGitStatus(selectedProject).catch(() => null),
-      ]);
-      setBranches(branchRes.status === "fulfilled" ? branchRes.value : []);
-      setWorktrees(wtRes.status === "fulfilled" ? wtRes.value : []);
-      setStatus(statusRes.status === "fulfilled" ? statusRes.value : null);
+      const agent = await createAgent({
+        project: selectedProject,
+        mode: "AUTO",
+        skip_permissions: true,
+        prompt:
+          `Clean up all temporary branches and worktrees for this project. ` +
+          `The main branch is "${currentBranch}". ` +
+          `\n\nLocal branches to process: ${branchList}` +
+          `\nWorktrees to process: ${wtList}` +
+          `\n\nSteps:` +
+          `\n1) First run 'git worktree list' to see all worktrees. For each non-main worktree, run 'git worktree remove <path> --force' to remove it.` +
+          `\n2) Run 'git worktree prune' to clean up stale refs.` +
+          `\n3) Checkout ${currentBranch}: 'git checkout ${currentBranch}'.` +
+          `\n4) For each local branch (not ${currentBranch}): ` +
+          `check if it has useful changes not yet in ${currentBranch} using 'git log ${currentBranch}..<branch> --oneline'. ` +
+          `If it has commits, try 'git merge <branch> --no-edit'. If merge conflicts occur, abort with 'git merge --abort' and skip that branch. ` +
+          `\n5) After merging (or skipping), delete each processed branch with 'git branch -D <branch>'.` +
+          `\n6) Finally, run 'git branch -a' and 'git worktree list' to show the final state.` +
+          `\nReport a summary of what was merged, deleted, and skipped.`,
+      });
+      navigate(`/agents/${agent.id}`);
     } catch (err) {
       addToast(`Cleanup error: ${err.message}`, "error");
     } finally {
       setCleaning(false);
     }
-  }, [selectedProject, cleaning, addToast]);
+  }, [selectedProject, cleaning, branches, worktrees, addToast, navigate]);
 
   // --- Loading skeleton for commits ---
   function CommitSkeleton() {
