@@ -111,9 +111,6 @@ export default function GitPage({ theme, onToggleTheme }) {
   const [cleaning, setCleaning] = useState(false);
   const [cleanupMode, setCleanupMode] = useState(false);       // branch selection mode
   const [selectedCleanup, setSelectedCleanup] = useState(new Set()); // selected branch names
-  const [cleaningWt, setCleaningWt] = useState(false);
-  const [cleanupModeWt, setCleanupModeWt] = useState(false);   // worktree selection mode
-  const [selectedCleanupWt, setSelectedCleanupWt] = useState(new Set()); // selected worktree paths
   const [error, setError] = useState(null);
   const toast = useToast();
   const addToast = useCallback((message, type) => type === "error" ? toast.error(message) : toast.success(message), [toast]);
@@ -308,53 +305,6 @@ export default function GitPage({ theme, onToggleTheme }) {
     }
   }, [selectedProject, mergingAll, worktrees, addToast, navigate]);
 
-  // --- Worktree cleanup: toggle / select / confirm ---
-  const toggleCleanupModeWt = useCallback(() => {
-    setCleanupModeWt((v) => { if (!v) setSelectedCleanupWt(new Set()); return !v; });
-  }, []);
-
-  const toggleCleanupItemWt = useCallback((key) => {
-    setSelectedCleanupWt((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  }, []);
-
-  const handleCleanupConfirmWt = useCallback(async () => {
-    if (!selectedProject || cleaningWt || selectedCleanupWt.size === 0) return;
-    const currentBranch = branches.find((b) => b.current)?.name || "main";
-    const wtPaths = [...selectedCleanupWt];
-    const wtList = wtPaths.join(", ");
-
-    setCleaningWt(true);
-    try {
-      const agent = await createAgent({
-        project: selectedProject,
-        mode: "AUTO",
-        skip_permissions: true,
-        prompt:
-          `Clean up the selected worktrees for this project. The main branch is "${currentBranch}".` +
-          `\n\nWorktrees to remove: ${wtList}` +
-          `\n\nSteps:` +
-          `\n1) For each selected worktree, run 'git worktree remove <path> --force'.` +
-          `\n2) Run 'git worktree prune' to clean up stale refs.` +
-          `\n3) For each worktree's branch, check if it has useful changes not yet in ${currentBranch} using 'git log ${currentBranch}..<branch> --oneline'. ` +
-          `If it has commits, checkout ${currentBranch} and try 'git merge <branch> --no-edit'. If merge conflicts occur, abort with 'git merge --abort' and skip. ` +
-          `Then delete the branch with 'git branch -D <branch>'.` +
-          `\n4) Run 'git worktree list' and 'git branch -a' to show the final state.` +
-          `\nReport a summary of what was removed, merged, deleted, and skipped.`,
-      });
-      navigate(`/agents/${agent.id}`);
-    } catch (err) {
-      addToast(`Cleanup error: ${err.message}`, "error");
-    } finally {
-      setCleaningWt(false);
-      setCleanupModeWt(false);
-      setSelectedCleanupWt(new Set());
-    }
-  }, [selectedProject, cleaningWt, selectedCleanupWt, branches, addToast, navigate]);
-
   // --- Branch cleanup: toggle / select / confirm ---
   const toggleCleanupMode = useCallback(() => {
     setCleanupMode((v) => { if (!v) setSelectedCleanup(new Set()); return !v; });
@@ -473,67 +423,27 @@ export default function GitPage({ theme, onToggleTheme }) {
               Worktrees
             </h2>
             {!loadingWorktrees && worktrees.length > 1 && (
-              <div className="flex items-center gap-1.5">
-                {!cleanupModeWt && (
-                  <button
-                    onClick={handleMergeAll}
-                    disabled={mergingAll}
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                      mergingAll
-                        ? "bg-purple-400 text-white cursor-wait dark:bg-purple-700/50 dark:text-purple-300"
-                        : "bg-purple-600 text-white hover:bg-purple-700 dark:bg-purple-600 dark:text-white dark:hover:bg-purple-500"
-                    }`}
-                  >
-                    {mergingAll ? (
-                      <span className="flex items-center gap-1">
-                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        Creating...
-                      </span>
-                    ) : (
-                      "Merge All"
-                    )}
-                  </button>
+              <button
+                onClick={handleMergeAll}
+                disabled={mergingAll}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                  mergingAll
+                    ? "bg-purple-400 text-white cursor-wait dark:bg-purple-700/50 dark:text-purple-300"
+                    : "bg-purple-600 text-white hover:bg-purple-700 dark:bg-purple-600 dark:text-white dark:hover:bg-purple-500"
+                }`}
+              >
+                {mergingAll ? (
+                  <span className="flex items-center gap-1">
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Creating...
+                  </span>
+                ) : (
+                  "Merge All"
                 )}
-                {cleanupModeWt && (
-                  <button
-                    onClick={handleCleanupConfirmWt}
-                    disabled={cleaningWt || selectedCleanupWt.size === 0}
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                      cleaningWt
-                        ? "bg-red-400/20 text-red-400 cursor-wait"
-                        : selectedCleanupWt.size === 0
-                          ? "bg-gray-500/10 text-gray-400 cursor-not-allowed"
-                          : "bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-500"
-                    }`}
-                  >
-                    {cleaningWt ? (
-                      <span className="flex items-center gap-1">
-                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        Creating...
-                      </span>
-                    ) : (
-                      `Confirm (${selectedCleanupWt.size})`
-                    )}
-                  </button>
-                )}
-                <button
-                  onClick={toggleCleanupModeWt}
-                  disabled={cleaningWt}
-                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                    cleanupModeWt
-                      ? "bg-gray-500/15 text-body hover:bg-gray-500/25 dark:bg-gray-500/10 dark:hover:bg-gray-500/20"
-                      : "bg-red-500/15 text-red-500 hover:bg-red-500/25 active:bg-red-500/30 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20 dark:active:bg-red-500/25"
-                  }`}
-                >
-                  {cleanupModeWt ? "Cancel" : "Clean"}
-                </button>
-              </div>
+              </button>
             )}
           </div>
           {loadingWorktrees ? (
@@ -549,35 +459,18 @@ export default function GitPage({ theme, onToggleTheme }) {
               {worktrees.map((wt, idx) => {
                 const isMain = idx === 0;
                 const name = wt.path ? wt.path.split("/").pop() : "unknown";
-                const isSelected = selectedCleanupWt.has(wt.path);
                 return (
                   <div
                     key={wt.path || idx}
-                    onClick={cleanupModeWt && !isMain ? () => toggleCleanupItemWt(wt.path) : undefined}
                     className={`flex items-center gap-2 rounded-lg text-sm px-3 py-2 border transition-colors ${
-                      cleanupModeWt && isSelected
-                        ? "bg-red-50 border-red-400 text-heading dark:bg-red-600/15 dark:border-red-500/50 dark:text-red-300"
-                        : isMain
-                          ? "bg-cyan-50 border-cyan-300 text-heading dark:bg-cyan-600/20 dark:border-cyan-500/50 dark:text-cyan-300"
-                          : cleanupModeWt
-                            ? "bg-purple-50 border-purple-300 text-heading cursor-pointer hover:border-red-400/50 dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-300 dark:hover:border-red-500/30"
-                            : "bg-purple-50 border-purple-300 text-heading dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-300"
+                      isMain
+                        ? "bg-cyan-50 border-cyan-300 text-heading dark:bg-cyan-600/20 dark:border-cyan-500/50 dark:text-cyan-300"
+                        : "bg-purple-50 border-purple-300 text-heading dark:bg-purple-500/10 dark:border-purple-500/30 dark:text-purple-300"
                     }`}
                   >
-                    {cleanupModeWt ? (
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        disabled={isMain}
-                        onChange={() => !isMain && toggleCleanupItemWt(wt.path)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-3.5 h-3.5 shrink-0 rounded accent-red-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-                      />
-                    ) : (
-                      <svg className="w-3.5 h-3.5 shrink-0 opacity-60" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
-                      </svg>
-                    )}
+                    <svg className="w-3.5 h-3.5 shrink-0 opacity-60" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
+                    </svg>
                     <span className="font-mono text-xs truncate">{name}</span>
                     {wt.branch && (
                       <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${isMain ? "bg-cyan-600 text-white dark:bg-cyan-600 dark:text-white" : "bg-purple-600 text-white dark:bg-purple-600 dark:text-white"}`}>
