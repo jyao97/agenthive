@@ -4,7 +4,7 @@ import QueueCard from "../../components/cards/QueueCard";
 import ActiveCard from "../../components/cards/ActiveCard";
 import { cancelTask } from "../../lib/api";
 
-export default function ExecutingView({ tasks, loading, onRefresh, selectedTaskId, onSelectTask, expandedTaskId, onExpandTask }) {
+export default function ExecutingView({ tasks, loading, onRefresh, selecting, selected, onToggle, expandedTaskId, onExpandTask }) {
   const { error, setError, handle } = useAsyncHandler();
 
   const active = tasks
@@ -47,8 +47,9 @@ export default function ExecutingView({ tasks, loading, onRefresh, selectedTaskI
             <ActiveCard
               key={task.id}
               task={task}
-              selected={selectedTaskId === task.id}
-              onSelect={onSelectTask}
+              selecting={selecting}
+              selected={selected.has(task.id)}
+              onToggle={onToggle}
               expanded={expandedTaskId === task.id}
               onExpand={onExpandTask}
               onRefresh={onRefresh}
@@ -69,8 +70,9 @@ export default function ExecutingView({ tasks, loading, onRefresh, selectedTaskI
               key={task.id}
               task={task}
               position={i + 1}
-              selected={selectedTaskId === task.id}
-              onSelect={onSelectTask}
+              selecting={selecting}
+              selected={selected.has(task.id)}
+              onToggle={onToggle}
               expanded={expandedTaskId === task.id}
               onExpand={onExpandTask}
               onRefresh={onRefresh}

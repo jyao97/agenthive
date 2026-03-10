@@ -1,6 +1,6 @@
 import DoneCard from "../../components/cards/DoneCard";
 
-export default function DoneView({ tasks, loading, expandedTaskId, onExpandTask, onRefresh }) {
+export default function DoneView({ tasks, loading, selecting, selected, onToggle, expandedTaskId, onExpandTask, onRefresh }) {
   const sorted = [...tasks].sort((a, b) =>
     new Date(b.completed_at || b.created_at) - new Date(a.completed_at || a.created_at)
   );
@@ -31,6 +31,9 @@ export default function DoneView({ tasks, loading, expandedTaskId, onExpandTask,
         <DoneCard
           key={task.id}
           task={task}
+          selecting={selecting}
+          selected={selected.has(task.id)}
+          onToggle={onToggle}
           expanded={expandedTaskId === task.id}
           onExpand={onExpandTask}
           onRefresh={onRefresh}

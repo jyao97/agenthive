@@ -2,49 +2,54 @@ import { memo } from "react";
 import { modelDisplayName } from "../../lib/constants";
 import TaskExpandedContent from "./TaskExpandedContent";
 
-export default memo(function QueueCard({ task, position, selected, onSelect, expanded, onExpand, onRefresh }) {
+export default memo(function QueueCard({ task, position, selecting, selected, onToggle, expanded, onExpand, onRefresh }) {
+  const handleClick = () => {
+    if (selecting) onToggle?.(task.id);
+    else onExpand?.(task.id);
+  };
+
   return (
     <div
       className={`w-full text-left rounded-2xl bg-surface shadow-card overflow-hidden transition-all ${
-        selected ? "ring-2 ring-cyan-500/40" : ""
+        selecting && selected ? "ring-1 ring-cyan-500" : ""
       }`}
     >
-      <div className="flex items-start gap-3 px-5 py-[18px]">
-        {/* Checkbox with position */}
-        <button
-          type="button"
-          onClick={() => onSelect?.(task.id)}
-          className="shrink-0 mt-0.5 group"
-          aria-label="Select task"
-        >
-          <div
-            className={`w-5 h-5 rounded-full border-[1.5px] transition-all duration-200 flex items-center justify-center ${
-              selected
-                ? "border-cyan-500 bg-cyan-500"
-                : "border-gray-300 dark:border-gray-600 group-hover:border-cyan-400 dark:group-hover:border-cyan-400"
-            }`}
-          >
-            {selected ? (
-              <svg className="w-2.5 h-2.5 text-white animate-checkbox-pop" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            ) : (
-              <span className="text-[9px] font-bold text-dim">{position}</span>
-            )}
+      <div
+        className="flex items-start gap-3 px-5 py-[18px] cursor-pointer"
+        onClick={handleClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
+      >
+        {/* Checkbox in selection mode */}
+        {selecting && (
+          <div className="shrink-0 mt-0.5">
+            <div
+              className={`w-5 h-5 rounded-full border-[1.5px] flex items-center justify-center transition-colors ${
+                selected ? "bg-cyan-500 border-cyan-500" : "border-edge"
+              }`}
+            >
+              {selected && (
+                <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </div>
           </div>
-        </button>
+        )}
 
         {/* Content area */}
-        <div
-          className="flex-1 min-w-0 cursor-pointer"
-          onClick={() => onExpand?.(task.id)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => { if (e.key === "Enter") onExpand?.(task.id); }}
-        >
-          <p className="text-base font-semibold text-heading leading-snug truncate">
-            {task.title}
-          </p>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            {!selecting && (
+              <span className="shrink-0 w-5 h-5 rounded-full bg-elevated flex items-center justify-center text-[9px] font-bold text-dim">
+                {position}
+              </span>
+            )}
+            <p className="text-base font-semibold text-heading leading-snug truncate">
+              {task.title}
+            </p>
+          </div>
 
           {!expanded && task.description && task.description !== task.title && (
             <p className="text-sm text-dim leading-relaxed mt-1.5 line-clamp-2">
@@ -72,8 +77,7 @@ export default memo(function QueueCard({ task, position, selected, onSelect, exp
         </div>
       </div>
 
-      {/* Expanded detail */}
-      {expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
+      {!selecting && expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
     </div>
   );
 });
