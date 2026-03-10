@@ -1,10 +1,8 @@
 import { memo } from "react";
-import { useNavigate } from "react-router-dom";
 import { modelDisplayName } from "../../lib/constants";
+import TaskExpandedContent from "./TaskExpandedContent";
 
-export default memo(function QueueCard({ task, position, selected, onSelect }) {
-  const navigate = useNavigate();
-
+export default memo(function QueueCard({ task, position, selected, onSelect, expanded, onExpand, onRefresh }) {
   return (
     <div
       className={`relative w-full text-left rounded-[12px] bg-surface shadow-card overflow-hidden transition-all ${
@@ -42,16 +40,16 @@ export default memo(function QueueCard({ task, position, selected, onSelect }) {
         {/* Content area */}
         <div
           className="flex-1 min-w-0 cursor-pointer"
-          onClick={() => navigate(`/tasks/${task.id}`)}
+          onClick={() => onExpand?.(task.id)}
           role="button"
           tabIndex={0}
-          onKeyDown={(e) => { if (e.key === "Enter") navigate(`/tasks/${task.id}`); }}
+          onKeyDown={(e) => { if (e.key === "Enter") onExpand?.(task.id); }}
         >
           <p className="text-base font-semibold text-heading leading-snug truncate">
             {task.title}
           </p>
 
-          {task.description && task.description !== task.title && (
+          {!expanded && task.description && task.description !== task.title && (
             <p className="text-sm text-dim leading-relaxed mt-1 line-clamp-2">
               {task.description.slice(0, 200)}
             </p>
@@ -76,6 +74,9 @@ export default memo(function QueueCard({ task, position, selected, onSelect }) {
           </div>
         </div>
       </div>
+
+      {/* Expanded detail */}
+      {expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
     </div>
   );
 });

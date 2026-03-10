@@ -1,8 +1,9 @@
 import { memo, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { elapsedDisplay } from "../../lib/formatters";
+import TaskExpandedContent from "./TaskExpandedContent";
 
-export default memo(function ActiveCard({ task, selected, onSelect, onCancel, onChat }) {
+export default memo(function ActiveCard({ task, selected, onSelect, onCancel, onChat, expanded, onExpand, onRefresh }) {
   const navigate = useNavigate();
   const [elapsed, setElapsed] = useState(task.elapsed_seconds || 0);
 
@@ -49,10 +50,10 @@ export default memo(function ActiveCard({ task, selected, onSelect, onCancel, on
         {/* Content area */}
         <div
           className="flex-1 min-w-0 cursor-pointer"
-          onClick={() => navigate(`/tasks/${task.id}`)}
+          onClick={() => onExpand?.(task.id)}
           role="button"
           tabIndex={0}
-          onKeyDown={(e) => { if (e.key === "Enter") navigate(`/tasks/${task.id}`); }}
+          onKeyDown={(e) => { if (e.key === "Enter") onExpand?.(task.id); }}
         >
           {/* Row 1: Title + elapsed */}
           <div className="flex items-start justify-between gap-3">
@@ -70,27 +71,32 @@ export default memo(function ActiveCard({ task, selected, onSelect, onCancel, on
             )}
           </div>
 
-          {/* Row 3: Actions */}
-          <div className="flex items-center gap-2 mt-2.5">
-            {task.agent_id && (
+          {/* Row 3: Actions — hidden when expanded */}
+          {!expanded && (
+            <div className="flex items-center gap-2 mt-2.5">
+              {task.agent_id && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onChat ? onChat(task) : navigate(`/agents/${task.agent_id}`); }}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 transition-colors"
+                >
+                  Chat
+                </button>
+              )}
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); onChat ? onChat(task) : navigate(`/agents/${task.agent_id}`); }}
-                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 transition-colors"
+                onClick={(e) => { e.stopPropagation(); if (confirm("Cancel this task?")) onCancel?.(task); }}
+                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
               >
-                Chat
+                Cancel
               </button>
-            )}
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); if (confirm("Cancel this task?")) onCancel?.(task); }}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Expanded detail */}
+      {expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
     </div>
   );
 });

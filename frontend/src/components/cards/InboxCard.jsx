@@ -1,10 +1,9 @@
 import { memo } from "react";
-import { useNavigate } from "react-router-dom";
 import { projectBadgeColor, modelDisplayName } from "../../lib/constants";
 import { relativeTime } from "../../lib/formatters";
+import TaskExpandedContent from "./TaskExpandedContent";
 
-export default memo(function InboxCard({ task, selected, onSelect }) {
-  const navigate = useNavigate();
+export default memo(function InboxCard({ task, selected, onSelect, expanded, onExpand, onRefresh }) {
   const projColor = task.project_name ? projectBadgeColor(task.project_name) : "";
   const preview = task.description && task.description !== task.title
     ? task.description
@@ -45,10 +44,10 @@ export default memo(function InboxCard({ task, selected, onSelect }) {
         {/* Content area */}
         <div
           className="flex-1 min-w-0 cursor-pointer"
-          onClick={() => navigate(`/tasks/${task.id}`)}
+          onClick={() => onExpand?.(task.id)}
           role="button"
           tabIndex={0}
-          onKeyDown={(e) => { if (e.key === "Enter") navigate(`/tasks/${task.id}`); }}
+          onKeyDown={(e) => { if (e.key === "Enter") onExpand?.(task.id); }}
         >
           {/* Row 1: Title + time */}
           <div className="flex items-start justify-between gap-3">
@@ -60,8 +59,8 @@ export default memo(function InboxCard({ task, selected, onSelect }) {
             </span>
           </div>
 
-          {/* Row 2: Description / prompt preview (max 2 lines) */}
-          {preview && (
+          {/* Row 2: Description / prompt preview (max 2 lines) — hidden when expanded */}
+          {!expanded && preview && (
             <p className="text-sm text-dim leading-relaxed mt-1 line-clamp-2">
               {preview.slice(0, 200)}
             </p>
@@ -98,6 +97,9 @@ export default memo(function InboxCard({ task, selected, onSelect }) {
           </div>
         </div>
       </div>
+
+      {/* Expanded detail */}
+      {expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
     </div>
   );
 });

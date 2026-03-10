@@ -1,6 +1,6 @@
 import { memo } from "react";
-import { useNavigate } from "react-router-dom";
 import { relativeTime, durationDisplay } from "../../lib/formatters";
+import TaskExpandedContent from "./TaskExpandedContent";
 
 const STATUS_ICON = {
   COMPLETE:  { color: "border-green-500 bg-green-500", icon: "M5 13l4 4L19 7" },
@@ -18,8 +18,7 @@ const ACCENT_COLOR = {
   TIMEOUT:   "bg-orange-500/60",
 };
 
-export default memo(function DoneCard({ task }) {
-  const navigate = useNavigate();
+export default memo(function DoneCard({ task, expanded, onExpand, onRefresh }) {
   const si = STATUS_ICON[task.status] || STATUS_ICON.COMPLETE;
   const accent = ACCENT_COLOR[task.status] || ACCENT_COLOR.COMPLETE;
   const isCancelled = task.status === "CANCELLED";
@@ -27,10 +26,10 @@ export default memo(function DoneCard({ task }) {
   return (
     <div
       className="relative w-full text-left rounded-[12px] bg-surface shadow-card overflow-hidden cursor-pointer"
-      onClick={() => navigate(`/tasks/${task.id}`)}
+      onClick={() => onExpand?.(task.id)}
       role="button"
       tabIndex={0}
-      onKeyDown={(e) => { if (e.key === "Enter") navigate(`/tasks/${task.id}`); }}
+      onKeyDown={(e) => { if (e.key === "Enter") onExpand?.(task.id); }}
     >
       {/* Left accent bar */}
       <div className={`absolute left-0 top-0 bottom-0 w-[3px] ${accent}`} />
@@ -60,6 +59,9 @@ export default memo(function DoneCard({ task }) {
           <p className="text-xs text-faint">{relativeTime(task.completed_at || task.created_at)}</p>
         </div>
       </div>
+
+      {/* Expanded detail */}
+      {expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
     </div>
   );
 });

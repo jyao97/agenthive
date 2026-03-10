@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
 import { Bell, BellOff } from "lucide-react";
 import { fetchTasksV2, fetchTaskCounts, updateNotificationSettings, dispatchTask, cancelTask, updateTaskV2 } from "../lib/api";
 import { TASK_PERSPECTIVE_TABS } from "../lib/constants";
@@ -41,7 +40,6 @@ const MOVE_OPTIONS = {
 };
 
 export default function TasksPage({ theme, onToggleTheme }) {
-  const navigate = useNavigate();
   const [rawPerspective, setRawPerspective] = useDraft("ui:tasks-v2:perspective", "INBOX");
   // Migrate stale localStorage values from old QUEUE/ACTIVE tabs
   const perspective = (rawPerspective === "QUEUE" || rawPerspective === "ACTIVE") ? "EXECUTING" : rawPerspective;
@@ -54,17 +52,22 @@ export default function TasksPage({ theme, onToggleTheme }) {
   const visible = usePageVisible();
   const { lastEvent } = useWebSocket();
 
-  // --- Selection state for floating action bar ---
+  // --- Selection & expansion state ---
   const [selectedTaskId, setSelectedTaskId] = useState(null);
+  const [expandedTaskId, setExpandedTaskId] = useState(null);
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // Clear selection when perspective changes
-  useEffect(() => { setSelectedTaskId(null); setShowMoveMenu(false); }, [perspective]);
+  // Clear selection & expansion when perspective changes
+  useEffect(() => { setSelectedTaskId(null); setExpandedTaskId(null); setShowMoveMenu(false); }, [perspective]);
 
   const handleSelectTask = useCallback((taskId) => {
     setSelectedTaskId((prev) => prev === taskId ? null : taskId);
     setShowMoveMenu(false);
+  }, []);
+
+  const handleExpandTask = useCallback((taskId) => {
+    setExpandedTaskId((prev) => prev === taskId ? null : taskId);
   }, []);
 
   const selectedTask = useMemo(
@@ -239,9 +242,9 @@ export default function TasksPage({ theme, onToggleTheme }) {
 
   const handleEdit = useCallback(() => {
     if (!selectedTaskId) return;
-    navigate(`/tasks/${selectedTaskId}`);
+    setExpandedTaskId(selectedTaskId);
     setSelectedTaskId(null);
-  }, [selectedTaskId, navigate]);
+  }, [selectedTaskId]);
 
   const ViewComponent = {
     INBOX: InboxView,
@@ -301,6 +304,8 @@ export default function TasksPage({ theme, onToggleTheme }) {
                 onRefresh={onRefresh}
                 selectedTaskId={selectedTaskId}
                 onSelectTask={handleSelectTask}
+                expandedTaskId={expandedTaskId}
+                onExpandTask={handleExpandTask}
               />
             )}
           </div>

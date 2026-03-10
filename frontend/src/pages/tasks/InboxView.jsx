@@ -1,6 +1,6 @@
 import InboxCard from "../../components/cards/InboxCard";
 
-export default function InboxView({ tasks, loading, selectedTaskId, onSelectTask }) {
+export default function InboxView({ tasks, loading, selectedTaskId, onSelectTask, expandedTaskId, onExpandTask, onRefresh }) {
   const sorted = [...tasks].sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
     return new Date(b.created_at) - new Date(a.created_at);
@@ -26,6 +26,9 @@ export default function InboxView({ tasks, loading, selectedTaskId, onSelectTask
           task={task}
           selected={selectedTaskId === task.id}
           onSelect={onSelectTask}
+          expanded={expandedTaskId === task.id}
+          onExpand={onExpandTask}
+          onRefresh={onRefresh}
         />
       ))}
     </div>

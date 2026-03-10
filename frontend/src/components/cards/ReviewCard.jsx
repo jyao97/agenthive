@@ -1,5 +1,5 @@
-import { memo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { memo } from "react";
+import TaskExpandedContent from "./TaskExpandedContent";
 
 const STATUS_STYLE = {
   MERGING:  { label: "Merging...",   color: "text-purple-400" },
@@ -7,11 +7,7 @@ const STATUS_STYLE = {
   CONFLICT: { label: "Conflict",     color: "text-red-400" },
 };
 
-export default memo(function ReviewCard({ task, selected, onSelect, merging, verifying, onApprove, onReject, onRetryMerge, onCancel, onVerify }) {
-  const navigate = useNavigate();
-  const [rejecting, setRejecting] = useState(false);
-  const [reason, setReason] = useState("");
-
+export default memo(function ReviewCard({ task, selected, onSelect, merging, verifying, onApprove, onReject, onRetryMerge, onCancel, onVerify, expanded, onExpand, onRefresh }) {
   const isMerging = merging || task.status === "MERGING";
   const { label: statusLabel, color: statusColor } =
     STATUS_STYLE[isMerging ? "MERGING" : task.status] || STATUS_STYLE.MERGING;
@@ -57,10 +53,10 @@ export default memo(function ReviewCard({ task, selected, onSelect, merging, ver
         {/* Content area */}
         <div
           className="flex-1 min-w-0 cursor-pointer"
-          onClick={() => !rejecting && navigate(`/tasks/${task.id}`)}
+          onClick={() => onExpand?.(task.id)}
           role="button"
           tabIndex={0}
-          onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && !rejecting) { e.preventDefault(); navigate(`/tasks/${task.id}`); } }}
+          onKeyDown={(e) => { if (e.key === "Enter") onExpand?.(task.id); }}
         >
           {/* Row 1: Title */}
           <p className="text-base font-semibold text-heading leading-snug truncate">{task.title}</p>
@@ -73,115 +69,85 @@ export default memo(function ReviewCard({ task, selected, onSelect, merging, ver
             )}
           </div>
 
-          {task.status === "REVIEW" && task.agent_summary && (
+          {!expanded && task.status === "REVIEW" && task.agent_summary && (
             <p className="text-sm text-dim leading-relaxed mt-1 line-clamp-2">{task.agent_summary.slice(0, 200)}</p>
           )}
 
-          {task.status === "CONFLICT" && task.error_message && (
+          {!expanded && task.status === "CONFLICT" && task.error_message && (
             <p className="text-sm text-red-400/80 leading-relaxed mt-1 line-clamp-2">{task.error_message.slice(0, 150)}</p>
           )}
 
-          {/* Row 3: Action buttons */}
-          <div className="flex flex-wrap items-center gap-2 mt-2.5">
-            {isMerging && (
-              <span className="text-xs text-purple-400 font-medium">Merging branch...</span>
-            )}
-            {task.status === "REVIEW" && !rejecting && !isMerging && (
-              <>
-                {verifyStatus === "running" || verifying ? (
-                  <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 flex items-center gap-1">
-                    <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
-                    Verifying
-                  </span>
-                ) : verifyStatus === "pass" ? (
-                  <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400">Verified</span>
-                ) : verifyStatus === "fail" ? (
-                  <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Failed</span>
-                ) : verifyStatus === "warn" ? (
-                  <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400">Verify Warn</span>
-                ) : verifyStatus === "error" ? (
-                  <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Error</span>
-                ) : (
+          {/* Row 3: Action buttons — hidden when expanded (shown in expanded content instead) */}
+          {!expanded && (
+            <div className="flex flex-wrap items-center gap-2 mt-2.5">
+              {isMerging && (
+                <span className="text-xs text-purple-400 font-medium">Merging branch...</span>
+              )}
+              {task.status === "REVIEW" && !isMerging && (
+                <>
+                  {verifyStatus === "running" || verifying ? (
+                    <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 flex items-center gap-1">
+                      <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" /></svg>
+                      Verifying
+                    </span>
+                  ) : verifyStatus === "pass" ? (
+                    <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400">Verified</span>
+                  ) : verifyStatus === "fail" ? (
+                    <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Failed</span>
+                  ) : verifyStatus === "warn" ? (
+                    <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400">Verify Warn</span>
+                  ) : verifyStatus === "error" ? (
+                    <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400">Verify Error</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); onVerify?.(task); }}
+                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 transition-colors"
+                    >
+                      Verify
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); onVerify?.(task); }}
-                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 transition-colors"
+                    onClick={(e) => { e.stopPropagation(); onApprove?.(task); }}
+                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400 hover:bg-green-500/25 transition-colors"
                   >
-                    Verify
+                    Approve
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onApprove?.(task); }}
-                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400 hover:bg-green-500/25 transition-colors"
-                >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); setRejecting(true); }}
-                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors"
-                >
-                  Reject
-                </button>
-              </>
-            )}
-            {task.status === "CONFLICT" && (
-              <>
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onRetryMerge?.(task); }}
-                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors"
-                >
-                  Retry
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onCancel?.(task); }}
-                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
-                >
-                  Cancel
-                </button>
-              </>
-            )}
-          </div>
-
-          {/* Inline reject textarea */}
-          {rejecting && (
-            <div className="mt-2.5 space-y-2" onClick={(e) => e.stopPropagation()}>
-              <textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Why are you rejecting this?"
-                rows={2}
-                autoFocus
-                className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-500"
-              />
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => { if (reason.trim()) { onReject?.(task, reason.trim()); setRejecting(false); setReason(""); } }}
-                  disabled={!reason.trim()}
-                  className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
-                    reason.trim()
-                      ? "bg-red-500 text-white hover:bg-red-400"
-                      : "bg-elevated text-dim cursor-not-allowed"
-                  }`}
-                >
-                  Confirm Reject
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setRejecting(false); setReason(""); }}
-                  className="px-3 py-1 rounded-lg text-xs font-medium bg-elevated text-label hover:text-heading transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onExpand?.(task.id); }}
+                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors"
+                  >
+                    Reject
+                  </button>
+                </>
+              )}
+              {task.status === "CONFLICT" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onRetryMerge?.(task); }}
+                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors"
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onCancel?.(task); }}
+                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
       </div>
+
+      {/* Expanded detail */}
+      {expanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(task.id)} />}
     </div>
   );
 });

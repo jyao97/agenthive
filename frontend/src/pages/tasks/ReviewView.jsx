@@ -5,7 +5,7 @@ import { approveTask, rejectTask, cancelTask, verifyTask } from "../../lib/api";
 
 const STATUS_ORDER = { REVIEW: 0, CONFLICT: 1, MERGING: 2 };
 
-export default function ReviewView({ tasks, loading, onRefresh, selectedTaskId, onSelectTask }) {
+export default function ReviewView({ tasks, loading, onRefresh, selectedTaskId, onSelectTask, expandedTaskId, onExpandTask }) {
   const { loadingIds, error, setError, handle } = useAsyncHandler();
 
   const sorted = [...tasks].sort((a, b) => {
@@ -36,6 +36,9 @@ export default function ReviewView({ tasks, loading, onRefresh, selectedTaskId, 
           task={task}
           selected={selectedTaskId === task.id}
           onSelect={onSelectTask}
+          expanded={expandedTaskId === task.id}
+          onExpand={onExpandTask}
+          onRefresh={onRefresh}
           merging={loadingIds.has(task.id)}
           rejecting={false}
           verifying={loadingIds.has(`verify-${task.id}`)}
