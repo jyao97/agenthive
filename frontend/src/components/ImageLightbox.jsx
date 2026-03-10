@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { downloadFile } from "../lib/api";
 import { useToast } from "../contexts/ToastContext";
 import {
@@ -29,6 +30,9 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
   const [playing, setPlaying] = useState(false);
   const [videoError, setVideoError] = useState(null);
   const [hiresReady, setHiresReady] = useState({}); // { [index]: true } when full-res loaded
+  const [entered, setEntered] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const closingRef = useRef(false);
 
   const containerRef = useRef(null);
   const imgRef = useRef(null);
@@ -49,6 +53,9 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     swipeStartY: 0,
     swipeStartX: 0,
     moved: false,
+    moveStartX: 0,
+    moveStartY: 0,
+    singleTapTimer: null,
   });
 
   // Keep current values in refs for event handlers (avoids stale closures)
@@ -90,6 +97,14 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     },
     [media.length, resetTransform]
   );
+
+  // Animated dismiss (exit animation then unmount)
+  const handleDismiss = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+    setTimeout(() => onClose(), 220);
+  }, [onClose]);
 
   // Pause video and reset error when navigating away
   useEffect(() => {
@@ -144,6 +159,10 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     const onTouchStart = (e) => {
       const ts = touchState.current;
       ts.moved = false;
+      if (e.touches.length >= 1) {
+        ts.moveStartX = e.touches[0].clientX;
+        ts.moveStartY = e.touches[0].clientY;
+      }
 
       if (e.touches.length === 2) {
         ts.isPinching = true;
@@ -173,7 +192,11 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     const onTouchMove = (e) => {
       e.preventDefault(); // works because listener is { passive: false }
       const ts = touchState.current;
-      ts.moved = true;
+      if (e.touches.length >= 1) {
+        const mdx = e.touches[0].clientX - ts.moveStartX;
+        const mdy = e.touches[0].clientY - ts.moveStartY;
+        if (Math.hypot(mdx, mdy) > 8) ts.moved = true;
+      }
 
       if (ts.isPinching && e.touches.length === 2) {
         const newDist = fingerDist(e.touches[0], e.touches[1]);
@@ -202,10 +225,8 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       } else if (ts.isSwiping && e.touches.length === 1) {
         const touch = e.touches[0];
         const dy = touch.clientY - ts.swipeStartY;
-        if (dy > 0) {
-          setDismissY(dy);
-          setDismissOpacity(Math.max(0.2, 1 - dy / 300));
-        }
+        setDismissY(dy);
+        setDismissOpacity(Math.max(0.2, 1 - Math.abs(dy) / 300));
       }
     };
 
@@ -228,14 +249,14 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         const dx = touch.clientX - ts.swipeStartX;
         const dy = touch.clientY - ts.swipeStartY;
 
-        // Swipe down to dismiss
-        if (dy > DISMISS_THRESHOLD && Math.abs(dx) < dy) {
-          onClose();
+        // Swipe up or down to dismiss (low threshold = 60px)
+        if (Math.abs(dy) > 60 && Math.abs(dx) < Math.abs(dy)) {
+          handleDismiss();
           return;
         }
 
         // Reset dismiss feedback
-        if (dismissYRef.current > 0) {
+        if (dismissYRef.current !== 0) {
           setAnimating(true);
           setDismissY(0);
           setDismissOpacity(1);
@@ -250,7 +271,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         }
       }
 
-      // Double-tap detection
+      // Tap detection: single-tap = close immediately, double-tap = zoom
       if (!ts.moved && e.changedTouches.length === 1) {
         const touch = e.changedTouches[0];
         const now = Date.now();
@@ -261,7 +282,9 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         );
 
         if (dt < LIGHTBOX_DOUBLE_TAP_WINDOW && tapDist < LIGHTBOX_DOUBLE_TAP_DIST) {
+          // Double-tap: zoom toggle
           ts.lastTapTime = 0;
+          clearTimeout(ts.singleTapTimer);
           setAnimating(true);
           if (isZoomedRef.current) {
             setScale(1);
@@ -285,6 +308,15 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         } else {
           ts.lastTapTime = now;
           ts.lastTapPos = { x: touch.clientX, y: touch.clientY };
+          // Single-tap: close immediately (if zoomed, reset zoom instead)
+          if (isZoomedRef.current) {
+            setAnimating(true);
+            setScale(1);
+            setTranslate({ x: 0, y: 0 });
+            setTimeout(() => setAnimating(false), TRANSITION_DURATION_MS);
+          } else {
+            handleDismiss();
+          }
         }
       }
 
@@ -301,7 +333,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
     };
-  }, [clampTranslate, goTo, media.length, onClose]);
+  }, [clampTranslate, goTo, media.length, handleDismiss]);
 
   // Wheel handler: pinch-to-zoom, trackpad swipe navigation, and pan
   useEffect(() => {
@@ -404,7 +436,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
   useEffect(() => {
     const handler = (e) => {
       if (e.key === "Escape") {
-        onClose();
+        handleDismiss();
         return;
       }
 
@@ -448,7 +480,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose, clampTranslate, goTo]);
+  }, [handleDismiss, clampTranslate, goTo]);
 
   // Prevent body scroll when lightbox is open
   useEffect(() => {
@@ -456,6 +488,11 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     return () => {
       document.body.style.overflow = "";
     };
+  }, []);
+
+  // Entrance animation
+  useEffect(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setEntered(true)));
   }, []);
 
   const current = media[currentIndex];
@@ -467,19 +504,19 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     willChange: "transform",
   };
 
-  return (
+  return createPortal(
     <div
       ref={containerRef}
       className="fixed inset-0 z-50 flex items-center justify-center select-none"
       style={{
-        backgroundColor: `rgba(0,0,0,${dismissOpacity * 0.95})`,
-        transition: animating ? `background-color ${TRANSITION_DURATION_MS}ms ease-out` : "none",
+        backgroundColor: `rgba(0,0,0,${(!entered || closing) ? 0 : dismissOpacity * 0.95})`,
+        transition: `background-color 280ms cubic-bezier(0.22, 1.15, 0.36, 1)`,
         touchAction: "none",
         cursor: isZoomed ? (dragging ? "grabbing" : "grab") : "default",
       }}
       onClick={(e) => {
         if (!isZoomed && !touchState.current.moved && e.target === containerRef.current) {
-          onClose();
+          handleDismiss();
         }
       }}
     >
@@ -511,7 +548,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          onClose();
+          handleDismiss();
         }}
         className="absolute top-4 right-4 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 text-white/80 hover:bg-white/20 transition-colors"
         style={{ marginTop: "env(safe-area-inset-top, 0px)" }}
@@ -542,6 +579,12 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       )}
 
       {/* Media content */}
+      <div style={{
+        opacity: (!entered || closing) ? 0 : 1,
+        transform: (!entered || closing) ? "scale(0.92)" : "scale(1)",
+        transition: "opacity 280ms cubic-bezier(0.22, 1.15, 0.36, 1), transform 280ms cubic-bezier(0.22, 1.15, 0.36, 1)",
+        willChange: "opacity, transform",
+      }}>
       {isCurrentVideo ? (
         <video
           ref={videoRef}
@@ -574,6 +617,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           onTransitionEnd={handleTransitionEnd}
         />
       )}
+      </div>
 
       {/* Error overlay for videos */}
       {isCurrentVideo && videoError && (
@@ -600,6 +644,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
           ))}
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   );
 }

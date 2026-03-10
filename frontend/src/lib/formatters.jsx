@@ -11,15 +11,18 @@ export function relativeTime(dateStr) {
   let str = String(dateStr);
   if (/^\d{4}-\d{2}-\d{2}T[\d:.]+$/.test(str)) str += "Z";
   const then = new Date(str).getTime();
-  const diff = Math.max(0, now - then);
+  const raw = now - then;
+  const future = raw < 0;
+  const diff = Math.abs(raw);
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
+  const fmt = (v, u) => future ? `in ${v}${u}` : `${v}${u} ago`;
+  if (seconds < 60) return fmt(seconds, "s");
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return fmt(minutes, "m");
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return fmt(hours, "h");
   const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  return fmt(days, "d");
 }
 
 /**

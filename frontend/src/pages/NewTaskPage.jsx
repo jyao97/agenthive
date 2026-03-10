@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { createTaskV2, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
@@ -7,6 +7,7 @@ import ProjectSelector from "../components/ProjectSelector";
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
 import SendLaterPicker from "../components/SendLaterPicker";
+import ImageLightbox from "../components/ImageLightbox";
 import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import { useToast } from "../contexts/ToastContext";
@@ -57,6 +58,8 @@ export default function NewTaskPage() {
   useEffect(() => {
     requestAnimationFrame(() => requestAnimationFrame(() => setMounted(true)));
   }, []);
+
+  const [previewIndex, setPreviewIndex] = useState(null);
 
   // Attachments
   const attachmentCacheKey = "draft:new-task:attachments";
@@ -196,7 +199,7 @@ export default function NewTaskPage() {
           model: model || undefined,
           effort: effort || undefined,
           skip_permissions: skipPermissions,
-          sync_mode: syncMode,
+          sync_mode: false,
           use_worktree: !!worktree,
           notify_at: notifyAt || undefined,
           auto_dispatch: false, // inbox only
@@ -325,8 +328,9 @@ export default function NewTaskPage() {
                 />
                 {attachments.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 px-1">
-                    {attachments.map((att) => (
-                      <div key={att.id} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[140px]">
+                    {attachments.map((att, i) => (
+                      <div key={att.id} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[140px] cursor-pointer"
+                        onClick={() => { if (!att.uploading) setPreviewIndex(i); }}>
                         {att.previewUrl ? (
                           <img src={att.previewUrl} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
                         ) : (
@@ -496,17 +500,6 @@ export default function NewTaskPage() {
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <div
                     role="switch"
-                    aria-checked={syncMode}
-                    onClick={() => { const next = !syncMode; setSyncMode(next); try { localStorage.setItem("pref:syncMode", String(next)); } catch {} }}
-                    className={`relative w-9 h-[20px] rounded-full transition-colors ${syncMode ? "bg-emerald-500" : "bg-elevated"}`}
-                  >
-                    <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${syncMode ? "translate-x-[16px]" : ""}`} />
-                  </div>
-                  <span className="text-sm text-label">Tmux</span>
-                </label>
-                <label className="col-span-4 flex items-center gap-2 cursor-pointer mt-1 justify-end">
-                  <div
-                    role="switch"
                     aria-checked={autoVoice}
                     onClick={() => {
                       const next = !autoVoice;
@@ -524,6 +517,17 @@ export default function NewTaskPage() {
           </div>
         </div>
       </div>
+      {previewIndex != null && attachments.length > 0 && (
+        <ImageLightbox
+          media={attachments.filter(a => !a.uploading).map(a => ({
+            src: a.previewUrl || `/api/uploads/${a.uploadedPath?.split("/").pop()}`,
+            filename: a.originalName,
+            type: "image",
+          }))}
+          initialIndex={Math.min(previewIndex, attachments.filter(a => !a.uploading).length - 1)}
+          onClose={() => setPreviewIndex(null)}
+        />
+      )}
     </div>
   );
 }

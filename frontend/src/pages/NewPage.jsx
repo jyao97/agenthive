@@ -6,6 +6,7 @@ import ProjectSelector from "../components/ProjectSelector";
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
 import SendLaterPicker from "../components/SendLaterPicker";
+import ImageLightbox from "../components/ImageLightbox";
 import ModelSelector from "../components/ModelSelector";
 import EffortSelector from "../components/EffortSelector";
 
@@ -272,6 +273,7 @@ function NewAgentForm({ showToast, navigate }) {
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const attachmentCacheKey = "draft:create-agent:attachments";
+  const [attPreviewIndex, setAttPreviewIndex] = useState(null);
   const [attachments, setAttachments] = useState(() => {
     try {
       const cached = localStorage.getItem(attachmentCacheKey);
@@ -528,8 +530,9 @@ function NewAgentForm({ showToast, navigate }) {
           />
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-1">
-              {attachments.map((att) => (
-                <div key={att.id} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[140px]">
+              {attachments.map((att, i) => (
+                <div key={att.id} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[140px] cursor-pointer"
+                  onClick={() => { if (!att.uploading) setAttPreviewIndex(i); }}>
                   {att.previewUrl ? (
                     <img src={att.previewUrl} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
                   ) : (
@@ -706,6 +709,17 @@ function NewAgentForm({ showToast, navigate }) {
         </div>
       </div>
 
+      {attPreviewIndex != null && attachments.length > 0 && (
+        <ImageLightbox
+          media={attachments.filter(a => !a.uploading).map(a => ({
+            src: a.previewUrl || `/api/uploads/${a.uploadedPath?.split("/").pop()}`,
+            filename: a.originalName,
+            type: "image",
+          }))}
+          initialIndex={Math.min(attPreviewIndex, attachments.filter(a => !a.uploading).length - 1)}
+          onClose={() => setAttPreviewIndex(null)}
+        />
+      )}
     </form>
   );
 }

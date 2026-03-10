@@ -242,6 +242,7 @@ def init_db():
             "rejection_reason": "ALTER TABLE tasks ADD COLUMN rejection_reason TEXT",
             "model": "ALTER TABLE tasks ADD COLUMN model VARCHAR(100)",
             "effort": "ALTER TABLE tasks ADD COLUMN effort VARCHAR(10)",
+            "sort_order": "ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
         }
         for col, ddl in task_new_cols.items():
             if col not in task_cols:

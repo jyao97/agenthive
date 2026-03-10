@@ -994,6 +994,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
+  const [attPreviewIndex, setAttPreviewIndex] = useState(null);
   const attachmentCacheKey = agentId ? `draft:chat:${agentId}:attachments` : null;
   const [attachments, setAttachments] = useState(() => {
     if (!attachmentCacheKey) return [];
@@ -1278,8 +1279,9 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
         {/* Attachment preview chips */}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-1">
-            {attachments.map((att) => (
-              <div key={att.id} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[140px]">
+            {attachments.map((att, i) => (
+              <div key={att.id} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[140px] cursor-pointer"
+                onClick={() => { if (!att.uploading) setAttPreviewIndex(i); }}>
                 {att.previewUrl ? (
                   <img src={att.previewUrl} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
                 ) : (
@@ -1392,6 +1394,17 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
           </button>
         </div>
       </div>
+      {attPreviewIndex != null && attachments.length > 0 && (
+        <ImageLightbox
+          media={attachments.filter(a => !a.uploading).map(a => ({
+            src: a.previewUrl || `/api/uploads/${a.uploadedPath?.split("/").pop()}`,
+            filename: a.originalName,
+            type: "image",
+          }))}
+          initialIndex={Math.min(attPreviewIndex, attachments.filter(a => !a.uploading).length - 1)}
+          onClose={() => setAttPreviewIndex(null)}
+        />
+      )}
     </div>
   );
 }

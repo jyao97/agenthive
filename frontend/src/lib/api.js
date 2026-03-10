@@ -142,6 +142,8 @@ export const createTaskV2 = (data) =>
   request("/api/v2/tasks", { method: "POST", body: JSON.stringify(data) });
 export const updateTaskV2 = (id, data) =>
   request(`/api/v2/tasks/${id}`, { method: "PUT", body: JSON.stringify(data) });
+export const reorderTasks = (taskIds) =>
+  request("/api/v2/tasks/reorder", { method: "PUT", body: JSON.stringify({ task_ids: taskIds }) });
 export const planTask = (id) =>
   request(`/api/v2/tasks/${id}/plan`, { method: "POST" });
 export const dispatchTask = (id) =>

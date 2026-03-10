@@ -3053,12 +3053,6 @@ Here are the day's conversations (with timestamps):
         else:
             parts.append("- Read PROGRESS.md in the project root (if it exists), focusing on entries relevant to this task — avoid repeating past mistakes")
         parts.append("\n## Guidelines")
-        parts.append("- Work autonomously — do not ask for confirmation, interviews, or permissions")
-        parts.append(
-            "- Complete the entire task in a single turn. Within this turn you may call as many "
-            "tools as needed — read files, write code, run tests, fix errors, iterate — until the "
-            "task is fully done and self-verified. Do not stop halfway and wait for feedback"
-        )
         parts.append("- Avoid dangerous/destructive operations (force push, drop tables, rm -rf, etc.)")
         parts.append("- Commit all changes with descriptive messages")
         parts.append("- Before your final message, append a short entry to PROGRESS.md with today's date, task title, and any lessons learned (gotchas, workarounds, or 'straightforward — no issues' if none)")

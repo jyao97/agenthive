@@ -343,7 +343,12 @@ export default function TasksPage({ theme, onToggleTheme }) {
         )}
       </PageHeader>
 
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      <div
+        className="flex-1 overflow-y-auto overflow-x-hidden"
+        onClick={(e) => {
+          if (expandedTaskId && !e.target.closest("[data-card]")) setExpandedTaskId(null);
+        }}
+      >
         <div className="max-w-2xl mx-auto w-full">
           <div className="pb-20 px-4 py-3">
             {loading && tasks.length === 0 && (

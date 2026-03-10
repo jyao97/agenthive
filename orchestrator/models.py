@@ -91,6 +91,7 @@ class Task(Base):
     skip_permissions: Mapped[bool] = mapped_column(Boolean, default=True)
     sync_mode: Mapped[bool] = mapped_column(Boolean, default=False)
     use_worktree: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     try_base_commit: Mapped[str | None] = mapped_column(String(50), nullable=True)
     notify_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     dispatch_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # deprecated — kept for DB compat

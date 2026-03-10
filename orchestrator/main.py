@@ -2969,6 +2969,20 @@ async def get_task_v2(task_id: str, db: Session = Depends(get_db)):
     )
 
 
+@app.put("/api/v2/tasks/reorder")
+async def reorder_tasks_v2(body: dict, db: Session = Depends(get_db)):
+    """Set sort_order for a list of task IDs. Body: { "task_ids": ["id1", "id2", ...] }"""
+    task_ids = body.get("task_ids", [])
+    if not task_ids:
+        raise HTTPException(400, "task_ids required")
+    for i, tid in enumerate(task_ids):
+        task = db.get(Task, tid)
+        if task:
+            task.sort_order = i
+    db.commit()
+    return {"ok": True, "count": len(task_ids)}
+
+
 @app.put("/api/v2/tasks/{task_id}", response_model=TaskOut)
 async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(get_db)):
     """Update task fields. Only allowed for INBOX/PLANNING tasks."""
@@ -2988,6 +3002,14 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
         val = getattr(body, field, None)
         if val is not None:
             setattr(task, field, val)
+    # Boolean fields: explicit set check (None means "not sent")
+    for field in ("skip_permissions", "use_worktree"):
+        if field in body.model_fields_set:
+            setattr(task, field, getattr(body, field))
+    if "worktree_name" in body.model_fields_set:
+        task.worktree_name = body.worktree_name or None
+    if "sort_order" in body.model_fields_set and body.sort_order is not None:
+        task.sort_order = body.sort_order
     # Time fields: allow explicit null to clear
     if "notify_at" in body.model_fields_set:
         task.notify_at = body.notify_at

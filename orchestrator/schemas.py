@@ -68,6 +68,10 @@ class TaskUpdate(BaseModel):
     effort: str | None = None
     status: str | None = None
     notify_at: datetime | None = None
+    skip_permissions: bool | None = None
+    use_worktree: bool | None = None
+    worktree_name: str | None = Field(None, max_length=200)
+    sort_order: int | None = None
 
 
 class TaskOut(BaseModel):
@@ -90,6 +94,7 @@ class TaskOut(BaseModel):
     skip_permissions: bool = True
     sync_mode: bool = False
     use_worktree: bool = True
+    sort_order: int = 0
     try_base_commit: str | None = None
     review_artifacts: str | None = None
     notify_at: datetime | None = None
