@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -21,7 +21,17 @@ function SortableTaskCard(props) {
 }
 
 export default function InboxView({ tasks, loading, selecting, selected, onToggle, expandedTaskId, onExpandTask, onRefresh }) {
-  const sorted = useMemo(() =>
+  // Optimistic order: local override until next props update
+  const [optimisticIds, setOptimisticIds] = useState(null);
+  const prevTasksRef = useRef(tasks);
+
+  // Clear optimistic state when tasks prop changes (server data arrived)
+  if (tasks !== prevTasksRef.current) {
+    prevTasksRef.current = tasks;
+    if (optimisticIds) setOptimisticIds(null);
+  }
+
+  const serverSorted = useMemo(() =>
     [...tasks].sort((a, b) => {
       if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
       return new Date(b.created_at) - new Date(a.created_at);
@@ -29,15 +39,17 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
     [tasks]
   );
 
+  // Apply optimistic order if set
+  const sorted = useMemo(() => {
+    if (!optimisticIds) return serverSorted;
+    const map = Object.fromEntries(serverSorted.map(t => [t.id, t]));
+    return optimisticIds.map(id => map[id]).filter(Boolean);
+  }, [serverSorted, optimisticIds]);
+
   const [activeDragId, setActiveDragId] = useState(null);
 
   // Is the dragged item part of a multi-selection?
   const isMultiDrag = activeDragId && selecting && selected.has(activeDragId) && selected.size > 1;
-  const selectedIds = useMemo(() => {
-    if (!selecting || selected.size <= 1) return null;
-    // Preserve relative order from sorted list
-    return sorted.filter(t => selected.has(t.id)).map(t => t.id);
-  }, [selecting, selected, sorted]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -52,31 +64,31 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
     if (!over || active.id === over.id) return;
 
     const ids = sorted.map(t => t.id);
+    let newIds;
 
     // Multi-drag: move selected group to the drop position
     if (selecting && selected.has(active.id) && selected.size > 1) {
       const groupIds = sorted.filter(t => selected.has(t.id)).map(t => t.id);
       const rest = ids.filter(id => !selected.has(id));
-      // Find where "over" sits in the remaining list
       let insertIdx = rest.indexOf(over.id);
       if (insertIdx === -1) insertIdx = rest.length;
-      // If dropping below the over item, insert after it
       const activeOrigIdx = ids.indexOf(active.id);
       const overOrigIdx = ids.indexOf(over.id);
       if (activeOrigIdx < overOrigIdx) insertIdx += 1;
-      const newIds = [...rest.slice(0, insertIdx), ...groupIds, ...rest.slice(insertIdx)];
-      await reorderTasks(newIds);
-      onRefresh?.();
-      return;
+      newIds = [...rest.slice(0, insertIdx), ...groupIds, ...rest.slice(insertIdx)];
+    } else {
+      // Single drag
+      const oldIdx = ids.indexOf(active.id);
+      const newIdx = ids.indexOf(over.id);
+      if (oldIdx === -1 || newIdx === -1) return;
+      newIds = arrayMove(ids, oldIdx, newIdx);
     }
 
-    // Single drag
-    const oldIdx = ids.indexOf(active.id);
-    const newIdx = ids.indexOf(over.id);
-    if (oldIdx === -1 || newIdx === -1) return;
-    const newIds = arrayMove(ids, oldIdx, newIdx);
-    await reorderTasks(newIds);
-    onRefresh?.();
+    // Optimistic update: apply new order instantly
+    setOptimisticIds(newIds);
+
+    // Persist to server in background, then refresh
+    reorderTasks(newIds).then(() => onRefresh?.());
   }, [sorted, selecting, selected, onRefresh]);
 
   const handleDragCancel = useCallback(() => setActiveDragId(null), []);
@@ -123,7 +135,6 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
       <DragOverlay>
         {activeTask ? (
           <div className="relative opacity-90 scale-[1.02] shadow-xl rounded-xl">
-            {/* Stacked cards effect for multi-drag */}
             {isMultiDrag && (
               <>
                 <div className="absolute inset-0 bg-surface rounded-xl ring-1 ring-edge/20 -rotate-1 translate-y-1 -z-10" />
@@ -139,7 +150,6 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
               onExpand={() => {}}
               onRefresh={() => {}}
             />
-            {/* Count badge for multi-drag */}
             {isMultiDrag && (
               <div className="absolute -top-2 -right-2 z-10 w-6 h-6 rounded-full bg-cyan-500 text-white text-xs font-bold flex items-center justify-center shadow-md">
                 {selected.size}
