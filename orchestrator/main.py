@@ -6399,13 +6399,17 @@ async def push_subscribe(request: Request, db: Session = Depends(get_db)):
     if existing:
         existing.p256dh_key = p256dh
         existing.auth_key = auth
+        logger.info("push/subscribe: updated existing subscription (endpoint=%s…)", endpoint[:60])
     else:
         db.add(PushSubscription(
             endpoint=endpoint,
             p256dh_key=p256dh,
             auth_key=auth,
         ))
+        logger.info("push/subscribe: registered new subscription (endpoint=%s…)", endpoint[:60])
     db.commit()
+    total = db.query(PushSubscription).count()
+    logger.info("push/subscribe: total active subscriptions = %d", total)
     return {"status": "subscribed"}
 
 

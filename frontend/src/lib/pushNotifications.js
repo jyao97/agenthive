@@ -42,8 +42,11 @@ export async function setupPushNotifications() {
     // Convert base64url to Uint8Array
     const applicationServerKey = urlBase64ToUint8Array(publicKey);
 
-    // Check for existing subscription first — re-subscribe if expired
+    // Always ensure we have a valid subscription and the backend knows about it.
+    // Existing subscriptions may have been purged server-side (410 expired)
+    // while the browser still holds a stale reference.
     let subscription = await reg.pushManager.getSubscription();
+    const hadExisting = !!subscription;
     if (!subscription) {
       subscription = await reg.pushManager.subscribe({
         userVisibleOnly: true,
@@ -51,8 +54,14 @@ export async function setupPushNotifications() {
       });
     }
 
-    // Send subscription to backend (always, to handle endpoint rotation)
+    // Always send to backend — handles re-registration after server-side
+    // expiry cleanup and endpoint rotation.
     const sub = subscription.toJSON();
+    console.debug(
+      "[push] %s subscription → sending to backend (endpoint=%s…)",
+      hadExisting ? "existing" : "new",
+      sub.endpoint?.slice(0, 60),
+    );
     const postRes = await authedFetch("/api/push/subscribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -63,12 +72,14 @@ export async function setupPushNotifications() {
     });
 
     if (postRes.ok) {
+      console.debug("[push] subscription registered with backend");
       setPushEnabled(true);
       return true;
     }
+    console.warn("[push] backend rejected subscription:", postRes.status);
     return false;
   } catch (err) {
-    console.warn("Push setup failed:", err);
+    console.warn("[push] setup failed:", err);
     return false;
   }
 }
