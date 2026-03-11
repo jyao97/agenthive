@@ -248,8 +248,8 @@ export default function NewTaskPage() {
         notify_at: notifyAt || undefined,
         auto_dispatch: false,
       });
-      clearTitle();
-      clearDesc();
+      setTitle("");
+      setDescription("");
       clearAttachments();
       setNotifyAt(null);
       showToast("Saved to inbox");
