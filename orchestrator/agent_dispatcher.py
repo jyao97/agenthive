@@ -5948,17 +5948,25 @@ Here are the day's conversations (with timestamps):
                 # This gates on the deterministic Stop hook signal instead of
                 # a pure idle-time heuristic, preventing false positives during
                 # long-running tool executions (Bash, Agent, etc.).
+                _HOOK_FALLBACK_POLLS = 10  # ~30s: flush even without stop hook
                 if pending_push_body:
                     pending_push_idle += 1
                     from main import _hook_flush_ready
-                    flush_ok = (
+                    hook_gated = (
                         agent_id in _hook_flush_ready and pending_push_idle >= 1
                     )
+                    fallback = (
+                        pending_push_idle >= _HOOK_FALLBACK_POLLS
+                        and not is_generating
+                    )
+                    flush_ok = hook_gated or fallback
                     if flush_ok:
+                        _flush_reason = "stop-hook" if hook_gated else "fallback-timeout"
                         logger.info(
                             "push: flushing notification for %s "
-                            "(stop-hook gated, %d idle polls): %s",
-                            agent_id, pending_push_idle, pending_push_body[:50],
+                            "(%s, %d idle polls): %s",
+                            agent_id, _flush_reason, pending_push_idle,
+                            pending_push_body[:50],
                         )
                         _hook_flush_ready.discard(agent_id)
                         db_push = SessionLocal()
@@ -6395,7 +6403,10 @@ Here are the day's conversations (with timestamps):
                         "Synced %d new turns for agent %s (roles=%s)",
                         len(new_turns), agent_id, _new_roles,
                     )
-                    self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
+                    # Only emit new_message for non-user turns to avoid
+                    # triggering browser notifications for the user's own messages.
+                    if any(r != "user" for r, *_ in new_turns):
+                        self._emit(emit_new_message(agent.id, "sync", _sync_agent_name, _sync_project))
 
                     # Defer push notification until response stabilizes
                     # (file stops growing), so we notify with final content

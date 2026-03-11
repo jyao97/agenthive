@@ -12,7 +12,7 @@ from utils import utcnow as _utcnow, truncate as _truncate
 from database import SessionLocal
 from log_config import save_worker_log
 from models import Project, Task, TaskStatus
-from push import send_push_notification, is_notification_enabled
+from notify import notify
 from task_state import TaskStateMachine
 from websocket import emit_task_update, emit_worker_update, emit_system_alert
 from worker_manager import WorkerManager
@@ -133,13 +133,11 @@ class TaskDispatcher:
 
             # Send push notification for task completion
             try:
-                if is_notification_enabled("tasks"):
-                    status_emoji = "\u2705" if task.status == TaskStatus.COMPLETE else "\u274c"
-                    send_push_notification(
-                        title=f"{status_emoji} Task {task.status.value}",
-                        body=(task.title or task.prompt or task.id)[:100],
-                        url=f"/tasks/{task.id}",
-                    )
+                status_emoji = "\u2705" if task.status == TaskStatus.COMPLETE else "\u274c"
+                notify("task_complete", task.id,
+                       f"{status_emoji} Task {task.status.value}",
+                       (task.title or task.prompt or task.id)[:100],
+                       f"/tasks/{task.id}")
             except Exception:
                 logger.warning("Push notification failed for task %s", task.id, exc_info=True)
 
