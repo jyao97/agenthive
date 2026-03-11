@@ -2813,11 +2813,18 @@ Here are the day's conversations (with timestamps):
             self._stale_session_retries.pop(agent.id, None)
             self._syncing_no_pane_retries.pop(agent.id, None)
             self._known_subagents.pop(agent.id, None)
-            # Clean up hook signal file
+            # Clean up hook signal files and flush gate
+            for suffix in (".newsession", ".stopsummary"):
+                try:
+                    os.unlink(f"/tmp/ahive-{agent.id}{suffix}")
+                except FileNotFoundError:
+                    pass
             try:
-                os.unlink(f"/tmp/ahive-{agent.id}.newsession")
+                os.unlink(f"/tmp/ahive-hooks/{agent.id}.stopsummary")
             except FileNotFoundError:
                 pass
+            from main import _hook_flush_ready
+            _hook_flush_ready.discard(agent.id)
 
         if emit:
             from websocket import emit_agent_update
@@ -3364,8 +3371,8 @@ Here are the day's conversations (with timestamps):
                     .first()
                 )
                 # Use Message content (most complete), fall back to Stop hook cache
-                from main import _hook_stop_summaries
-                hook_summary = _hook_stop_summaries.pop(agent.id, None)
+                from main import read_stop_summary
+                hook_summary = read_stop_summary(agent.id)
                 msg_summary = last_msg.content[:2000] if (last_msg and last_msg.content) else None
                 task.agent_summary = msg_summary or hook_summary
                 if task.agent_summary and (task.project_name or task.project):
@@ -5936,17 +5943,24 @@ Here are the day's conversations (with timestamps):
                     is_generating = False
                     self._stop_generating(agent_id)
                     _sync_gen_id = None
-                # Flush deferred push notification after response stabilized
-                # (require 3+ consecutive idle polls = ~9s of no file growth
-                # to avoid firing during brief pauses in JSONL writes)
+                # Flush deferred push notification when Stop hook confirms
+                # end-of-turn AND JSONL has been idle (no tool result followed).
+                # This gates on the deterministic Stop hook signal instead of
+                # a pure idle-time heuristic, preventing false positives during
+                # long-running tool executions (Bash, Agent, etc.).
                 if pending_push_body:
                     pending_push_idle += 1
-                    if pending_push_idle >= 3:
-                        logger.debug(
-                            "push: flushing deferred notification for %s "
-                            "after %d idle polls: %s",
+                    from main import _hook_flush_ready
+                    flush_ok = (
+                        agent_id in _hook_flush_ready and pending_push_idle >= 1
+                    )
+                    if flush_ok:
+                        logger.info(
+                            "push: flushing notification for %s "
+                            "(stop-hook gated, %d idle polls): %s",
                             agent_id, pending_push_idle, pending_push_body[:50],
                         )
+                        _hook_flush_ready.discard(agent_id)
                         db_push = SessionLocal()
                         try:
                             ag_push = db_push.get(Agent, agent_id)
@@ -6067,6 +6081,9 @@ Here are the day's conversations (with timestamps):
                 continue
             idle_polls = 0
             pending_push_idle = 0  # File grew — response may still be generating
+            # Agent is still working (tool result came back) — cancel flush gate
+            from main import _hook_flush_ready
+            _hook_flush_ready.discard(agent_id)
             last_size = current_size
 
             # Parse full file for turns

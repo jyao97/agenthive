@@ -3811,14 +3811,40 @@ async def generate_worktree_name(request: Request):
 
 # ---- Claude Code Hooks Endpoints ----
 
-# Cache of last_assistant_message from Stop hooks, keyed by agent_id.
-# The dispatcher reads (and pops) these when harvesting task completions,
-# using the cached summary instead of parsing output files.
-# Stop hooks fire per-turn (every Claude response), so this dict may be
-# overwritten multiple times during a multi-step task — only the final
-# value matters, and the dispatcher only reads it after confirming the
-# agent's subprocess has actually exited.
-_hook_stop_summaries: dict[str, str] = {}
+# Stop hook signal file directory.  The dispatcher reads (and deletes)
+# these when harvesting task completions.
+_HOOK_SIGNAL_DIR = "/tmp/ahive-hooks"
+
+# Set of agent IDs whose Stop hook fired since the last JSONL growth.
+# The cli_sync loop uses this as a gate: only flush deferred push
+# notifications when the Stop hook has confirmed end-of-turn AND no
+# new JSONL growth followed (which would indicate tool execution).
+# When JSONL grows again (tool_result written), the agent is removed
+# from this set, preventing mid-conversation false positives.
+_hook_flush_ready: set[str] = set()
+
+
+def write_stop_summary(agent_id: str, summary: str) -> None:
+    """Persist Stop hook summary to signal file (survives restart)."""
+    os.makedirs(_HOOK_SIGNAL_DIR, exist_ok=True)
+    path = os.path.join(_HOOK_SIGNAL_DIR, f"{agent_id}.stopsummary")
+    try:
+        with open(path, "w") as f:
+            f.write(summary)
+    except OSError:
+        pass
+
+
+def read_stop_summary(agent_id: str) -> str | None:
+    """Read and consume Stop hook summary signal file."""
+    path = os.path.join(_HOOK_SIGNAL_DIR, f"{agent_id}.stopsummary")
+    try:
+        with open(path, "r") as f:
+            summary = f.read().strip()
+        os.unlink(path)
+        return summary or None
+    except (FileNotFoundError, OSError):
+        return None
 
 
 @app.post("/api/hooks/agent-stop")
@@ -3851,7 +3877,12 @@ async def hook_agent_stop(request: Request):
     summary = str(last_message)[:2000].strip() if last_message else ""
 
     if summary:
-        _hook_stop_summaries[agent_id] = summary
+        write_stop_summary(agent_id, summary)
+
+    # Mark this agent as ready to flush deferred push notification.
+    # If new JSONL growth follows (tool result), the sync loop clears
+    # this flag — preventing mid-conversation false positives.
+    _hook_flush_ready.add(agent_id)
 
     # Clear generating state immediately — the Stop hook is a deterministic
     # signal that Claude finished this turn.  This emits agent_stream_end
@@ -3859,6 +3890,44 @@ async def hook_agent_stop(request: Request):
     ad = getattr(app.state, "agent_dispatcher", None)
     if ad and agent_id in ad._generating_agents:
         ad._stop_generating(agent_id)
+
+    return {}
+
+
+@app.post("/api/hooks/agent-session-start")
+async def hook_agent_session_start(request: Request):
+    """Receive SessionStart hook from Claude Code agents.
+
+    Writes a signal file that the dispatcher's _detect_successor() reads
+    to deterministically track session rotation (e.g. /clear, compaction).
+    """
+    agent_id = request.headers.get("X-Agent-Id", "").strip()
+    if not agent_id:
+        return {}
+
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+
+    # Claude Code sends session info — extract session_id
+    session_id = ""
+    if isinstance(body, dict):
+        # Try direct field, then nested session object
+        session_id = body.get("session_id", "") or ""
+        if not session_id:
+            session = body.get("session") or {}
+            if isinstance(session, dict):
+                session_id = session.get("session_id", "") or session.get("id", "") or ""
+
+    if session_id:
+        signal_path = f"/tmp/ahive-{agent_id}.newsession"
+        try:
+            with open(signal_path, "w") as f:
+                f.write(session_id)
+            logger.info("SessionStart hook: agent=%s session=%s", agent_id[:8], session_id[:12])
+        except OSError:
+            pass
 
     return {}
 
@@ -3983,6 +4052,14 @@ def _write_agent_hooks_config(project_path: str):
     base_url = f"http://localhost:{port}/api/hooks"
 
     desired_hooks = {
+        "SessionStart": [{
+            "hooks": [{
+                "type": "http",
+                "url": f"{base_url}/agent-session-start",
+                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+            }],
+        }],
         "Stop": [{
             "hooks": [{
                 "type": "http",
