@@ -1,41 +1,47 @@
+import { useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { projectBadgeColor, modelDisplayName } from "../../lib/constants";
 import { relativeTime } from "../../lib/formatters";
 import CardShell, { cardPadding } from "../../components/cards/CardShell";
-import TaskExpandedContent from "../../components/cards/TaskExpandedContent";
 
-function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand, onRefresh }) {
+function PlanningCard({ task, selecting, selected, onToggle }) {
   const navigate = useNavigate();
   const subState = task.planning_status || (!task.agent_id ? "queued" : "planning");
   const projColor = task.project_name ? projectBadgeColor(task.project_name) : "";
   const isHigh = task.priority >= 1;
   const savedDesc = task.description || "";
   const preview = savedDesc && savedDesc !== task.title ? savedDesc : task.project_name || null;
-  const isExpanded = expanded && !selecting && !task.agent_id;
 
-  const handleClick = () => {
+  // Shake animation for queued cards
+  const cardRef = useRef(null);
+  const [shaking, setShaking] = useState(false);
+
+  const handleClick = useCallback(() => {
     if (selecting) { onToggle?.(task.id); return; }
-    // Has agent → go to conversation; queued → expand for editing
     if (task.agent_id) {
       navigate(`/agents/${task.agent_id}`);
     } else {
-      onExpand?.(isExpanded ? null : task.id);
+      // Queued — no agent yet, shake to indicate not ready
+      if (shaking) return;
+      setShaking(true);
+      setTimeout(() => setShaking(false), 500);
     }
-  };
+  }, [selecting, task.id, task.agent_id, onToggle, navigate, shaking]);
 
   return (
     <div className="relative">
-      <CardShell expanded={isExpanded} selecting={selecting} selected={selected}>
+      <CardShell selecting={selecting} selected={selected}>
         <div
-          className={`flex items-start gap-3 px-5 cursor-pointer transition-[padding] duration-400 ease-[cubic-bezier(0.22,1.15,0.36,1)] ${cardPadding(isExpanded, selecting)}`}
+          ref={cardRef}
+          className={`flex items-start gap-3 px-5 cursor-pointer ${cardPadding(false, selecting)} ${shaking ? "animate-[shake_0.4s_ease-in-out]" : ""}`}
           onClick={handleClick}
           role="button"
           tabIndex={0}
           onKeyDown={(e) => { if (e.key === "Enter") handleClick(); }}
         >
-          <div className={`flex-1 min-w-0 ${isExpanded ? "flex flex-col min-h-[160px]" : ""}`}>
+          <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3">
-              <p className={`text-base font-semibold leading-snug ${isExpanded ? "text-heading whitespace-pre-wrap" : "text-heading truncate"}`}>
+              <p className="text-base font-semibold leading-snug text-heading truncate">
                 {task.title}
               </p>
               <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
@@ -62,13 +68,13 @@ function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand,
               </div>
             </div>
 
-            {!isExpanded && preview && (
+            {preview && (
               <p className="text-sm text-dim leading-relaxed mt-1.5 line-clamp-2">
                 {preview.slice(0, 200)}
               </p>
             )}
 
-            <div className={`flex flex-wrap items-center gap-1.5 ${isExpanded ? "mt-auto" : "mt-2.5"}`}>
+            <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
               {task.project_name && (
                 <span className={`text-[11px] font-medium rounded-full px-2 py-0.5 ${projColor}`}>{task.project_name}</span>
               )}
@@ -98,14 +104,12 @@ function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand,
             </div>
           </div>
         </div>
-
-        {isExpanded && <TaskExpandedContent task={task} onRefresh={onRefresh} onCollapse={() => onExpand?.(null)} />}
       </CardShell>
     </div>
   );
 }
 
-export default function PlanningView({ tasks, loading, selecting, selected, onToggle, expandedTaskId, onExpandTask, onRefresh }) {
+export default function PlanningView({ tasks, loading, selecting, selected, onToggle }) {
   const sorted = [...tasks].sort((a, b) => {
     if (b.priority !== a.priority) return b.priority - a.priority;
     return new Date(a.created_at) - new Date(b.created_at);
@@ -132,9 +136,6 @@ export default function PlanningView({ tasks, loading, selecting, selected, onTo
           selecting={selecting}
           selected={selected.has(task.id)}
           onToggle={onToggle}
-          expanded={expandedTaskId === task.id}
-          onExpand={onExpandTask}
-          onRefresh={onRefresh}
         />
       ))}
     </div>

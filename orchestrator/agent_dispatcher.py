@@ -3034,6 +3034,13 @@ Here are the day's conversations (with timestamps):
         parts = [f"# Task: {task.title}"]
         if task.description:
             parts.append(f"\n{task.description}")
+
+        # Approved plan from planning phase (stored in retry_context for attempt 1)
+        if task.attempt_number <= 1 and task.retry_context:
+            parts.append(f"\n## Approved Implementation Plan")
+            parts.append("Follow this plan. It was reviewed and approved by the user.")
+            parts.append(task.retry_context)
+
         if task.attempt_number > 1 and task.retry_context:
             parts.append(f"\n## Previous Attempt Context (attempt #{task.attempt_number})")
             parts.append(task.retry_context)

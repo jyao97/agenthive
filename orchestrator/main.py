@@ -5424,6 +5424,68 @@ async def answer_agent_interactive(
         if effective_index is None:
             effective_index = 0 if body.approved else 2
 
+        # --- Check if this is a planning agent ---
+        _task = db.get(Task, agent.task_id) if agent.task_id else None
+        is_planning_agent = _task and _task.status == TaskStatus.PLANNING
+
+        if is_planning_agent and effective_index in (0, 1, 2):
+            # Planning agent: extract plan, kill tmux, dispatch new -p execution agent.
+            # DON'T send tmux keys — the planning agent's job is done.
+
+            # Extract plan text from the interactive metadata
+            plan_text = ""
+            if last_msg and last_msg.meta_json:
+                try:
+                    meta = json.loads(last_msg.meta_json)
+                    for item in meta.get("interactive", []):
+                        if item.get("type") == "exit_plan_mode":
+                            plan_text = item.get("plan", "")
+                            break
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+            # Patch metadata to record the approval
+            patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+            if not patched:
+                logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
+
+            try:
+                # Store approved plan on task for the execution agent
+                _task.retry_context = plan_text or None
+
+                # Transition PLANNING → PENDING (dispatch picks it up)
+                TaskStateMachine.transition(_task, TaskStatus.PENDING)
+                _task.agent_id = None  # unlink so dispatch creates new agent
+                _task.started_at = None
+
+                # Option 2 (manual approval): disable skip_permissions
+                if effective_index == 2:
+                    _task.skip_permissions = False
+
+                # Stop planning agent
+                agent.task_id = None
+                agent.status = AgentStatus.STOPPED
+                db.commit()
+
+                # Kill tmux session
+                if has_tmux:
+                    _graceful_kill_tmux(pane_id, f"ah-{agent.id[:8]}")
+
+                import asyncio
+                asyncio.ensure_future(emit_task_update(
+                    _task.id, _task.status.value, _task.project_name or "",
+                    title=_task.title,
+                ))
+                logger.info(
+                    "Planning task %s → PENDING for -p execution (option %d, killed planning agent %s)",
+                    _task.id, effective_index, agent.id,
+                )
+            except (InvalidTransitionError, Exception) as e:
+                logger.warning("Failed to transition planning task %s: %s", _task.id, e)
+
+            return {"detail": "ok", "keys_sent": 0, "prompt_type": "planning_handoff", "auto_approved": False}
+
+        # --- Non-planning agent: normal tmux key flow ---
         if has_tmux:
             # Capture pane content BEFORE sending keys for diagnostics
             from agent_dispatcher import capture_tmux_pane, _detect_plan_prompt
@@ -5440,11 +5502,6 @@ async def answer_agent_interactive(
                 raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
 
             # Patch DB immediately after keys succeed — BEFORE any await.
-            # The sync loop runs on the same event loop; an await here lets
-            # it parse the JSONL (which may already carry a context-clear
-            # dismiss answer) and overwrite the metadata while our patch
-            # hasn't landed yet.  With answer=null in the DB at that point,
-            # _merge_interactive_meta cannot protect the user's selection.
             patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
             if not patched:
                 logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
@@ -5466,31 +5523,6 @@ async def answer_agent_interactive(
             patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
             if not patched:
                 logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
-
-        # --- Planning agent: transition task PLANNING → EXECUTING on approve ---
-        if effective_index in (0, 1, 2) and agent.task_id:
-            _task = db.get(Task, agent.task_id)
-            if _task and _task.status == TaskStatus.PLANNING:
-                try:
-                    # Atomic double-transition so _dispatch_pending_tasks never sees PENDING
-                    TaskStateMachine.transition(_task, TaskStatus.PENDING)
-                    TaskStateMachine.transition(_task, TaskStatus.EXECUTING)
-                    _task.started_at = _utcnow()
-                    # Option 2 (manual approval): disable skip_permissions
-                    if effective_index == 2:
-                        agent.skip_permissions = False
-                        _task.skip_permissions = False
-                    db.commit()
-                    asyncio.ensure_future(emit_task_update(
-                        _task.id, _task.status.value, _task.project_name or "",
-                        title=_task.title, agent_id=agent.id,
-                    ))
-                    logger.info(
-                        "Planning task %s → EXECUTING (option %d, agent %s)",
-                        _task.id, effective_index, agent.id,
-                    )
-                except (InvalidTransitionError, Exception) as e:
-                    logger.warning("Failed to transition planning task %s: %s", _task.id, e)
 
         return {"detail": "ok", "keys_sent": len(keys) if has_tmux else 0, "prompt_type": prompt_type, "auto_approved": not has_tmux}
 
