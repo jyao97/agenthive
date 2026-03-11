@@ -3083,28 +3083,15 @@ Here are the day's conversations (with timestamps):
         return "\n".join(parts)
 
     def _build_planning_prompt(self, task: Task, db: Session | None = None) -> str:
-        """Build a planning-phase prompt that encourages exploration and Q&A."""
-        project_name = task.project_name or task.project
+        """Build a planning-phase prompt that encourages exploration and Q&A.
 
-        # Inject relevant insights from FTS5 RAG
-        insights_block = ""
-        if db and project_name:
-            try:
-                query_text = f"{task.title} {task.description or ''}"
-                insights = query_insights(db, project_name, query_text, limit=15, pad_recent=True)
-                if insights:
-                    insights_block = (
-                        "\n## Relevant Past Insights\n"
-                        + "\n".join(f"- {i}" for i in insights)
-                    )
-            except Exception:
-                logger.debug("Failed to query insights for planning task %s", task.id, exc_info=True)
-
+        Note: insights are NOT embedded here — _prepare_dispatch handles them
+        via metadata (for InsightsBubble) and _build_agent_prompt (for Claude).
+        """
         return (
             f"# Planning: {task.title}\n"
             f"\n"
             f"{task.description or '(no description provided)'}\n"
-            f"{insights_block}\n"
             f"\n"
             f"## Your Role\n"
             f"You are a **planning agent**. Your goal is to thoroughly explore the codebase, "
