@@ -316,6 +316,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to start dispatchers — running without scheduling")
 
+    # Clean stale unlinked session entries from previous runs
+    try:
+        _clean_stale_unlinked()
+    except Exception:
+        logger.debug("Failed to clean stale unlinked sessions", exc_info=True)
+
     # Start backup loop
     try:
         from backup import run_backup_loop
@@ -3869,6 +3875,53 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
     return agent
 
 
+def _write_agent_hooks_config(project_path: str):
+    """Write .claude/settings.local.json with agent lifecycle hooks.
+
+    Hooks fire inside Claude Code agents and POST back to the orchestrator,
+    enabling instant task harvest (Stop) without polling.
+
+    Uses AHIVE_AGENT_ID env var (set per agent in tmux export and subprocess
+    env) to identify which agent triggered the hook.  For user sessions
+    without the env var the header is empty and the endpoint returns 200 (no-op).
+    """
+    port = os.getenv("PORT", "8080")
+    base_url = f"http://localhost:{port}/api/hooks"
+
+    desired_hooks = {
+        "Stop": [{
+            "hooks": [{
+                "type": "http",
+                "url": f"{base_url}/agent-stop",
+                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+            }],
+        }],
+    }
+
+    settings_local_dir = os.path.join(project_path, ".claude")
+    settings_local_path = os.path.join(settings_local_dir, "settings.local.json")
+    try:
+        os.makedirs(settings_local_dir, exist_ok=True)
+
+        existing = {}
+        if os.path.isfile(settings_local_path):
+            with open(settings_local_path, "r") as f:
+                existing = json.load(f)
+
+        # Merge: replace our hook entries, preserve unrelated user hooks
+        current_hooks = existing.get("hooks", {})
+        merged_hooks = {**current_hooks, **desired_hooks}
+
+        if existing.get("hooks") != merged_hooks:
+            existing["hooks"] = merged_hooks
+            with open(settings_local_path, "w") as f:
+                json.dump(existing, f, indent=2)
+            logger.info("Preflight: wrote agent hooks to %s", settings_local_path)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Preflight: failed to write agent hooks config: %s", e)
+
+
 def _preflight_claude_project(project_path: str):
     """Ensure all Claude Code prerequisites are met before launching.
 
@@ -3976,6 +4029,9 @@ def _preflight_claude_project(project_path: str):
             logger.info("Preflight: updated ~/.claude/settings.json")
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Preflight: failed to update settings.json: %s", e)
+
+    # --- 3. .claude/settings.local.json (project-level agent hooks) ---
+    _write_agent_hooks_config(project_path)
 
 
 @app.post("/api/agents/launch-tmux", status_code=201)
@@ -4530,6 +4586,176 @@ async def scan_agents(request: Request, db: Session = Depends(get_db)):
         ad._reap_dead_agents(db)
         db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Unlinked sessions — manual Claude Code sessions not launched by orchestrator
+# ---------------------------------------------------------------------------
+
+_UNLINKED_DIR: str | None = None
+
+
+def _get_unlinked_dir() -> str:
+    """Return (and lazily create) the unlinked-sessions directory."""
+    global _UNLINKED_DIR
+    if _UNLINKED_DIR is None:
+        from config import BACKUP_DIR
+        _UNLINKED_DIR = os.path.join(BACKUP_DIR, "unlinked-sessions")
+    os.makedirs(_UNLINKED_DIR, exist_ok=True)
+    return _UNLINKED_DIR
+
+
+def _clean_stale_unlinked(max_age: int = 3600):
+    """Remove unlinked session entries whose JSONL hasn't been updated in max_age seconds."""
+    udir = _get_unlinked_dir()
+    now = _time.time()
+    removed = 0
+    try:
+        for fname in os.listdir(udir):
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(udir, fname)
+            try:
+                with open(fpath) as f:
+                    info = json.load(f)
+                transcript = info.get("transcript_path", "")
+                if transcript and os.path.isfile(transcript):
+                    mtime = os.path.getmtime(transcript)
+                    if now - mtime < max_age:
+                        continue  # still active
+                # Transcript gone or stale → remove
+                os.unlink(fpath)
+                removed += 1
+            except (OSError, json.JSONDecodeError):
+                try:
+                    os.unlink(fpath)
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    if removed:
+        logger.info("Cleaned %d stale unlinked session entries", removed)
+    return removed
+
+
+@app.get("/api/unlinked-sessions")
+async def list_unlinked_sessions():
+    """List manually-launched Claude Code sessions not bound to any agent."""
+    _clean_stale_unlinked()
+    udir = _get_unlinked_dir()
+    sessions = []
+    try:
+        for fname in sorted(os.listdir(udir)):
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(udir, fname)
+            try:
+                with open(fpath) as f:
+                    info = json.load(f)
+                # Derive project name from CWD
+                cwd = info.get("cwd", "")
+                project_name = os.path.basename(cwd.rstrip("/")) if cwd else ""
+                info["project_name"] = project_name
+                info["file"] = fname
+                sessions.append(info)
+            except (OSError, json.JSONDecodeError):
+                continue
+    except OSError:
+        pass
+    return sessions
+
+
+@app.post("/api/unlinked-sessions/{session_id}/adopt")
+async def adopt_unlinked_session(
+    session_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Bind an unlinked session to a new agent and start syncing.
+
+    Body: {"project": "project-name"}
+    Optional: {"agent_id": "existing-agent-id"} to bind to existing agent.
+    """
+    import secrets
+    from config import CC_MODEL
+
+    udir = _get_unlinked_dir()
+    info_path = os.path.join(udir, f"{session_id}.json")
+    if not os.path.isfile(info_path):
+        raise HTTPException(status_code=404, detail="Unlinked session not found")
+
+    try:
+        with open(info_path) as f:
+            info = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read session info: {e}")
+
+    body = await request.json()
+    project_name = body.get("project") or os.path.basename(info.get("cwd", "").rstrip("/"))
+    existing_agent_id = body.get("agent_id")
+
+    proj = db.get(Project, project_name)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
+
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if not ad:
+        raise HTTPException(status_code=503, detail="Agent dispatcher not ready")
+
+    if existing_agent_id:
+        # Bind to existing agent
+        agent = db.get(Agent, existing_agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        agent.session_id = session_id
+        if agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
+            agent.status = AgentStatus.SYNCING
+        agent.cli_sync = True
+    else:
+        # Create new agent
+        for _ in range(20):
+            agent_hex = secrets.token_hex(6)
+            if db.get(Agent, agent_hex) is None:
+                break
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate agent ID")
+
+        agent = Agent(
+            id=agent_hex,
+            project=project_name,
+            name=f"Manual: {os.path.basename(info.get('cwd', 'session'))}"[:80],
+            mode=AgentMode.AUTO,
+            status=AgentStatus.SYNCING,
+            model=info.get("model") or proj.default_model or CC_MODEL,
+            cli_sync=True,
+            session_id=session_id,
+            last_message_preview="Adopted manual session",
+            last_message_at=datetime.now(timezone.utc),
+        )
+        db.add(agent)
+
+    db.commit()
+    db.refresh(agent)
+
+    # Write .owner and start sync
+    ad.start_session_sync(agent.id, session_id, proj.path)
+
+    # Remove the unlinked entry
+    try:
+        os.unlink(info_path)
+    except OSError:
+        pass
+
+    logger.info(
+        "Adopted unlinked session %s → agent %s (project %s)",
+        session_id[:12], agent.id, project_name,
+    )
+
+    from websocket import emit_agent_update
+    asyncio.ensure_future(emit_agent_update(agent.id, agent.status.value, agent.project))
+
+    return AgentOut.model_validate(agent)
 
 
 def _enrich_agent_briefs(rows, request) -> list[AgentBrief]:

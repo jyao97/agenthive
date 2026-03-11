@@ -5357,10 +5357,6 @@ Here are the day's conversations (with timestamps):
           2. Sidecar scan: check .owner files for sessions already
              claimed by this agent but not yet in the DB.
 
-          3. Unowned JSONL scan (last resort): if the agent's tmux
-             pane is alive, look for new unowned JONLs within 30s
-             of the current session's last write.
-
         Sessions owned by other agents are skipped.
         """
         current_jsonl = _resolve_session_jsonl(current_sid, project_path, worktree)
@@ -5371,43 +5367,7 @@ Here are the day's conversations (with timestamps):
 
         sdir = session_source_dir(project_path)
 
-        # Layer 0: Hook signal — check for /tmp/ahive-{agent_id}.newsession
-        # written by the SessionStart hook.  This is deterministic: Claude
-        # Code itself tells us the new session_id via the hook payload.
-        signal_path = f"/tmp/ahive-{agent_id}.newsession"
-        try:
-            with open(signal_path) as f:
-                hook_sid = f.read().strip()
-            # Consume the signal file immediately to prevent re-processing
-            os.unlink(signal_path)
-            if hook_sid and hook_sid != current_sid:
-                # Verify the JSONL actually exists (hook may fire before
-                # Claude writes the first entry)
-                for _sd in [sdir]:
-                    hook_jsonl = os.path.join(_sd, f"{hook_sid}.jsonl")
-                    if os.path.exists(hook_jsonl):
-                        _write_session_owner(sdir, hook_sid, agent_id)
-                        logger.info(
-                            "_detect_successor: hook-signal match "
-                            "agent=%s new_sid=%s",
-                            agent_id, hook_sid[:12],
-                        )
-                        return hook_sid
-                # JSONL not yet on disk — re-write signal so next poll
-                # retries (hook only fires once)
-                try:
-                    with open(signal_path, "w") as f:
-                        f.write(hook_sid)
-                except OSError:
-                    pass
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            logger.debug("_detect_successor: hook signal read failed: %s", e)
-
-        # Get this agent's Claude process PID from its tmux pane.
-        # The pane is the stable identity anchor — it doesn't change
-        # across /clear or context compaction.
+        # Pre-fetch active_sids and pane state — needed by all layers.
         pane_pid: int | None = None
         db = SessionLocal()
         try:
@@ -5426,6 +5386,39 @@ Here are the day's conversations (with timestamps):
             }
         finally:
             db.close()
+
+        # Layer 0: Hook signal — check for /tmp/ahive-{agent_id}.newsession
+        # written by the SessionStart hook.  This is deterministic: Claude
+        # Code itself tells us the new session_id via the hook payload.
+        signal_path = f"/tmp/ahive-{agent_id}.newsession"
+        try:
+            with open(signal_path) as f:
+                hook_sid = f.read().strip()
+            # Consume the signal file immediately to prevent re-processing
+            os.unlink(signal_path)
+            if hook_sid and hook_sid != current_sid and hook_sid not in active_sids:
+                # Verify the JSONL actually exists (hook may fire before
+                # Claude writes the first entry)
+                hook_jsonl = os.path.join(sdir, f"{hook_sid}.jsonl")
+                if os.path.exists(hook_jsonl):
+                    _write_session_owner(sdir, hook_sid, agent_id)
+                    logger.info(
+                        "_detect_successor: hook-signal match "
+                        "agent=%s new_sid=%s",
+                        agent_id, hook_sid[:12],
+                    )
+                    return hook_sid
+                # JSONL not yet on disk — re-write signal so next poll
+                # retries (hook only fires once)
+                try:
+                    with open(signal_path, "w") as f:
+                        f.write(hook_sid)
+                except OSError:
+                    pass
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.debug("_detect_successor: hook signal read failed: %s", e)
 
         # Primary: FD scan — ask the OS which JSONL the agent's own
         # Claude process has open.  This is deterministic: the PID
@@ -5483,80 +5476,11 @@ Here are the day's conversations (with timestamps):
                     session_dir, agent_id, e,
                 )
 
-        if best_sid:
-            return best_sid
-
-        # Fallback 2: unowned JSONL scan — detect /clear continuations.
-        #
-        # After /clear, Claude Code creates a brand-new JSONL with no
-        # .owner sidecar.  Since we pre-write .owner at launch for ALL
-        # orchestrator sessions, an unowned JSONL can only be:
-        #   (a) a /clear continuation of an existing agent, or
-        #   (b) a manually-launched Claude Code session (different pane).
-        #
-        # Safety guards:
-        #   - tmux pane alive (pane_pid not None)
-        #   - Temporal proximity: the new JSONL must have been created
-        #     within _CLEAR_WINDOW seconds of the current session's last
-        #     write.  This prevents an idle agent from claiming another
-        #     agent's /clear continuation — the idle agent's session
-        #     stopped updating long ago, so the time gap is too large.
-        if not pane_pid:
-            return None
-
-        _CLEAR_WINDOW = 30  # seconds
-
-        for session_dir in session_dirs:
-            try:
-                # Build set of session IDs that have .owner files
-                owned_sids: set[str] = set()
-                for fname in os.listdir(session_dir):
-                    if fname.endswith(".owner"):
-                        owned_sids.add(fname[:-6])  # strip ".owner"
-
-                for fname in os.listdir(session_dir):
-                    if not fname.endswith(".jsonl"):
-                        continue
-                    sid = fname[:-6]  # strip ".jsonl"
-                    # Skip: current session, already assigned, or owned
-                    if sid == current_sid or sid in active_sids:
-                        continue
-                    if sid in owned_sids:
-                        continue
-                    # Must look like a UUID session ID
-                    if len(sid) < 32 or "-" not in sid:
-                        continue
-                    try:
-                        mtime = os.path.getmtime(
-                            os.path.join(session_dir, fname))
-                    except OSError:
-                        continue
-                    if mtime <= current_mtime:
-                        continue
-                    # Temporal proximity check: the new JSONL must have
-                    # appeared shortly after the current session stopped
-                    # updating.  If the gap is too large, it's likely
-                    # from another agent's /clear, not ours.
-                    if mtime - current_mtime > _CLEAR_WINDOW:
-                        continue
-                    if mtime > best_mtime:
-                        best_sid, best_mtime = sid, mtime
-            except OSError as e:
-                logger.warning(
-                    "_detect_successor: unowned scan failed "
-                    "dir=%s agent=%s: %s",
-                    session_dir, agent_id, e,
-                )
-
-        if best_sid:
-            # Claim ownership immediately
-            _write_session_owner(sdir, best_sid, agent_id)
-            logger.info(
-                "_detect_successor: unowned-jsonl match "
-                "agent=%s pane_pid=%d new_sid=%s gap=%.1fs",
-                agent_id, pane_pid, best_sid[:12],
-                best_mtime - current_mtime,
-            )
+        # Note: the old "unowned JSONL scan" (Fallback 3) was removed.
+        # It scanned for JONLs without .owner files and tried to claim them,
+        # but this created race conditions between agents — any idle agent
+        # could steal another agent's /clear continuation.  With hooks as
+        # the primary path, this heuristic is no longer needed.
 
         return best_sid
 

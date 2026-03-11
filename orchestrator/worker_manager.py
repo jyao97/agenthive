@@ -199,6 +199,9 @@ class WorkerManager:
         if resume_session_id:
             cmd.extend(["--resume", resume_session_id])
 
+        env = self._clean_env()
+        env["AHIVE_AGENT_ID"] = agent.id
+
         with open(output_file, "w") as out_f:
             process = subprocess.Popen(
                 cmd,
@@ -206,7 +209,7 @@ class WorkerManager:
                 stdout=out_f,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
-                env=self._clean_env(),
+                env=env,
             )
 
         pid_str = str(process.pid)
