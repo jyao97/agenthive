@@ -471,8 +471,7 @@ export default function NewTaskPage() {
                     title="Quick save to inbox"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-                      <path d="M13 2l-4 7h5l-3 6" />
-                      <path d="M3 15h4l2 3h6l2-3h4v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4z" />
+                      <path d="M4 14a1 1 0 01-.78-1.63l9.9-10.2a.5.5 0 01.86.46l-1.92 6.02A1 1 0 0013 10h7a1 1 0 01.78 1.63l-9.9 10.2a.5.5 0 01-.86-.46l1.92-6.02A1 1 0 0011 14z" />
                     </svg>
                   </button>
                 </div>
