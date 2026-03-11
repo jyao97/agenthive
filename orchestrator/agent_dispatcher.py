@@ -3351,20 +3351,22 @@ Here are the day's conversations (with timestamps):
                     .order_by(Message.created_at.desc())
                     .first()
                 )
-                if last_msg:
-                    task.agent_summary = last_msg.content[:2000] if last_msg.content else None
+                # Use Message content (most complete), fall back to Stop hook cache
+                from main import _hook_stop_summaries
+                hook_summary = _hook_stop_summaries.pop(agent.id, None)
+                msg_summary = last_msg.content[:2000] if (last_msg and last_msg.content) else None
+                task.agent_summary = msg_summary or hook_summary
+                if task.agent_summary and (task.project_name or task.project):
                     # Auto-store agent summary as an insight for RAG
-                    if task.agent_summary and (task.project_name or task.project):
-                        try:
-                            today_str = _utcnow().strftime("%Y-%m-%d")
-                            # Condense to a single clean line (strip newlines, limit length)
-                            clean_summary = " ".join(task.agent_summary[:500].split())
-                            summary_line = f"1. {task.title[:80]}: {clean_summary}"
-                            store_insights(db, task.project_name or task.project, today_str, summary_line, agent_id=agent.id)
-                        except Exception:
-                            logger.debug("Failed to store task-completion insight for task %s", task.id, exc_info=True)
+                    try:
+                        today_str = _utcnow().strftime("%Y-%m-%d")
+                        clean_summary = " ".join(task.agent_summary[:500].split())
+                        summary_line = f"1. {task.title[:80]}: {clean_summary}"
+                        store_insights(db, task.project_name or task.project, today_str, summary_line, agent_id=agent.id)
+                    except Exception:
+                        logger.debug("Failed to store task-completion insight for task %s", task.id, exc_info=True)
                 # If agent died without producing any output → FAILED, not REVIEW
-                if not last_msg:
+                if not last_msg and not hook_summary:
                     TaskStateMachine.transition(task, TaskStatus.FAILED)
                     task.error_message = "Agent stopped without producing output"
                     db.commit()
@@ -3444,41 +3446,6 @@ Here are the day's conversations (with timestamps):
             ))
             logger.info("Task %s: failed stale MERGING task", task.id)
 
-        # --- Hook-harvested cleanup ---
-        # When the Stop hook transitions a task to REVIEW instantly, the agent
-        # subprocess is still running.  Once _harvest_exec_completions sets the
-        # agent to IDLE (subprocess exited), we stop the agent here.
-        hook_review_tasks = (
-            db.query(Task)
-            .filter(
-                Task.status == TaskStatus.REVIEW,
-                Task.agent_id.isnot(None),
-            )
-            .all()
-        )
-        for task in hook_review_tasks:
-            agent = db.get(Agent, task.agent_id)
-            if not agent:
-                continue
-            # Agent is IDLE (exec finished) but not yet STOPPED → stop it
-            if agent.status == AgentStatus.IDLE and not agent.cli_sync:
-                # Upgrade summary from actual Message (more complete than hook payload)
-                last_msg = (
-                    db.query(Message)
-                    .filter(Message.agent_id == agent.id, Message.role == MessageRole.AGENT)
-                    .order_by(Message.created_at.desc())
-                    .first()
-                )
-                if last_msg and last_msg.content:
-                    task.agent_summary = last_msg.content[:2000]
-                self.stop_agent_cleanup(
-                    db, agent, "",
-                    add_message=False, cancel_tasks=False, emit=False,
-                )
-                db.commit()
-                from websocket import emit_agent_update
-                self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
-                logger.info("Task %s: stopped hook-harvested agent %s", task.id, agent.id)
 
     def _harvest_verify_completions(self, db: Session):
         """Check verification sub-agents — when done, update task review_artifacts."""

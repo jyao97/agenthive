@@ -3771,85 +3771,44 @@ async def generate_worktree_name(request: Request):
 
 # ---- Claude Code Hooks Endpoints ----
 
+# Cache of last_assistant_message from Stop hooks, keyed by agent_id.
+# The dispatcher reads (and pops) these when harvesting task completions,
+# using the cached summary instead of parsing output files.
+# Stop hooks fire per-turn (every Claude response), so this dict may be
+# overwritten multiple times during a multi-step task — only the final
+# value matters, and the dispatcher only reads it after confirming the
+# agent's subprocess has actually exited.
+_hook_stop_summaries: dict[str, str] = {}
+
+
 @app.post("/api/hooks/agent-stop")
-async def hook_agent_stop(request: Request, db: Session = Depends(get_db)):
-    """Receive Stop hook from Claude Code agents for instant task harvest.
+async def hook_agent_stop(request: Request):
+    """Receive Stop hook from Claude Code agents — signal only, no harvest.
 
-    Called by the HTTP hook configured in .claude/settings.local.json.
-    Transitions the agent's task from EXECUTING → REVIEW immediately,
-    eliminating the 2-second polling delay.
+    Caches the last_assistant_message so the dispatcher can use it when it
+    independently confirms the agent is truly done (subprocess exited).
 
-    For non-managed sessions (no AHIVE_AGENT_ID header), returns 200 no-op.
+    Stop fires per conversation turn, not just at task completion, so this
+    endpoint deliberately does NOT transition task state.  The dispatcher
+    owns that decision using full context (process exit, agent status, etc.).
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
     if not agent_id:
         return {}  # User session — not managed by orchestrator
 
-    agent = db.get(Agent, agent_id)
-    if not agent or not agent.task_id:
-        return {}  # Agent not found or no linked task
-
-    task = db.get(Task, agent.task_id)
-    if not task or task.status != TaskStatus.EXECUTING:
-        return {}  # Task not in harvestable state
-
-    # Extract summary from hook payload
     try:
         body = await request.json()
     except Exception:
-        body = {}
-    last_message = (body.get("last_assistant_message") or "")
-    # last_assistant_message may be a string or structured object
+        return {}
+
+    last_message = body.get("last_assistant_message") or ""
     if isinstance(last_message, dict):
         last_message = last_message.get("content", "") or str(last_message)
-    summary = str(last_message)[:2000] if last_message else None
-
-    # Atomic CAS: only transition if still EXECUTING (prevents race with polling harvest)
-    rows = (
-        db.query(Task)
-        .filter(Task.id == task.id, Task.status == TaskStatus.EXECUTING)
-        .update({"status": TaskStatus.REVIEW.value}, synchronize_session="fetch")
-    )
-    if rows == 0:
-        return {}  # Already harvested by polling — no-op
-
-    # Refresh task after CAS update
-    db.refresh(task)
+    summary = str(last_message)[:2000].strip() if last_message else ""
 
     if summary:
-        task.agent_summary = summary
-        # Store insight for RAG
-        try:
-            from agent_dispatcher import store_insights
-            today_str = _utcnow().strftime("%Y-%m-%d")
-            clean_summary = " ".join(summary[:500].split())
-            summary_line = f"1. {task.title[:80]}: {clean_summary}"
-            store_insights(db, task.project_name or task.project, today_str, summary_line, agent_id=agent.id)
-        except Exception:
-            logger.debug("Hook: failed to store insight for task %s", task.id, exc_info=True)
+        _hook_stop_summaries[agent_id] = summary
 
-    db.commit()
-
-    # Emit WebSocket events for instant frontend update
-    from websocket import emit_task_update
-    await emit_task_update(
-        task.id, task.status.value, task.project_name or "",
-        title=task.title, agent_id=task.agent_id,
-    )
-
-    # Send push notification
-    try:
-        from push import send_push_notification, is_notification_enabled
-        if is_notification_enabled("tasks"):
-            send_push_notification(
-                "Task Ready for Review",
-                task.title[:60],
-                f"/tasks/{task.id}",
-            )
-    except Exception:
-        logger.warning("Hook: push notification failed for task %s", task.id, exc_info=True)
-
-    logger.info("Hook: task %s instant-harvested to REVIEW (agent %s)", task.id, agent_id)
     return {}
 
 
@@ -4778,6 +4737,19 @@ async def adopt_unlinked_session(
     body = await request.json()
     project_name = body.get("project") or os.path.basename(info.get("cwd", "").rstrip("/"))
     existing_agent_id = body.get("agent_id")
+
+    # Check if session is already bound to an agent
+    existing = db.query(Agent).filter(Agent.session_id == session_id).first()
+    if existing:
+        # Already adopted — clean up signal file and return success
+        try:
+            os.unlink(info_path)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=409,
+            detail=f"Session already bound to agent {existing.id} ({existing.name})",
+        )
 
     proj = db.get(Project, project_name)
     if not proj:
