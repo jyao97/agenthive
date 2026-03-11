@@ -316,6 +316,18 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to start dispatchers — running without scheduling")
 
+    # Install global SessionStart hook so ALL claude processes are detected
+    try:
+        _write_global_session_hook()
+    except Exception:
+        logger.warning("Failed to write global session hook", exc_info=True)
+
+    # Process sessions that accumulated while orchestrator was offline
+    try:
+        _ingest_pending_sessions()
+    except Exception:
+        logger.debug("Failed to ingest pending sessions", exc_info=True)
+
     # Clean stale unlinked session entries from previous runs
     try:
         _clean_stale_unlinked()
@@ -4130,20 +4142,13 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
 
 
 def _write_agent_hooks_config(project_path: str):
-    """Write .claude/settings.local.json with agent lifecycle hooks.
+    """Write project-level hooks (PreToolUse safety, Stop) to settings.local.json.
 
-    Hooks fire inside Claude Code agents and POST back to the orchestrator,
-    enabling instant task harvest (Stop) without polling.
-
-    Uses AHIVE_AGENT_ID env var (set per agent in tmux export and subprocess
-    env) to identify which agent triggered the hook.  For user sessions
-    without the env var the header is empty and the endpoint returns 200 (no-op).
+    SessionStart is handled globally via _write_global_session_hook().
     """
     port = os.getenv("PORT", "8080")
     base_url = f"http://localhost:{port}/api/hooks"
 
-    # PreToolUse safety hook — deterministic guardrail that replaces
-    # prompt-based "NEVER run X" rules with hard blocks.
     hook_script = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "hooks", "pretooluse-safety.sh",
@@ -4155,18 +4160,6 @@ def _write_agent_hooks_config(project_path: str):
             "hooks": [{
                 "type": "command",
                 "command": hook_script,
-            }],
-        }],
-        "SessionStart": [{
-            "hooks": [{
-                "type": "http",
-                "url": f"{base_url}/agent-session-start",
-                "headers": {
-                    "X-Agent-Id": "$AHIVE_AGENT_ID",
-                    "X-Session-Cwd": "$PWD",
-                    "X-Tmux-Pane": "$TMUX_PANE",
-                },
-                "allowedEnvVars": ["AHIVE_AGENT_ID", "PWD", "TMUX_PANE"],
             }],
         }],
         "Stop": [{
@@ -4189,8 +4182,9 @@ def _write_agent_hooks_config(project_path: str):
             with open(settings_local_path, "r") as f:
                 existing = json.load(f)
 
-        # Merge: replace our hook entries, preserve unrelated user hooks
         current_hooks = existing.get("hooks", {})
+        # Remove stale SessionStart from project-level (now global)
+        current_hooks.pop("SessionStart", None)
         merged_hooks = {**current_hooks, **desired_hooks}
 
         if existing.get("hooks") != merged_hooks:
@@ -4200,6 +4194,47 @@ def _write_agent_hooks_config(project_path: str):
             logger.info("Preflight: wrote agent hooks to %s", settings_local_path)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Preflight: failed to write agent hooks config: %s", e)
+
+
+def _write_global_session_hook():
+    """Write SessionStart hook to ~/.claude/settings.json (global).
+
+    This ensures ALL claude processes on this machine fire the hook,
+    regardless of which project they're in or whether AgentHive started
+    them.  The hook script tries HTTP POST to the orchestrator and falls
+    back to writing a local file when the orchestrator is offline.
+    """
+    hook_script = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "hooks", "session-start.sh",
+    )
+
+    desired_hook = [{
+        "hooks": [{
+            "type": "command",
+            "command": hook_script,
+        }],
+    }]
+
+    claude_home = os.path.expanduser("~/.claude")
+    settings_path = os.path.join(claude_home, "settings.json")
+    try:
+        existing = {}
+        if os.path.isfile(settings_path):
+            with open(settings_path, "r") as f:
+                existing = json.load(f)
+
+        current_hooks = existing.get("hooks", {})
+        if current_hooks.get("SessionStart") == desired_hook:
+            return  # Already configured
+
+        current_hooks["SessionStart"] = desired_hook
+        existing["hooks"] = current_hooks
+        with open(settings_path, "w") as f:
+            json.dump(existing, f, indent=2)
+        logger.info("Wrote global SessionStart hook to %s", settings_path)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to write global session hook: %s", e)
 
 
 def _preflight_claude_project(project_path: str):
@@ -4875,6 +4910,95 @@ async def scan_agents(request: Request, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # Unlinked sessions — manual Claude Code sessions not launched by orchestrator
 # ---------------------------------------------------------------------------
+
+_PENDING_SESSIONS_DIR = "/tmp/ahive-pending-sessions"
+
+
+def _ingest_pending_sessions():
+    """Process sessions that accumulated while orchestrator was offline.
+
+    The SessionStart hook script writes to /tmp/ahive-pending-sessions/
+    when the orchestrator is unreachable.  On startup we ingest these
+    and create unlinked entries for user confirmation.
+    """
+    if not os.path.isdir(_PENDING_SESSIONS_DIR):
+        return
+    from agent_dispatcher import _write_unlinked_entry
+    from session_cache import session_source_dir
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        # Load active session IDs to avoid creating entries for owned sessions
+        active_sids: set[str] = {
+            r[0] for r in db.query(Agent.session_id).filter(
+                Agent.session_id.is_not(None),
+                Agent.status != AgentStatus.STOPPED,
+            ).all()
+        }
+        projects = db.query(Project).filter(Project.archived == False).all()
+        proj_by_path = {os.path.realpath(p.path): p for p in projects}
+    finally:
+        db.close()
+
+    ingested = 0
+    for fname in list(os.listdir(_PENDING_SESSIONS_DIR)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(_PENDING_SESSIONS_DIR, fname)
+        try:
+            with open(fpath) as f:
+                info = json.load(f)
+            os.unlink(fpath)  # Consume immediately
+        except (OSError, json.JSONDecodeError):
+            try:
+                os.unlink(fpath)
+            except OSError:
+                pass
+            continue
+
+        sid = info.get("session_id", "")
+        agent_id = info.get("agent_id", "")
+        cwd = info.get("cwd", "")
+
+        if not sid:
+            continue
+
+        # Managed agent: write signal file (successor detection handles it)
+        if agent_id:
+            try:
+                with open(f"/tmp/ahive-{agent_id}.newsession", "w") as f:
+                    f.write(sid)
+            except OSError:
+                pass
+            continue
+
+        # Unmanaged session: match CWD to project → unlinked entry
+        if sid in active_sids:
+            continue
+        cwd_real = os.path.realpath(cwd) if cwd else ""
+        matched_proj = None
+        for pp, p in proj_by_path.items():
+            if cwd_real == pp or cwd_real.startswith(pp + "/"):
+                matched_proj = p
+                break
+        if not matched_proj:
+            continue
+
+        sdir = session_source_dir(matched_proj.path)
+        transcript = os.path.join(sdir, f"{sid}.jsonl")
+
+        _write_unlinked_entry(
+            session_id=sid,
+            cwd=cwd_real,
+            transcript_path=transcript if os.path.isfile(transcript) else "",
+            tmux_pane=info.get("tmux_pane") or None,
+            project_name=matched_proj.name,
+        )
+        ingested += 1
+
+    if ingested:
+        logger.info("Ingested %d pending sessions from offline hook fallback", ingested)
+
 
 _UNLINKED_DIR: str | None = None
 
