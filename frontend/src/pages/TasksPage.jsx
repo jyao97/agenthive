@@ -323,7 +323,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
             )}
           </button>
         ) : undefined}
-        selectAction={!selecting && tasks.length > 0 ? (
+        selectAction={!selecting ? (
           <button
             type="button"
             onClick={enterSelectMode}
