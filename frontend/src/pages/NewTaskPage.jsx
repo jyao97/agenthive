@@ -223,6 +223,45 @@ export default function NewTaskPage() {
     await dismiss();
   };
 
+  // ---- Quick save: store to inbox, clear input, keep settings ----
+  const quickSave = async () => {
+    if (submittingRef.current) return;
+    const hasText = description.trim() || title.trim() || attachments.some((a) => a.uploadedPath);
+    if (!hasText || attachments.some((a) => a.uploading)) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      const uploaded = attachments.filter((a) => a.uploadedPath);
+      const fullDescription = buildDescriptionText(description.trim(), uploaded);
+      let finalTitle = title.trim() || deriveTitle(description);
+      if (!finalTitle && uploaded.length > 0) finalTitle = "Untitled task";
+      await createTaskV2({
+        title: finalTitle,
+        description: fullDescription || undefined,
+        project_name: project || undefined,
+        priority,
+        model: model || undefined,
+        effort: effort || undefined,
+        skip_permissions: skipPermissions,
+        sync_mode: false,
+        use_worktree: !!worktree,
+        notify_at: notifyAt || undefined,
+        auto_dispatch: false,
+      });
+      clearTitle();
+      clearDesc();
+      clearAttachments();
+      setNotifyAt(null);
+      showToast("Saved to inbox");
+      textareaRef.current?.focus();
+    } catch (err) {
+      showToast("Failed to save: " + err.message, "error");
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
   // ---- Attach/detach notify_at reminder time ----
   const handlePickReminder = (isoString) => {
     setNotifyAt(isoString);
@@ -356,7 +395,7 @@ export default function NewTaskPage() {
                   </div>
                 )}
                 <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={handleFileSelect} />
-                <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-1.5 items-center px-1">
+                <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-1.5 items-center px-1">
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
@@ -367,17 +406,22 @@ export default function NewTaskPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                     </svg>
                   </button>
-                  <div className="min-w-0">
-                    {voice.recording && voice.analyserNode && (
-                      <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} onTap={voice.toggleRecording} className="h-8" />
+                  <div />
+                  <div className="relative">
+                    <VoiceRecorder
+                      recording={voice.recording}
+                      voiceLoading={voice.voiceLoading}
+                      micError={voice.micError}
+                      onToggle={voice.toggleRecording}
+                    />
+                    {voice.recording && voice.remainingSeconds != null && (
+                      <span className="absolute -top-1.5 -right-1 text-[9px] font-semibold tabular-nums bg-black/60 text-white rounded-full px-1 min-w-[16px] text-center leading-[14px] pointer-events-none">
+                        {voice.remainingSeconds >= 60
+                          ? `${Math.floor(voice.remainingSeconds / 60)}:${String(voice.remainingSeconds % 60).padStart(2, "0")}`
+                          : voice.remainingSeconds}
+                      </span>
                     )}
                   </div>
-                  <VoiceRecorder
-                    recording={voice.recording}
-                    voiceLoading={voice.voiceLoading}
-                    micError={voice.micError}
-                    onToggle={voice.toggleRecording}
-                  />
                   <div className="relative">
                     <button
                       type="button"
@@ -409,11 +453,31 @@ export default function NewTaskPage() {
                         ? "bg-elevated text-dim cursor-not-allowed"
                         : "bg-indigo-500 hover:bg-indigo-400 text-white"
                     }`}
-                    title="Save to inbox"
+                    title="Save to inbox & close"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-2.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
                     </svg>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={quickSave}
+                    disabled={!hasContent || submitting}
+                    className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                      !hasContent || submitting
+                        ? "bg-elevated text-dim cursor-not-allowed"
+                        : "bg-amber-500 hover:bg-amber-400 text-white"
+                    }`}
+                    title="Quick save to inbox"
+                  >
+                    <span className="relative inline-flex">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-2.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                      </svg>
+                      <svg className="absolute -top-1 -right-1.5 w-2.5 h-2.5 text-amber-200 drop-shadow" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                        <path d="M13 1L5 13h6l-2 10 8-12h-6l2-10z" />
+                      </svg>
+                    </span>
                   </button>
                 </div>
               </div>
