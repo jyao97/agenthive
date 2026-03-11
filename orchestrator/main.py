@@ -3921,9 +3921,12 @@ async def hook_agent_stop(request: Request):
 async def hook_agent_session_start(request: Request):
     """Receive SessionStart hook from Claude Code agents.
 
-    Only handles managed agents (X-Agent-Id present): writes a signal file
-    for _detect_successor() to track session rotation.  Unmanaged sessions
-    are discovered via tmux scan and shown as "needs confirm" in the UI.
+    Managed agents (X-Agent-Id present): writes a signal file for
+    _detect_successor() to track session rotation.
+
+    Unmanaged sessions (no X-Agent-Id): creates an unlinked session entry
+    so the user can confirm (adopt) it in the UI.  This is push-based
+    detection that complements the polling-based tmux scan fallback.
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
 
@@ -3942,17 +3945,80 @@ async def hook_agent_session_start(request: Request):
             if isinstance(session, dict):
                 session_id = session.get("session_id", "") or session.get("id", "") or ""
 
-    if not session_id or not agent_id:
+    if not session_id:
         return {}
 
-    # Managed agent — session rotation signal
-    signal_path = f"/tmp/ahive-{agent_id}.newsession"
+    if agent_id:
+        # Managed agent — session rotation signal
+        signal_path = f"/tmp/ahive-{agent_id}.newsession"
+        try:
+            with open(signal_path, "w") as f:
+                f.write(session_id)
+            logger.info("SessionStart hook: agent=%s session=%s", agent_id[:8], session_id[:12])
+        except OSError:
+            pass
+        return {}
+
+    # --- Unmanaged session: push-based detection ---
+    # Extract CWD and tmux pane from headers (set via allowedEnvVars).
+    cwd = request.headers.get("X-Session-Cwd", "").strip()
+    tmux_pane = request.headers.get("X-Tmux-Pane", "").strip()
+
+    if not cwd:
+        logger.debug("SessionStart hook: unmanaged session %s has no CWD header", session_id[:12])
+        return {}
+
+    # Match CWD to a registered project
+    from database import SessionLocal
+    db = SessionLocal()
     try:
-        with open(signal_path, "w") as f:
-            f.write(session_id)
-        logger.info("SessionStart hook: agent=%s session=%s", agent_id[:8], session_id[:12])
-    except OSError:
-        pass
+        cwd_real = os.path.realpath(cwd)
+        projects = db.query(Project).filter(Project.archived == False).all()
+        matched_proj = None
+        for p in projects:
+            proj_real = os.path.realpath(p.path)
+            if cwd_real == proj_real or cwd_real.startswith(proj_real + "/"):
+                matched_proj = p
+                break
+        if not matched_proj:
+            logger.debug(
+                "SessionStart hook: unmanaged session %s CWD %s doesn't match any project",
+                session_id[:12], cwd,
+            )
+            return {}
+
+        # Guard: don't create entry if session already owned by an agent
+        existing = db.query(Agent).filter(Agent.session_id == session_id).first()
+        if existing:
+            logger.debug(
+                "SessionStart hook: session %s already owned by agent %s",
+                session_id[:12], existing.id[:8],
+            )
+            return {}
+    finally:
+        db.close()
+
+    # Resolve transcript JSONL path
+    from session_cache import session_source_dir
+    sdir = session_source_dir(matched_proj.path)
+    transcript_path = os.path.join(sdir, f"{session_id}.jsonl")
+    if not os.path.isfile(transcript_path):
+        # JSONL may not exist yet at session start — that's OK,
+        # the unlinked entry will be cleaned up later if it never appears.
+        transcript_path = ""
+
+    from agent_dispatcher import _write_unlinked_entry
+    _write_unlinked_entry(
+        session_id=session_id,
+        cwd=cwd_real,
+        transcript_path=transcript_path,
+        tmux_pane=tmux_pane or None,
+        project_name=matched_proj.name,
+    )
+    logger.info(
+        "SessionStart hook: unmanaged session %s → unlinked entry (project=%s, pane=%s)",
+        session_id[:12], matched_proj.name, tmux_pane or "?",
+    )
 
     return {}
 
@@ -4095,8 +4161,12 @@ def _write_agent_hooks_config(project_path: str):
             "hooks": [{
                 "type": "http",
                 "url": f"{base_url}/agent-session-start",
-                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
-                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+                "headers": {
+                    "X-Agent-Id": "$AHIVE_AGENT_ID",
+                    "X-Session-Cwd": "$PWD",
+                    "X-Tmux-Pane": "$TMUX_PANE",
+                },
+                "allowedEnvVars": ["AHIVE_AGENT_ID", "PWD", "TMUX_PANE"],
             }],
         }],
         "Stop": [{
@@ -4820,7 +4890,11 @@ def _get_unlinked_dir() -> str:
 
 
 def _clean_stale_unlinked(max_age: int = 3600):
-    """Remove unlinked session entries whose JSONL hasn't been updated in max_age seconds."""
+    """Remove unlinked session entries whose JSONL hasn't been updated in max_age seconds.
+
+    Preserves entries whose tmux pane still has a running process, even if
+    the JSONL is stale (idle sessions detected via Tier 3 / hook push).
+    """
     udir = _get_unlinked_dir()
     now = _time.time()
     removed = 0
@@ -4837,7 +4911,21 @@ def _clean_stale_unlinked(max_age: int = 3600):
                     mtime = os.path.getmtime(transcript)
                     if now - mtime < max_age:
                         continue  # still active
-                # Transcript gone or stale → remove
+                # Transcript stale or gone — check if tmux pane is alive
+                # (idle sessions have stale JONLs but running processes).
+                tmux_pane = info.get("tmux_pane", "")
+                if tmux_pane:
+                    try:
+                        import subprocess
+                        r = subprocess.run(
+                            ["tmux", "display-message", "-t", tmux_pane, "-p", "#{pane_pid}"],
+                            capture_output=True, text=True, timeout=3,
+                        )
+                        if r.returncode == 0 and r.stdout.strip():
+                            continue  # pane is still alive — keep entry
+                    except Exception:
+                        pass
+                # Transcript gone/stale and no live pane → remove
                 os.unlink(fpath)
                 removed += 1
             except (OSError, json.JSONDecodeError):
@@ -4926,14 +5014,46 @@ async def adopt_unlinked_session(
     # Check if session is already bound to an agent
     existing = db.query(Agent).filter(Agent.session_id == session_id).first()
     if existing:
-        # Already adopted — clean up signal file and return success
+        if existing.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
+            # Revive the stopped/errored agent that owns this session.
+            # This handles the case where a manually-started claude process
+            # reuses a session that was previously adopted and then stopped.
+            revive_proj = db.get(Project, existing.project)
+            if not revive_proj:
+                raise HTTPException(status_code=404, detail=f"Project '{existing.project}' not found")
+
+            existing.status = AgentStatus.SYNCING
+            existing.tmux_pane = info.get("tmux_pane")
+            existing.cli_sync = True
+            existing.last_message_at = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(existing)
+
+            ad = getattr(request.app.state, "agent_dispatcher", None)
+            if ad:
+                ad.start_session_sync(existing.id, session_id, revive_proj.path)
+
+            try:
+                os.unlink(info_path)
+            except OSError:
+                pass
+
+            logger.info(
+                "Adopted unlinked session %s → revived agent %s (project %s)",
+                session_id[:12], existing.id, existing.project,
+            )
+            from websocket import emit_agent_update
+            asyncio.ensure_future(emit_agent_update(existing.id, existing.status.value, existing.project))
+            return AgentOut.model_validate(existing)
+
+        # Active agent owns this session — can't adopt
         try:
             os.unlink(info_path)
         except OSError:
             pass
         raise HTTPException(
             status_code=409,
-            detail=f"Session already bound to agent {existing.id} ({existing.name})",
+            detail=f"Session already bound to active agent {existing.id} ({existing.name})",
         )
 
     proj = db.get(Project, project_name)

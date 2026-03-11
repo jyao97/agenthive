@@ -4638,9 +4638,13 @@ Here are the day's conversations (with timestamps):
             if not session_dirs_to_scan:
                 continue
 
-            # Collect available session JSONLs sorted by mtime descending
+            # Collect available session JSONLs sorted by mtime descending.
+            # Also track stopped-agent sessions separately for Tier 3
+            # (broad fallback that creates unlinked entries only).
             candidates: list[tuple[str, str, float]] = []  # (sid, fpath, mtime)
+            stopped_candidates: list[tuple[str, str, float]] = []
             seen_sids: set[str] = set()
+            stopped_sids = set(stopped_session_agents.keys())
             for sdir in session_dirs_to_scan:
                 try:
                     for fname in os.listdir(sdir):
@@ -4650,10 +4654,13 @@ Here are the day's conversations (with timestamps):
                         if not os.path.isfile(fpath):
                             continue
                         sid = fname.replace(".jsonl", "")
-                        if sid in all_agent_session_ids or sid in seen_sids:
+                        if sid in seen_sids:
                             continue
                         seen_sids.add(sid)
-                        candidates.append((sid, fpath, os.path.getmtime(fpath)))
+                        if sid in stopped_sids:
+                            stopped_candidates.append((sid, fpath, os.path.getmtime(fpath)))
+                        elif sid not in all_agent_session_ids:
+                            candidates.append((sid, fpath, os.path.getmtime(fpath)))
                 except OSError as e:
                     logger.warning(
                         "_auto_detect_cli_sessions: failed to scan session dir %s: %s",
@@ -4767,6 +4774,35 @@ Here are the day's conversations (with timestamps):
                         )
 
                 if not best_sid:
+                    # Tier 3: broad fallback for unlinked entry detection.
+                    # recent_candidates filters by mtime (<30 min) which
+                    # misses idle sessions whose JSONL hasn't been written
+                    # to recently.  Try ALL unowned + stopped candidates
+                    # using ctime correlation.  Only creates an unlinked
+                    # entry requiring user confirmation — never auto-assigns.
+                    broad_candidates = [
+                        (sid, fpath, mt) for sid, fpath, mt in candidates
+                        if sid not in active_session_ids
+                        and sid not in pid_matched_sids
+                    ] + list(stopped_candidates)
+                    t3_match = _tier2_match_for_pane(pane_pid, broad_candidates)
+                    if t3_match:
+                        t3_sid, t3_fpath = t3_match
+                        pane_info = pane_map.get(pane_id)
+                        pcwd = pane_info["cwd"] if pane_info else proj_path
+                        detected_model = _detect_session_model(t3_fpath) if t3_fpath else None
+                        _write_unlinked_entry(
+                            session_id=t3_sid,
+                            cwd=pcwd,
+                            transcript_path=t3_fpath or "",
+                            model=detected_model,
+                            tmux_pane=pane_id,
+                            project_name=proj.name,
+                        )
+                        logger.info(
+                            "Tier 3 (broad ctime) → unlinked entry: pane %s → session %s (project=%s)",
+                            pane_id, t3_sid[:12], proj.name,
+                        )
                     continue
 
                 active_session_ids.add(best_sid)
