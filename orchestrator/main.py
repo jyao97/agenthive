@@ -4947,9 +4947,14 @@ async def list_unlinked_sessions(db: Session = Depends(get_db)):
     _clean_stale_unlinked()
     udir = _get_unlinked_dir()
 
-    # Pre-fetch all bound session IDs to filter out already-adopted sessions
+    # Pre-fetch session IDs owned by ACTIVE agents to filter out adopted sessions.
+    # Stopped/errored agents are excluded: their sessions may be re-detected
+    # (Tier 3 / hook push) and the adopt endpoint will revive them.
     bound_sids: set[str] = {
-        r[0] for r in db.query(Agent.session_id).filter(Agent.session_id.is_not(None)).all()
+        r[0] for r in db.query(Agent.session_id).filter(
+            Agent.session_id.is_not(None),
+            Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
+        ).all()
     }
 
     sessions = []
