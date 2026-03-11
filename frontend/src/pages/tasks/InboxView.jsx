@@ -3,6 +3,7 @@ import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSe
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import InboxCard from "../../components/cards/InboxCard";
+import { CardSwipeContext } from "../../components/cards/CardShell";
 import { reorderTasks } from "../../lib/api";
 
 // Disable the snap-back animation when dropping — our optimistic update handles the new order
@@ -117,56 +118,58 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
   const activeTask = activeDragId ? sorted.find(t => t.id === activeDragId) : null;
 
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-      onDragCancel={handleDragCancel}
-    >
-      <SortableContext items={sorted.map(t => t.id)} strategy={verticalListSortingStrategy}>
-        <div className="space-y-3" style={activeDragId ? { touchAction: "none" } : undefined}>
-          {sorted.map((task) => (
-            <SortableTaskCard
-              key={task.id}
-              task={task}
-              selecting={selecting}
-              selected={selected.has(task.id)}
-              onToggle={onToggle}
-              expanded={expandedTaskId === task.id}
-              onExpand={onExpandTask}
-              onRefresh={onRefresh}
-              isGroupDragged={isMultiDrag && selected.has(task.id) && task.id !== activeDragId}
-            />
-          ))}
-        </div>
-      </SortableContext>
-      <DragOverlay dropAnimation={null}>
-        {activeTask ? (
-          <div className="relative opacity-90 scale-[1.02] shadow-xl rounded-xl">
-            {isMultiDrag && (
-              <>
-                <div className="absolute inset-0 bg-surface rounded-xl ring-1 ring-edge/20 -rotate-1 translate-y-1 -z-10" />
-                <div className="absolute inset-0 bg-surface rounded-xl ring-1 ring-edge/10 rotate-1 translate-y-2 -z-20" />
-              </>
-            )}
-            <InboxCard
-              task={activeTask}
-              selecting={selecting}
-              selected={false}
-              onToggle={() => {}}
-              expanded={false}
-              onExpand={() => {}}
-              onRefresh={() => {}}
-            />
-            {isMultiDrag && (
-              <div className="absolute -top-2 -right-2 z-10 w-6 h-6 rounded-full bg-cyan-500 text-white text-xs font-bold flex items-center justify-center shadow-md">
-                {selected.size}
-              </div>
-            )}
+    <CardSwipeContext.Provider value={null}>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        onDragCancel={handleDragCancel}
+      >
+        <SortableContext items={sorted.map(t => t.id)} strategy={verticalListSortingStrategy}>
+          <div className="space-y-3" style={activeDragId ? { touchAction: "none" } : undefined}>
+            {sorted.map((task) => (
+              <SortableTaskCard
+                key={task.id}
+                task={task}
+                selecting={selecting}
+                selected={selected.has(task.id)}
+                onToggle={onToggle}
+                expanded={expandedTaskId === task.id}
+                onExpand={onExpandTask}
+                onRefresh={onRefresh}
+                isGroupDragged={isMultiDrag && selected.has(task.id) && task.id !== activeDragId}
+              />
+            ))}
           </div>
-        ) : null}
-      </DragOverlay>
-    </DndContext>
+        </SortableContext>
+        <DragOverlay dropAnimation={null}>
+          {activeTask ? (
+            <div className="relative opacity-90 scale-[1.02] shadow-xl rounded-xl">
+              {isMultiDrag && (
+                <>
+                  <div className="absolute inset-0 bg-surface rounded-xl ring-1 ring-edge/20 -rotate-1 translate-y-1 -z-10" />
+                  <div className="absolute inset-0 bg-surface rounded-xl ring-1 ring-edge/10 rotate-1 translate-y-2 -z-20" />
+                </>
+              )}
+              <InboxCard
+                task={activeTask}
+                selecting={selecting}
+                selected={false}
+                onToggle={() => {}}
+                expanded={false}
+                onExpand={() => {}}
+                onRefresh={() => {}}
+              />
+              {isMultiDrag && (
+                <div className="absolute -top-2 -right-2 z-10 w-6 h-6 rounded-full bg-cyan-500 text-white text-xs font-bold flex items-center justify-center shadow-md">
+                  {selected.size}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
+    </CardSwipeContext.Provider>
   );
 }
