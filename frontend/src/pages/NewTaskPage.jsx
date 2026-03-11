@@ -470,14 +470,10 @@ export default function NewTaskPage() {
                     }`}
                     title="Quick save to inbox"
                   >
-                    <span className="relative inline-flex">
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-2.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-                      </svg>
-                      <svg className="absolute -bottom-1 -right-1.5 w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-                        <path d="M13 2L3 14h9l-2 8 10-12h-9l2-8z" />
-                      </svg>
-                    </span>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                      <path d="M13 2l-4 7h5l-3 6" />
+                      <path d="M3 15h4l2 3h6l2-3h4v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4z" />
+                    </svg>
                   </button>
                 </div>
               </div>
