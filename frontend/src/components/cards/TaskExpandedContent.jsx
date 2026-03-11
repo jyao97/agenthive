@@ -368,6 +368,13 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
                   </button>
                 </>
               )}
+
+              {(task.status === "COMPLETE" || task.status === "CANCELLED") && (
+                <button type="button" onClick={doDelete} disabled={actionLoading}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors">
+                  Delete
+                </button>
+              )}
             </div>
           )}
         </>
