@@ -5427,6 +5427,8 @@ Here are the day's conversations (with timestamps):
                     # Primary: .owner sidecar file (written by start_session_sync)
                     # Secondary: legacy marker tag (backward compat with old sessions)
                     # Tertiary: JSONL uuid matching (pre-marker sessions)
+                    # Quaternary: unowned CWD match (auto-continuation sessions
+                    #   have no markers — accept when no conflicting ownership)
                     if claude_cwd and claude_cwd.startswith(project_path):
                         candidate_cwd = _get_session_cwd(fpath)
                         if candidate_cwd and candidate_cwd.startswith(project_path):
@@ -5455,6 +5457,19 @@ Here are the day's conversations (with timestamps):
                                         if mtime < cwd_mtime:
                                             cwd_sid, cwd_mtime = sid, mtime
                                         continue
+
+                            # Quaternary: no ownership evidence at all.
+                            # Auto-continuation sessions (compaction, /clear
+                            # without slug) have no sidecar, no marker, and
+                            # new UUIDs.  Accept as weak CWD candidate when
+                            # there is no conflicting ownership.
+                            if mtime < cwd_mtime:
+                                logger.info(
+                                    "_detect_successor_session: unowned CWD match "
+                                    "agent=%s candidate_sid=%s (no ownership evidence)",
+                                    agent_id, sid[:12],
+                                )
+                                cwd_sid, cwd_mtime = sid, mtime
                             continue
 
                     # Strategy 3: legacy PID-based match (fallback) — newest wins
