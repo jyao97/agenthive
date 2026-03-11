@@ -5904,9 +5904,28 @@ Here are the day's conversations (with timestamps):
                         m for m in all_db
                         if m.role == MessageRole.AGENT
                     ]
+                    _existing_user_msgs = [
+                        m for m in all_db
+                        if m.role == MessageRole.USER
+                    ]
                     for role, content, meta, uuid in missing:
                         meta_json = json.dumps(meta) if meta else None
                         if role == "user":
+                            # Dedup: skip CLI user messages that are wrapped
+                            # versions of an existing task/web message (the
+                            # wrapper adds project context around the original).
+                            is_wrapped_dup = False
+                            for em in _existing_user_msgs:
+                                if em.source in ("task", "web") and em.content:
+                                    # The wrapped prompt contains the original
+                                    if em.content[:100] in (content or ""):
+                                        is_wrapped_dup = True
+                                        # Attach UUID so future syncs skip it
+                                        if uuid and not em.jsonl_uuid:
+                                            em.jsonl_uuid = uuid
+                                        break
+                            if is_wrapped_dup:
+                                continue
                             db.add(Message(
                                 agent_id=agent_id,
                                 role=MessageRole.USER,
