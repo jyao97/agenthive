@@ -112,7 +112,10 @@ _IMPORT_CHECK_TIMEOUT = 15
 _API_REQUEST_TIMEOUT = 10
 
 
-def _create_tmux_claude_session(session_name: str, project_path: str, claude_cmd: str) -> str:
+def _create_tmux_claude_session(
+    session_name: str, project_path: str, claude_cmd: str,
+    agent_id: str | None = None,
+) -> str:
     """Create a tmux session running Claude. Returns pane_id."""
     import subprocess as _sp
     # Kill any stale session with same name
@@ -125,9 +128,11 @@ def _create_tmux_claude_session(session_name: str, project_path: str, claude_cmd
     pane_result = _sp.run(["tmux", "display-message", "-p", "-t", session_name, "#{pane_id}"],
                           capture_output=True, text=True, timeout=_TMUX_CMD_TIMEOUT)
     pane_id = pane_result.stdout.strip()
-    # Unset problematic env vars
-    _sp.run(["tmux", "send-keys", "-t", pane_id,
-             "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED", "Enter"],
+    # Unset problematic env vars and export AHIVE_AGENT_ID for hooks
+    env_setup = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED"
+    if agent_id:
+        env_setup += f" && export AHIVE_AGENT_ID={agent_id}"
+    _sp.run(["tmux", "send-keys", "-t", pane_id, env_setup, "Enter"],
             check=True, capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
     # Launch Claude
     _sp.run(["tmux", "send-keys", "-t", pane_id, claude_cmd, "Enter"],
@@ -4078,7 +4083,7 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     # directory that hasn't been explicitly trusted yet.
     _preflight_claude_project(proj.path)
 
-    pane_id = _create_tmux_claude_session(tmux_session, proj.path, claude_cmd)
+    pane_id = _create_tmux_claude_session(tmux_session, proj.path, claude_cmd, agent_id=agent_hex)
 
     # Create Agent record immediately so the frontend can navigate to it.
     agent_name = (prompt or "CLI session")[:80]
@@ -4911,7 +4916,7 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
             tmux_session = f"ah-{agent.id[:8]}"
             _preflight_claude_project(project.path)
 
-            pane_id = _create_tmux_claude_session(tmux_session, project.path, claude_cmd)
+            pane_id = _create_tmux_claude_session(tmux_session, project.path, claude_cmd, agent_id=agent.id)
 
             agent.tmux_pane = pane_id
             agent.status = AgentStatus.SYNCING
