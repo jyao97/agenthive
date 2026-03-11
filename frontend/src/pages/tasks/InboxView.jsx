@@ -3,7 +3,6 @@ import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSe
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import InboxCard from "../../components/cards/InboxCard";
-import { CardSwipeContext } from "../../components/cards/CardShell";
 import { reorderTasks } from "../../lib/api";
 
 // Disable the snap-back animation when dropping — our optimistic update handles the new order
@@ -118,8 +117,7 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
   const activeTask = activeDragId ? sorted.find(t => t.id === activeDragId) : null;
 
   return (
-    <CardSwipeContext.Provider value={null}>
-      <DndContext
+    <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
         onDragStart={handleDragStart}
@@ -169,7 +167,6 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
             </div>
           ) : null}
         </DragOverlay>
-      </DndContext>
-    </CardSwipeContext.Provider>
+    </DndContext>
   );
 }

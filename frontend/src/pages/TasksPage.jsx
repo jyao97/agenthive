@@ -14,6 +14,7 @@ import ExecutingView from "./tasks/ExecutingView";
 import ReviewView from "./tasks/ReviewView";
 import PlanningView from "./tasks/PlanningView";
 import DoneView from "./tasks/DoneView";
+import { CardSwipeContext } from "../components/cards/CardShell";
 
 const PERSPECTIVE_STATUSES = {
   INBOX: "INBOX",
@@ -67,9 +68,9 @@ export default function TasksPage({ theme, onToggleTheme }) {
     setExpandedTaskId(null);
   }, [perspective]);
 
-  const enterSelectMode = useCallback(() => {
+  const enterSelectMode = useCallback((preSelectId) => {
     setSelecting(true);
-    setSelected(new Set());
+    setSelected(preSelectId ? new Set([preSelectId]) : new Set());
     setExpandedTaskId(null);
   }, []);
 
@@ -387,25 +388,27 @@ export default function TasksPage({ theme, onToggleTheme }) {
         }}
       >
         <div className="max-w-2xl mx-auto w-full">
-          <div className="pb-20 px-4 py-3">
-            {loading && tasks.length === 0 && (
-              <div className="flex justify-center py-12">
-                <span className="text-dim text-sm animate-pulse">Loading...</span>
-              </div>
-            )}
-            {!loading && (
-              <ViewComponent
-                tasks={tasks}
-                loading={loading}
-                onRefresh={onRefresh}
-                selecting={selecting}
-                selected={selected}
-                onToggle={toggleOne}
-                expandedTaskId={expandedTaskId}
-                onExpandTask={handleExpandTask}
-              />
-            )}
-          </div>
+          <CardSwipeContext.Provider value={null}>
+            <div className="pb-20 px-4 py-3">
+              {loading && tasks.length === 0 && (
+                <div className="flex justify-center py-12">
+                  <span className="text-dim text-sm animate-pulse">Loading...</span>
+                </div>
+              )}
+              {!loading && (
+                <ViewComponent
+                  tasks={tasks}
+                  loading={loading}
+                  onRefresh={onRefresh}
+                  selecting={selecting}
+                  selected={selected}
+                  onToggle={toggleOne}
+                  expandedTaskId={expandedTaskId}
+                  onExpandTask={handleExpandTask}
+                />
+              )}
+            </div>
+          </CardSwipeContext.Provider>
         </div>
       </div>
 
