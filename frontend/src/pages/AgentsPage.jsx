@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
-import { Bell, BellOff } from "lucide-react";
+import { Bell, BellOff, Link2, ChevronDown, ChevronUp } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { fetchAgents, stopAgent, deleteAgent, scanAgents, searchMessages, markAgentRead, updateNotificationSettings } from "../lib/api";
+import { fetchAgents, stopAgent, deleteAgent, scanAgents, searchMessages, markAgentRead, updateNotificationSettings, fetchUnlinkedSessions, adoptUnlinkedSession } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, POLL_INTERVAL, modelDisplayName, agentBotState } from "../lib/constants";
 import BotIcon from "../components/BotIcon";
@@ -202,17 +202,48 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     }
   }, []);
 
+  // --- Unlinked sessions ---
+  const [unlinked, setUnlinked] = useState([]);
+  const [unlinkedOpen, setUnlinkedOpen] = useState(true);
+  const [adoptingId, setAdoptingId] = useState(null);
+
+  const loadUnlinked = useCallback(async () => {
+    try {
+      const data = await fetchUnlinkedSessions();
+      setUnlinked(Array.isArray(data) ? data : []);
+    } catch {
+      // Silently ignore — not critical
+    }
+  }, []);
+
+  const handleAdopt = useCallback(async (session) => {
+    setAdoptingId(session.session_id);
+    try {
+      await adoptUnlinkedSession(session.session_id, {
+        project: session.project_name,
+      });
+      showToast(`Adopted session → ${session.project_name}`);
+      setUnlinked((prev) => prev.filter((s) => s.session_id !== session.session_id));
+      load(); // Refresh agent list
+      window.dispatchEvent(new CustomEvent("agents-data-changed"));
+    } catch (err) {
+      showToast(err.message || "Failed to adopt session", "error");
+    } finally {
+      setAdoptingId(null);
+    }
+  }, [showToast, load]);
+
   // Cross-pane sync: notification toggle + data refresh
   useEffect(() => {
     const onNotifsChanged = (e) => setAgentNotifsOn(e.detail.enabled);
-    const onDataChanged = () => load();
+    const onDataChanged = () => { load(); loadUnlinked(); };
     window.addEventListener("agent-notifs-changed", onNotifsChanged);
     window.addEventListener("agents-data-changed", onDataChanged);
     return () => {
       window.removeEventListener("agent-notifs-changed", onNotifsChanged);
       window.removeEventListener("agents-data-changed", onDataChanged);
     };
-  }, [load]);
+  }, [load, loadUnlinked]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -225,9 +256,10 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   useEffect(() => {
     if (!visible) return;
     load();
-    pollRef.current = setInterval(load, POLL_INTERVAL);
+    loadUnlinked();
+    pollRef.current = setInterval(() => { load(); loadUnlinked(); }, POLL_INTERVAL);
     return () => clearInterval(pollRef.current);
-  }, [load, visible]);
+  }, [load, loadUnlinked, visible]);
 
   // Double-tap nav: scroll to first unread agent
   useEffect(() => {
@@ -585,6 +617,64 @@ export default function AgentsPage({ theme, onToggleTheme }) {
             </svg>
             <p className="text-sm">No agents yet</p>
             <p className="text-xs mt-1 text-ghost">Create one from the New tab</p>
+          </div>
+        )}
+
+        {/* Unlinked sessions banner */}
+        {unlinked.length > 0 && !selecting && (
+          <div className="rounded-xl bg-surface border border-edge overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setUnlinkedOpen((v) => !v)}
+              className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-hover transition-colors"
+            >
+              <Link2 className="w-4 h-4 text-violet-500 dark:text-violet-400 shrink-0" />
+              <span className="text-sm font-medium text-violet-600 dark:text-violet-300 flex-1">
+                {unlinked.length} unlinked session{unlinked.length !== 1 ? "s" : ""}
+              </span>
+              {unlinkedOpen
+                ? <ChevronUp className="w-4 h-4 text-faint" />
+                : <ChevronDown className="w-4 h-4 text-faint" />
+              }
+            </button>
+            {unlinkedOpen && (
+              <div className="border-t border-divider divide-y divide-divider">
+                {unlinked.map((s) => (
+                  <div key={s.session_id} className="px-4 py-2.5 flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-heading truncate">
+                          {s.project_name || "unknown"}
+                        </span>
+                        {s.model && (
+                          <span className="text-[10px] text-faint font-medium px-1.5 py-0.5 rounded bg-elevated shrink-0">
+                            {modelDisplayName(s.model)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-xs text-dim truncate" title={s.cwd}>
+                          {s.cwd}
+                        </span>
+                        {s.timestamp && (
+                          <span className="text-xs text-faint shrink-0">
+                            {relativeTime(new Date(s.timestamp * 1000).toISOString())}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleAdopt(s)}
+                      disabled={adoptingId === s.session_id}
+                      className="shrink-0 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors disabled:opacity-50"
+                    >
+                      {adoptingId === s.session_id ? "Adopting..." : "Adopt"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
