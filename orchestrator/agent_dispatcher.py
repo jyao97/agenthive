@@ -289,13 +289,31 @@ def _write_session_owner(session_dir: str, sid: str, agent_id: str):
     """Write ownership sidecar file next to a session JSONL.
 
     Creates ``{session_dir}/{sid}.owner`` as JSON containing agent_id.
-    This allows deterministic session→agent mapping without parsing
-    JSONL content.
+    Also removes stale .owner files for the same agent_id (from previous
+    /clear cycles) to prevent unbounded accumulation.
     """
     path = os.path.join(session_dir, f"{sid}.owner")
     try:
         with open(path, "w") as f:
             json.dump({"agent_id": agent_id}, f)
+    except OSError:
+        pass
+
+    # Clean up old .owner files for the same agent_id
+    if agent_id == "system":
+        return  # Don't scan for system-owned files
+    try:
+        for fname in os.listdir(session_dir):
+            if not fname.endswith(".owner") or fname == f"{sid}.owner":
+                continue
+            fpath = os.path.join(session_dir, fname)
+            try:
+                with open(fpath) as f:
+                    data = json.load(f)
+                if data.get("agent_id") == agent_id:
+                    os.unlink(fpath)
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
     except OSError:
         pass
 
@@ -2929,16 +2947,8 @@ Here are the day's conversations (with timestamps):
         for task in notify_tasks:
             task.notify_at = None
             action = _ACTION_TEXT.get(task.status, "Reminder")
-            try:
-                from push import send_push_notification, is_notification_enabled
-                if is_notification_enabled("tasks"):
-                    send_push_notification(
-                        action,
-                        task.title or "Untitled task",
-                        url=f"/tasks/{task.id}",
-                    )
-            except Exception:
-                logger.warning("Failed to send notify_at notification for %s", task.id, exc_info=True)
+            from notify import notify
+            notify("notify_at", "", action, task.title or "Untitled task", url=f"/tasks/{task.id}")
 
     def _dispatch_pending_tasks(self, db: Session):
         """Pick up PENDING v2 tasks and create tmux agents for them."""
@@ -3053,6 +3063,7 @@ Here are the day's conversations (with timestamps):
             worktree=wt_name if wt_name else None,
             skip_permissions=getattr(task, 'skip_permissions', True),
             task_id=task.id,
+            muted=True,  # task agents: message notifications off by default
             last_message_preview=f"Task: {task.title[:80]}",
             last_message_at=_utcnow(),
         )
@@ -3269,6 +3280,7 @@ Here are the day's conversations (with timestamps):
                     effort=effort,
                     skip_permissions=True,
                     task_id=task.id,
+                    muted=True,  # task agents: message notifications off by default
                     last_message_preview=f"Planning: {task.title[:60]}",
                     last_message_at=_utcnow(),
                 )
@@ -3391,17 +3403,8 @@ Here are the day's conversations (with timestamps):
                     title=task.title, agent_id=task.agent_id,
                 ))
                 self._emit(emit_agent_update(agent.id, "STOPPED", agent.project))
-                # Send push notification (suppress if user is viewing the agent or tasks notifications off)
-                try:
-                    from push import send_push_notification, is_notification_enabled
-                    if is_notification_enabled("tasks") and not self._is_agent_in_use(agent.id, saved_pane):
-                        send_push_notification(
-                            "Task Ready for Review",
-                            task.title[:60],
-                            f"/tasks/{task.id}",
-                        )
-                except Exception:
-                    logger.warning("Push notification failed for task %s", task.id, exc_info=True)
+                from notify import notify
+                notify("task_complete", agent.id, "Task Ready for Review", task.title[:60], f"/tasks/{task.id}")
                 logger.info("Task %s moved to REVIEW (agent %s stopped)", task.id, agent.id)
             elif agent.status == AgentStatus.ERROR:
                 TaskStateMachine.transition(task, TaskStatus.FAILED)
@@ -3839,19 +3842,9 @@ Here are the day's conversations (with timestamps):
             self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
             self._emit(emit_new_message(agent.id, resp.id, agent.name, agent.project))
 
-            if not agent.muted and not is_viewed:
-                from push import send_push_notification, is_notification_enabled
-                if is_notification_enabled("agents"):
-                    status_emoji = "\u274c" if is_error else "\u2705"
-                    logger.debug(
-                        "push: harvest_completed sending for %s: %s",
-                        agent.id, preview[:50],
-                    )
-                    send_push_notification(
-                        title=f"{status_emoji} {agent.name}",
-                        body=preview[:100],
-                        url=f"/agents/{agent.id}",
-                    )
+            status_emoji = "\u274c" if is_error else "\u2705"
+            from notify import notify
+            notify("task_complete", agent.id, f"{status_emoji} {agent.name}", preview[:100], f"/agents/{agent.id}")
 
             # Generate video thumbnails in background thread
             if result_text:
@@ -3976,14 +3969,8 @@ Here are the day's conversations (with timestamps):
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
                 self._emit(emit_new_message(agent.id, sys_msg.id, agent.name, agent.project))
 
-                if not agent.muted and not is_viewed:
-                    from push import send_push_notification, is_notification_enabled
-                    if is_notification_enabled("agents"):
-                        send_push_notification(
-                            title=f"\u23f0 {agent.name}",
-                            body=timeout_note,
-                            url=f"/agents/{agent.id}",
-                        )
+                from notify import notify
+                notify("task_complete", agent.id, f"\u23f0 {agent.name}", timeout_note, f"/agents/{agent.id}")
 
                 timed_out.append(agent_id)
 
@@ -4029,14 +4016,8 @@ Here are the day's conversations (with timestamps):
             if not project:
                 reason = f"Project '{agent.project}' not found"
                 self.error_agent_cleanup(db, agent, reason)
-                if not agent.muted and not self._is_agent_in_use(agent.id, agent.tmux_pane):
-                    from push import send_push_notification, is_notification_enabled
-                    if is_notification_enabled("agents"):
-                        send_push_notification(
-                            title=f"\u274c {agent.name}",
-                            body=reason,
-                            url=f"/agents/{agent.id}",
-                        )
+                from notify import notify
+                notify("task_complete", agent.id, f"\u274c {agent.name}", reason, f"/agents/{agent.id}")
                 continue
 
             try:
@@ -4052,14 +4033,8 @@ Here are the day's conversations (with timestamps):
                 logger.exception("Failed to start agent %s", agent.id)
                 reason = "Failed to start — project directory not found"
                 self.error_agent_cleanup(db, agent, reason)
-                if not agent.muted and not self._is_agent_in_use(agent.id, agent.tmux_pane):
-                    from push import send_push_notification, is_notification_enabled
-                    if is_notification_enabled("agents"):
-                        send_push_notification(
-                            title=f"\u274c {agent.name}",
-                            body=reason,
-                            url=f"/agents/{agent.id}",
-                        )
+                from notify import notify
+                notify("task_complete", agent.id, f"\u274c {agent.name}", reason, f"/agents/{agent.id}")
 
     # ---- Step 4: Dispatch pending messages ----
 
@@ -5975,16 +5950,14 @@ Here are the day's conversations (with timestamps):
                         db_push = SessionLocal()
                         try:
                             ag_push = db_push.get(Agent, agent_id)
-                            if ag_push and not ag_push.muted:
+                            if ag_push:
                                 self._refresh_pane_attached()
-                                if not self._is_agent_in_use(agent_id, ag_push.tmux_pane):
-                                    from push import send_push_notification, is_notification_enabled
-                                    if is_notification_enabled("agents"):
-                                        send_push_notification(
-                                            title=_sync_agent_name or f"Agent {agent_id[:8]}",
-                                            body=pending_push_body,
-                                            url=f"/agents/{agent_id}",
-                                        )
+                                from notify import notify
+                                notify("message", agent_id,
+                                       _sync_agent_name or f"Agent {agent_id[:8]}",
+                                       pending_push_body, f"/agents/{agent_id}",
+                                       muted=ag_push.muted,
+                                       in_use=self._is_agent_in_use(agent_id, ag_push.tmux_pane))
                         finally:
                             db_push.close()
                         pending_push_body = ""
@@ -6492,16 +6465,14 @@ Here are the day's conversations (with timestamps):
                     db_push = SessionLocal()
                     try:
                         ag_push = db_push.get(Agent, agent_id)
-                        if ag_push and not ag_push.muted:
+                        if ag_push:
                             self._refresh_pane_attached()
-                            if not self._is_agent_in_use(agent_id, ag_push.tmux_pane):
-                                from push import send_push_notification, is_notification_enabled
-                                if is_notification_enabled("agents"):
-                                    send_push_notification(
-                                        title=_sync_agent_name or f"Agent {agent_id[:8]}",
-                                        body=pending_push_body,
-                                        url=f"/agents/{agent_id}",
-                                    )
+                            from notify import notify
+                            notify("message", agent_id,
+                                   _sync_agent_name or f"Agent {agent_id[:8]}",
+                                   pending_push_body, f"/agents/{agent_id}",
+                                   muted=ag_push.muted,
+                                   in_use=self._is_agent_in_use(agent_id, ag_push.tmux_pane))
                     finally:
                         db_push.close()
                     pending_push_body = ""
@@ -6530,14 +6501,11 @@ Here are the day's conversations (with timestamps):
                         ))
                         self._emit(emit_new_message(agent.id, sys_msg.id, _sync_agent_name, _sync_project))
 
-                        if not agent.muted and not self._is_agent_in_use(agent_id, saved_pane):
-                            from push import send_push_notification, is_notification_enabled
-                            if is_notification_enabled("agents"):
-                                send_push_notification(
-                                    title=f"\u2705 {_sync_agent_name or agent_id[:8]}",
-                                    body="CLI session ended — sync complete",
-                                    url=f"/agents/{agent_id}",
-                                )
+                        from notify import notify
+                        notify("task_complete", agent_id,
+                               f"\u2705 {_sync_agent_name or agent_id[:8]}",
+                               "CLI session ended — sync complete",
+                               f"/agents/{agent_id}")
                 finally:
                     db.close()
                 break

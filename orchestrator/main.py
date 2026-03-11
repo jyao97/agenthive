@@ -556,21 +556,61 @@ async def health(request: Request):
 
 
 @app.post("/api/test/notify")
-async def test_notify():
-    """Send a test notification via all channels (for debugging)."""
-    from websocket import ws_manager
-    count = await ws_manager.broadcast("agent_update", {
-        "agent_id": "test",
-        "status": "IDLE",
-        "project": "test",
-    })
-    from push import send_push_notification
-    send_push_notification(
-        title="AgentHive Test",
-        body="Test notification from webapp",
-        url="/agents",
-    )
-    return {"sent_to_ws": count, "push_sent": True}
+async def test_notify(request: Request):
+    """Send a test notification through the notify() gateway.
+
+    Query params:
+        channel: notify_at | task_complete | message (default: message)
+        agent_id: agent ID to test with (default: "test")
+        muted: true/false (default: false)
+        in_use: true/false (default: false) — if "auto", uses real _is_agent_in_use()
+    """
+    params = request.query_params
+    channel = params.get("channel", "message")
+    agent_id = params.get("agent_id", "test")
+    muted = params.get("muted", "false").lower() == "true"
+    in_use_param = params.get("in_use", "false")
+
+    # Auto-detect in-use from real signals
+    ws_viewed = False
+    pane_attached = False
+    pane = None
+    if in_use_param == "auto" and agent_id != "test":
+        dispatcher = getattr(app.state, "agent_dispatcher", None)
+        if dispatcher:
+            from database import SessionLocal
+            from models import Agent
+            db = SessionLocal()
+            try:
+                agent = db.get(Agent, agent_id)
+                pane = agent.tmux_pane if agent else None
+            finally:
+                db.close()
+            from websocket import ws_manager
+            ws_viewed = ws_manager.is_agent_viewed(agent_id)
+            dispatcher._refresh_pane_attached()
+            pane_attached = bool(pane and dispatcher._pane_attached.get(pane, False))
+            in_use = ws_viewed or pane_attached
+        else:
+            in_use = False
+    else:
+        in_use = in_use_param.lower() == "true"
+
+    from notify import notify
+    notify(channel, agent_id, "AgentHive Test",
+           f"Test via {channel} (muted={muted}, in_use={in_use})",
+           "/agents", muted=muted, in_use=in_use)
+
+    return {
+        "channel": channel,
+        "agent_id": agent_id,
+        "muted": muted,
+        "in_use": in_use,
+        "ws_viewed": ws_viewed,
+        "pane_attached": pane_attached,
+        "tmux_pane": pane,
+        "routed_through": "notify()",
+    }
 
 
 @app.get("/api/system/stats")
@@ -3783,10 +3823,14 @@ _hook_stop_summaries: dict[str, str] = {}
 
 @app.post("/api/hooks/agent-stop")
 async def hook_agent_stop(request: Request):
-    """Receive Stop hook from Claude Code agents — signal only, no harvest.
+    """Receive Stop hook from Claude Code agents.
 
     Caches the last_assistant_message so the dispatcher can use it when it
     independently confirms the agent is truly done (subprocess exited).
+
+    Also clears the generating state immediately so the frontend receives
+    agent_stream_end without waiting for the sync loop's JSONL-polling
+    heuristic — this unblocks deferred browser notifications.
 
     Stop fires per conversation turn, not just at task completion, so this
     endpoint deliberately does NOT transition task state.  The dispatcher
@@ -3808,6 +3852,13 @@ async def hook_agent_stop(request: Request):
 
     if summary:
         _hook_stop_summaries[agent_id] = summary
+
+    # Clear generating state immediately — the Stop hook is a deterministic
+    # signal that Claude finished this turn.  This emits agent_stream_end
+    # over WebSocket, which flushes deferred browser notifications.
+    ad = getattr(app.state, "agent_dispatcher", None)
+    if ad and agent_id in ad._generating_agents:
+        ad._stop_generating(agent_id)
 
     return {}
 
@@ -4683,10 +4734,16 @@ def _clean_stale_unlinked(max_age: int = 3600):
 
 
 @app.get("/api/unlinked-sessions")
-async def list_unlinked_sessions():
+async def list_unlinked_sessions(db: Session = Depends(get_db)):
     """List manually-launched Claude Code sessions not bound to any agent."""
     _clean_stale_unlinked()
     udir = _get_unlinked_dir()
+
+    # Pre-fetch all bound session IDs to filter out already-adopted sessions
+    bound_sids: set[str] = {
+        r[0] for r in db.query(Agent.session_id).filter(Agent.session_id.is_not(None)).all()
+    }
+
     sessions = []
     try:
         for fname in sorted(os.listdir(udir)):
@@ -4696,6 +4753,14 @@ async def list_unlinked_sessions():
             try:
                 with open(fpath) as f:
                     info = json.load(f)
+                sid = info.get("session_id", "")
+                if sid in bound_sids:
+                    # Already adopted — clean up stale signal file
+                    try:
+                        os.unlink(fpath)
+                    except OSError:
+                        pass
+                    continue
                 # Derive project name from CWD
                 cwd = info.get("cwd", "")
                 project_name = os.path.basename(cwd.rstrip("/")) if cwd else ""
