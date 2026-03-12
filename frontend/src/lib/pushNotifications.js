@@ -21,22 +21,34 @@ function setPushEnabled(v) {
  * Returns true on success, false on failure.
  */
 export async function setupPushNotifications() {
-  if (!isPushSupported()) return false;
+  if (!isPushSupported()) {
+    console.debug("[push] setup skipped: PushManager not supported");
+    return false;
+  }
   // Skip service worker registration in dev mode — it conflicts with Vite HMR
   // and causes white screen crashes in standalone PWA mode.
-  if (import.meta.env.DEV) return false;
+  if (import.meta.env.DEV) {
+    console.debug("[push] setup skipped: dev mode (Vite HMR conflict)");
+    return false;
+  }
 
   try {
     // Request notification permission
     const permission = await Notification.requestPermission();
-    if (permission !== "granted") return false;
+    if (permission !== "granted") {
+      console.debug("[push] setup skipped: permission=%s", permission);
+      return false;
+    }
 
     // Use the SW already registered by vite-plugin-pwa (includes push-handler.js)
     const reg = await navigator.serviceWorker.ready;
 
     // Fetch VAPID public key from backend
     const res = await authedFetch("/api/push/vapid-public-key");
-    if (!res.ok) return false;
+    if (!res.ok) {
+      console.warn("[push] VAPID key fetch failed: %d %s", res.status, res.statusText);
+      return false;
+    }
     const { publicKey } = await res.json();
 
     // Convert base64url to Uint8Array
@@ -107,6 +119,49 @@ export async function teardownPushNotifications() {
     console.warn("Push teardown error:", err);
   }
   setPushEnabled(false);
+}
+
+/**
+ * Re-send existing push subscription to backend on every page load.
+ * Works in dev mode (no SW registration needed) — just upserts whatever
+ * the browser already has.  Ensures backend always has a fresh copy even
+ * after server-side expiry cleanup or endpoint rotation.
+ */
+export async function reRegisterExistingSubscription() {
+  if (!isPushSupported()) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) {
+      console.debug("[push] re-register: no service worker registered");
+      return;
+    }
+    const subscription = await reg.pushManager.getSubscription();
+    if (!subscription) {
+      console.debug("[push] re-register: no existing subscription");
+      return;
+    }
+    const sub = subscription.toJSON();
+    if (!sub.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) {
+      console.debug("[push] re-register: subscription missing keys");
+      return;
+    }
+    const res = await authedFetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        endpoint: sub.endpoint,
+        keys: sub.keys,
+      }),
+    });
+    if (res.ok) {
+      console.debug("[push] re-register: upsert OK (endpoint=%s…)", sub.endpoint?.slice(0, 60));
+      setPushEnabled(true);
+    } else {
+      console.warn("[push] re-register: backend rejected: %d", res.status);
+    }
+  } catch (err) {
+    console.debug("[push] re-register failed: %s", err);
+  }
 }
 
 /** Convert a base64url-encoded string to a Uint8Array (for applicationServerKey). */

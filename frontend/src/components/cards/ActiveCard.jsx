@@ -20,7 +20,7 @@ export default memo(function ActiveCard({ task, selecting, selected, onToggle })
 
   return (
     <div className="relative">
-      <CardShell selecting={selecting} selected={selected}>
+      <CardShell taskId={task.id} selecting={selecting} selected={selected}>
         <div
           className={`flex items-start gap-3 px-5 cursor-pointer ${cardPadding(false, selecting)}`}
           onClick={handleClick}

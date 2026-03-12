@@ -88,10 +88,6 @@ VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:agenthive@example.com")
 # Uploads
 UPLOADS_DIR = os.path.expanduser(os.getenv("UPLOADS_DIR", "~/.agenthive/uploads"))
 
-# Telegram Bot
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-
 # CORS
 CORS_ORIGINS = [
     o.strip() for o in
