@@ -5201,13 +5201,16 @@ Here are the day's conversations (with timestamps):
     def _rotate_agent_session(
         self, agent_id: str, new_sid: str, project_path: str,
         worktree: str | None = None,
-    ):
+    ) -> bool:
         """Rotate an agent to a new CLI session in-place.
 
         Keeps the same agent ID and conversation history.  The sync loop
         restarts and reconciles turns from the new JSONL against existing
         DB messages — the dedup logic handles carried-forward history
         automatically.
+
+        Returns True on success, False if the rotation was blocked
+        (e.g. UNIQUE constraint violation).
         """
         from websocket import emit_agent_update
 
@@ -5215,7 +5218,7 @@ Here are the day's conversations (with timestamps):
         try:
             agent = db.get(Agent, agent_id)
             if not agent:
-                return
+                return False
             old_sid = agent.session_id
             agent.session_id = new_sid
             new_fpath = _resolve_session_jsonl(
@@ -5237,7 +5240,7 @@ Here are the day's conversations (with timestamps):
                     "already owned by another agent (UNIQUE violation)",
                     agent_id, new_sid[:12],
                 )
-                return
+                return False
             self._emit(emit_agent_update(agent_id, "SYNCING", agent.project))
             logger.info(
                 "Rotated agent %s session in-place: %s → %s",
@@ -5251,6 +5254,7 @@ Here are the day's conversations (with timestamps):
         # already present in the DB.
         self._cancel_sync_task(agent_id)
         self.start_session_sync(agent_id, new_sid, project_path)
+        return True
 
     async def _sync_session_loop(
         self, agent_id: str, session_id: str, project_path: str
@@ -5759,11 +5763,13 @@ Here are the day's conversations (with timestamps):
                             "%s → %s — rotating in-place",
                             agent_id, session_id[:12], new_sid[:12],
                         )
-                        self._rotate_agent_session(
+                        if self._rotate_agent_session(
                             agent_id, new_sid, project_path,
                             worktree=_worktree,
-                        )
-                        return  # new sync task started by _rotate_agent_session
+                        ):
+                            return  # new sync task started by _rotate_agent_session
+                        # Rotation failed (UNIQUE violation) — stay in
+                        # current sync loop so we keep monitoring.
 
                     if idle_polls % 30 == 0:
                         logger.debug(
