@@ -3941,18 +3941,21 @@ async def hook_agent_tool_activity(request: Request):
         return {}
 
     tool_name = body.get("tool_name", "")
-    phase = body.get("hook_event_name", "")
-    if phase == "PreToolUse":
+    hook_event = body.get("hook_event_name", "")
+    if hook_event == "PreToolUse":
         phase = "start"
-    elif phase in ("PostToolUse", "PostToolUseFailure"):
+    elif hook_event in ("PostToolUse", "PostToolUseFailure"):
         phase = "end"
     else:
         return {}
 
     tool_input = body.get("tool_input")
+    tool_output = body.get("tool_output") or body.get("tool_error") or None
+    is_error = hook_event == "PostToolUseFailure"
 
     from websocket import emit_tool_activity
-    await emit_tool_activity(agent_id, tool_name, phase, tool_input)
+    await emit_tool_activity(agent_id, tool_name, phase, tool_input,
+                              tool_output=tool_output, is_error=is_error)
 
     return {}
 

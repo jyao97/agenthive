@@ -233,7 +233,9 @@ async def emit_agent_stream_end(agent_id: str,
 
 
 async def emit_tool_activity(agent_id: str, tool_name: str, phase: str,
-                              tool_input: dict | None = None):
+                              tool_input: dict | None = None,
+                              tool_output: str | None = None,
+                              is_error: bool = False):
     """Broadcast tool start/end events driven by CC hooks (PreToolUse/PostToolUse)."""
     payload: dict = {
         "agent_id": agent_id,
@@ -241,13 +243,17 @@ async def emit_tool_activity(agent_id: str, tool_name: str, phase: str,
         "phase": phase,  # "start" or "end"
     }
     if tool_input:
-        summary = _tool_summary(tool_name, tool_input)
+        summary = _tool_input_summary(tool_name, tool_input)
         if summary:
             payload["summary"] = summary
+    if phase == "end" and tool_output is not None:
+        payload["output_summary"] = _tool_output_summary(tool_name, tool_output, is_error)
+    if is_error:
+        payload["is_error"] = True
     await ws_manager.broadcast("tool_activity", payload)
 
 
-def _tool_summary(tool_name: str, tool_input: dict) -> str:
+def _tool_input_summary(tool_name: str, tool_input: dict) -> str:
     """Build a short human-readable summary from tool input."""
     if tool_name == "Bash":
         cmd = tool_input.get("command", "")
@@ -261,3 +267,45 @@ def _tool_summary(tool_name: str, tool_input: dict) -> str:
     if tool_name in ("WebFetch", "WebSearch"):
         return (tool_input.get("url") or tool_input.get("query") or "")[:120]
     return ""
+
+
+def _tool_output_summary(tool_name: str, output: str, is_error: bool) -> str:
+    """Build a short result summary from tool output."""
+    if is_error:
+        # First meaningful line of error
+        for line in output.strip().splitlines():
+            line = line.strip()
+            if line:
+                return f"error: {line[:100]}"
+        return "error"
+
+    if tool_name == "Bash":
+        lines = output.strip().splitlines()
+        if not lines:
+            return "done (no output)"
+        if len(lines) == 1:
+            return lines[0][:120]
+        return f"{lines[-1][:80]} ({len(lines)} lines)"
+    if tool_name == "Read":
+        lines = output.strip().splitlines()
+        return f"{len(lines)} lines"
+    if tool_name == "Grep":
+        lines = output.strip().splitlines()
+        if not lines:
+            return "no matches"
+        return f"{len(lines)} matches"
+    if tool_name == "Glob":
+        lines = [l for l in output.strip().splitlines() if l.strip()]
+        if not lines:
+            return "no files"
+        return f"{len(lines)} files"
+    if tool_name == "Agent":
+        # Agent output can be huge — just indicate completion
+        return "done"
+    if tool_name in ("Edit", "Write"):
+        return "done"
+    # Generic fallback
+    length = len(output)
+    if length < 50:
+        return output.strip()[:50] or "done"
+    return f"done ({length} chars)"
