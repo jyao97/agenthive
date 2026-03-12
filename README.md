@@ -22,8 +22,7 @@ AgentHive is **not a replacement for the Claude Code CLI** — it's a companion.
 
 ### Real-time
 - **Live streaming output** — WebSocket-based streaming of agent responses as they generate, with tool call summaries
-- **Browser notifications** — Notification API triggered directly from WebSocket events when the tab is in the background; no expiring push subscriptions needed
-- **Push notifications (fallback)** — Server-side Web Push via VAPID for when the browser is fully closed, with auto-resubscribe on every page load
+- **Push notifications** — Hook-triggered Web Push (VAPID) with three-channel routing (`notify_at`, `task_complete`, `message`), per-agent mute, global toggles, and in-use suppression (WebSocket viewing + tmux pane attached detection)
 
 ### Agent Management
 - **Project folders** — Group projects by category (e.g. "robotics", "infrastructure") for clean organization
@@ -352,7 +351,7 @@ Core capabilities:
 5. Real-time streaming output via WebSocket
 6. Automatic session caching and recovery
 7. Hourly automatic database backups
-8. Notifications via Web Push and Telegram Bot
+8. Notifications via Web Push
 9. tmux-based agent launch and CLI session sync
 
 ---
@@ -390,7 +389,7 @@ Host Machine
 - **Frontend**: React 19, TailwindCSS 4, Vite 7
 - **Database**: SQLite (WAL mode, SQLAlchemy 2.0)
 - **Agent Execution**: `claude` CLI spawned as host subprocesses (`subprocess.Popen`)
-- **Real-time**: WebSocket (FastAPI native) + Web Push (pywebpush/VAPID) + Telegram Bot
+- **Real-time**: WebSocket (FastAPI native) + Web Push (pywebpush/VAPID)
 - **Voice**: OpenAI Whisper API
 - **Auth**: Password-based with custom JWT (HMAC-SHA256, stdlib only)
 - **Testing**: Vitest (frontend)
@@ -424,7 +423,9 @@ cc-orchestrator/
 │   ├── voice.py               # Whisper speech-to-text
 │   ├── backup.py              # Automatic hourly database backups
 │   ├── websocket.py           # WebSocket connection manager + event emitters
-│   ├── push.py                # Notifications (Web Push + Telegram Bot)
+│   ├── notify.py              # Unified notification gateway (three-channel router)
+│   ├── push.py                # Web Push sender (VAPID)
+│   ├── hooks/                 # Claude Code hook scripts (SessionStart, Stop)
 │   ├── log_config.py          # Structured logging setup
 │   └── requirements.txt       # Python dependencies
 │
@@ -468,7 +469,8 @@ cc-orchestrator/
 │   │       ├── api.js                # Centralized fetch wrapper (~40+ functions)
 │   │       ├── constants.js          # Status/mode colors, model options
 │   │       ├── formatters.jsx        # relativeTime(), renderMarkdown(), etc.
-│   │       └── pushNotifications.js  # Web Push API integration
+│   │       ├── notifications.js      # Mute state, global toggles, viewing tracking
+│   │       └── pushNotifications.js  # Web Push subscription lifecycle
 │   ├── index.html
 │   ├── vite.config.js
 │   └── package.json
@@ -618,6 +620,25 @@ Detection of orphaned tmux Claude sessions uses tiered matching:
 
 During execution, an asyncio task tails the output file every 0.5s, parses stream-json events, and broadcasts incremental content via WebSocket (`agent_stream` event) for live display in the chat UI.
 
+#### Notification System
+
+Two independent notification subsystems, logically decoupled:
+
+**Agent notifications** (`message` channel) — conversational, hook-driven:
+- **Trigger**: `/api/hooks/agent-stop` — Claude Code Stop hook fires after each conversation turn. This is the sole trigger; no JSONL polling or frontend-initiated notifications.
+- **Guards** (all must pass): global `notifications_agents_enabled` toggle → per-agent `muted` flag → in-use detection
+- **In-use suppression** (`_is_agent_in_use`): suppressed when either signal is true:
+  1. **WebSocket viewing** — frontend sends `{ type: "viewing", agent_ids: [...] }` on page navigation and `visibilitychange`; backend tracks via `ws_manager.is_agent_viewed()`
+  2. **tmux pane attached** — `_refresh_pane_attached()` polls `tmux list-panes` every dispatcher tick
+- **Mute**: Per-agent `agent.muted` flag (bell icon in chat UI). Task-linked agents default to `muted=True`.
+
+**Task notifications** (`task_complete` + `notify_at` channels) — lifecycle-driven, dispatcher-internal:
+- **`task_complete`**: Fired by dispatcher on agent completion, timeout, or error. Only checks global `notifications_tasks_enabled` toggle. Ignores per-agent mute and in-use state — task outcomes always notify unless globally disabled.
+- **`notify_at`**: Scheduled reminders. Always sends, no guards at all.
+- These channels are triggered from within `agent_dispatcher.py` (not via hooks), making the task notification path fully independent from the agent message path.
+
+**Delivery**: Web Push (VAPID) only. Subscription auto-upserted on every page load via `reRegisterExistingSubscription()`. All channels route through `notify()` → `push.py` → `_send_webpush()`.
+
 ---
 
 ### Database Models
@@ -637,6 +658,10 @@ class Agent:
     cli_sync: bool           # Import history from CLI session and live-sync
     tmux_pane: str | None    # tmux pane ID for tmux-launched agents
     model: str | None        # Claude model override
+    muted: bool              # Per-agent notification mute (default False)
+    task_id: str | None      # FK to tasks (SET NULL) — which task this agent is executing
+    parent_id: str | None    # FK to agents (self-ref) — parent agent for subagents
+    is_subagent: bool        # True if spawned by another agent
     last_message_preview: str | None
     last_message_at: datetime | None
     unread_count: int
@@ -676,12 +701,46 @@ class Project:
     archived: bool
 ```
 
-#### Supporting Models
+#### Task (dispatched work units)
 
-- **Task**: Legacy ephemeral tasks (PID tracked via container_id field)
+```python
+class Task:
+    id: str
+    title: str                   # Short description
+    description: str | None      # Detailed instructions
+    project_name: str | None     # FK to projects
+    status: TaskStatus           # INBOX | PLANNING | PENDING | DISPATCHED | REVIEW | ...
+    agent_id: str | None         # FK to agents (SET NULL) — which agent is assigned
+    priority: int                # 0=normal, 1=high
+    model: str | None            # Model override for execution
+    effort: str | None           # l/m/h effort estimate
+    notify_at: datetime | None   # Scheduled reminder time
+    worktree_name: str | None
+    branch_name: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+```
+
+#### Agent ↔ Task relationship
+
+Agents and Tasks are **loosely coupled** via bidirectional nullable FKs:
+
+```
+Task.agent_id  → Agent  (SET NULL on delete)
+Agent.task_id  → Task   (SET NULL on delete)
+```
+
+- **Agents can exist without tasks**: Direct chat agents, CLI-synced sessions, and manually launched tmux agents have no task association.
+- **Tasks can exist without agents**: INBOX/PLANNING tasks are unassigned. An agent is only linked when the task is dispatched.
+- **SET NULL on both sides**: Deleting either end cleans the FK without cascading — a stopped agent doesn't destroy its task history, and archiving a task doesn't kill its agent.
+- **Task-linked agents default to `muted=True`**: Exec/plan agents spawned for tasks suppress `message` notifications; they only fire `task_complete` on lifecycle events. Users can manually unmute.
+
+#### Other Models
+
 - **StarredSession**: Bookmarked Claude sessions
-- **PushSubscription**: Web Push endpoints (endpoint, p256dh_key, auth_key)
-- **SystemConfig**: Key-value store (jwt_secret, password_hash)
+- **PushSubscription**: Web Push VAPID endpoints (endpoint, p256dh_key, auth_key)
+- **SystemConfig**: Key-value store (jwt_secret, password_hash, notification toggles)
 
 ---
 
@@ -755,13 +814,22 @@ GET    /api/workers                 Worker statuses (legacy)
 GET    /api/logs                    Recent log entries
 ```
 
-#### Files, Voice, Push
+#### Notifications & Hooks
+```
+GET    /api/settings/notifications          Get global toggles (agents/tasks)
+PUT    /api/settings/notifications          Update global toggles
+POST   /api/hooks/agent-stop               Claude Code Stop hook (triggers message notifications)
+POST   /api/hooks/agent-session-start      Claude Code SessionStart hook
+GET    /api/push/vapid-public-key          VAPID public key
+POST   /api/push/subscribe                 Subscribe to Web Push
+POST   /api/push/unsubscribe              Unsubscribe from Web Push
+POST   /api/test/notify                    Test notification routing
+```
+
+#### Files & Voice
 ```
 GET    /api/files/{project}/{path}  Serve project files (images, videos, CSVs)
 POST   /api/voice                   Whisper speech-to-text
-GET    /api/push/vapid-public-key   VAPID public key
-POST   /api/push/subscribe          Subscribe to push
-POST   /api/push/unsubscribe        Unsubscribe from push
 ```
 
 #### WebSocket
@@ -814,9 +882,6 @@ VAPID_PRIVATE_KEY = ""
 VAPID_PUBLIC_KEY = ""
 VAPID_SUBJECT = "mailto:agenthive@example.com"
 
-# Telegram Bot (optional)
-TELEGRAM_BOT_TOKEN = ""            # Bot token from @BotFather
-TELEGRAM_CHAT_ID = ""              # Chat ID for notifications
 ```
 
 ---
