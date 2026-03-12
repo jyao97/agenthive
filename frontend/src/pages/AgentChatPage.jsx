@@ -928,6 +928,76 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   );
 }
 
+// --- Tool Activity Log (real-time feed of tool calls via CC hooks) ---
+
+function ToolActivityLog({ toolLog, activeTool, toolStartTime }) {
+  const [expanded, setExpanded] = useState(true);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!toolStartTime) { setElapsed(0); return; }
+    setElapsed(Math.floor((Date.now() - toolStartTime) / 1000));
+    const timer = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - toolStartTime) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [toolStartTime]);
+
+  if (!toolLog.length) return null;
+
+  const completed = toolLog.filter((e) => e.done);
+  const running = toolLog.find((e) => !e.done);
+  const collapsible = completed.length > 3;
+  const visibleCompleted = collapsible && !expanded ? completed.slice(-2) : completed;
+  const hiddenCount = completed.length - visibleCompleted.length;
+
+  return (
+    <div className="flex justify-start my-2">
+      <div className="max-w-[85%] rounded-2xl px-4 py-2.5 bg-surface shadow-card rounded-bl-md">
+        <div className="space-y-0.5 text-xs font-mono">
+          {collapsible && hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="text-faint hover:text-dim text-[11px] mb-0.5"
+            >
+              + {hiddenCount} more...
+            </button>
+          )}
+          {visibleCompleted.map((entry, i) => (
+            <div key={i} className={`flex items-center gap-1.5 ${entry.isError ? "text-red-400" : "text-dim"}`}>
+              <span className="shrink-0">{entry.isError ? "✗" : "✓"}</span>
+              <span className="text-cyan-300">{entry.name}</span>
+              {entry.summary && <span className="text-faint truncate max-w-[160px]">{entry.summary}</span>}
+              {entry.outputSummary && (
+                <span className={entry.isError ? "text-red-400/70" : "text-faint"}>→ {entry.outputSummary}</span>
+              )}
+            </div>
+          ))}
+          {running && (
+            <div className="flex items-center gap-1.5 text-dim">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse shrink-0" />
+              <span className="text-cyan-300">{running.name}</span>
+              {running.summary && <span className="text-faint truncate max-w-[160px]">{running.summary}</span>}
+              {elapsed > 2 && <span className="text-faint">({elapsed}s)</span>}
+            </div>
+          )}
+          {collapsible && expanded && (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              className="text-faint hover:text-dim text-[11px] mt-0.5"
+            >
+              collapse
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // --- Typing Indicator (shown when executing but no streaming content yet) ---
 
 function TypingIndicator({ activeTool, toolStartTime }) {
@@ -1458,6 +1528,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [streamingContent, setStreamingContent] = useState(null);
   const [activeTool, setActiveTool] = useState(null);
   const [toolStartTime, setToolStartTime] = useState(null);
+  const [toolLog, setToolLog] = useState([]);   // [{name, summary, outputSummary, isError, startTime, done}]
   const streamTimeoutRef = useRef(null);
   const generationIdRef = useRef(null); // tracks current backend generation_id
   const [editingName, setEditingName] = useState(false);
@@ -1833,12 +1904,26 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     // Much more reliable than JSONL polling — fires synchronously with
     // each tool call regardless of file growth or idle thresholds.
     if (lastEvent.type === "tool_activity" && lastEvent.data?.agent_id === id) {
-      if (lastEvent.data.phase === "start") {
-        setActiveTool({ name: lastEvent.data.tool_name, summary: lastEvent.data.summary || "" });
+      const { tool_name, phase, summary, output_summary, is_error } = lastEvent.data;
+      if (phase === "start") {
+        setActiveTool({ name: tool_name, summary: summary || "" });
         setToolStartTime(Date.now());
+        setToolLog((prev) => [...prev, {
+          name: tool_name, summary: summary || "",
+          outputSummary: null, isError: false,
+          startTime: Date.now(), done: false,
+        }]);
       } else {
         setActiveTool(null);
         setToolStartTime(null);
+        setToolLog((prev) => {
+          // Mark the last matching in-progress entry as done
+          const idx = prev.findLastIndex((e) => e.name === tool_name && !e.done);
+          if (idx === -1) return prev;
+          const updated = [...prev];
+          updated[idx] = { ...updated[idx], done: true, outputSummary: output_summary || "", isError: !!is_error };
+          return updated;
+        });
       }
       return;
     }
@@ -1848,6 +1933,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       setStreamingContent(null);
       setActiveTool(null);
       setToolStartTime(null);
+      setToolLog([]);
       refreshMessages({ syncHint: lastEvent.data?.message_id === "sync" });
       return;
     }
@@ -1874,6 +1960,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         setStreamingContent(null);
         setActiveTool(null);
         setToolStartTime(null);
+        setToolLog([]);
         generationIdRef.current = null;
       }
       refreshMessages();
@@ -2433,6 +2520,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                 );
                 if (!isDuplicate) return <StreamingBubble content={streamingContent} project={agent.project} activeTool={activeTool} />;
               }
+              // Tool activity log — shows completed + in-progress tool calls
+              if (toolLog.length > 0) return <ToolActivityLog toolLog={toolLog} activeTool={activeTool} toolStartTime={toolStartTime} />;
               return (isExecuting || agent?.is_generating) ? <TypingIndicator activeTool={activeTool} toolStartTime={toolStartTime} /> : null;
             })()}
 
