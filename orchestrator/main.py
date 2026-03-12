@@ -3866,12 +3866,12 @@ def read_stop_summary(agent_id: str) -> str | None:
 async def hook_agent_stop(request: Request):
     """Receive Stop hook from Claude Code agents.
 
-    This is the sole trigger for "message" notifications.  When the Stop
-    hook fires, we immediately check in-use / mute conditions and send a
-    push notification if appropriate.
-
-    Also caches the last_assistant_message for the dispatcher and clears
+    Caches the last_assistant_message for the dispatcher and clears
     generating state so the frontend receives agent_stream_end.
+
+    Push notifications are triggered from the JSONL sync loop (in
+    agent_dispatcher) at the same moment unread_count increments, so
+    badge and push are always in sync.
 
     Stop fires per conversation turn, not just at task completion, so this
     endpoint deliberately does NOT transition task state.
@@ -3900,31 +3900,7 @@ async def hook_agent_stop(request: Request):
         logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
         ad._stop_generating(agent_id)
 
-    # Send message notification (sole trigger point).
-    from database import SessionLocal
-    from models import Agent
-    db_notify = SessionLocal()
-    _notify_decision = "SKIP (no agent)"
-    try:
-        agent = db_notify.get(Agent, agent_id)
-        if agent and ad:
-            ad._refresh_pane_attached()
-            from notify import notify
-            _notify_decision = notify(
-                "message", agent_id,
-                agent.name or f"Agent {agent_id[:8]}",
-                summary[:120] or "Response ready",
-                f"/agents/{agent_id}",
-                muted=agent.muted,
-                in_use=ad._is_agent_in_use(agent_id, agent.tmux_pane),
-            )
-    finally:
-        db_notify.close()
-
-    logger.info(
-        "hook_agent_stop: agent=%s summary_len=%d notify=%s",
-        agent_id[:8], len(summary), _notify_decision,
-    )
+    logger.info("hook_agent_stop: agent=%s summary_len=%d", agent_id[:8], len(summary))
 
     return {}
 
@@ -3979,6 +3955,34 @@ async def hook_agent_session_start(request: Request):
     if not cwd:
         logger.debug("SessionStart hook: unmanaged session %s has no CWD header", session_id[:12])
         return {}
+
+    # If this tmux pane is already owned by an active agent, treat this as
+    # a session rotation (e.g. /clear) — write a signal file instead of
+    # creating a new unlinked entry.  This is critical for detected agents
+    # that don't have AHIVE_AGENT_ID in their environment.
+    if tmux_pane:
+        from database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            pane_owner = _db.query(Agent).filter(
+                Agent.tmux_pane == tmux_pane,
+                Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
+            ).first()
+            if pane_owner:
+                signal_path = f"/tmp/ahive-{pane_owner.id}.newsession"
+                try:
+                    with open(signal_path, "w") as f:
+                        f.write(session_id)
+                    logger.info(
+                        "SessionStart hook: pane %s owned by agent %s — "
+                        "wrote rotation signal for session %s",
+                        tmux_pane, pane_owner.id[:8], session_id[:12],
+                    )
+                except OSError:
+                    pass
+                return {}
+        finally:
+            _db.close()
 
     # Match CWD to a registered project
     from database import SessionLocal

@@ -2357,6 +2357,26 @@ class AgentDispatcher:
         )
         return in_use
 
+    def _maybe_notify_message(self, agent) -> str | None:
+        """Send 'message' push when unread transitions from 0 → >0.
+
+        Call this right after incrementing unread_count.  Only fires on the
+        0→N edge so the user gets exactly one push per batch of unread messages.
+        Returns the notify decision string, or None if skipped (already had unread).
+        """
+        if agent.unread_count <= 0:
+            return None  # defensive — shouldn't happen after an increment
+        from notify import notify
+        body = (agent.last_message_preview or "Response ready")[:120]
+        return notify(
+            "message", agent.id,
+            agent.name or f"Agent {agent.id[:8]}",
+            body,
+            f"/agents/{agent.id}",
+            muted=agent.muted,
+            in_use=False,  # caller already verified not in-use
+        )
+
     def get_active_sessions(self) -> list[tuple[str, str]]:
         """Return (session_id, project_path) for all agents with sessions.
 
@@ -3840,6 +3860,7 @@ Here are the day's conversations (with timestamps):
             is_viewed = self._is_agent_in_use(agent.id, agent.tmux_pane)
             if not is_viewed:
                 agent.unread_count += 1
+                self._maybe_notify_message(agent)
 
             save_worker_log(f"agent-{agent.id}", logs)
 
@@ -3969,6 +3990,7 @@ Here are the day's conversations (with timestamps):
                 is_viewed = self._is_agent_in_use(agent.id, agent.tmux_pane)
                 if not is_viewed:
                     agent.unread_count += 1
+                    self._maybe_notify_message(agent)
 
                 from websocket import emit_agent_update, emit_new_message
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
@@ -6079,7 +6101,9 @@ Here are the day's conversations (with timestamps):
                     agent.last_message_at = _utcnow()
                     if not self._is_agent_in_use(agent.id, agent.tmux_pane):
                         _non_user = sum(1 for r, *_ in new_turns if r != "user")
-                        agent.unread_count += _non_user
+                        if _non_user > 0:
+                            agent.unread_count += _non_user
+                            self._maybe_notify_message(agent)
                     db.commit()
 
                     last_turn_count = len(turns)
@@ -6149,6 +6173,7 @@ Here are the day's conversations (with timestamps):
                         agent.last_message_at = _utcnow()
                         if not self._is_agent_in_use(agent.id, agent.tmux_pane):
                             agent.unread_count += len(final_new)
+                            self._maybe_notify_message(agent)
                         db.commit()
                         last_turn_count = len(turns)
                         self._emit(emit_agent_update(
