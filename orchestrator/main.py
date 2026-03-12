@@ -3923,6 +3923,40 @@ async def hook_agent_stop(request: Request):
     return {}
 
 
+@app.post("/api/hooks/agent-tool-activity")
+async def hook_agent_tool_activity(request: Request):
+    """Receive PreToolUse/PostToolUse hooks — broadcast tool activity to frontend.
+
+    Gives users real-time visibility into which tool the agent is running,
+    replacing the unreliable JSONL-polling approach that loses tool info
+    after the idle threshold (~6s).
+    """
+    agent_id = request.headers.get("X-Agent-Id", "").strip()
+    if not agent_id:
+        return {}
+
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+
+    tool_name = body.get("tool_name", "")
+    phase = body.get("hook_event_name", "")
+    if phase == "PreToolUse":
+        phase = "start"
+    elif phase in ("PostToolUse", "PostToolUseFailure"):
+        phase = "end"
+    else:
+        return {}
+
+    tool_input = body.get("tool_input")
+
+    from websocket import emit_tool_activity
+    await emit_tool_activity(agent_id, tool_name, phase, tool_input)
+
+    return {}
+
+
 @app.post("/api/hooks/agent-session-start")
 async def hook_agent_session_start(request: Request):
     """Receive SessionStart hook from Claude Code agents.
@@ -4176,7 +4210,8 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
 
 
 def _write_agent_hooks_config(project_path: str):
-    """Write project-level hooks (PreToolUse safety, Stop) to settings.local.json.
+    """Write project-level hooks (PreToolUse safety + activity, PostToolUse, Stop)
+    to settings.local.json.
 
     SessionStart is handled globally via _write_global_session_hook().
     """
@@ -4188,13 +4223,33 @@ def _write_agent_hooks_config(project_path: str):
         "hooks", "pretooluse-safety.sh",
     )
 
+    _tool_activity_hook = {
+        "type": "http",
+        "url": f"{base_url}/agent-tool-activity",
+        "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+        "allowedEnvVars": ["AHIVE_AGENT_ID"],
+    }
+
     desired_hooks = {
-        "PreToolUse": [{
-            "matcher": "Bash|Write|Edit",
-            "hooks": [{
-                "type": "command",
-                "command": hook_script,
-            }],
+        "PreToolUse": [
+            # Safety guardrails (Bash/Write/Edit only)
+            {
+                "matcher": "Bash|Write|Edit",
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_script,
+                }],
+            },
+            # Tool activity broadcast (all tools)
+            {
+                "hooks": [_tool_activity_hook],
+            },
+        ],
+        "PostToolUse": [{
+            "hooks": [_tool_activity_hook],
+        }],
+        "PostToolUseFailure": [{
+            "hooks": [_tool_activity_hook],
         }],
         "Stop": [{
             "hooks": [{

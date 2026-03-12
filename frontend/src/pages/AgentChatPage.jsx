@@ -949,7 +949,10 @@ function TypingIndicator({ activeTool, toolStartTime }) {
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
             <span className="text-xs text-dim">
               <code className="text-[11px] px-1 py-0.5 rounded bg-elevated text-cyan-300 font-mono">{activeTool.name}</code>
-              {" "}running{activeTool.summary ? `: ${activeTool.summary.replace(/^`\w+`\s*/, "")}` : "..."}
+              {" "}running...
+              {activeTool.summary && (
+                <span className="text-faint ml-1 font-mono text-[11px] truncate inline-block max-w-[200px] align-bottom">{activeTool.summary}</span>
+              )}
               {elapsed > 3 && <span className="text-faint ml-1">({elapsed}s)</span>}
             </span>
           </div>
@@ -1808,16 +1811,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       // Track the current generation
       if (gid != null) generationIdRef.current = gid;
       setStreamingContent(lastEvent.data.content);
-      const newTool = lastEvent.data.active_tool || null;
-      setActiveTool((prev) => {
-        // Track when the active tool changes (new tool or different tool)
-        if (newTool && (!prev || prev.name !== newTool.name)) setToolStartTime(Date.now());
-        if (!newTool) setToolStartTime(null);
-        return newTool;
-      });
       // Safety fallback: auto-clear streaming content after inactivity in
       // case agent_stream_end is never received (e.g., WS disconnect).
-      // Keep activeTool visible — it will be cleared by new_message or agent_update.
       clearTimeout(streamTimeoutRef.current);
       streamTimeoutRef.current = setTimeout(() => {
         setStreamingContent(null);
@@ -1831,9 +1826,20 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
       clearTimeout(streamTimeoutRef.current);
       setStreamingContent(null);
-      // Keep activeTool visible — the tool may still be executing even though
-      // the JSONL stopped growing.  It will be cleared when new_message arrives
-      // (tool completed) or agent status changes (agent stopped).
+      return;
+    }
+
+    // Hook-driven tool activity (PreToolUse/PostToolUse HTTP hooks)
+    // Much more reliable than JSONL polling — fires synchronously with
+    // each tool call regardless of file growth or idle thresholds.
+    if (lastEvent.type === "tool_activity" && lastEvent.data?.agent_id === id) {
+      if (lastEvent.data.phase === "start") {
+        setActiveTool({ name: lastEvent.data.tool_name, summary: lastEvent.data.summary || "" });
+        setToolStartTime(Date.now());
+      } else {
+        setActiveTool(null);
+        setToolStartTime(null);
+      }
       return;
     }
 

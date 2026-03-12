@@ -230,3 +230,34 @@ async def emit_agent_stream_end(agent_id: str,
     if generation_id is not None:
         payload["generation_id"] = generation_id
     await ws_manager.broadcast("agent_stream_end", payload)
+
+
+async def emit_tool_activity(agent_id: str, tool_name: str, phase: str,
+                              tool_input: dict | None = None):
+    """Broadcast tool start/end events driven by CC hooks (PreToolUse/PostToolUse)."""
+    payload: dict = {
+        "agent_id": agent_id,
+        "tool_name": tool_name,
+        "phase": phase,  # "start" or "end"
+    }
+    if tool_input:
+        summary = _tool_summary(tool_name, tool_input)
+        if summary:
+            payload["summary"] = summary
+    await ws_manager.broadcast("tool_activity", payload)
+
+
+def _tool_summary(tool_name: str, tool_input: dict) -> str:
+    """Build a short human-readable summary from tool input."""
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        return cmd[:120] if cmd else ""
+    if tool_name in ("Read", "Write", "Edit"):
+        return tool_input.get("file_path", "")[:120]
+    if tool_name in ("Glob", "Grep"):
+        return tool_input.get("pattern", "")[:80]
+    if tool_name == "Agent":
+        return tool_input.get("description", "")[:80]
+    if tool_name in ("WebFetch", "WebSearch"):
+        return (tool_input.get("url") or tool_input.get("query") or "")[:120]
+    return ""
