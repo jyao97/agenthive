@@ -3901,7 +3901,9 @@ async def hook_agent_stop(request: Request):
             logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
             ad._stop_generating(agent_id)
         # Signal the JSONL sync loop to increment unread on next poll
+        # and wake it immediately (skip the 3s sleep)
         ad._pending_notify.add(agent_id)
+        ad.wake_sync(agent_id)
 
     logger.info("hook_agent_stop: agent=%s summary_len=%d", agent_id[:8], len(summary))
 

@@ -2209,6 +2209,8 @@ class AgentDispatcher:
         # Agents whose stop hook fired — JSONL sync consumes this to
         # increment unread_count at the right moment (not mid-generation).
         self._pending_notify: set[str] = set()
+        # Per-agent events to wake sync loops immediately on stop hook
+        self._sync_wake: dict[str, asyncio.Event] = {}
 
         # Tmux launch background tasks: agent_id -> asyncio.Task
         self._launch_tasks: dict[str, asyncio.Task] = {}
@@ -2943,6 +2945,12 @@ Here are the day's conversations (with timestamps):
         gid = self._next_generation_id(agent_id)
         self._generating_agents.add(agent_id)
         return gid
+
+    def wake_sync(self, agent_id: str):
+        """Wake the sync loop for an agent immediately (skip sleep)."""
+        ev = self._sync_wake.get(agent_id)
+        if ev:
+            ev.set()
 
     def _stop_generating(self, agent_id: str):
         """Mark agent as no longer generating and emit stream_end."""
@@ -5232,6 +5240,7 @@ Here are the day's conversations (with timestamps):
             finally:
                 db.close()
         finally:
+            self._sync_wake.pop(agent_id, None)
             # Only clean up if this is still the active sync task.
             # _rotate_agent_session replaces the task, so the old one
             # must not remove the new entry from _sync_tasks.
@@ -5274,6 +5283,10 @@ Here are the day's conversations (with timestamps):
         """Inner sync loop — see _sync_session_loop for docs."""
         POLL_INTERVAL = 3  # seconds between checks
         _GENERATING_IDLE_THRESHOLD = 2  # idle polls before clearing is_generating (~6s)
+
+        # Register wake event so stop hook can interrupt the sleep
+        wake_event = asyncio.Event()
+        self._sync_wake[agent_id] = wake_event
 
         from websocket import emit_agent_stream, emit_agent_update, emit_new_message
 
@@ -5541,7 +5554,12 @@ Here are the day's conversations (with timestamps):
         _getsize_error_count = 0
         _GETSIZE_ERROR_LIMIT = 20  # ~60s at 3s poll interval
         while True:
-            await asyncio.sleep(POLL_INTERVAL)
+            # Wait up to POLL_INTERVAL, but wake immediately if stop hook fires
+            try:
+                await asyncio.wait_for(wake_event.wait(), timeout=POLL_INTERVAL)
+                wake_event.clear()
+            except asyncio.TimeoutError:
+                pass
 
             try:
                 current_size = os.path.getsize(jsonl_path)
