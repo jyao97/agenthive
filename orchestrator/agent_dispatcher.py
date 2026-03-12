@@ -347,6 +347,7 @@ def _write_unlinked_entry(
     tmux_pane: str | None = None,
     pane_pid: int | None = None,
     project_name: str | None = None,
+    tmux_session: str | None = None,
 ):
     """Write an unlinked session entry for user confirmation in the UI.
 
@@ -368,6 +369,7 @@ def _write_unlinked_entry(
                 "transcript_path": transcript_path,
                 "model": model,
                 "tmux_pane": tmux_pane,
+                "tmux_session": tmux_session,
                 "pane_pid": pane_pid,
                 "project_name": project_name,
                 "timestamp": _time.time(),
@@ -2395,11 +2397,14 @@ class AgentDispatcher:
     def _is_agent_in_use(self, agent_id: str, tmux_pane: str | None = None) -> bool:
         """Check if a user is actively viewing this agent (tmux or web)."""
         from websocket import ws_manager
-        if ws_manager.is_agent_viewed(agent_id):
-            return True
-        if tmux_pane and self._pane_attached.get(tmux_pane, False):
-            return True
-        return False
+        webapp_active = ws_manager.is_agent_viewed(agent_id)
+        tmux_attached = bool(tmux_pane and self._pane_attached.get(tmux_pane, False))
+        in_use = webapp_active or tmux_attached
+        logger.debug(
+            "in_use check agent=%s: webapp_active=%s, tmux_pane=%s tmux_attached=%s → %s",
+            agent_id[:8], webapp_active, tmux_pane, tmux_attached, in_use,
+        )
+        return in_use
 
     def get_active_sessions(self) -> list[tuple[str, str]]:
         """Return (session_id, project_path) for all agents with sessions.

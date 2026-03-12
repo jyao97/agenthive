@@ -4019,17 +4019,29 @@ async def hook_agent_session_start(request: Request):
         # the unlinked entry will be cleaned up later if it never appears.
         transcript_path = ""
 
+    # Resolve tmux session name from pane ID
+    tmux_session_name = None
+    if tmux_pane:
+        try:
+            tmux_session_name = subprocess.check_output(
+                ["tmux", "display-message", "-t", tmux_pane, "-p", "#{session_name}"],
+                timeout=2, text=True,
+            ).strip() or None
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            pass
+
     from agent_dispatcher import _write_unlinked_entry
     _write_unlinked_entry(
         session_id=session_id,
         cwd=cwd_real,
         transcript_path=transcript_path,
         tmux_pane=tmux_pane or None,
+        tmux_session=tmux_session_name,
         project_name=matched_proj.name,
     )
     logger.info(
-        "SessionStart hook: unmanaged session %s → unlinked entry (project=%s, pane=%s)",
-        session_id[:12], matched_proj.name, tmux_pane or "?",
+        "SessionStart hook: unmanaged session %s → unlinked entry (project=%s, pane=%s, tmux_session=%s)",
+        session_id[:12], matched_proj.name, tmux_pane or "?", tmux_session_name or "?",
     )
 
     return {}
@@ -5190,7 +5202,7 @@ async def adopt_unlinked_session(
         agent = Agent(
             id=agent_hex,
             project=project_name,
-            name=f"Manual: {os.path.basename(info.get('cwd', 'session'))}"[:80],
+            name=(f"Detected: {info['tmux_session']}" if info.get("tmux_session") else f"Manual: {os.path.basename(info.get('cwd', 'session'))}")[:80],
             mode=AgentMode.AUTO,
             status=AgentStatus.SYNCING,
             model=info.get("model") or proj.default_model or CC_MODEL,

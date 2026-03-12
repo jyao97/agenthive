@@ -178,6 +178,13 @@ export const launchTmuxAgent = (data) =>
   request("/api/agents/launch-tmux", { method: "POST", body: JSON.stringify(data) });
 export const scanAgents = () =>
   request("/api/agents/scan", { method: "POST" });
+export const fetchUnlinkedSessions = () =>
+  request("/api/unlinked-sessions");
+export const adoptUnlinkedSession = (sessionId, data) =>
+  request(`/api/unlinked-sessions/${sessionId}/adopt`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 export const stopAgent = (id) =>
   request(`/api/agents/${id}`, { method: "DELETE" });
 export const deleteAgent = (id) =>
