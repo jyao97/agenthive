@@ -222,7 +222,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
       await adoptUnlinkedSession(session.session_id, {
         project: session.project_name,
       });
-      showToast(`Adopted session → ${session.project_name}`);
+      showToast(`Session confirmed → syncing ${session.project_name}`);
       setUnlinked((prev) => prev.filter((s) => s.session_id !== session.session_id));
       load(); // Refresh agent list
       window.dispatchEvent(new CustomEvent("agents-data-changed"));
@@ -630,7 +630,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
             >
               <Link2 className="w-4 h-4 text-violet-500 dark:text-violet-400 shrink-0" />
               <span className="text-sm font-medium text-violet-600 dark:text-violet-300 flex-1">
-                {unlinked.length} unlinked session{unlinked.length !== 1 ? "s" : ""}
+                {unlinked.length} session{unlinked.length !== 1 ? "s" : ""} needs confirmation
               </span>
               {unlinkedOpen
                 ? <ChevronUp className="w-4 h-4 text-faint" />
@@ -644,8 +644,13 @@ export default function AgentsPage({ theme, onToggleTheme }) {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-heading truncate">
-                          {s.project_name || "unknown"}
+                          {s.tmux_session || s.project_name || "unknown"}
                         </span>
+                        {s.project_name && (
+                          <span className="text-[10px] text-faint font-medium px-1.5 py-0.5 rounded bg-elevated shrink-0">
+                            {s.project_name}
+                          </span>
+                        )}
                         {s.model && (
                           <span className="text-[10px] text-faint font-medium px-1.5 py-0.5 rounded bg-elevated shrink-0">
                             {modelDisplayName(s.model)}
@@ -669,7 +674,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
                       disabled={adoptingId === s.session_id}
                       className="shrink-0 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors disabled:opacity-50"
                     >
-                      {adoptingId === s.session_id ? "Adopting..." : "Adopt"}
+                      {adoptingId === s.session_id ? "Syncing..." : "Confirm"}
                     </button>
                   </div>
                 ))}
