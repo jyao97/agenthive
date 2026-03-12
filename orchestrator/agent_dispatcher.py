@@ -795,6 +795,132 @@ def store_insights(db, project: str, date_str: str, section_text: str,
         own_db.close()
 
 
+def _extract_insight_terms(text: str) -> list[str]:
+    """Extract distinctive identifiers from an insight line for grep-style matching.
+
+    Returns file paths, backtick-quoted terms, snake_case and CamelCase identifiers.
+    """
+    terms: list[str] = []
+    # File paths (e.g., foo.py, bar/baz.ts)
+    terms.extend(re.findall(r'[\w/\-]+\.(?:py|js|ts|tsx|jsx|md|json|yaml|yml|toml|sh|sql)\b', text))
+    # Backtick-quoted terms
+    terms.extend(re.findall(r'`([^`]+)`', text))
+    # snake_case identifiers (skip very short ones)
+    for t in re.findall(r'\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b', text):
+        if len(t) > 4 and t not in terms:
+            terms.append(t)
+    # CamelCase identifiers
+    for t in re.findall(r'\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b', text):
+        if t not in terms:
+            terms.append(t)
+    return terms
+
+
+def _grep_dedup_insights(new_section: str, existing_progress: str,
+                         project_path: str) -> str:
+    """Two-pass dedup: grep existing PROGRESS.md for related content, then
+    use a focused LLM call (with only the matched lines, NOT the full 50K)
+    to filter out genuine duplicates.
+
+    Returns the cleaned new_section with duplicates removed and insights renumbered.
+    """
+    import subprocess
+    from config import CLAUDE_BIN
+
+    # Parse heading and numbered insights from the generated section
+    lines = new_section.split("\n")
+    heading = ""
+    insights: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            heading = stripped
+        elif re.match(r'\d+\.', stripped):
+            insights.append(stripped)
+
+    if not insights or not existing_progress:
+        return new_section
+
+    # For each new insight, grep existing PROGRESS.md for term matches
+    existing_lines = existing_progress.split("\n")
+    overlap_map: dict[int, list[str]] = {}  # insight_idx -> matching existing lines
+
+    for idx, insight in enumerate(insights):
+        terms = _extract_insight_terms(insight)
+        if not terms:
+            continue
+        matched: set[int] = set()
+        for term in terms:
+            tl = term.lower()
+            for li, eline in enumerate(existing_lines):
+                # Only match against numbered insight lines in existing content
+                if tl in eline.lower() and re.match(r'\s*\d+\.', eline.strip()):
+                    matched.add(li)
+        if matched:
+            overlap_map[idx] = [existing_lines[i].strip() for i in sorted(matched)][:5]
+
+    if not overlap_map:
+        return new_section  # No term overlap found, keep everything
+
+    # Build a focused dedup prompt (much smaller than the full 50K approach)
+    parts: list[str] = []
+    for idx in sorted(overlap_map):
+        parts.append(f"NEW #{idx+1}: {insights[idx]}")
+        parts.append("EXISTING:")
+        for m in overlap_map[idx]:
+            parts.append(f"  - {m}")
+        parts.append("")
+
+    dedup_prompt = (
+        "Compare each NEW insight against its EXISTING matches from PROGRESS.md.\n"
+        "If a NEW insight is essentially the same information as an existing entry, it's a DUPLICATE.\n"
+        "If it adds genuinely new details, corrections, or covers a different aspect, KEEP it.\n\n"
+        + "\n".join(parts) + "\n"
+        "Output ONLY a comma-separated list of NEW insight numbers to KEEP (e.g. \"1,3,5\").\n"
+        "Output \"ALL\" to keep everything, \"NONE\" to discard everything."
+    )
+
+    try:
+        result = subprocess.run(
+            [CLAUDE_BIN, "-p", "-", "--output-format", "text"],
+            input=dedup_prompt,
+            capture_output=True, text=True, timeout=120,
+            cwd=project_path,
+        )
+        if result.returncode != 0:
+            logger.warning("Dedup LLM call failed (rc=%d), keeping all insights", result.returncode)
+            return new_section
+
+        answer = result.stdout.strip().upper()
+        if "ALL" in answer:
+            return new_section
+        if "NONE" in answer:
+            return f"{heading}\n1. No new insights."
+
+        # Parse the kept indices from LLM response
+        keep_from_llm = set()
+        for tok in re.findall(r'\d+', answer):
+            keep_from_llm.add(int(tok) - 1)  # 1-indexed -> 0-indexed
+    except Exception as e:
+        logger.warning("Dedup LLM error: %s, keeping all insights", e)
+        return new_section
+
+    # Keep: insights with no overlap (weren't checked) + LLM-approved ones
+    no_overlap = set(range(len(insights))) - set(overlap_map.keys())
+    all_keep = sorted(no_overlap | keep_from_llm)
+
+    if not all_keep:
+        return f"{heading}\n1. No new insights."
+
+    kept = [insights[i] for i in all_keep if i < len(insights)]
+    result_lines = [heading]
+    for i, line in enumerate(kept, 1):
+        renumbered = re.sub(r'^\d+\.', f'{i}.', line)
+        result_lines.append(renumbered)
+
+    return "\n".join(result_lines)
+
+
 _NON_ENGLISH_RE = re.compile(r"[^\x00-\x7F]+")
 _TRANSLATE_CACHE_MAX = 256
 _translate_cache: dict[str, str] = {}
@@ -2526,7 +2652,7 @@ class AgentDispatcher:
         # Use the date that was actually summarized (default: yesterday UTC)
         summary_date = (target_date or (datetime.now(timezone.utc) - timedelta(days=1)).date()).isoformat()
 
-        # Read existing PROGRESS.md so LLM can avoid duplicates and contradictions
+        # Read existing PROGRESS.md for grep-based dedup (applied after LLM generation)
         progress_path = os.path.join(project_path, "PROGRESS.md")
         existing_progress = ""
         try:
@@ -2538,17 +2664,7 @@ class AgentDispatcher:
         if len(existing_progress) > 50_000:
             existing_progress = existing_progress[-50_000:]
 
-        existing_block = ""
-        if existing_progress:
-            existing_block = f"""
-
-=== EXISTING PROGRESS.md (for deduplication) ===
-{existing_progress}
-=== END EXISTING ===
-
-"""
-
-        prompt = f"""You are a project analyst. Read ALL the following conversations from {summary_date} thoroughly. Extract every NEW and meaningful insight, decision, bug fix, design choice, and lesson learned.
+        prompt = f"""You are a project analyst. Read ALL the following conversations from {summary_date} thoroughly. Extract every meaningful insight, decision, bug fix, design choice, and lesson learned.
 
 STRICT RULES:
 1. Output ONLY the summary section — no preamble, no explanation, no markdown fences.
@@ -2562,10 +2678,9 @@ STRICT RULES:
 4. Focus on: new discoveries, architectural decisions, bug root causes & fixes, design choices, gotchas, and lessons that future agents should know.
 5. Omit routine/trivial activity (echo tests, simple file creates). Only include things worth remembering.
 6. Each insight must be self-contained — readable without context of the original conversation.
-7. **DEDUPLICATION**: The existing PROGRESS.md is provided below. Do NOT repeat insights already captured there. Only output genuinely new information. If this day's conversation contradicts or supersedes a previous insight, note the update explicitly (e.g., "Updated: X is now Y, replacing previous approach Z").
-8. Max 25 numbered items. Be concise but specific — include file names, function names, and concrete details.
-9. Do NOT output anything before the ## heading or after the last numbered item. If there are no new insights, output only the heading with a single item "No new insights."
-{existing_block}
+7. Max 25 numbered items. Be concise but specific — include file names, function names, and concrete details.
+8. Do NOT output anything before the ## heading or after the last numbered item. If there are no new insights, output only the heading with a single item "No new insights."
+
 Here are the day's conversations (with timestamps):
 
 {session_context}"""
@@ -2644,6 +2759,33 @@ Here are the day's conversations (with timestamps):
         heading_idx = new_section.find(f"## {summary_date}")
         if heading_idx > 0:
             new_section = new_section[heading_idx:].strip()
+
+        # Grep-based dedup: compare new insights against existing PROGRESS.md
+        # by extracting key terms, grepping for matches, then using a focused
+        # LLM call with only the matched lines (not the full 50K context).
+        if existing_progress:
+            pre_dedup = _pre_sessions.copy()
+            try:
+                _pre_sessions.update(
+                    f.replace(".jsonl", "")
+                    for f in os.listdir(_session_dir)
+                    if f.endswith(".jsonl")
+                )
+            except OSError:
+                pass
+            new_section = _grep_dedup_insights(new_section, existing_progress, project_path)
+            # Mark sessions created by the dedup LLM call
+            try:
+                for f in os.listdir(_session_dir):
+                    if not f.endswith(".jsonl"):
+                        continue
+                    sid = f.replace(".jsonl", "")
+                    if sid not in _pre_sessions:
+                        _write_session_owner(_session_dir, sid, "system")
+                        logger.info("Marked dedup session %s as system-owned", sid[:12])
+            except OSError:
+                pass
+            logger.info("Grep-dedup completed for %s", project_name)
 
         # Append to PROGRESS.md (never overwrite)
         progress_path = os.path.join(project_path, "PROGRESS.md")

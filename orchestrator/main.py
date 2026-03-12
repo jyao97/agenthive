@@ -2456,7 +2456,7 @@ def _summarize_progress_background(project_name: str, project_path: str,
     today = _dt.now(_tz.utc).date().isoformat()
     progress_path = os.path.join(project_path, "PROGRESS.md")
 
-    # Read existing PROGRESS.md so LLM can avoid duplicates and contradictions
+    # Read existing PROGRESS.md for grep-based dedup (applied after LLM generation)
     existing_progress = ""
     try:
         if os.path.isfile(progress_path):
@@ -2467,17 +2467,7 @@ def _summarize_progress_background(project_name: str, project_path: str,
     if len(existing_progress) > 50_000:
         existing_progress = existing_progress[-50_000:]
 
-    existing_block = ""
-    if existing_progress:
-        existing_block = f"""
-
-=== EXISTING PROGRESS.md (for deduplication) ===
-{existing_progress}
-=== END EXISTING ===
-
-"""
-
-    prompt = f"""You are a project analyst. Read ALL the following conversations from {today} thoroughly. Extract every NEW and meaningful insight, decision, bug fix, design choice, and lesson learned.
+    prompt = f"""You are a project analyst. Read ALL the following conversations from {today} thoroughly. Extract every meaningful insight, decision, bug fix, design choice, and lesson learned.
 
 STRICT RULES:
 1. Output ONLY the summary section — no preamble, no explanation, no markdown fences.
@@ -2491,10 +2481,9 @@ STRICT RULES:
 4. Focus on: new discoveries, architectural decisions, bug root causes & fixes, design choices, gotchas, and lessons that future agents should know.
 5. Omit routine/trivial activity (echo tests, simple file creates). Only include things worth remembering.
 6. Each insight must be self-contained — readable without context of the original conversation.
-7. **DEDUPLICATION**: The existing PROGRESS.md is provided below. Do NOT repeat insights already captured there. Only output genuinely new information from today. If today's conversation contradicts or supersedes a previous insight, note the update explicitly (e.g., "Updated: X is now Y, replacing previous approach Z").
-8. Max 25 numbered items. Be concise but specific — include file names, function names, and concrete details.
-9. Do NOT output anything before the ## heading or after the last numbered item. If there are no new insights, output only the heading with a single item "No new insights today."
-{existing_block}
+7. Max 25 numbered items. Be concise but specific — include file names, function names, and concrete details.
+8. Do NOT output anything before the ## heading or after the last numbered item. If there are no new insights, output only the heading with a single item "No new insights today."
+
 Here are today's conversations (with timestamps):
 
 {session_context}"""
@@ -2564,6 +2553,30 @@ Here are today's conversations (with timestamps):
         else:
             lines = lines[1:]
         new_section = "\n".join(lines).strip()
+
+    # Grep-based dedup against existing PROGRESS.md
+    if existing_progress:
+        from agent_dispatcher import _grep_dedup_insights
+        # Update session snapshot before dedup LLM call
+        try:
+            _pre_sessions.update(
+                f.replace(".jsonl", "")
+                for f in os.listdir(_session_dir)
+                if f.endswith(".jsonl")
+            )
+        except OSError:
+            pass
+        new_section = _grep_dedup_insights(new_section, existing_progress, project_path)
+        # Mark sessions from dedup call
+        try:
+            for f in os.listdir(_session_dir):
+                if not f.endswith(".jsonl"):
+                    continue
+                sid = f.replace(".jsonl", "")
+                if sid not in _pre_sessions:
+                    _write_session_owner(_session_dir, sid, "system")
+        except OSError:
+            pass
 
     # For manual flow: show proposed section for user review before appending
     data = {"proposed": new_section, "is_append": True}
