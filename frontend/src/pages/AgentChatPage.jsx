@@ -1838,6 +1838,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
       refreshMessages();
     }
+
   }, [lastEvent, id, refreshMessages]);
 
   // Cleanup
@@ -2413,6 +2414,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
             })()}
           </>
         )}
+
 
         <div ref={messagesEndRef} />
       </div>

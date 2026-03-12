@@ -5,7 +5,7 @@ import LoginPage from "./pages/LoginPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchUnreadCount, fetchClaudeMdPending, fetchTaskCounts, getAuthToken } from "./lib/api";
-import { isPushSupported, setupPushNotifications } from "./lib/pushNotifications";
+import { isPushSupported, setupPushNotifications, reRegisterExistingSubscription } from "./lib/pushNotifications";
 import useIdleLock from "./hooks/useIdleLock";
 import usePageVisible from "./hooks/usePageVisible";
 import { MonitorProvider } from "./contexts/MonitorContext";
@@ -170,6 +170,9 @@ function AuthGuard({ children }) {
           } else if (r.authenticated) {
             setAuthed(true);
             setServerDown(false);
+            // Always re-send existing subscription to backend (works in dev mode too)
+            reRegisterExistingSubscription();
+            // Full setup (SW registration + new subscription) only in production
             if (isPushSupported()) {
               setupPushNotifications().catch((err) => {
                 console.warn("Push notification setup failed:", err);

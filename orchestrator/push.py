@@ -1,8 +1,6 @@
 """Push notification sender — best-effort, never blocks dispatch.
 
-Supports two backends:
-1. Web Push (VAPID) — browser-based, works when PWA is open
-2. Telegram Bot — reliable push via Telegram Bot API
+Backend: Web Push (VAPID) — browser-based, works when PWA is open.
 """
 
 import json
@@ -11,8 +9,6 @@ import logging
 import requests as _requests
 
 from config import (
-    TELEGRAM_BOT_TOKEN,
-    TELEGRAM_CHAT_ID,
     VAPID_PRIVATE_KEY,
     VAPID_PUBLIC_KEY,
     VAPID_SUBJECT,
@@ -37,30 +33,8 @@ def is_notification_enabled(category: str) -> bool:
 
 
 def send_push_notification(title: str, body: str, url: str = "/") -> None:
-    """Send a push notification via all configured backends."""
-    _send_telegram(title, body, url)
+    """Send a push notification via Web Push."""
     _send_webpush(title, body, url)
-
-
-def _send_telegram(title: str, body: str, url: str = "/") -> None:
-    """Send a notification via Telegram Bot API."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    try:
-        text = f"*{title}*\n{body}"
-        _requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "Markdown",
-            },
-            timeout=5,
-        )
-    except _requests.exceptions.RequestException:
-        logger.debug("Telegram send failed", exc_info=True)
-    except Exception:
-        logger.error("Telegram send unexpected error", exc_info=True)
 
 
 def _send_webpush(title: str, body: str, url: str = "/") -> None:

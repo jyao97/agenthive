@@ -26,46 +26,40 @@ def notify(
     *,
     in_use: bool = False,
     muted: bool = False,
-) -> None:
+) -> str:
     """Send a notification through the appropriate channel.
 
-    Args:
-        channel: "notify_at" | "task_complete" | "message"
-        agent_id: agent ID (empty string for task-only reminders)
-        title: notification title
-        body: notification body
-        url: deep link URL
-        in_use: whether the user is actively viewing this agent (message only)
-        muted: whether this agent's message notifications are muted (message only)
+    Returns decision string: "SEND", "SKIP (reason)", or "DROP (unknown)".
     """
     if channel == "notify_at":
         logger.info("notify: %s → SEND (always)", channel)
         _send(title, body, url)
-        return
+        return "SEND"
 
     if channel == "task_complete":
         if not is_notification_enabled("tasks"):
             logger.info("notify: %s agent=%s → SKIP (global toggle off)", channel, agent_id[:8])
-            return
+            return "SKIP (global off)"
         logger.info("notify: %s agent=%s → SEND", channel, agent_id[:8])
         _send(title, body, url)
-        return
+        return "SEND"
 
     if channel == "message":
         if not is_notification_enabled("agents"):
             logger.info("notify: %s agent=%s → SKIP (global toggle off)", channel, agent_id[:8])
-            return
+            return "SKIP (global off)"
         if muted:
             logger.info("notify: %s agent=%s → SKIP (muted)", channel, agent_id[:8])
-            return
+            return "SKIP (muted)"
         if in_use:
             logger.info("notify: %s agent=%s → SKIP (in-use)", channel, agent_id[:8])
-            return
+            return "SKIP (in-use)"
         logger.info("notify: %s agent=%s → SEND", channel, agent_id[:8])
         _send(title, body, url)
-        return
+        return "SEND"
 
     logger.warning("notify: unknown channel %r — dropping", channel)
+    return "DROP (unknown)"
 
 
 def _send(title: str, body: str, url: str) -> None:
