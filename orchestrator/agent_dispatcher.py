@@ -1406,8 +1406,8 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, s
         elif entry_type == "system":
             # Use structured fields from JSONL (subtype, content)
             subtype = entry.get("subtype", "")
-            # Skip internal CLI metrics
-            if subtype in ("turn_duration",):
+            # Skip internal CLI metrics / redundant signals
+            if subtype in ("turn_duration", "stop_hook_summary"):
                 continue
             flush_assistant()
             content = entry.get("content", "")
