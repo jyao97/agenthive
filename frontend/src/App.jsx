@@ -361,14 +361,7 @@ export default function App() {
   useEffect(() => {
     // Only poll unread when not on login page and has a token
     if (!visible || location.pathname === "/login" || !getAuthToken()) return;
-    const poll = () => fetchUnreadCount().then((r) => {
-      setUnread(r.unread);
-      // PWA app icon badge (home screen / taskbar)
-      if (navigator.setAppBadge) {
-        if (r.unread > 0) navigator.setAppBadge(r.unread).catch(() => {});
-        else navigator.clearAppBadge?.().catch(() => {});
-      }
-    }).catch((err) => {
+    const poll = () => fetchUnreadCount().then((r) => setUnread(r.unread)).catch((err) => {
       console.warn("Unread count poll failed:", err);
     });
     poll();
@@ -393,6 +386,14 @@ export default function App() {
     const id = setInterval(poll, 10000);
     return () => clearInterval(id);
   }, [location.pathname, visible]);
+
+  // PWA app icon badge — total of agent unread + task review count
+  useEffect(() => {
+    const total = unread + reviewCount;
+    if (!navigator.setAppBadge) return;
+    if (total > 0) navigator.setAppBadge(total).catch(() => {});
+    else navigator.clearAppBadge?.().catch(() => {});
+  }, [unread, reviewCount]);
 
   // Safari iOS: after keyboard dismiss the visual viewport desyncs from
   // the layout viewport.  The ONLY thing that fixes it is an actual
