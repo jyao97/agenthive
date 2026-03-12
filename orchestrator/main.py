@@ -3940,22 +3940,46 @@ async def hook_agent_tool_activity(request: Request):
     except Exception:
         return {}
 
-    tool_name = body.get("tool_name", "")
     hook_event = body.get("hook_event_name", "")
-    if hook_event == "PreToolUse":
-        phase = "start"
-    elif hook_event in ("PostToolUse", "PostToolUseFailure"):
-        phase = "end"
-    else:
-        return {}
-
-    tool_input = body.get("tool_input")
-    tool_output = body.get("tool_output") or body.get("tool_error") or None
-    is_error = hook_event == "PostToolUseFailure"
 
     from websocket import emit_tool_activity
-    await emit_tool_activity(agent_id, tool_name, phase, tool_input,
-                              tool_output=tool_output, is_error=is_error)
+
+    # --- Tool lifecycle ---
+    if hook_event == "PreToolUse":
+        tool_input = body.get("tool_input")
+        await emit_tool_activity(agent_id, body.get("tool_name", ""), "start",
+                                  tool_input=tool_input)
+        return {}
+    if hook_event in ("PostToolUse", "PostToolUseFailure"):
+        tool_input = body.get("tool_input")
+        tool_output = body.get("tool_output") or body.get("tool_error") or None
+        is_error = hook_event == "PostToolUseFailure"
+        await emit_tool_activity(agent_id, body.get("tool_name", ""), "end",
+                                  tool_input=tool_input, tool_output=tool_output,
+                                  is_error=is_error)
+        return {}
+
+    # --- Subagent lifecycle ---
+    if hook_event == "SubagentStart":
+        agent_type = body.get("agent_type", "subagent")
+        desc = body.get("description", "") or body.get("prompt", "")[:80] or ""
+        await emit_tool_activity(agent_id, f"Agent:{agent_type}", "start",
+                                  tool_input={"description": desc} if desc else None)
+        return {}
+    if hook_event == "SubagentStop":
+        agent_type = body.get("agent_type", "subagent")
+        await emit_tool_activity(agent_id, f"Agent:{agent_type}", "end",
+                                  tool_output="done")
+        return {}
+
+    # --- Permission prompt (agent blocked, waiting for user) ---
+    if hook_event == "Notification":
+        ntype = body.get("notification_type", "")
+        if ntype == "permission_prompt":
+            tool_name = body.get("tool_name", "unknown")
+            await emit_tool_activity(agent_id, tool_name, "permission",
+                                      tool_input=body.get("tool_input"))
+        return {}
 
     return {}
 
@@ -4252,6 +4276,16 @@ def _write_agent_hooks_config(project_path: str):
             "hooks": [_tool_activity_hook],
         }],
         "PostToolUseFailure": [{
+            "hooks": [_tool_activity_hook],
+        }],
+        "SubagentStart": [{
+            "hooks": [_tool_activity_hook],
+        }],
+        "SubagentStop": [{
+            "hooks": [_tool_activity_hook],
+        }],
+        "Notification": [{
+            "matcher": "permission_prompt",
             "hooks": [_tool_activity_hook],
         }],
         "Stop": [{

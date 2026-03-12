@@ -236,11 +236,11 @@ async def emit_tool_activity(agent_id: str, tool_name: str, phase: str,
                               tool_input: dict | None = None,
                               tool_output: str | None = None,
                               is_error: bool = False):
-    """Broadcast tool start/end events driven by CC hooks (PreToolUse/PostToolUse)."""
+    """Broadcast tool/subagent/permission events driven by CC hooks."""
     payload: dict = {
         "agent_id": agent_id,
         "tool_name": tool_name,
-        "phase": phase,  # "start" or "end"
+        "phase": phase,  # "start", "end", or "permission"
     }
     if tool_input:
         summary = _tool_input_summary(tool_name, tool_input)

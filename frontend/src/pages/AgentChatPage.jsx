@@ -946,10 +946,22 @@ function ToolActivityLog({ toolLog, activeTool, toolStartTime }) {
   if (!toolLog.length) return null;
 
   const completed = toolLog.filter((e) => e.done);
-  const running = toolLog.find((e) => !e.done);
+  const active = toolLog.filter((e) => !e.done);
   const collapsible = completed.length > 3;
   const visibleCompleted = collapsible && !expanded ? completed.slice(-2) : completed;
   const hiddenCount = completed.length - visibleCompleted.length;
+
+  const entryIcon = (entry) => {
+    if (entry.kind === "permission") return "⏳";
+    if (entry.isError) return "✗";
+    if (entry.kind === "subagent") return "◆";
+    return "✓";
+  };
+  const nameColor = (entry) => {
+    if (entry.kind === "permission") return "text-amber-400";
+    if (entry.kind === "subagent") return "text-violet-400";
+    return "text-cyan-300";
+  };
 
   return (
     <div className="flex justify-start my-2">
@@ -966,22 +978,27 @@ function ToolActivityLog({ toolLog, activeTool, toolStartTime }) {
           )}
           {visibleCompleted.map((entry, i) => (
             <div key={i} className={`flex items-center gap-1.5 ${entry.isError ? "text-red-400" : "text-dim"}`}>
-              <span className="shrink-0">{entry.isError ? "✗" : "✓"}</span>
-              <span className="text-cyan-300">{entry.name}</span>
+              <span className="shrink-0">{entryIcon(entry)}</span>
+              <span className={nameColor(entry)}>{entry.name}</span>
               {entry.summary && <span className="text-faint truncate max-w-[160px]">{entry.summary}</span>}
               {entry.outputSummary && (
                 <span className={entry.isError ? "text-red-400/70" : "text-faint"}>→ {entry.outputSummary}</span>
               )}
             </div>
           ))}
-          {running && (
-            <div className="flex items-center gap-1.5 text-dim">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse shrink-0" />
-              <span className="text-cyan-300">{running.name}</span>
-              {running.summary && <span className="text-faint truncate max-w-[160px]">{running.summary}</span>}
-              {elapsed > 2 && <span className="text-faint">({elapsed}s)</span>}
+          {active.map((entry, i) => (
+            <div key={`active-${i}`} className="flex items-center gap-1.5 text-dim">
+              {entry.kind === "permission" ? (
+                <span className="text-amber-400 shrink-0">⏳</span>
+              ) : (
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse shrink-0" />
+              )}
+              <span className={nameColor(entry)}>{entry.name}</span>
+              {entry.summary && <span className="text-faint truncate max-w-[160px]">{entry.summary}</span>}
+              {entry.kind === "permission" && <span className="text-amber-400/70">awaiting permission</span>}
+              {entry.kind !== "permission" && elapsed > 2 && <span className="text-faint">({elapsed}s)</span>}
             </div>
-          )}
+          ))}
           {collapsible && expanded && (
             <button
               type="button"
@@ -1908,12 +1925,21 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (phase === "start") {
         setActiveTool({ name: tool_name, summary: summary || "" });
         setToolStartTime(Date.now());
-        setToolLog((prev) => [...prev, {
-          name: tool_name, summary: summary || "",
-          outputSummary: null, isError: false,
-          startTime: Date.now(), done: false,
-        }]);
-      } else {
+        setToolLog((prev) => {
+          // If there's a pending permission entry for this tool, mark it resolved
+          const resolved = prev.map((e) =>
+            e.kind === "permission" && e.name === tool_name && !e.done
+              ? { ...e, done: true, outputSummary: "granted" }
+              : e
+          );
+          return [...resolved, {
+            name: tool_name, summary: summary || "",
+            outputSummary: null, isError: false,
+            startTime: Date.now(), done: false,
+            kind: tool_name.startsWith("Agent:") ? "subagent" : "tool",
+          }];
+        });
+      } else if (phase === "end") {
         setActiveTool(null);
         setToolStartTime(null);
         setToolLog((prev) => {
@@ -1924,6 +1950,14 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           updated[idx] = { ...updated[idx], done: true, outputSummary: output_summary || "", isError: !!is_error };
           return updated;
         });
+      } else if (phase === "permission") {
+        // Agent is blocked waiting for permission — show alert entry
+        setToolLog((prev) => [...prev, {
+          name: tool_name, summary: summary || "",
+          outputSummary: null, isError: false,
+          startTime: Date.now(), done: false,
+          kind: "permission",
+        }]);
       }
       return;
     }
