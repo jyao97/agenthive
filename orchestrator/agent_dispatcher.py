@@ -2206,6 +2206,9 @@ class AgentDispatcher:
         # Generation tracking: monotonic ID per agent + set of currently generating agents
         self._generation_ids: dict[str, int] = {}
         self._generating_agents: set[str] = set()
+        # Agents whose stop hook fired — JSONL sync consumes this to
+        # increment unread_count at the right moment (not mid-generation).
+        self._pending_notify: set[str] = set()
 
         # Tmux launch background tasks: agent_id -> asyncio.Task
         self._launch_tasks: dict[str, asyncio.Task] = {}
@@ -5638,6 +5641,19 @@ Here are the day's conversations (with timestamps):
                     is_generating = False
                     self._stop_generating(agent_id)
                     _sync_gen_id = None
+                # Stop hook fired but JSONL hasn't changed — turns were
+                # already imported; increment unread now.
+                if agent_id in self._pending_notify:
+                    self._pending_notify.discard(agent_id)
+                    db_pn = SessionLocal()
+                    try:
+                        _ag = db_pn.get(Agent, agent_id)
+                        if _ag and not self._is_agent_in_use(_ag.id, _ag.tmux_pane):
+                            _ag.unread_count += 1
+                            self._maybe_notify_message(_ag)
+                            db_pn.commit()
+                    finally:
+                        db_pn.close()
                 # Periodically check if we should still be syncing
                 if idle_polls % 10 == 0:
                     db = SessionLocal()
@@ -5812,6 +5828,19 @@ Here are the day's conversations (with timestamps):
                         _sync_gen_id = self._start_generating(agent_id)
                     _sync_active_tool = _extract_last_tool_from_content(partial) if partial else None
                     self._emit(emit_agent_stream(agent_id, partial, generation_id=_sync_gen_id, active_tool=_sync_active_tool))
+                # Stop hook fired but turns already imported — increment unread now
+                if agent_id in self._pending_notify:
+                    self._pending_notify.discard(agent_id)
+                    db_pn = SessionLocal()
+                    try:
+                        _ag = db_pn.get(Agent, agent_id)
+                        if _ag and not self._is_agent_in_use(_ag.id, _ag.tmux_pane):
+                            _ag.unread_count += 1
+                            _ag.last_message_preview = (partial or _ag.last_message_preview or "")[:200]
+                            self._maybe_notify_message(_ag)
+                            db_pn.commit()
+                    finally:
+                        db_pn.close()
                 continue
 
             db = SessionLocal()
@@ -5841,6 +5870,13 @@ Here are the day's conversations (with timestamps):
                             )
                         agent.last_message_preview = (_last_content or "")[:200]
                         agent.last_message_at = _utcnow()
+                        # Stop hook fired while last turn was growing — this
+                        # is the final content, increment unread now.
+                        if agent_id in self._pending_notify:
+                            self._pending_notify.discard(agent_id)
+                            if not self._is_agent_in_use(agent.id, agent.tmux_pane):
+                                agent.unread_count += 1
+                                self._maybe_notify_message(agent)
                         db.commit()
                         # Stream the updated content to connected clients
                         _sync_active_tool = _extract_last_tool_from_content(_last_content) if _last_content else None
@@ -6015,11 +6051,15 @@ Here are the day's conversations (with timestamps):
 
                     agent.last_message_preview = (new_turns[-1][1] or "")[:200]
                     agent.last_message_at = _utcnow()
-                    if not self._is_agent_in_use(agent.id, agent.tmux_pane):
-                        _non_user = sum(1 for r, *_ in new_turns if r != "user")
-                        if _non_user > 0:
-                            agent.unread_count += _non_user
-                            self._maybe_notify_message(agent)
+                    # Only increment unread when the stop hook has fired
+                    # (agent finished its turn), not mid-generation.
+                    if agent_id in self._pending_notify:
+                        self._pending_notify.discard(agent_id)
+                        if not self._is_agent_in_use(agent.id, agent.tmux_pane):
+                            _non_user = sum(1 for r, *_ in new_turns if r != "user")
+                            if _non_user > 0:
+                                agent.unread_count += _non_user
+                                self._maybe_notify_message(agent)
                     db.commit()
 
                     last_turn_count = len(turns)

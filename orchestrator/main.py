@@ -3896,9 +3896,12 @@ async def hook_agent_stop(request: Request):
     # Clear generating state immediately — the Stop hook is a deterministic
     # signal that Claude finished this turn.
     ad = getattr(app.state, "agent_dispatcher", None)
-    if ad and agent_id in ad._generating_agents:
-        logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
-        ad._stop_generating(agent_id)
+    if ad:
+        if agent_id in ad._generating_agents:
+            logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
+            ad._stop_generating(agent_id)
+        # Signal the JSONL sync loop to increment unread on next poll
+        ad._pending_notify.add(agent_id)
 
     logger.info("hook_agent_stop: agent=%s summary_len=%d", agent_id[:8], len(summary))
 
