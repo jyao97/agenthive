@@ -25,12 +25,6 @@ export async function setupPushNotifications() {
     console.debug("[push] setup skipped: PushManager not supported");
     return false;
   }
-  // Skip service worker registration in dev mode — it conflicts with Vite HMR
-  // and causes white screen crashes in standalone PWA mode.
-  if (import.meta.env.DEV) {
-    console.debug("[push] setup skipped: dev mode (Vite HMR conflict)");
-    return false;
-  }
 
   try {
     // Request notification permission
@@ -40,7 +34,16 @@ export async function setupPushNotifications() {
       return false;
     }
 
-    // Use the SW already registered by vite-plugin-pwa (includes push-handler.js)
+    // In dev mode, vite-plugin-pwa doesn't register a SW, so we manually
+    // register the lightweight push-handler.js as a standalone service worker.
+    if (import.meta.env.DEV) {
+      const existing = await navigator.serviceWorker.getRegistration();
+      if (!existing) {
+        console.debug("[push] dev mode: registering push-handler.js as standalone SW");
+        await navigator.serviceWorker.register("/push-handler.js");
+      }
+    }
+
     const reg = await navigator.serviceWorker.ready;
 
     // Fetch VAPID public key from backend
