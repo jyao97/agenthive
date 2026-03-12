@@ -5080,145 +5080,61 @@ Here are the day's conversations (with timestamps):
         Used to detect when Claude auto-continues into a new session
         (e.g. after /clear or context compaction).
 
-        Detection strategy (priority order):
-
-          0. Hook signal: check /tmp/ahive-{agent_id}.newsession written
-             by the SessionStart hook.  Deterministic, zero false
-             positives — Claude Code tells us the new session_id
-             directly.  This is the primary path.
-
-          1. FD scan: check which JSONL the agent's Claude process has
-             open (via /proc/{pid}/fd/).
-
-          2. Sidecar scan: check .owner files for sessions already
-             claimed by this agent but not yet in the DB.
-
-        Sessions owned by other agents are skipped.
+        Relies solely on the SessionStart hook signal file written by:
+        - Managed agents: hook has AHIVE_AGENT_ID → writes signal directly
+        - Detected agents: hook handler checks pane ownership → writes signal
         """
-        current_jsonl = _resolve_session_jsonl(current_sid, project_path, worktree)
-        try:
-            current_mtime = os.path.getmtime(current_jsonl)
-        except OSError:
-            return None
-
         sdir = session_source_dir(project_path)
 
-        # Pre-fetch active_sids and pane state — needed by all layers.
-        pane_pid: int | None = None
-        db = SessionLocal()
-        try:
-            agent = db.get(Agent, agent_id)
-            if agent and agent.tmux_pane:
-                pane_info = _build_tmux_claude_map().get(agent.tmux_pane)
-                if pane_info:
-                    pane_pid = pane_info["pid"]
-
-            # Collect ALL session IDs assigned to any agent to avoid
-            # re-adopting a dead or unrelated session.
-            active_sids: set[str] = {
-                a.session_id for a in db.query(Agent).filter(
-                    Agent.session_id.is_not(None),
-                ).all()
-            }
-        finally:
-            db.close()
-
-        # Layer 0: Hook signal — check for /tmp/ahive-{agent_id}.newsession
-        # written by the SessionStart hook.  This is deterministic: Claude
-        # Code itself tells us the new session_id via the hook payload.
         signal_path = f"/tmp/ahive-{agent_id}.newsession"
         try:
             with open(signal_path) as f:
                 hook_sid = f.read().strip()
             # Consume the signal file immediately to prevent re-processing
             os.unlink(signal_path)
-            if hook_sid and hook_sid != current_sid and hook_sid not in active_sids:
-                # Verify the JSONL actually exists (hook may fire before
-                # Claude writes the first entry)
-                hook_jsonl = os.path.join(sdir, f"{hook_sid}.jsonl")
-                if os.path.exists(hook_jsonl):
-                    _write_session_owner(sdir, hook_sid, agent_id)
-                    logger.info(
-                        "_detect_successor: hook-signal match "
-                        "agent=%s new_sid=%s",
-                        agent_id, hook_sid[:12],
-                    )
-                    return hook_sid
-                # JSONL not yet on disk — re-write signal so next poll
-                # retries (hook only fires once)
-                try:
-                    with open(signal_path, "w") as f:
-                        f.write(hook_sid)
-                except OSError:
-                    pass
         except FileNotFoundError:
-            pass
+            return None
         except OSError as e:
             logger.debug("_detect_successor: hook signal read failed: %s", e)
+            return None
 
-        # Primary: FD scan — ask the OS which JSONL the agent's own
-        # Claude process has open.  This is deterministic: the PID
-        # belongs to THIS agent's tmux pane, so it can only find
-        # sessions belonging to this agent's Claude process.
-        if pane_pid:
-            fd_sid = _detect_pid_session_jsonl(pane_pid)
-            if fd_sid and fd_sid != current_sid and fd_sid not in active_sids:
-                # Write .owner immediately so future checks are instant
-                _write_session_owner(sdir, fd_sid, agent_id)
-                logger.info(
-                    "_detect_successor: fd-scan match "
-                    "agent=%s pid=%d new_sid=%s",
-                    agent_id, pane_pid, fd_sid[:12],
+        if not hook_sid or hook_sid == current_sid:
+            return None
+
+        # Guard: don't rotate if session already owned by another agent
+        db = SessionLocal()
+        try:
+            existing = db.query(Agent).filter(
+                Agent.session_id == hook_sid,
+            ).first()
+            if existing and existing.id != agent_id:
+                logger.debug(
+                    "_detect_successor: session %s already owned by agent %s, "
+                    "skipping rotation for %s",
+                    hook_sid[:12], existing.id[:8], agent_id[:8],
                 )
-                return fd_sid
+                return None
+        finally:
+            db.close()
 
-        # Fallback 1: sidecar scan — check .owner files for sessions
-        # already claimed by this agent but not yet assigned in the DB.
-        session_dirs = [sdir]
-        if worktree:
-            wt_path = os.path.join(project_path, ".claude", "worktrees", worktree)
-            wt_sdir = session_source_dir(wt_path)
-            if wt_sdir not in session_dirs and os.path.isdir(wt_sdir):
-                session_dirs.append(wt_sdir)
+        # Verify the JSONL actually exists (hook may fire before
+        # Claude writes the first entry)
+        hook_jsonl = os.path.join(sdir, f"{hook_sid}.jsonl")
+        if os.path.exists(hook_jsonl):
+            _write_session_owner(sdir, hook_sid, agent_id)
+            logger.info(
+                "_detect_successor: hook-signal match agent=%s new_sid=%s",
+                agent_id[:8], hook_sid[:12],
+            )
+            return hook_sid
 
-        best_sid, best_mtime = None, current_mtime
-        for session_dir in session_dirs:
-            try:
-                for fname in os.listdir(session_dir):
-                    if not fname.endswith(".owner"):
-                        continue
-                    sid = fname.replace(".owner", "")
-                    if sid == current_sid or sid in active_sids:
-                        continue
-                    owner = _read_session_owner(session_dir, sid)
-                    if not owner or owner.get("agent_id") != agent_id:
-                        continue
-                    # Verify JSONL exists and is newer
-                    jsonl_path = os.path.join(session_dir, f"{sid}.jsonl")
-                    try:
-                        mtime = os.path.getmtime(jsonl_path)
-                    except OSError:
-                        continue
-                    if mtime > best_mtime:
-                        logger.info(
-                            "_detect_successor: sidecar match "
-                            "agent=%s candidate_sid=%s",
-                            agent_id, sid[:12],
-                        )
-                        best_sid, best_mtime = sid, mtime
-            except OSError as e:
-                logger.warning(
-                    "_detect_successor: scan failed dir=%s agent=%s: %s",
-                    session_dir, agent_id, e,
-                )
-
-        # Note: the old "unowned JSONL scan" (Fallback 3) was removed.
-        # It scanned for JONLs without .owner files and tried to claim them,
-        # but this created race conditions between agents — any idle agent
-        # could steal another agent's /clear continuation.  With hooks as
-        # the primary path, this heuristic is no longer needed.
-
-        return best_sid
+        # JSONL not yet on disk — re-write signal so next poll retries
+        try:
+            with open(signal_path, "w") as f:
+                f.write(hook_sid)
+        except OSError:
+            pass
+        return None
 
     def _rotate_agent_session(
         self, agent_id: str, new_sid: str, project_path: str,
