@@ -361,7 +361,14 @@ export default function App() {
   useEffect(() => {
     // Only poll unread when not on login page and has a token
     if (!visible || location.pathname === "/login" || !getAuthToken()) return;
-    const poll = () => fetchUnreadCount().then((r) => setUnread(r.unread)).catch((err) => {
+    const poll = () => fetchUnreadCount().then((r) => {
+      setUnread(r.unread);
+      // PWA app icon badge (home screen / taskbar)
+      if (navigator.setAppBadge) {
+        if (r.unread > 0) navigator.setAppBadge(r.unread).catch(() => {});
+        else navigator.clearAppBadge?.().catch(() => {});
+      }
+    }).catch((err) => {
       console.warn("Unread count poll failed:", err);
     });
     poll();
