@@ -1171,10 +1171,19 @@ function ToolActivityLog({ toolLog, activeTool, toolStartTime }) {
 }
 
 
-// --- Permission Approval Card (inline in tool activity log area) ---
+// --- Permission Approval Card (inline, matches PlanBubble style) ---
+
+const PERMISSION_OPTIONS = [
+  { label: "Allow", description: "Allow this tool call once", color: "emerald", decision: "allow" },
+  { label: `Allow for session`, description: "Don't ask again for this tool", color: "cyan", decision: "allow_always" },
+  { label: "Deny", description: "Block this tool call", color: "red", decision: "deny" },
+];
 
 function PermissionCard({ request, agentId, onResolved }) {
-  const [loading, setLoading] = useState(null); // "allow" | "deny" | "allow_always"
+  const [chosenIdx, setChosenIdx] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -1186,69 +1195,136 @@ function PermissionCard({ request, agentId, onResolved }) {
     return () => clearInterval(timer);
   }, [request.created_at]);
 
-  const handle = async (decision) => {
-    setLoading(decision);
+  const handleSelect = async (idx) => {
+    const opt = PERMISSION_OPTIONS[idx];
+    setChosenIdx(idx);
+    setSubmitting(true);
+    setError(null);
     try {
       await respondPermission(agentId, request.request_id, {
-        decision,
+        decision: opt.decision,
         tool_name: request.tool_name,
       });
-      onResolved(request.request_id, decision);
-    } catch {
-      setLoading(null);
+      onResolved(request.request_id, opt.decision);
+    } catch (e) {
+      setError("Failed: " + (e.message || "Unknown error"));
+      setChosenIdx(null);
+    } finally {
+      setSubmitting(false);
     }
   };
 
+  const isAnswered = chosenIdx != null;
   const toolLabel = request.tool_name;
   const summary = request.summary || "";
 
+  const colorMap = {
+    emerald: { active: "bg-emerald-500/20 border-emerald-500/40 text-heading", dot: "border-emerald-400 bg-emerald-400" },
+    cyan: { active: "bg-cyan-500/20 border-cyan-500/40 text-heading", dot: "border-cyan-400 bg-cyan-400" },
+    red: { active: "bg-red-500/20 border-red-500/40 text-heading", dot: "border-red-400 bg-red-400" },
+  };
+
+  // Badge
+  let badgeText = null;
+  let badgeClass = "";
+  if (isAnswered) {
+    const opt = PERMISSION_OPTIONS[chosenIdx];
+    badgeText = opt.decision === "deny" ? "Denied" : "Allowed";
+    badgeClass = opt.decision === "deny"
+      ? "bg-red-500/20 text-red-300"
+      : "bg-emerald-500/20 text-emerald-300";
+  }
+
   return (
-    <div className="flex justify-start my-2">
-      <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-surface shadow-card rounded-bl-md border border-amber-500/30">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-amber-400 text-sm">⏳</span>
-          <span className="text-xs font-semibold text-amber-300">Permission Required</span>
-          <span className="text-[11px] text-faint font-mono ml-auto">{elapsed}s</span>
-        </div>
-        <div className="text-xs font-mono text-dim mb-2">
-          <span className="text-cyan-300">{toolLabel}</span>
-          {summary && <span className="text-faint ml-1.5 break-all">{summary.length > 120 ? summary.slice(0, 120) + "…" : summary}</span>}
-        </div>
-        {request.tool_input && Object.keys(request.tool_input).length > 0 && (
-          <details className="mb-2">
-            <summary className="text-[11px] text-faint cursor-pointer hover:text-dim">details</summary>
-            <pre className="text-[10px] text-faint mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all">
-              {JSON.stringify(request.tool_input, null, 2)}
-            </pre>
-          </details>
+    <div className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/20 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+        <span className="text-sm font-medium text-amber-300">Permission Required</span>
+        <span className="text-[10px] text-dim font-mono">{elapsed}s</span>
+        {badgeText && (
+          <span className={`ml-auto px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${badgeClass}`}>
+            {badgeText}
+          </span>
         )}
-        <div className="flex gap-2 mt-1" style={{ touchAction: "manipulation" }}>
-          <button
-            type="button"
-            onPointerUp={() => !loading && handle("allow")}
-            disabled={!!loading}
-            className="px-4 py-2.5 text-xs font-medium rounded-xl bg-emerald-600/80 active:bg-emerald-500 text-white transition-colors disabled:opacity-50 min-h-[40px] select-none"
-          >
-            {loading === "allow" ? "…" : "Allow"}
-          </button>
-          <button
-            type="button"
-            onPointerUp={() => !loading && handle("allow_always")}
-            disabled={!!loading}
-            className="px-4 py-2.5 text-xs font-medium rounded-xl bg-cyan-600/60 active:bg-cyan-500 text-white transition-colors disabled:opacity-50 min-h-[40px] select-none"
-          >
-            {loading === "allow_always" ? "…" : `Always ${toolLabel}`}
-          </button>
-          <button
-            type="button"
-            onPointerUp={() => !loading && handle("deny")}
-            disabled={!!loading}
-            className="px-4 py-2.5 text-xs font-medium rounded-xl bg-red-600/60 active:bg-red-500 text-white transition-colors disabled:opacity-50 min-h-[40px] select-none"
-          >
-            {loading === "deny" ? "…" : "Deny"}
-          </button>
+      </div>
+      {/* Tool details */}
+      <div className="mb-3 rounded-lg bg-surface/60 border border-divider/40 overflow-hidden">
+        <div className="px-3 py-2 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-cyan-300">{toolLabel}</span>
+            {summary && <span className="text-xs text-dim truncate">{summary}</span>}
+          </div>
+          {request.tool_input && Object.keys(request.tool_input).length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={() => setDetailsOpen((v) => !v)}
+                className="text-[10px] text-dim hover:text-body transition-colors mt-1"
+              >
+                {detailsOpen ? "Hide details" : "Show details"}
+              </button>
+              {detailsOpen && (
+                <pre className="text-[10px] text-dim mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
+                  {JSON.stringify(request.tool_input, null, 2)}
+                </pre>
+              )}
+            </>
+          )}
         </div>
       </div>
+      {/* Options — same pattern as PlanBubble */}
+      <div className="space-y-1.5">
+        {PERMISSION_OPTIONS.map((opt, oi) => {
+          const isChosen = chosenIdx === oi;
+          const dimmed = isAnswered && !isChosen;
+          const colors = colorMap[opt.color] || colorMap.emerald;
+          // For "Allow for session", show tool name in label
+          const label = opt.decision === "allow_always" ? `Always allow ${toolLabel}` : opt.label;
+
+          return (
+            <button
+              key={oi}
+              type="button"
+              disabled={isAnswered || submitting}
+              onClick={() => !isAnswered && handleSelect(oi)}
+              className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-all border ${
+                isChosen
+                  ? colors.active
+                  : dimmed
+                    ? "bg-surface/30 border-divider/30 text-dim/50"
+                    : "bg-surface/50 border-divider hover:bg-hover hover:border-heading/20 text-body"
+              } ${isAnswered ? "cursor-default" : "cursor-pointer"}`}
+            >
+              <div className="flex items-start gap-2">
+                <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+                  isChosen ? colors.dot : "border-dim/40"
+                }`}>
+                  {isChosen && (
+                    <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                </span>
+                <div>
+                  <span className="font-medium">{label}</span>
+                  <p className={`text-xs mt-0.5 ${dimmed ? "text-dim/30" : "text-dim"}`}>{opt.description}</p>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {submitting && (
+        <p className="text-xs text-dim mt-2 flex items-center gap-1.5">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          Sending response...
+        </p>
+      )}
+      {error && (
+        <p className="text-xs text-red-400 mt-2 px-1">{error}</p>
+      )}
     </div>
   );
 }
