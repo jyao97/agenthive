@@ -1026,11 +1026,11 @@ const _tlColor = (e) => {
 
 function ToolLogEntry({ entry }) {
   return (
-    <div className={`flex items-center gap-1.5 ${entry.is_error ? "text-red-400/80" : "text-faint"}`}>
+    <div className={`flex items-center gap-1.5 ${entry.is_error ? "text-red-400" : "text-dim"}`}>
       <span className="shrink-0">{_tlIcon(entry)}</span>
       <span className={_tlColor(entry)}>{entry.name}</span>
-      {entry.summary && <span className="truncate max-w-[140px]">{entry.summary}</span>}
-      {entry.output_summary && <span className={entry.is_error ? "text-red-400/60" : ""}>→ {entry.output_summary}</span>}
+      {entry.summary && <span className="text-faint truncate max-w-[160px]">{entry.summary}</span>}
+      {entry.output_summary && <span className={entry.is_error ? "text-red-400/70" : "text-faint"}>→ {entry.output_summary}</span>}
     </div>
   );
 }
@@ -1063,9 +1063,9 @@ function ToolLogBubble({ entries }) {
   const hiddenCount = deduped.length - visible.length;
 
   return (
-    <div className="flex justify-start my-1">
-      <div className="max-w-[85%] rounded-xl px-3 py-1.5 bg-elevated/60 border border-divider/50">
-        <div className="space-y-0 text-[11px] font-mono">
+    <div className="flex justify-start my-2">
+      <div className="max-w-[85%] rounded-2xl px-4 py-2.5 bg-surface shadow-card rounded-bl-md">
+        <div className="space-y-0.5 text-xs font-mono">
           {hiddenCount > 0 && (
             <button type="button" onClick={() => setExpanded(true)} className="text-faint hover:text-dim text-[11px] mb-0.5">
               + {hiddenCount} more...
