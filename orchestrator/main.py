@@ -129,7 +129,7 @@ def _create_tmux_claude_session(
                           capture_output=True, text=True, timeout=_TMUX_CMD_TIMEOUT)
     pane_id = pane_result.stdout.strip()
     # Unset problematic env vars and export AHIVE_AGENT_ID for hooks
-    env_setup = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED"
+    env_setup = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED CLAUDE_CODE_OAUTH_TOKEN"
     if agent_id:
         env_setup += f" && export AHIVE_AGENT_ID={agent_id}"
     _sp.run(["tmux", "send-keys", "-t", pane_id, env_setup, "Enter"],
@@ -323,6 +323,24 @@ async def lifespan(app: FastAPI):
         _write_global_session_hook()
     except Exception:
         logger.warning("Failed to write global session hook", exc_info=True)
+
+    # Refresh project-level hook configs (ensures new hook types are registered)
+    try:
+        _db_hooks = SessionLocal()
+        _project_paths = [
+            p.path for p in _db_hooks.query(Project.path).distinct().all()
+            if p.path and os.path.isdir(p.path)
+        ]
+        _db_hooks.close()
+        for _pp in _project_paths:
+            try:
+                _write_agent_hooks_config(_pp)
+            except Exception:
+                logger.debug("Failed to refresh hooks for %s", _pp, exc_info=True)
+        if _project_paths:
+            logger.info("Refreshed hook configs for %d projects", len(_project_paths))
+    except Exception:
+        logger.warning("Failed to refresh project hook configs", exc_info=True)
 
     # Process sessions that accumulated while orchestrator was offline
     try:
@@ -3877,6 +3895,48 @@ def read_stop_summary(agent_id: str) -> str | None:
         return None
 
 
+@app.post("/api/hooks/agent-session-end")
+async def hook_agent_session_end(request: Request):
+    """Receive SessionEnd hook — deterministic signal that a CLI session ended.
+
+    Replaces JSONL tail scanning (_session_has_ended polling) as the primary
+    mechanism for detecting session completion.  The sync loop's polling-based
+    check remains as a fallback for abnormal exits that don't fire hooks.
+    """
+    agent_id = request.headers.get("X-Agent-Id", "").strip()
+    if not agent_id:
+        return {}
+
+    ad = getattr(app.state, "agent_dispatcher", None)
+    if not ad:
+        return {}
+
+    # Trigger final sync + stop cleanup via the sync loop
+    import asyncio
+    asyncio.create_task(ad.trigger_sync(agent_id, is_stop=True))
+
+    logger.info("hook_agent_session_end: agent=%s", agent_id[:8])
+    return {}
+
+
+@app.post("/api/hooks/agent-user-prompt")
+async def hook_agent_user_prompt(request: Request):
+    """Receive UserPromptSubmit hook — user typed something in the CLI.
+
+    Wakes the sync loop immediately so the new JSONL content (user message)
+    is imported without waiting for the next poll cycle.
+    """
+    agent_id = request.headers.get("X-Agent-Id", "").strip()
+    if not agent_id:
+        return {}
+
+    ad = getattr(app.state, "agent_dispatcher", None)
+    if ad:
+        ad.wake_sync(agent_id)
+
+    return {}
+
+
 @app.post("/api/hooks/agent-stop")
 async def hook_agent_stop(request: Request):
     """Receive Stop hook from Claude Code agents.
@@ -3957,6 +4017,53 @@ async def hook_agent_tool_activity(request: Request):
         tool_input = body.get("tool_input")
         summary = _tool_input_summary(tool_name, tool_input) if tool_input else ""
         await emit_tool_activity(agent_id, tool_name, phase, tool_input=tool_input)
+        # Immediate interactive card for AskUserQuestion / ExitPlanMode
+        if tool_name in ("AskUserQuestion", "ExitPlanMode") and tool_input and ad:
+            try:
+                from database import SessionLocal as _SL
+                from websocket import emit_new_message as _enm
+                if tool_name == "AskUserQuestion":
+                    _item = {
+                        "type": "ask_user_question",
+                        "tool_use_id": body.get("tool_use_id", ""),
+                        "questions": tool_input.get("questions", []),
+                        "answer": None,
+                    }
+                else:
+                    _item = {
+                        "type": "exit_plan_mode",
+                        "tool_use_id": body.get("tool_use_id", ""),
+                        "allowedPrompts": tool_input.get("allowedPrompts", []),
+                        "plan": tool_input.get("plan", ""),
+                        "answer": None,
+                    }
+                _meta = json.dumps({"interactive": [_item]})
+                _db = _SL()
+                try:
+                    _ag = _db.get(Agent, agent_id)
+                    _ag_name = _ag.name if _ag else ""
+                    _ag_proj = _ag.project if _ag else ""
+                    # Create message with interactive metadata
+                    _msg = Message(
+                        agent_id=agent_id,
+                        role=MessageRole.AGENT,
+                        content="",
+                        status=MessageStatus.COMPLETED,
+                        source="cli",
+                        meta_json=_meta,
+                        jsonl_uuid=body.get("tool_use_id", ""),
+                        completed_at=_utcnow(),
+                    )
+                    _db.add(_msg)
+                    _db.commit()
+                    ad._emit(_enm(agent_id, _msg.id, _ag_name, _ag_proj))
+                finally:
+                    _db.close()
+            except Exception:
+                logger.warning(
+                    "PreToolUse: failed to create interactive card for %s",
+                    agent_id[:8], exc_info=True,
+                )
     elif hook_event in ("PostToolUse", "PostToolUseFailure"):
         tool_name = body.get("tool_name", "")
         phase = "end"
@@ -3977,6 +4084,50 @@ async def hook_agent_tool_activity(request: Request):
         summary = desc
         await emit_tool_activity(agent_id, tool_name, phase,
                                   tool_input={"description": desc} if desc else None)
+        # Create Agent record immediately so UI shows the subagent
+        sub_agent_id = body.get("agent_id", "")
+        if ad and sub_agent_id:
+            try:
+                from database import SessionLocal as _SL
+                from models import Agent as _Agent, AgentMode as _AM, AgentStatus as _AS
+                from websocket import emit_agent_update as _eau
+                _db = _SL()
+                try:
+                    # Look up parent to get project name
+                    _parent = _db.get(Agent, agent_id)
+                    _project_name = _parent.project if _parent else ""
+                    _name = desc[:60] or f"subagent-{sub_agent_id[:8]}"
+                    _sub = _Agent(
+                        project=_project_name,
+                        name=_name,
+                        mode=_AM.AUTO,
+                        status=_AS.SYNCING,
+                        cli_sync=True,
+                        parent_id=agent_id,
+                        is_subagent=True,
+                        claude_agent_id=sub_agent_id,
+                    )
+                    _db.add(_sub)
+                    _db.commit()
+                    # Register in known_subagents
+                    known = ad._known_subagents.setdefault(agent_id, {})
+                    known[sub_agent_id] = {
+                        "agent_id": _sub.id,
+                        "last_size": 0,
+                        "idle_polls": 0,
+                    }
+                    ad._emit(_eau(_sub.id, "SYNCING", _project_name))
+                    logger.info(
+                        "SubagentStart hook: created subagent %s (%s) for parent %s",
+                        _sub.id, _name, agent_id[:8],
+                    )
+                finally:
+                    _db.close()
+            except Exception:
+                logger.warning(
+                    "SubagentStart hook: failed to create subagent for parent %s",
+                    agent_id[:8], exc_info=True,
+                )
     elif hook_event == "SubagentStop":
         agent_type = body.get("agent_type", "subagent")
         tool_name = f"Agent:{agent_type}"
@@ -3984,6 +4135,56 @@ async def hook_agent_tool_activity(request: Request):
         kind = "subagent"
         output_summary = "done"
         await emit_tool_activity(agent_id, tool_name, phase, tool_output="done")
+        # Final import of subagent messages + mark STOPPED
+        sub_agent_id = body.get("agent_id", "")
+        last_msg = body.get("last_assistant_message", "")
+        transcript_path = body.get("agent_transcript_path", "")
+        if ad and sub_agent_id:
+            try:
+                from database import SessionLocal as _SL
+                from agent_dispatcher import _parse_session_turns
+                from websocket import emit_agent_update as _eau, emit_new_message as _enm
+                known = ad._known_subagents.get(agent_id, {})
+                info = known.get(sub_agent_id)
+                if info:
+                    sub_db_id = info["agent_id"]
+                    _db = _SL()
+                    try:
+                        # Final parse of subagent JSONL if transcript path available
+                        if transcript_path and os.path.isfile(transcript_path):
+                            turns = _parse_session_turns(transcript_path)
+                            existing_count = _db.query(Message).filter(
+                                Message.agent_id == sub_db_id,
+                            ).count()
+                            if len(turns) > existing_count:
+                                ad._import_turns_as_messages(
+                                    _db, sub_db_id, turns[existing_count:],
+                                )
+                        sub_ag = _db.get(Agent, sub_db_id)
+                        if sub_ag and sub_ag.status == AgentStatus.SYNCING:
+                            if last_msg:
+                                _preview = str(last_msg)[:200] if isinstance(last_msg, str) else str(last_msg.get("content", ""))[:200]
+                                sub_ag.last_message_preview = _preview
+                            ad.stop_agent_cleanup(
+                                _db, sub_ag, "",
+                                kill_tmux=False, add_message=False,
+                                cancel_tasks=False,
+                            )
+                            _db.commit()
+                            _project_name = sub_ag.project or ""
+                            ad._emit(_eau(sub_db_id, "STOPPED", _project_name))
+                            ad._emit(_enm(sub_db_id, "sync", sub_ag.name, _project_name))
+                            logger.info(
+                                "SubagentStop hook: marked subagent %s STOPPED",
+                                sub_db_id,
+                            )
+                    finally:
+                        _db.close()
+            except Exception:
+                logger.warning(
+                    "SubagentStop hook: failed to finalize subagent for parent %s",
+                    agent_id[:8], exc_info=True,
+                )
     # --- Permission prompt ---
     elif hook_event == "Notification":
         ntype = body.get("notification_type", "")
@@ -4010,13 +4211,9 @@ async def hook_agent_tool_activity(request: Request):
         return {}
 
     # Wake the JSONL sync loop so new message content is picked up
-    # right away instead of waiting up to 3 seconds.
+    # immediately instead of waiting for the next poll cycle.
     if ad:
         ad.wake_sync(agent_id)
-        if phase == "end":  # PostToolUse completed — JSONL has new content
-            # Schedule sync in background (don't block the hook response)
-            import asyncio
-            asyncio.create_task(ad.trigger_sync(agent_id))
 
     return {}
 
@@ -4095,8 +4292,22 @@ async def hook_agent_permission(request: Request):
         url=f"/agents/{agent_id}",
     )
 
-    # Block until user responds (no timeout — waits indefinitely)
-    decision, reason = await pm.wait_for_decision(req.id)
+    # Block until user responds, with configurable timeout (default 2h)
+    _perm_timeout = int(os.getenv("AHIVE_PERMISSION_TIMEOUT", "7200"))
+    try:
+        decision, reason = await asyncio.wait_for(
+            pm.wait_for_decision(req.id), timeout=_perm_timeout,
+        )
+    except asyncio.TimeoutError:
+        pm.respond(req.id, "deny", "Permission timed out")
+        from notify import notify
+        notify("permission", agent_id, "Permission timed out",
+               f"{agent_name}: {tool_name} auto-denied after timeout",
+               url=f"/agents/{agent_id}")
+        return {"hookSpecificOutput": {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "Permission request timed out",
+        }}
 
     if decision == "allow":
         return {"hookSpecificOutput": {"permissionDecision": "allow"}}
@@ -4416,7 +4627,7 @@ def _write_agent_hooks_config(project_path: str):
 
     hook_script = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        "hooks", "pretooluse-safety.sh",
+        "hooks", "pretooluse-safety.py",
     )
 
     _tool_activity_hook = {
@@ -4479,6 +4690,22 @@ def _write_agent_hooks_config(project_path: str):
             "hooks": [{
                 "type": "http",
                 "url": f"{base_url}/agent-stop",
+                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+            }],
+        }],
+        "SessionEnd": [{
+            "hooks": [{
+                "type": "http",
+                "url": f"{base_url}/agent-session-end",
+                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+            }],
+        }],
+        "UserPromptSubmit": [{
+            "hooks": [{
+                "type": "http",
+                "url": f"{base_url}/agent-user-prompt",
                 "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
                 "allowedEnvVars": ["AHIVE_AGENT_ID"],
             }],
