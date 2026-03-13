@@ -5450,7 +5450,7 @@ Here are the day's conversations (with timestamps):
         wake_event = asyncio.Event()
         self._sync_wake[agent_id] = wake_event
 
-        from websocket import emit_agent_stream, emit_agent_update, emit_new_message
+        from websocket import emit_agent_stream, emit_agent_update, emit_new_message, emit_tool_activity
 
         # Cache agent name/project for notification payloads
         _sync_agent_name = ""
@@ -5802,6 +5802,10 @@ Here are the day's conversations (with timestamps):
                     self._emit(emit_new_message(
                         agent_id, compact_msg.id, _sync_agent_name, _sync_project,
                     ))
+                    self._emit(emit_tool_activity(
+                        agent_id, "Compact", "end",
+                        tool_output="context compacted",
+                    ))
                 finally:
                     db_compact.close()
                 continue
@@ -5821,6 +5825,27 @@ Here are the day's conversations (with timestamps):
                     is_generating = False
                     self._stop_generating(agent_id)
                     _sync_gen_id = None
+
+                # Detect in-progress compaction by checking tmux pane text.
+                # During compact, CC shows "Compacting" in the terminal but
+                # JSONL doesn't grow and no hooks fire — so we bridge the gap
+                # by emitting a synthetic tool_activity event.
+                if idle_polls in (1, 3, 6):
+                    _pane_id = None
+                    db_pane = SessionLocal()
+                    try:
+                        _ag = db_pane.get(Agent, agent_id)
+                        if _ag:
+                            _pane_id = _ag.tmux_pane
+                    finally:
+                        db_pane.close()
+                    if _pane_id:
+                        _pane_text = capture_tmux_pane(_pane_id)
+                        if _pane_text and "compact" in _pane_text.lower():
+                            self._emit(emit_tool_activity(
+                                agent_id, "Compact", "start",
+                                tool_input={"description": "Compacting conversation context"},
+                            ))
                 # Stop hook fired but JSONL hasn't changed — turns were
                 # already imported; increment unread now.
                 if agent_id in self._pending_notify:
@@ -5968,6 +5993,10 @@ Here are the day's conversations (with timestamps):
                     db_compact.commit()
                     self._emit(emit_new_message(
                         agent_id, compact_msg.id, _sync_agent_name, _sync_project,
+                    ))
+                    self._emit(emit_tool_activity(
+                        agent_id, "Compact", "end",
+                        tool_output="context compacted",
                     ))
                 finally:
                     db_compact.close()
