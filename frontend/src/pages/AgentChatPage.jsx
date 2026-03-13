@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, Component } from "react";
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, Component } from "react";
 import { Bell, BellOff } from "lucide-react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
@@ -577,6 +577,9 @@ function InteractiveBubbles({ metadata, agentId, onAnswered, messageContent, pro
   });
 }
 
+// Regex matching tool summary lines in message content: > `ToolName` ...
+const TOOL_SUMMARY_RE = /^> `(\w+)`\s*(.*)/;
+
 function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, agentId, onRefresh, queuePosition, queueTotal }) {
   if (message.role === "SYSTEM") {
     return <SystemBubble message={message} />;
@@ -713,10 +716,19 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   );
 
   // Strip [Attached file: ...] tags from user message display text
-  const displayContent = useMemo(
-    () => isUser ? stripAttachmentTags(message.content) : message.content,
-    [isUser, message.content],
-  );
+  const displayContent = useMemo(() => {
+    if (isUser) return stripAttachmentTags(message.content);
+    // Strip `> ToolName ...` summary lines when we have a tool_log
+    // (they'll be rendered as separate tool bubbles instead)
+    if (message.metadata?.tool_log?.length) {
+      return message.content
+        .split("\n")
+        .filter((line) => !TOOL_SUMMARY_RE.test(line))
+        .join("\n")
+        .trim();
+    }
+    return message.content;
+  }, [isUser, message.content, message.metadata?.tool_log]);
 
   const scheduledTime = isScheduled
     ? new Date(message.scheduled_at).toLocaleTimeString([], TIME_SHORT)
@@ -806,13 +818,9 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
             displayContent && <p className="text-sm whitespace-pre-wrap">{displayContent}</p>
           ) : (
             <div className="text-sm" ref={markdownRef} onClick={handleMarkdownClick}>
-              {message.metadata?.tool_log?.length ? (
-                <InterleavedContent content={displayContent} toolLog={message.metadata.tool_log} project={project} />
-              ) : (
-                <SafeMarkdown fallback={displayContent}>
-                  {renderMarkdown(displayContent, project)}
-                </SafeMarkdown>
-              )}
+              <SafeMarkdown fallback={displayContent}>
+                {renderMarkdown(displayContent, project)}
+              </SafeMarkdown>
             </div>
           )}
           <div className={`text-xs mt-1 flex items-center gap-1.5 ${
@@ -958,108 +966,51 @@ function ToolLogEntry({ entry }) {
   );
 }
 
-// Regex matching tool summary lines in message content: > `ToolName` ...
-const TOOL_SUMMARY_RE = /^> `(\w+)`\s*(.*)/;
-
 /**
- * Split message content into interleaved text + tool segments.
- * Tool summary lines (> `Grep` ...) are replaced by richer tool_log entries.
- * Consecutive tool lines are grouped into collapsible blocks.
+ * Standalone mini-bubble for persisted tool_log entries.
+ * Rendered as a separate element between ChatBubble components in the message list.
  */
-function InterleavedContent({ content, toolLog, project }) {
+function ToolLogBubble({ entries }) {
   const [expanded, setExpanded] = useState(false);
+  if (!entries?.length) return null;
 
-  const segments = useMemo(() => {
-    if (!toolLog?.length) return [{ type: "text", text: content }];
-
-    const lines = content.split("\n");
-    const result = [];
-    let textBuf = [];
-    let toolBuf = [];
-    let logIdx = 0;
-
-    const flushText = () => {
-      const t = textBuf.join("\n").trim();
-      if (t) result.push({ type: "text", text: t });
-      textBuf = [];
-    };
-    const flushTools = () => {
-      if (toolBuf.length) result.push({ type: "tools", entries: toolBuf });
-      toolBuf = [];
-    };
-
-    for (const line of lines) {
-      const m = line.match(TOOL_SUMMARY_RE);
-      if (m && logIdx < toolLog.length) {
-        // Match tool_log entries for this line — consume start+end pair
-        const toolName = m[1];
-        const matched = [];
-        while (logIdx < toolLog.length) {
-          const entry = toolLog[logIdx];
-          if (entry.name === toolName || entry.name === `Agent:${toolName}`) {
-            matched.push(entry);
-            logIdx++;
-            if (entry.phase === "end") break;
-          } else {
-            // Mismatched — include as-is (subagent, permission, etc.)
-            matched.push(entry);
-            logIdx++;
-            if (entry.phase === "end" || entry.phase === "permission") break;
-          }
-        }
-        // Use the richest entry (prefer "end" which has output_summary)
-        const best = matched.find((e) => e.phase === "end") || matched[matched.length - 1] || { name: toolName, phase: "end", kind: "tool" };
-        if (textBuf.length) { flushText(); flushTools(); }
-        toolBuf.push(best);
-      } else {
-        if (toolBuf.length) flushTools();
-        textBuf.push(line);
+  // Deduplicate: keep only "end" phase entries (they have output_summary);
+  // for entries without a matching "end", keep the "start" entry.
+  const deduped = useMemo(() => {
+    const seen = new Map(); // name → best entry
+    for (const e of entries) {
+      const key = `${e.name}:${e.summary || ""}`;
+      const prev = seen.get(key);
+      if (!prev || e.phase === "end") {
+        seen.set(key, e);
       }
     }
-    // Flush remaining + any unconsumed tool_log entries
-    if (toolBuf.length) flushTools();
-    flushText();
-    while (logIdx < toolLog.length) {
-      toolBuf.push(toolLog[logIdx++]);
-    }
-    if (toolBuf.length) result.push({ type: "tools", entries: toolBuf });
+    return [...seen.values()];
+  }, [entries]);
 
-    return result;
-  }, [content, toolLog]);
+  const LIMIT = 5;
+  const showAll = expanded || deduped.length <= LIMIT;
+  const visible = showAll ? deduped : deduped.slice(-LIMIT);
+  const hiddenCount = deduped.length - visible.length;
 
   return (
-    <>
-      {segments.map((seg, i) => {
-        if (seg.type === "text") {
-          return (
-            <SafeMarkdown key={i} fallback={seg.text}>
-              {renderMarkdown(seg.text, project)}
-            </SafeMarkdown>
-          );
-        }
-        // Tool group — collapsed by default if > 5
-        const entries = seg.entries;
-        const LIMIT = 5;
-        const showAll = expanded || entries.length <= LIMIT;
-        const visible = showAll ? entries : entries.slice(-LIMIT);
-        const hiddenCount = entries.length - visible.length;
-        return (
-          <div key={i} className="my-1 space-y-0 text-[11px] font-mono">
-            {hiddenCount > 0 && (
-              <button type="button" onClick={() => setExpanded(true)} className="text-faint hover:text-dim text-[11px] mb-0.5">
-                + {hiddenCount} more...
-              </button>
-            )}
-            {visible.map((e, j) => <ToolLogEntry key={j} entry={e} />)}
-            {showAll && entries.length > LIMIT && (
-              <button type="button" onClick={() => setExpanded(false)} className="text-faint hover:text-dim text-[11px] mt-0.5">
-                collapse
-              </button>
-            )}
-          </div>
-        );
-      })}
-    </>
+    <div className="flex justify-start my-1">
+      <div className="max-w-[85%] rounded-xl px-3 py-1.5 bg-elevated/60 border border-divider/50">
+        <div className="space-y-0 text-[11px] font-mono">
+          {hiddenCount > 0 && (
+            <button type="button" onClick={() => setExpanded(true)} className="text-faint hover:text-dim text-[11px] mb-0.5">
+              + {hiddenCount} more...
+            </button>
+          )}
+          {visible.map((e, j) => <ToolLogEntry key={j} entry={e} />)}
+          {showAll && deduped.length > LIMIT && (
+            <button type="button" onClick={() => setExpanded(false)} className="text-faint hover:text-dim text-[11px] mt-0.5">
+              collapse
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1683,6 +1634,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [toolStartTime, setToolStartTime] = useState(null);
   const [toolLog, setToolLog] = useState([]);   // [{name, summary, outputSummary, isError, startTime, done}]
   const [hookActive, setHookActive] = useState(false); // true when hook events indicate agent is working
+  const lastHookTimeRef = useRef(0);   // timestamp of last hook event (for compact grace period)
+  const hookGraceRef = useRef(null);   // timer for grace period
   const streamTimeoutRef = useRef(null);
   const generationIdRef = useRef(null); // tracks current backend generation_id
   const [editingName, setEditingName] = useState(false);
@@ -2061,6 +2014,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const { tool_name, phase, summary, output_summary, is_error } = lastEvent.data;
       // Any hook event = agent is definitely active
       setHookActive(true);
+      lastHookTimeRef.current = Date.now();
+      clearTimeout(hookGraceRef.current);
       if (phase === "start") {
         setActiveTool({ name: tool_name, summary: summary || "" });
         setToolStartTime(Date.now());
@@ -2089,6 +2044,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           updated[idx] = { ...updated[idx], done: true, outputSummary: output_summary || "", isError: !!is_error };
           return updated;
         });
+        // Grace period: keep hookActive true for 30s after last tool end.
+        // Covers compact/thinking gaps where no hooks fire.
+        clearTimeout(hookGraceRef.current);
+        hookGraceRef.current = setTimeout(() => {
+          // Only clear if no new hook arrived since we set the timer
+          if (Date.now() - lastHookTimeRef.current >= 29_000) {
+            setHookActive(false);
+          }
+        }, 30_000);
       } else if (phase === "permission") {
         // Agent is blocked waiting for permission — show alert entry
         setToolLog((prev) => [...prev, {
@@ -2103,11 +2067,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
     if (lastEvent.type === "new_message" && lastEvent.data?.agent_id === id) {
       clearTimeout(streamTimeoutRef.current);
+      clearTimeout(hookGraceRef.current);
       setStreamingContent(null);
       setActiveTool(null);
       setToolStartTime(null);
       setToolLog([]);
       setHookActive(false);
+      lastHookTimeRef.current = 0;
       refreshMessages({ syncHint: lastEvent.data?.message_id === "sync" });
       return;
     }
@@ -2131,11 +2097,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (status !== "EXECUTING" && status !== "SYNCING") {
         // Agent no longer active — clear all streaming & tool state
         clearTimeout(streamTimeoutRef.current);
+        clearTimeout(hookGraceRef.current);
         setStreamingContent(null);
         setActiveTool(null);
         setToolStartTime(null);
         setToolLog([]);
         setHookActive(false);
+        lastHookTimeRef.current = 0;
         generationIdRef.current = null;
       }
       refreshMessages();
@@ -2147,6 +2115,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   useEffect(() => {
     return () => {
       clearTimeout(streamTimeoutRef.current);
+      clearTimeout(hookGraceRef.current);
     };
   }, []);
 
@@ -2332,8 +2301,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const healthDotColor = health === null ? "bg-gray-400" : isHealthy ? "bg-green-500" : "bg-red-500";
   const healthLabel = health === null ? "..." : isHealthy ? "OK" : "Error";
 
-  const statusDot = AGENT_STATUS_COLORS[agent.status] || "bg-gray-500";
-  const statusText = AGENT_STATUS_TEXT_COLORS[agent.status] || "text-dim";
+  // When hooks indicate active work during SYNCING, promote the visual status to "executing"
+  const effectiveStatus = (agent.status === "SYNCING" && (hookActive || agent.is_generating))
+    ? "EXECUTING" : agent.status;
+  const statusDot = AGENT_STATUS_COLORS[effectiveStatus] || "bg-gray-500";
+  const statusText = AGENT_STATUS_TEXT_COLORS[effectiveStatus] || "text-dim";
   const isExecuting = agent.status === "EXECUTING";
   const isSyncing = agent.status === "SYNCING";
   const hasTmux = isSyncing && !!agent.tmux_pane;
@@ -2532,9 +2504,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           {/* Row 2: Status + model + branch | action buttons (ml-9 aligns with name after back btn) */}
           {!compactHeader && <div className="flex items-center gap-2 ml-9">
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
-              <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
+              <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}${effectiveStatus === "EXECUTING" ? " animate-pulse" : ""}`} />
               <span className={`text-xs shrink-0 ${statusText}`}>
-                {agent.status.toLowerCase().replace("_", " ")}
+                {effectiveStatus.toLowerCase().replace("_", " ")}
                 {activeTool && (isExecuting || isSyncing) && (
                   <span className="text-faint">: <span className="font-mono">{activeTool.name}</span></span>
                 )}
@@ -2679,7 +2651,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
             )}
 
             {messages.filter((m) => !(m.role === "USER" && m.status === "PENDING")).map((msg) => (
-              <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
+              <React.Fragment key={msg.id}>
+                <ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
+                {msg.role === "AGENT" && msg.metadata?.tool_log?.length > 0 && (
+                  <ToolLogBubble entries={msg.metadata.tool_log} />
+                )}
+              </React.Fragment>
             ))}
 
             {/* Streaming output or typing indicator while executing/syncing */}
