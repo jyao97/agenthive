@@ -2652,10 +2652,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
             {messages.filter((m) => !(m.role === "USER" && m.status === "PENDING")).map((msg) => (
               <React.Fragment key={msg.id}>
-                <ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
+                {/* Tool bubbles render BEFORE the agent text — tools ran during generation */}
                 {msg.role === "AGENT" && msg.metadata?.tool_log?.length > 0 && (
                   <ToolLogBubble entries={msg.metadata.tool_log} />
                 )}
+                <ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
               </React.Fragment>
             ))}
 
