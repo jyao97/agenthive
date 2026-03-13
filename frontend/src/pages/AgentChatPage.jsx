@@ -873,6 +873,9 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
         {!isUser && message.metadata?.interactive?.length > 0 && (
           <InteractiveBubbles metadata={message.metadata} agentId={agentId} onAnswered={onRefresh} messageContent={message.content} project={project} />
         )}
+        {!isUser && message.metadata?.tool_log?.length > 0 && (
+          <PersistedToolLog entries={message.metadata.tool_log} />
+        )}
 
         {/* Action popover for scheduled/pending messages */}
         {showActions && (
@@ -927,6 +930,65 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     </div>
   );
 }
+
+// --- Persisted Tool Log (saved in message metadata, collapsed by default) ---
+
+function PersistedToolLog({ entries }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!entries?.length) return null;
+
+  const COLLAPSED_LIMIT = 5;
+  const visible = expanded ? entries : entries.slice(-COLLAPSED_LIMIT);
+  const hiddenCount = entries.length - visible.length;
+
+  const icon = (e) => {
+    if (e.kind === "permission") return "⏳";
+    if (e.is_error) return "✗";
+    if (e.kind === "subagent") return "◆";
+    if (e.phase === "start") return "▸";
+    return "✓";
+  };
+  const color = (e) => {
+    if (e.kind === "permission") return "text-amber-400";
+    if (e.is_error) return "text-red-400";
+    if (e.kind === "subagent") return "text-violet-400";
+    return "text-cyan-300";
+  };
+
+  return (
+    <div className="mt-1.5 border-t border-divider/30 pt-1.5">
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="text-faint hover:text-dim text-[11px] font-mono mb-0.5"
+        >
+          + {hiddenCount} more tools...
+        </button>
+      )}
+      <div className="space-y-0 text-[11px] font-mono">
+        {visible.map((e, i) => (
+          <div key={i} className={`flex items-center gap-1.5 ${e.is_error ? "text-red-400/80" : "text-faint"}`}>
+            <span className="shrink-0">{icon(e)}</span>
+            <span className={color(e)}>{e.name}</span>
+            {e.summary && <span className="truncate max-w-[140px]">{e.summary}</span>}
+            {e.output_summary && <span className={e.is_error ? "text-red-400/60" : ""}>→ {e.output_summary}</span>}
+          </div>
+        ))}
+      </div>
+      {expanded && entries.length > COLLAPSED_LIMIT && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="text-faint hover:text-dim text-[11px] font-mono mt-0.5"
+        >
+          collapse
+        </button>
+      )}
+    </div>
+  );
+}
+
 
 // --- Tool Activity Log (real-time feed of tool calls via CC hooks) ---
 

@@ -3942,44 +3942,72 @@ async def hook_agent_tool_activity(request: Request):
 
     hook_event = body.get("hook_event_name", "")
 
-    from websocket import emit_tool_activity
+    from websocket import emit_tool_activity, _tool_input_summary, _tool_output_summary
+
+    ad = getattr(app.state, "agent_dispatcher", None)
+    tool_name = phase = summary = output_summary = ""
+    is_error = False
+    kind = "tool"
 
     # --- Tool lifecycle ---
     if hook_event == "PreToolUse":
+        tool_name = body.get("tool_name", "")
+        phase = "start"
         tool_input = body.get("tool_input")
-        await emit_tool_activity(agent_id, body.get("tool_name", ""), "start",
-                                  tool_input=tool_input)
-        return {}
-    if hook_event in ("PostToolUse", "PostToolUseFailure"):
+        summary = _tool_input_summary(tool_name, tool_input) if tool_input else ""
+        await emit_tool_activity(agent_id, tool_name, phase, tool_input=tool_input)
+    elif hook_event in ("PostToolUse", "PostToolUseFailure"):
+        tool_name = body.get("tool_name", "")
+        phase = "end"
+        is_error = hook_event == "PostToolUseFailure"
         tool_input = body.get("tool_input")
         tool_output = body.get("tool_output") or body.get("tool_error") or None
-        is_error = hook_event == "PostToolUseFailure"
-        await emit_tool_activity(agent_id, body.get("tool_name", ""), "end",
-                                  tool_input=tool_input, tool_output=tool_output,
-                                  is_error=is_error)
-        return {}
-
+        summary = _tool_input_summary(tool_name, tool_input) if tool_input else ""
+        output_summary = _tool_output_summary(tool_name, tool_output, is_error) if tool_output else ""
+        await emit_tool_activity(agent_id, tool_name, phase, tool_input=tool_input,
+                                  tool_output=tool_output, is_error=is_error)
     # --- Subagent lifecycle ---
-    if hook_event == "SubagentStart":
+    elif hook_event == "SubagentStart":
         agent_type = body.get("agent_type", "subagent")
+        tool_name = f"Agent:{agent_type}"
+        phase = "start"
+        kind = "subagent"
         desc = body.get("description", "") or body.get("prompt", "")[:80] or ""
-        await emit_tool_activity(agent_id, f"Agent:{agent_type}", "start",
+        summary = desc
+        await emit_tool_activity(agent_id, tool_name, phase,
                                   tool_input={"description": desc} if desc else None)
-        return {}
-    if hook_event == "SubagentStop":
+    elif hook_event == "SubagentStop":
         agent_type = body.get("agent_type", "subagent")
-        await emit_tool_activity(agent_id, f"Agent:{agent_type}", "end",
-                                  tool_output="done")
-        return {}
-
-    # --- Permission prompt (agent blocked, waiting for user) ---
-    if hook_event == "Notification":
+        tool_name = f"Agent:{agent_type}"
+        phase = "end"
+        kind = "subagent"
+        output_summary = "done"
+        await emit_tool_activity(agent_id, tool_name, phase, tool_output="done")
+    # --- Permission prompt ---
+    elif hook_event == "Notification":
         ntype = body.get("notification_type", "")
         if ntype == "permission_prompt":
             tool_name = body.get("tool_name", "unknown")
-            await emit_tool_activity(agent_id, tool_name, "permission",
-                                      tool_input=body.get("tool_input"))
+            phase = "permission"
+            kind = "permission"
+            tool_input = body.get("tool_input")
+            summary = _tool_input_summary(tool_name, tool_input) if tool_input else ""
+            await emit_tool_activity(agent_id, tool_name, phase, tool_input=tool_input)
+        else:
+            return {}
+    else:
         return {}
+
+    # Accumulate for persistence — sync loop will attach to the next agent message
+    if ad and phase:
+        entry = {"name": tool_name, "phase": phase, "kind": kind}
+        if summary:
+            entry["summary"] = summary[:120]
+        if output_summary:
+            entry["output_summary"] = output_summary[:120]
+        if is_error:
+            entry["is_error"] = True
+        ad.append_tool_log(agent_id, entry)
 
     return {}
 
