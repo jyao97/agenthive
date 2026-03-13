@@ -2314,13 +2314,21 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
 
     if (lastEvent.type === "new_message" && lastEvent.data?.agent_id === id) {
+      // If a Compact tool is in progress, don't clear active state —
+      // the compact system message doesn't mean the agent stopped working.
+      const hasActiveCompact = activeTool?.name === "Compact" ||
+        toolLog.some((e) => e.name === "Compact" && !e.done);
+      if (hasActiveCompact) {
+        // Just refresh messages to show the compact system message
+        refreshMessages({ syncHint: true });
+        return;
+      }
       clearTimeout(streamTimeoutRef.current);
       clearTimeout(hookGraceRef.current);
       setStreamingContent(null);
       setActiveTool(null);
       setToolStartTime(null);
       setToolLog([]);
-      setPendingPermissions([]);
       setHookActive(false);
       lastHookTimeRef.current = 0;
       refreshMessages({ syncHint: lastEvent.data?.message_id === "sync" });

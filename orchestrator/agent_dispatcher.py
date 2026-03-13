@@ -5488,6 +5488,7 @@ Here are the day's conversations (with timestamps):
         last_streamed_hash = ""  # Hash of last agent_stream content (avoid re-emit)
         is_generating = False
         _sync_gen_id: int | None = None  # current generation_id for sync streaming
+        _compact_notified = False  # True once Compact "start" event emitted (reset on compact end)
         def _content_hash(content: str) -> str:
             """Fast hash of content for change detection."""
             import hashlib
@@ -5833,6 +5834,7 @@ Here are the day's conversations (with timestamps):
                         agent_id, "Compact", "end",
                         tool_output="context compacted",
                     ))
+                    _compact_notified = False
                 finally:
                     db_compact.close()
                 continue
@@ -5852,6 +5854,28 @@ Here are the day's conversations (with timestamps):
                     is_generating = False
                     self._stop_generating(agent_id)
                     _sync_gen_id = None
+
+                # Detect likely in-progress compaction: JSONL stopped growing,
+                # there are accumulated tool_log entries (hooks fired recently),
+                # and the tmux pane is alive.  Emit a single Compact "start"
+                # so the frontend keeps showing executing status.
+                if not _compact_notified and idle_polls == _GENERATING_IDLE_THRESHOLD:
+                    has_pending_tools = bool(self._tool_logs.get(agent_id))
+                    if has_pending_tools:
+                        _pane_id = None
+                        db_cp = SessionLocal()
+                        try:
+                            _ag = db_cp.get(Agent, agent_id)
+                            if _ag:
+                                _pane_id = _ag.tmux_pane
+                        finally:
+                            db_cp.close()
+                        if _pane_id and verify_tmux_pane(_pane_id):
+                            _compact_notified = True
+                            self._emit(emit_tool_activity(
+                                agent_id, "Compact", "start",
+                                tool_input={"description": "Compacting context"},
+                            ))
 
                 # Stop hook fired but JSONL hasn't changed — turns were
                 # already imported; increment unread now.
@@ -6022,6 +6046,7 @@ Here are the day's conversations (with timestamps):
                         agent_id, "Compact", "end",
                         tool_output="context compacted",
                     ))
+                    _compact_notified = False
                 finally:
                     db_compact.close()
                 continue

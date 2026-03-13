@@ -62,17 +62,20 @@ export function useStreamingAgents(agents, lastEvent) {
         }, HOOK_GRACE_MS));
       }
     }
-    // New message committed → agent finished this turn
+    // New message committed → agent finished this turn (unless mid-compact)
     if (lastEvent.type === "new_message" && lastEvent.data?.agent_id) {
       const aid = lastEvent.data.agent_id;
-      clearTimeout(graceTimers.current.get(aid));
-      graceTimers.current.delete(aid);
-      setActiveAgents((prev) => {
-        if (!prev.has(aid)) return prev;
-        const next = new Set(prev);
-        next.delete(aid);
-        return next;
-      });
+      // If a grace timer is running, the agent was recently doing tool calls —
+      // this new_message is likely a compact system message, not a real turn end.
+      // Let the grace timer handle cleanup instead.
+      if (!graceTimers.current.has(aid)) {
+        setActiveAgents((prev) => {
+          if (!prev.has(aid)) return prev;
+          const next = new Set(prev);
+          next.delete(aid);
+          return next;
+        });
+      }
     }
     // Seed from backend on connect/reconnect
     if (lastEvent.type === "generating_agents" && lastEvent.data?.agent_ids) {
