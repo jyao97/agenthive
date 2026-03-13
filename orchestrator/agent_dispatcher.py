@@ -3102,9 +3102,6 @@ Here are the day's conversations (with timestamps):
         ev = self._sync_wake.get(agent_id)
         if ev:
             ev.set()
-        ctx = self._sync_contexts.get(agent_id)
-        if ctx:
-            ctx.wake_event.set()
 
     def _stop_generating(self, agent_id: str):
         """Mark agent as no longer generating and emit stream_end."""
@@ -4646,7 +4643,7 @@ Here are the day's conversations (with timestamps):
             )
 
         # Safety rules (git reset --hard, rm -rf, etc.) are enforced by
-        # the PreToolUse hook (orchestrator/hooks/pretooluse-safety.sh),
+        # the PreToolUse hook (orchestrator/hooks/pretooluse-safety.py),
         # not by prompt instructions.
 
         return (
@@ -5447,10 +5444,10 @@ Here are the day's conversations (with timestamps):
             sync_reconcile_initial,
             sync_import_new_turns,
             sync_handle_compact,
-            sync_check_streaming,
+            _handle_stop,
         )
 
-        POLL_INTERVAL = 6  # seconds between checks (hooks handle latency-sensitive events)
+        POLL_INTERVAL = 30  # hooks are primary sync driver; polling is fallback only
 
         # Register wake event so stop hook can interrupt the sleep
         wake_event = asyncio.Event()
@@ -5520,8 +5517,13 @@ Here are the day's conversations (with timestamps):
                 wake_event.clear()
             except asyncio.TimeoutError:
                 pass
-            # Also clear the ctx wake_event (set by wake_sync)
-            ctx.wake_event.clear()
+
+            # Handle pending_stop (set by trigger_sync via Stop hook)
+            if ctx.pending_stop:
+                ctx.pending_stop = False
+                await sync_import_new_turns(self, ctx)
+                await _handle_stop(self, ctx)
+                continue
 
             try:
                 current_size = os.path.getsize(ctx.jsonl_path)
@@ -5577,8 +5579,7 @@ Here are the day's conversations (with timestamps):
 
             # Compact detection — file shrink
             if current_size < ctx.last_offset:
-                async with ctx.sync_lock:
-                    await sync_handle_compact(self, ctx)
+                await sync_handle_compact(self, ctx)
                 continue
 
             # File hasn't grown — idle polling
@@ -5590,9 +5591,6 @@ Here are the day's conversations (with timestamps):
                         "Sync loop heartbeat for agent %s: idle_polls=%d, session=%s",
                         agent_id, ctx.idle_polls, session_id[:12],
                     )
-
-                # Handle streaming state, generating timeout, compact detection
-                await sync_check_streaming(self, ctx)
 
                 # Periodically check if we should still be syncing
                 if ctx.idle_polls % 10 == 0:
@@ -5681,16 +5679,13 @@ Here are the day's conversations (with timestamps):
 
             # File grew — do incremental sync
             ctx.idle_polls = 0
-            async with ctx.sync_lock:
-                result = await sync_import_new_turns(self, ctx)
+            result = await sync_import_new_turns(self, ctx)
             if result == "exit":
                 break
 
-            # Scan for subagent JSONLs spawned by this session
-            self._process_subagents(
-                agent_id, session_id, project_path,
-                _worktree, ctx.agent_name, ctx.agent_project,
-            )
+            # Subagent creation/finalization is handled by SubagentStart/Stop
+            # hooks in main.py.  _process_subagents remains as a fallback
+            # but is no longer called every sync cycle.
 
             # Check if the CLI session has ended
             if self._session_has_ended(ctx.jsonl_path):

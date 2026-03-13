@@ -42,19 +42,13 @@ class SyncContext:
     last_offset: int = 0          # byte position for seek-based reads
     last_turn_count: int = 0
     last_tail_hash: str = ""
-    last_streamed_hash: str = ""
     incremental_turns: list = field(default_factory=list)
 
     # Agent state
-    is_generating: bool = False
-    sync_gen_id: int | None = None
     compact_notified: bool = False
     idle_polls: int = 0
     getsize_error_count: int = 0
-
-    # Concurrency
-    sync_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    wake_event: asyncio.Event = field(default_factory=asyncio.Event)
+    pending_stop: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -298,10 +292,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         _dedup_sig,
         _merge_interactive_meta,
         _update_stale_interactive_metadata,
-        _extract_last_tool_from_content,
     )
     from websocket import (
-        emit_agent_stream,
         emit_agent_update,
         emit_new_message,
         emit_tool_activity,
@@ -328,7 +320,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         _t = turns[-1] if turns else ("", "", None)
         _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
         ctx.last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
-        ctx.last_streamed_hash = ""
         # Notify UI about the compact
         db_compact = SessionLocal()
         try:
@@ -367,19 +358,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     )
 
     if not new_turns and not last_turn_updated:
-        # File grew but turns didn't change — mid-generation streaming
-        partial = ""
-        if turns and turns[-1][0] == "assistant":
-            partial = turns[-1][1]
-        p_hash = _content_hash(partial) if partial else ""
-        if p_hash != ctx.last_streamed_hash:
-            ctx.last_streamed_hash = p_hash
-            if not ctx.is_generating:
-                ctx.is_generating = True
-                ctx.sync_gen_id = ad._start_generating(ctx.agent_id)
-            _sync_active_tool = _extract_last_tool_from_content(partial) if partial else None
-            ad._emit(emit_agent_stream(ctx.agent_id, partial, generation_id=ctx.sync_gen_id, active_tool=_sync_active_tool))
-        return "streaming"
+        return "no_change"
 
     db = SessionLocal()
     try:
@@ -409,17 +388,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                 agent.last_message_preview = (_last_content or "")[:200]
                 agent.last_message_at = _utcnow()
                 db.commit()
-                _sync_active_tool = _extract_last_tool_from_content(_last_content) if _last_content else None
-                ad._emit(emit_agent_stream(
-                    ctx.agent_id, _last_content, generation_id=ctx.sync_gen_id,
-                    active_tool=_sync_active_tool,
-                ))
                 ad._emit(emit_new_message(agent.id, "sync", ctx.agent_name, ctx.agent_project))
                 ctx.last_tail_hash = tail_hash
-                ctx.last_streamed_hash = _content_hash(_last_content) if _last_content else ""
-                if not ctx.is_generating:
-                    ctx.is_generating = True
-                    ctx.sync_gen_id = ad._start_generating(ctx.agent_id)
                 logger.info(
                     "Updated last turn content for agent %s (%s chars)",
                     ctx.agent_id, len(_last_content),
@@ -571,16 +541,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
 
             ctx.last_turn_count = len(turns)
             ctx.last_tail_hash = tail_hash
-            _last_assistant = ""
-            for _r, _c, *_ in reversed(new_turns):
-                if _r == "assistant":
-                    _last_assistant = _c
-                    break
-            ctx.last_streamed_hash = _content_hash(_last_assistant) if _last_assistant else ""
-            if ctx.is_generating:
-                ctx.is_generating = False
-                ad._stop_generating(ctx.agent_id)
-                ctx.sync_gen_id = None
             ad._emit(emit_agent_update(
                 agent.id, agent.status.value, agent.project
             ))
@@ -663,64 +623,26 @@ async def sync_handle_compact(ad, ctx: SyncContext):
 
 
 # ---------------------------------------------------------------------------
-# 4. sync_check_streaming — idle poll streaming preview
-# ---------------------------------------------------------------------------
-
-async def sync_check_streaming(ad, ctx: SyncContext):
-    """Check for partial content growth during idle polls and emit agent_stream.
-
-    Also handles generating timeout and compact detection.
-    """
-    from agent_dispatcher import (
-        _build_tmux_claude_map,
-        _extract_last_tool_from_content,
-        verify_tmux_pane,
-    )
-    from websocket import (
-        emit_agent_stream,
-        emit_agent_update,
-        emit_tool_activity,
-    )
-
-    _GENERATING_IDLE_THRESHOLD = 2
-
-    # File stopped growing — clear generating state after threshold
-    if ctx.is_generating and ctx.idle_polls >= _GENERATING_IDLE_THRESHOLD:
-        ctx.is_generating = False
-        ad._stop_generating(ctx.agent_id)
-        ctx.sync_gen_id = None
-
-    # compact_notified is set directly by PreCompact hook in main.py
-
-
-# ---------------------------------------------------------------------------
-# 5. trigger_sync — public entry point for hooks
+# 4. trigger_sync — public entry point for hooks
 # ---------------------------------------------------------------------------
 
 async def trigger_sync(ad, agent_id: str, *, is_stop: bool = False):
     """Public entry point for hooks to trigger an immediate sync.
 
+    Sets pending_stop if needed and wakes the sync loop to do the work.
+    The sync loop is the single sync path — hooks just wake it.
+
     Args:
         ad: AgentDispatcher instance
         agent_id: The agent to sync
-        is_stop: If True, handle post-stop logic (unread count, notifications)
+        is_stop: If True, handle post-stop logic on next sync cycle
     """
     ctx = ad._sync_contexts.get(agent_id)
     if not ctx:
         return
-    async with ctx.sync_lock:
-        # Check for compact (file shrink)
-        try:
-            current_size = os.path.getsize(ctx.jsonl_path)
-        except OSError:
-            return
-        if current_size < ctx.last_offset:
-            await sync_handle_compact(ad, ctx)
-            return
-        # Import new turns
-        result = await sync_import_new_turns(ad, ctx)
-        if is_stop:
-            await _handle_stop(ad, ctx)
+    if is_stop:
+        ctx.pending_stop = True
+    ad.wake_sync(agent_id)
 
 
 # ---------------------------------------------------------------------------
@@ -728,13 +650,7 @@ async def trigger_sync(ad, agent_id: str, *, is_stop: bool = False):
 # ---------------------------------------------------------------------------
 
 async def _handle_stop(ad, ctx: SyncContext):
-    """Handle post-stop logic: clear generating, unread count, notifications."""
-    # Clear generating state
-    if ctx.is_generating:
-        ctx.is_generating = False
-        ad._stop_generating(ctx.agent_id)
-        ctx.sync_gen_id = None
-
+    """Handle post-stop logic: unread count, notifications."""
     # Increment unread_count if agent not in use
     db = SessionLocal()
     try:
