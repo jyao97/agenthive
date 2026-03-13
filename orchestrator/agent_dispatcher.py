@@ -5800,6 +5800,24 @@ Here are the day's conversations (with timestamps):
                 last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
                 last_size = current_size
                 idle_polls = 0
+                # Drain accumulated tool_log to the last assistant message
+                # so tool entries aren't lost across the compact boundary.
+                _tlog = self.drain_tool_log(agent_id)
+                if _tlog:
+                    db_tlog = SessionLocal()
+                    try:
+                        last_asst = db_tlog.query(Message).filter(
+                            Message.agent_id == agent_id,
+                            Message.role == "AGENT",
+                        ).order_by(Message.created_at.desc()).first()
+                        if last_asst:
+                            _meta = json.loads(last_asst.meta_json) if last_asst.meta_json else {}
+                            existing = _meta.get("tool_log", [])
+                            _meta["tool_log"] = existing + _tlog
+                            last_asst.meta_json = json.dumps(_meta)
+                            db_tlog.commit()
+                    finally:
+                        db_tlog.close()
                 # Notify UI about the compact
                 db_compact = SessionLocal()
                 try:
@@ -5835,26 +5853,6 @@ Here are the day's conversations (with timestamps):
                     self._stop_generating(agent_id)
                     _sync_gen_id = None
 
-                # Detect in-progress compaction by checking tmux pane text.
-                # During compact, CC shows "Compacting" in the terminal but
-                # JSONL doesn't grow and no hooks fire — so we bridge the gap
-                # by emitting a synthetic tool_activity event.
-                if idle_polls in (1, 3, 6):
-                    _pane_id = None
-                    db_pane = SessionLocal()
-                    try:
-                        _ag = db_pane.get(Agent, agent_id)
-                        if _ag:
-                            _pane_id = _ag.tmux_pane
-                    finally:
-                        db_pane.close()
-                    if _pane_id:
-                        _pane_text = capture_tmux_pane(_pane_id)
-                        if _pane_text and "compact" in _pane_text.lower():
-                            self._emit(emit_tool_activity(
-                                agent_id, "Compact", "start",
-                                tool_input={"description": "Compacting conversation context"},
-                            ))
                 # Stop hook fired but JSONL hasn't changed — turns were
                 # already imported; increment unread now.
                 if agent_id in self._pending_notify:
@@ -5992,6 +5990,23 @@ Here are the day's conversations (with timestamps):
                 _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
                 last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
                 last_streamed_hash = ""  # Reset for fresh post-compact streaming
+                # Drain accumulated tool_log to the last assistant message
+                _tlog = self.drain_tool_log(agent_id)
+                if _tlog:
+                    db_tlog = SessionLocal()
+                    try:
+                        last_asst = db_tlog.query(Message).filter(
+                            Message.agent_id == agent_id,
+                            Message.role == "AGENT",
+                        ).order_by(Message.created_at.desc()).first()
+                        if last_asst:
+                            _meta = json.loads(last_asst.meta_json) if last_asst.meta_json else {}
+                            existing = _meta.get("tool_log", [])
+                            _meta["tool_log"] = existing + _tlog
+                            last_asst.meta_json = json.dumps(_meta)
+                            db_tlog.commit()
+                    finally:
+                        db_tlog.close()
                 # Notify UI about the compact
                 db_compact = SessionLocal()
                 try:
