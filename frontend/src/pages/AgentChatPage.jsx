@@ -580,7 +580,81 @@ function InteractiveBubbles({ metadata, agentId, onAnswered, messageContent, pro
 // Regex matching tool summary lines in message content: > `ToolName` ...
 const TOOL_SUMMARY_RE = /^> `(\w+)`\s*(.*)/;
 
-function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, agentId, onRefresh, queuePosition, queueTotal }) {
+/**
+ * Split agent message content into interleaved text + tool segments.
+ * Uses `> ToolName` summary lines as delimiters, pairing with tool_log entries.
+ * Returns [{type:"text",text}, {type:"tools",entries}, ...].
+ */
+function splitMessageSegments(content, toolLog) {
+  if (!toolLog?.length) return [{ type: "text", text: content }];
+
+  const lines = content.split("\n");
+  const result = [];
+  let textBuf = [];
+  let toolBuf = [];
+  let logIdx = 0;
+
+  const flushText = () => {
+    const t = textBuf.join("\n").trim();
+    if (t) result.push({ type: "text", text: t });
+    textBuf = [];
+  };
+  const flushTools = () => {
+    if (toolBuf.length) result.push({ type: "tools", entries: [...toolBuf] });
+    toolBuf = [];
+  };
+
+  for (const line of lines) {
+    const m = line.match(TOOL_SUMMARY_RE);
+    if (m && logIdx < toolLog.length) {
+      const toolName = m[1];
+      // Consume matching tool_log entries (start+end pair)
+      const matched = [];
+      while (logIdx < toolLog.length) {
+        const entry = toolLog[logIdx];
+        matched.push(entry);
+        logIdx++;
+        if (entry.phase === "end" || entry.phase === "permission") break;
+        if (entry.name !== toolName && entry.name !== `Agent:${toolName}`) break;
+      }
+      // Use the richest entry (prefer "end" which has output_summary)
+      const best = matched.find((e) => e.phase === "end") || matched[matched.length - 1];
+      if (textBuf.length) flushText();
+      toolBuf.push(best);
+    } else {
+      if (toolBuf.length) flushTools();
+      textBuf.push(line);
+    }
+  }
+  if (toolBuf.length) flushTools();
+  flushText();
+  // Append any unconsumed tool_log entries
+  while (logIdx < toolLog.length) {
+    toolBuf.push(toolLog[logIdx++]);
+  }
+  if (toolBuf.length) result.push({ type: "tools", entries: toolBuf });
+
+  return result;
+}
+
+/** Lightweight agent text bubble for non-final segments (no timestamp / actions). */
+function AgentTextSegment({ text, project }) {
+  return (
+    <div className="flex justify-start my-2">
+      <div className="max-w-[85%]">
+        <div className="rounded-2xl px-4 py-2.5 bg-surface shadow-card text-body rounded-bl-md">
+          <div className="text-sm">
+            <SafeMarkdown fallback={text}>
+              {renderMarkdown(text, project)}
+            </SafeMarkdown>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, agentId, onRefresh, queuePosition, queueTotal, contentOverride }) {
   if (message.role === "SYSTEM") {
     return <SystemBubble message={message} />;
   }
@@ -715,20 +789,13 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     [message.content, project, message.role],
   );
 
-  // Strip [Attached file: ...] tags from user message display text
+  // Strip [Attached file: ...] tags from user message display text.
+  // When contentOverride is provided (interleaved mode), use it directly.
   const displayContent = useMemo(() => {
+    if (contentOverride != null) return contentOverride;
     if (isUser) return stripAttachmentTags(message.content);
-    // Strip `> ToolName ...` summary lines when we have a tool_log
-    // (they'll be rendered as separate tool bubbles instead)
-    if (message.metadata?.tool_log?.length) {
-      return message.content
-        .split("\n")
-        .filter((line) => !TOOL_SUMMARY_RE.test(line))
-        .join("\n")
-        .trim();
-    }
     return message.content;
-  }, [isUser, message.content, message.metadata?.tool_log]);
+  }, [contentOverride, isUser, message.content]);
 
   const scheduledTime = isScheduled
     ? new Date(message.scheduled_at).toLocaleTimeString([], TIME_SHORT)
@@ -2650,15 +2717,30 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               <div className="text-center py-3 text-xs opacity-40">Beginning of conversation</div>
             )}
 
-            {messages.filter((m) => !(m.role === "USER" && m.status === "PENDING")).map((msg) => (
-              <React.Fragment key={msg.id}>
-                {/* Tool bubbles render BEFORE the agent text — tools ran during generation */}
-                {msg.role === "AGENT" && msg.metadata?.tool_log?.length > 0 && (
-                  <ToolLogBubble entries={msg.metadata.tool_log} />
-                )}
-                <ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
-              </React.Fragment>
-            ))}
+            {messages.filter((m) => !(m.role === "USER" && m.status === "PENDING")).map((msg) => {
+              // For agent messages with tool_log, interleave text + tool bubbles
+              const toolLog = msg.role === "AGENT" && msg.metadata?.tool_log;
+              if (toolLog?.length) {
+                const segments = splitMessageSegments(msg.content, toolLog);
+                // Find the last text segment — it gets the full ChatBubble (with timestamp, actions)
+                const lastTextIdx = segments.findLastIndex((s) => s.type === "text");
+                return (
+                  <React.Fragment key={msg.id}>
+                    {segments.map((seg, i) => {
+                      if (seg.type === "tools") {
+                        return <ToolLogBubble key={`${msg.id}-t${i}`} entries={seg.entries} />;
+                      }
+                      // Text segment — last one gets full ChatBubble, others get lightweight bubble
+                      if (i === lastTextIdx) {
+                        return <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride={seg.text} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
+                      }
+                      return <AgentTextSegment key={`${msg.id}-s${i}`} text={seg.text} project={agent.project} />;
+                    })}
+                  </React.Fragment>
+                );
+              }
+              return <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
+            })}
 
             {/* Streaming output or typing indicator while executing/syncing */}
             {(() => {
