@@ -4008,6 +4008,9 @@ async def hook_agent_tool_activity(request: Request):
         if is_error:
             entry["is_error"] = True
         ad.append_tool_log(agent_id, entry)
+        # Wake the JSONL sync loop immediately so new message content
+        # is picked up right away instead of waiting up to 3 seconds.
+        ad.wake_sync(agent_id)
 
     return {}
 

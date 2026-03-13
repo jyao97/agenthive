@@ -1682,6 +1682,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [activeTool, setActiveTool] = useState(null);
   const [toolStartTime, setToolStartTime] = useState(null);
   const [toolLog, setToolLog] = useState([]);   // [{name, summary, outputSummary, isError, startTime, done}]
+  const [hookActive, setHookActive] = useState(false); // true when hook events indicate agent is working
   const streamTimeoutRef = useRef(null);
   const generationIdRef = useRef(null); // tracks current backend generation_id
   const [editingName, setEditingName] = useState(false);
@@ -2058,6 +2059,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     // each tool call regardless of file growth or idle thresholds.
     if (lastEvent.type === "tool_activity" && lastEvent.data?.agent_id === id) {
       const { tool_name, phase, summary, output_summary, is_error } = lastEvent.data;
+      // Any hook event = agent is definitely active
+      setHookActive(true);
       if (phase === "start") {
         setActiveTool({ name: tool_name, summary: summary || "" });
         setToolStartTime(Date.now());
@@ -2104,6 +2107,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       setActiveTool(null);
       setToolStartTime(null);
       setToolLog([]);
+      setHookActive(false);
       refreshMessages({ syncHint: lastEvent.data?.message_id === "sync" });
       return;
     }
@@ -2131,6 +2135,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         setActiveTool(null);
         setToolStartTime(null);
         setToolLog([]);
+        setHookActive(false);
         generationIdRef.current = null;
       }
       refreshMessages();
@@ -2692,7 +2697,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               }
               // Tool activity log — shows completed + in-progress tool calls
               if (toolLog.length > 0) return <ToolActivityLog toolLog={toolLog} activeTool={activeTool} toolStartTime={toolStartTime} />;
-              return (isExecuting || agent?.is_generating) ? <TypingIndicator activeTool={activeTool} toolStartTime={toolStartTime} /> : null;
+              return (isExecuting || agent?.is_generating || hookActive) ? <TypingIndicator activeTool={activeTool} toolStartTime={toolStartTime} /> : null;
             })()}
 
             {/* Pending/scheduled messages always at the bottom */}
@@ -2731,7 +2736,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           try { await escapeAgent(id); loadData(); } catch (e) { showToast(e.message || "Escape failed", "error"); }
         } : null}
         escapeDisabled={isStopped || isError}
-        escapeUrgent={isExecuting || hasPendingInteractive || agent.is_generating || (hasTmux && (streamingContent || (messages.length > 0 && messages[messages.length - 1].role === "USER")))}
+        escapeUrgent={isExecuting || hasPendingInteractive || agent.is_generating || hookActive || (hasTmux && (streamingContent || (messages.length > 0 && messages[messages.length - 1].role === "USER")))}
         escapeAvailable={hasTmuxPane}
       />
 
