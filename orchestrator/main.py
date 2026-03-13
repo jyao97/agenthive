@@ -3915,10 +3915,9 @@ async def hook_agent_stop(request: Request):
         if agent_id in ad._generating_agents:
             logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
             ad._stop_generating(agent_id)
-        # Signal the JSONL sync loop to increment unread on next poll
-        # and wake it immediately (skip the 3s sleep)
-        ad._pending_notify.add(agent_id)
-        ad.wake_sync(agent_id)
+        # Agent finished — trigger final sync to import last message + handle notifications
+        import asyncio
+        asyncio.create_task(ad.trigger_sync(agent_id, is_stop=True))
 
     logger.info("hook_agent_stop: agent=%s summary_len=%d", agent_id[:8], len(summary))
 
@@ -3997,22 +3996,27 @@ async def hook_agent_tool_activity(request: Request):
             await emit_tool_activity(agent_id, tool_name, phase, tool_input=tool_input)
         else:
             return {}
+    # --- Context compaction ---
+    elif hook_event == "PreCompact":
+        tool_name = "Compact"
+        phase = "start"
+        kind = "compact"
+        summary = "context compaction"
+        await emit_tool_activity(agent_id, tool_name, phase)
+        # Mark compact as starting so sync loop handles offset reset
+        if ad and ad._sync_contexts.get(agent_id):
+            ad._sync_contexts[agent_id].compact_notified = True
     else:
         return {}
 
-    # Accumulate for persistence — sync loop will attach to the next agent message
-    if ad and phase:
-        entry = {"name": tool_name, "phase": phase, "kind": kind}
-        if summary:
-            entry["summary"] = summary[:120]
-        if output_summary:
-            entry["output_summary"] = output_summary[:120]
-        if is_error:
-            entry["is_error"] = True
-        ad.append_tool_log(agent_id, entry)
-        # Wake the JSONL sync loop immediately so new message content
-        # is picked up right away instead of waiting up to 3 seconds.
+    # Wake the JSONL sync loop so new message content is picked up
+    # right away instead of waiting up to 3 seconds.
+    if ad:
         ad.wake_sync(agent_id)
+        if phase == "end":  # PostToolUse completed — JSONL has new content
+            # Schedule sync in background (don't block the hook response)
+            import asyncio
+            asyncio.create_task(ad.trigger_sync(agent_id))
 
     return {}
 
@@ -4466,6 +4470,9 @@ def _write_agent_hooks_config(project_path: str):
         }],
         "Notification": [{
             "matcher": "permission_prompt",
+            "hooks": [_tool_activity_hook],
+        }],
+        "PreCompact": [{
             "hooks": [_tool_activity_hook],
         }],
         "Stop": [{
