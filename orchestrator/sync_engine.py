@@ -293,8 +293,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     Returns one of: "new_turns", "turn_updated", "streaming", "no_change"
     """
     from agent_dispatcher import (
-        _read_jsonl_incremental,
-        _parse_incremental_lines,
         _parse_session_turns,
         _is_wrapped_prompt,
         _dedup_sig,
@@ -310,31 +308,23 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     )
     from thumbnails import generate_thumbnails_for_message
 
-    # Incremental read: seek to last_offset, read only new bytes
-    _inc_lines, _new_offset, _leftover = _read_jsonl_incremental(
-        ctx.jsonl_path, ctx.last_offset,
-    )
-    if _inc_lines:
-        turns = _parse_incremental_lines(_inc_lines, ctx.incremental_turns)
-    else:
-        turns = list(ctx.incremental_turns)
-    ctx.last_offset = _new_offset
+    # Full parse — reliable, avoids incremental merge bugs
+    try:
+        ctx.last_offset = os.path.getsize(ctx.jsonl_path)
+    except OSError:
+        pass
+    turns = _parse_session_turns(ctx.jsonl_path)
 
     # Detect turn count decrease (compact may produce a larger
     # file but with fewer turns if the summary is long)
     if len(turns) < ctx.last_turn_count:
         logger.info(
             "Turn count decreased for agent %s (%d -> %d, "
-            "likely /compact), resetting offset + full re-parse",
+            "likely /compact), full re-parse already done",
             ctx.agent_id, ctx.last_turn_count, len(turns),
         )
-        turns = _parse_session_turns(ctx.jsonl_path)
         ctx.incremental_turns = list(turns)
         ctx.last_turn_count = len(turns)
-        try:
-            ctx.last_offset = os.path.getsize(ctx.jsonl_path)
-        except OSError:
-            pass
         _t = turns[-1] if turns else ("", "", None)
         _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
         ctx.last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
