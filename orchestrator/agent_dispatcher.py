@@ -2609,14 +2609,8 @@ class AgentDispatcher:
         # Generation tracking: monotonic ID per agent + set of currently generating agents
         self._generation_ids: dict[str, int] = {}
         self._generating_agents: set[str] = set()
-        # Agents whose stop hook fired — JSONL sync consumes this to
-        # increment unread_count at the right moment (not mid-generation).
-        self._pending_notify: set[str] = set()
         # Per-agent events to wake sync loops immediately on stop hook
         self._sync_wake: dict[str, asyncio.Event] = {}
-        # Accumulated tool activity entries per agent (populated by CC hooks,
-        # drained and attached to agent messages during sync commit).
-        self._tool_logs: dict[str, list] = {}
         # Per-agent sync contexts (used by sync_engine)
         from sync_engine import SyncContext
         self._sync_contexts: dict[str, SyncContext] = {}
@@ -3182,11 +3176,6 @@ Here are the day's conversations (with timestamps):
                     completed_at=_utcnow(),
                 )
             elif role == "assistant":
-                _tlog = self.drain_tool_log(agent_id)
-                if _tlog:
-                    _meta = json.loads(meta_json) if meta_json else {}
-                    _meta["tool_log"] = _tlog
-                    meta_json = json.dumps(_meta)
                 msg = Message(
                     agent_id=agent_id,
                     role=MessageRole.AGENT,
@@ -3393,18 +3382,6 @@ Here are the day's conversations (with timestamps):
         ctx = self._sync_contexts.get(agent_id)
         if ctx:
             ctx.wake_event.set()
-
-    def append_tool_log(self, agent_id: str, entry: dict):
-        """Append a tool activity entry (called from hook endpoint)."""
-        self._tool_logs.setdefault(agent_id, []).append(entry)
-
-    def drain_tool_log(self, agent_id: str) -> list | None:
-        """Return and clear accumulated tool log for an agent.
-
-        Returns None if empty (so meta_json is not bloated with empty lists).
-        """
-        entries = self._tool_logs.pop(agent_id, None)
-        return entries if entries else None
 
     def _stop_generating(self, agent_id: str):
         """Mark agent as no longer generating and emit stream_end."""

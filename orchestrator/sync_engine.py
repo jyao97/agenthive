@@ -339,23 +339,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
         ctx.last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
         ctx.last_streamed_hash = ""
-        # Drain accumulated tool_log to the last assistant message
-        _tlog = ad.drain_tool_log(ctx.agent_id)
-        if _tlog:
-            db_tlog = SessionLocal()
-            try:
-                last_asst = db_tlog.query(Message).filter(
-                    Message.agent_id == ctx.agent_id,
-                    Message.role == "AGENT",
-                ).order_by(Message.created_at.desc()).first()
-                if last_asst:
-                    _meta = json.loads(last_asst.meta_json) if last_asst.meta_json else {}
-                    existing = _meta.get("tool_log", [])
-                    _meta["tool_log"] = existing + _tlog
-                    last_asst.meta_json = json.dumps(_meta)
-                    db_tlog.commit()
-            finally:
-                db_tlog.close()
         # Notify UI about the compact
         db_compact = SessionLocal()
         try:
@@ -406,19 +389,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                 ctx.sync_gen_id = ad._start_generating(ctx.agent_id)
             _sync_active_tool = _extract_last_tool_from_content(partial) if partial else None
             ad._emit(emit_agent_stream(ctx.agent_id, partial, generation_id=ctx.sync_gen_id, active_tool=_sync_active_tool))
-        # Stop hook fired but turns already imported — increment unread now
-        if ctx.agent_id in ad._pending_notify:
-            ad._pending_notify.discard(ctx.agent_id)
-            db_pn = SessionLocal()
-            try:
-                _ag = db_pn.get(Agent, ctx.agent_id)
-                if _ag and not ad._is_agent_in_use(_ag.id, _ag.tmux_pane):
-                    _ag.unread_count += 1
-                    _ag.last_message_preview = (partial or _ag.last_message_preview or "")[:200]
-                    ad._maybe_notify_message(_ag)
-                    db_pn.commit()
-            finally:
-                db_pn.close()
         return "streaming"
 
     db = SessionLocal()
@@ -448,12 +418,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     )
                 agent.last_message_preview = (_last_content or "")[:200]
                 agent.last_message_at = _utcnow()
-                # Stop hook fired while last turn was growing
-                if ctx.agent_id in ad._pending_notify:
-                    ad._pending_notify.discard(ctx.agent_id)
-                    if not ad._is_agent_in_use(agent.id, agent.tmux_pane):
-                        agent.unread_count += 1
-                        ad._maybe_notify_message(agent)
                 db.commit()
                 _sync_active_tool = _extract_last_tool_from_content(_last_content) if _last_content else None
                 ad._emit(emit_agent_stream(
@@ -587,11 +551,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         completed_at=_utcnow(),
                     )
                 elif role == "assistant":
-                    _tlog = ad.drain_tool_log(ctx.agent_id)
-                    if _tlog:
-                        _meta = json.loads(meta_json) if meta_json else {}
-                        _meta["tool_log"] = _tlog
-                        meta_json = json.dumps(_meta)
                     msg = Message(
                         agent_id=ctx.agent_id,
                         role=MessageRole.AGENT,
@@ -618,13 +577,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
 
             agent.last_message_preview = (new_turns[-1][1] or "")[:200]
             agent.last_message_at = _utcnow()
-            if ctx.agent_id in ad._pending_notify:
-                ad._pending_notify.discard(ctx.agent_id)
-                if not ad._is_agent_in_use(agent.id, agent.tmux_pane):
-                    _non_user = sum(1 for r, *_ in new_turns if r != "user")
-                    if _non_user > 0:
-                        agent.unread_count += _non_user
-                        ad._maybe_notify_message(agent)
             db.commit()
 
             ctx.last_turn_count = len(turns)
@@ -700,23 +652,6 @@ async def sync_handle_compact(ad, ctx: SyncContext):
     except OSError:
         ctx.last_offset = 0
     ctx.idle_polls = 0
-    # Drain accumulated tool_log to the last assistant message
-    _tlog = ad.drain_tool_log(ctx.agent_id)
-    if _tlog:
-        db_tlog = SessionLocal()
-        try:
-            last_asst = db_tlog.query(Message).filter(
-                Message.agent_id == ctx.agent_id,
-                Message.role == "AGENT",
-            ).order_by(Message.created_at.desc()).first()
-            if last_asst:
-                _meta = json.loads(last_asst.meta_json) if last_asst.meta_json else {}
-                existing = _meta.get("tool_log", [])
-                _meta["tool_log"] = existing + _tlog
-                last_asst.meta_json = json.dumps(_meta)
-                db_tlog.commit()
-        finally:
-            db_tlog.close()
     # Notify UI about the compact
     db_compact = SessionLocal()
     try:
@@ -765,37 +700,7 @@ async def sync_check_streaming(ad, ctx: SyncContext):
         ad._stop_generating(ctx.agent_id)
         ctx.sync_gen_id = None
 
-    # Detect likely in-progress compaction
-    if not ctx.compact_notified and ctx.idle_polls == _GENERATING_IDLE_THRESHOLD:
-        has_pending_tools = bool(ad._tool_logs.get(ctx.agent_id))
-        if has_pending_tools:
-            _pane_id = None
-            db_cp = SessionLocal()
-            try:
-                _ag = db_cp.get(Agent, ctx.agent_id)
-                if _ag:
-                    _pane_id = _ag.tmux_pane
-            finally:
-                db_cp.close()
-            if _pane_id and verify_tmux_pane(_pane_id):
-                ctx.compact_notified = True
-                ad._emit(emit_tool_activity(
-                    ctx.agent_id, "Compact", "start",
-                    tool_input={"description": "Compacting context"},
-                ))
-
-    # Stop hook fired but JSONL hasn't changed
-    if ctx.agent_id in ad._pending_notify:
-        ad._pending_notify.discard(ctx.agent_id)
-        db_pn = SessionLocal()
-        try:
-            _ag = db_pn.get(Agent, ctx.agent_id)
-            if _ag and not ad._is_agent_in_use(_ag.id, _ag.tmux_pane):
-                _ag.unread_count += 1
-                ad._maybe_notify_message(_ag)
-                db_pn.commit()
-        finally:
-            db_pn.close()
+    # compact_notified is set directly by PreCompact hook in main.py
 
 
 # ---------------------------------------------------------------------------
