@@ -4931,9 +4931,12 @@ async def _launch_tmux_background(
             if pane_text is None:
                 continue
 
-            # Check for the REPL status bar (definitive ready signal)
+            # Check for the REPL status bar (definitive ready signal).
+            # With --dangerously-skip-permissions: "⏵⏵ bypass ... shift+tab"
+            # Without (supervised mode): "? for shortcuts ... /effort"
             for ln in pane_text.split("\n"):
-                if "\u23f5" in ln and "shift+tab" in ln:
+                if ("\u23f5" in ln and "shift+tab" in ln) or \
+                   ("? for shortcuts" in ln):
                     tui_ready = True
                     break
             if tui_ready:
