@@ -1570,6 +1570,283 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, s
     return turns
 
 
+def _read_jsonl_incremental(
+    jsonl_path: str, last_offset: int
+) -> tuple[list[str], int, str]:
+    """Read new complete JSONL lines from *last_offset*, returning parsed lines.
+
+    Returns ``(lines, new_offset, leftover)`` where:
+    - *lines*: list of complete JSONL line strings (stripped, non-empty)
+    - *new_offset*: byte position to resume from on next call (after last
+      complete newline, so partial writes are retried)
+    - *leftover*: any trailing bytes after the last newline (partial line
+      being written by Claude Code) — kept for diagnostics but NOT parsed.
+
+    On error (file missing, etc.), returns ``([], last_offset, "")``.
+    """
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            f.seek(last_offset)
+            new_data = f.read()
+            end_offset = f.tell()
+    except OSError:
+        return [], last_offset, ""
+
+    if not new_data:
+        return [], last_offset, ""
+
+    # Split into lines; the last element after split("\n") may be a
+    # partial line if the file is mid-write.  Only process complete lines
+    # (those terminated by "\n").
+    parts = new_data.split("\n")
+    # If new_data ends with "\n", parts[-1] is "" (complete).
+    # If not, parts[-1] is a partial line — exclude it.
+    leftover = ""
+    if not new_data.endswith("\n"):
+        leftover = parts.pop()  # incomplete line — retry next time
+        # Rewind offset to before the partial line so we re-read it
+        end_offset -= len(leftover.encode("utf-8", errors="replace"))
+
+    lines = [l.strip() for l in parts if l.strip()]
+    return lines, end_offset, leftover
+
+
+def _parse_incremental_lines(
+    raw_lines: list[str],
+    prior_turns: list[tuple[str, str, dict | None, str | None]],
+) -> list[tuple[str, str, dict | None, str | None]]:
+    """Parse new JSONL lines into turns, appending to / updating *prior_turns*.
+
+    This is a thin wrapper that feeds raw JSONL lines through the same
+    parsing logic as ``_parse_session_turns`` but operates on a list of
+    already-read line strings instead of opening a file.  It returns the
+    **full** turn list (prior + new) so callers can use it as a drop-in
+    replacement for ``_parse_session_turns`` during incremental reads.
+
+    The function handles the tricky case where the last prior turn was an
+    assistant turn that may still be accumulating (new assistant entries
+    before the next user entry extend the same turn).
+    """
+    if not raw_lines:
+        return list(prior_turns)
+
+    # We need to replay from the last assistant turn boundary because
+    # new assistant entries may extend it.  Find the index of the last
+    # user/system turn in prior_turns — everything after that is the
+    # "open" assistant turn that might still be growing.
+    replay_from = len(prior_turns)
+    for i in range(len(prior_turns) - 1, -1, -1):
+        if prior_turns[i][0] in ("user", "system"):
+            replay_from = i + 1
+            break
+        replay_from = i
+
+    # Turns that are finalized (before the open assistant tail)
+    finalized = list(prior_turns[:replay_from])
+
+    # Re-build the open assistant turn (if any) + new lines by parsing
+    # them together.  We need the original JSONL lines for the open
+    # assistant turn, but we don't have them anymore.  Instead, just
+    # parse the new lines on their own and handle merging:
+    # - If the first new entry is an assistant entry AND prior_turns
+    #   ended with an assistant turn, we need to merge.
+    # - Otherwise, just append new turns.
+
+    # Parse new lines into turns using the same logic as _parse_session_turns
+    new_turns: list[tuple[str, str, dict | None, str | None]] = []
+    assistant_parts: list[tuple[str, str]] = []
+    pending_interactive: list[dict] = []
+    interactive_by_id: dict[str, dict] = {}
+    assistant_turn_uuid: str | None = None
+
+    def flush_assistant():
+        nonlocal assistant_turn_uuid
+        if not assistant_parts and not pending_interactive:
+            return
+        text = _format_parts(assistant_parts) if assistant_parts else ""
+        meta = None
+        if pending_interactive:
+            meta = {"interactive": list(pending_interactive)}
+        if text.strip() or meta:
+            new_turns.append(("assistant", text.strip() if text else "", meta, assistant_turn_uuid))
+        assistant_parts.clear()
+        pending_interactive.clear()
+        assistant_turn_uuid = None
+
+    for line in raw_lines:
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        entry_type = entry.get("type")
+        entry_uuid = entry.get("uuid")
+
+        if entry_type == "user":
+            msg = entry.get("message", {})
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        tool_use_id = block.get("tool_use_id", "")
+                        if tool_use_id in interactive_by_id:
+                            result_content = block.get("content", "")
+                            if isinstance(result_content, list):
+                                result_content = " ".join(
+                                    b.get("text", "") if isinstance(b, dict) else str(b)
+                                    for b in result_content
+                                ).strip() or ""
+                            interactive_by_id[tool_use_id]["answer"] = result_content
+                            _derive_selected_index(interactive_by_id[tool_use_id])
+                            flush_assistant()
+                continue
+            if isinstance(content, str) and content.strip():
+                stripped = content.strip()
+                if (
+                    stripped.startswith("<local-command-caveat>")
+                    or stripped.startswith("<command-name>")
+                    or stripped.startswith("<local-command-stdout>")
+                    or stripped.startswith("<system-reminder>")
+                    or stripped.startswith("<task-notification>")
+                ):
+                    continue
+                if stripped.startswith(
+                    "This session is being continued from a previous conversation"
+                ):
+                    flush_assistant()
+                    new_turns.append(("system", content, None, None))
+                    continue
+                flush_assistant()
+                clean = _strip_agent_preamble(stripped)
+                new_turns.append(("user", clean, None, entry_uuid))
+
+        elif entry_type == "assistant":
+            msg = entry.get("message", {})
+            if entry.get("parent_tool_use_id"):
+                continue
+            if assistant_turn_uuid is None and entry_uuid:
+                assistant_turn_uuid = entry_uuid
+            for block in msg.get("content", []):
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text", "").strip():
+                    if not _is_image_metadata(block["text"]):
+                        assistant_parts.append(("text", block["text"]))
+                elif block.get("type") == "tool_use":
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
+                    tool_use_id = block.get("id", "")
+                    if tool_name in ("AskUserQuestion", "ExitPlanMode"):
+                        flush_assistant()
+                        if tool_name == "AskUserQuestion":
+                            entry_data = {
+                                "type": "ask_user_question",
+                                "tool_use_id": tool_use_id,
+                                "questions": tool_input.get("questions", []),
+                                "answer": None,
+                            }
+                        else:
+                            entry_data = {
+                                "type": "exit_plan_mode",
+                                "tool_use_id": tool_use_id,
+                                "allowedPrompts": tool_input.get("allowedPrompts", []),
+                                "plan": tool_input.get("plan", ""),
+                                "answer": None,
+                            }
+                        pending_interactive.append(entry_data)
+                        interactive_by_id[tool_use_id] = entry_data
+                    summary = _format_tool_summary(tool_name, tool_input)
+                    if summary:
+                        assistant_parts.append(("tool", summary))
+
+        elif entry_type == "queue-operation":
+            if entry.get("operation") == "enqueue":
+                queued_content = entry.get("content", "")
+                if isinstance(queued_content, str) and queued_content.strip():
+                    clean_q = _strip_agent_preamble(queued_content.strip())
+                    if clean_q.lstrip().startswith("<task-notification>"):
+                        flush_assistant()
+                        new_turns.append(("assistant", clean_q, None, None))
+                    else:
+                        flush_assistant()
+                        new_turns.append(("user", clean_q, None, None))
+
+        elif entry_type == "system":
+            subtype = entry.get("subtype", "")
+            if subtype in ("turn_duration",):
+                continue
+            flush_assistant()
+            content = entry.get("content", "")
+            if subtype or content:
+                label = content or subtype.replace("_", " ")
+                new_turns.append(("system", label, None, None))
+
+    flush_assistant()
+
+    # Merge: if prior_turns ended with an open assistant turn and the
+    # first new parsed block is also assistant, merge them.
+    open_assistant = list(prior_turns[replay_from:])
+    if open_assistant and new_turns:
+        # The open tail is all assistant turns; new_turns[0] might extend it
+        if new_turns[0][0] == "assistant":
+            # Merge: concatenate content, merge metadata
+            merged_content_parts = []
+            merged_meta_items: list[dict] = []
+            merged_uuid = None
+            for _r, _c, _m, _u in open_assistant:
+                if _c:
+                    merged_content_parts.append(_c)
+                if _m and "interactive" in _m:
+                    merged_meta_items.extend(_m["interactive"])
+                if merged_uuid is None and _u:
+                    merged_uuid = _u
+            # Add the new assistant turn
+            nr, nc, nm, nu = new_turns[0]
+            if nc:
+                merged_content_parts.append(nc)
+            if nm and "interactive" in nm:
+                merged_meta_items.extend(nm["interactive"])
+            if merged_uuid is None and nu:
+                merged_uuid = nu
+
+            merged_content = "\n\n".join(merged_content_parts)
+            merged_meta = {"interactive": merged_meta_items} if merged_meta_items else None
+            finalized.append(("assistant", merged_content, merged_meta, merged_uuid))
+            # Add remaining new turns
+            finalized.extend(new_turns[1:])
+        else:
+            # New turns start with user/system — the open assistant is finalized
+            finalized.extend(open_assistant)
+            finalized.extend(new_turns)
+    elif open_assistant:
+        finalized.extend(open_assistant)
+    elif new_turns:
+        finalized.extend(new_turns)
+
+    # Deduplicate user turns (same logic as _parse_session_turns)
+    if finalized:
+        seen_uuids: set[str] = set()
+        seen_content: set[str] = set()
+        deduped: list[tuple[str, str, dict | None, str | None]] = []
+        for role, content, meta, uuid in finalized:
+            if role == "user":
+                if uuid:
+                    if uuid in seen_uuids:
+                        continue
+                    seen_uuids.add(uuid)
+                if content in seen_content:
+                    continue
+                seen_content.add(content)
+            deduped.append((role, content, meta, uuid))
+        finalized = deduped
+
+    return finalized
+
+
 def _update_stale_interactive_metadata(
     db: "Session", agent_id: str, turns: list[tuple]
 ) -> bool:
@@ -5452,8 +5729,8 @@ Here are the day's conversations (with timestamps):
         self, agent_id: str, session_id: str, project_path: str
     ):
         """Inner sync loop — see _sync_session_loop for docs."""
-        POLL_INTERVAL = 3  # seconds between checks
-        _GENERATING_IDLE_THRESHOLD = 2  # idle polls before clearing is_generating (~6s)
+        POLL_INTERVAL = 6  # seconds between checks (hooks handle latency-sensitive events)
+        _GENERATING_IDLE_THRESHOLD = 2  # idle polls before clearing is_generating (~12s)
 
         # Register wake event so stop hook can interrupt the sleep
         wake_event = asyncio.Event()
@@ -5482,22 +5759,24 @@ Here are the day's conversations (with timestamps):
                 agent_id, jsonl_path,
             )
 
-        last_size = 0
+        last_offset = 0  # byte position for incremental JSONL reads
         last_turn_count = 0
         last_tail_hash = ""  # Hash of last turn content to detect updates
         last_streamed_hash = ""  # Hash of last agent_stream content (avoid re-emit)
         is_generating = False
         _sync_gen_id: int | None = None  # current generation_id for sync streaming
         _compact_notified = False  # True once Compact "start" event emitted (reset on compact end)
+        # Accumulated turns from incremental reads (avoids full re-parse each poll)
+        _incremental_turns: list[tuple[str, str, dict | None, str | None]] = []
         def _content_hash(content: str) -> str:
             """Fast hash of content for change detection."""
             import hashlib
             return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:16]
 
-        # Get the current file size and turn count so we only import new turns
+        # Get the current file offset and turn count so we only import new turns
         try:
             with open(jsonl_path, "r", errors="replace") as f:
-                last_size = f.seek(0, 2)  # seek to end
+                last_offset = f.seek(0, 2)  # seek to end — byte offset
         except OSError as e:
             logger.warning(
                 "Sync loop for agent %s: cannot read session JSONL %s: %s",
@@ -5505,6 +5784,7 @@ Here are the day's conversations (with timestamps):
             )
 
         initial_turns = _parse_session_turns(jsonl_path)
+        _incremental_turns = list(initial_turns)
         last_turn_count = len(initial_turns)
         if initial_turns:
             _init_tail = initial_turns[-1]
@@ -5724,7 +6004,7 @@ Here are the day's conversations (with timestamps):
 
         idle_polls = 0
         _getsize_error_count = 0
-        _GETSIZE_ERROR_LIMIT = 20  # ~60s at 3s poll interval
+        _GETSIZE_ERROR_LIMIT = 10  # ~60s at 6s poll interval
         while True:
             # Wait up to POLL_INTERVAL, but wake immediately if stop hook fires
             try:
@@ -5788,18 +6068,20 @@ Here are the day's conversations (with timestamps):
                 continue
 
             # Detect JSONL rewrite (e.g. /compact shrinks the file)
-            if current_size < last_size:
+            if current_size < last_offset:
                 logger.info(
                     "Session file shrank for agent %s (%d → %d bytes, "
-                    "likely /compact), resetting sync state",
-                    agent_id, last_size, current_size,
+                    "likely /compact), resetting offset + full re-parse",
+                    agent_id, last_offset, current_size,
                 )
+                # Compact: full re-parse required, reset offset
                 turns = _parse_session_turns(jsonl_path)
+                _incremental_turns = list(turns)
                 last_turn_count = len(turns)
                 _t = turns[-1] if turns else ("", "", None)
                 _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
                 last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
-                last_size = current_size
+                last_offset = current_size
                 idle_polls = 0
                 # Drain accumulated tool_log to the last assistant message
                 # so tool entries aren't lost across the compact boundary.
@@ -5839,9 +6121,9 @@ Here are the day's conversations (with timestamps):
                     db_compact.close()
                 continue
 
-            if current_size <= last_size:
+            if current_size <= last_offset:
                 idle_polls += 1
-                # Heartbeat log every 30 idle polls (~90s) to confirm loop is alive
+                # Heartbeat log every 30 idle polls (~180s) to confirm loop is alive
                 if idle_polls % 30 == 0 and idle_polls > 0:
                     logger.info(
                         "Sync loop heartbeat for agent %s: idle_polls=%d, session=%s",
@@ -5936,7 +6218,7 @@ Here are the day's conversations (with timestamps):
                     if not pane_alive:
                         # tmux is dead — if we've been idle long enough
                         # with no pane, the CLI session is truly gone.
-                        # Use 60 idle polls (~3 min) to give time for
+                        # Use 60 idle polls (~6 min) to give time for
                         # pane re-detection before giving up.
                         if idle_polls >= 60:
                             logger.info(
@@ -5996,20 +6278,32 @@ Here are the day's conversations (with timestamps):
                     # simply be idle in the tmux session.
                 continue
             idle_polls = 0
-            last_size = current_size
 
-            # Parse full file for turns
-            turns = _parse_session_turns(jsonl_path)
+            # Incremental read: seek to last_offset, read only new bytes
+            _inc_lines, _new_offset, _leftover = _read_jsonl_incremental(
+                jsonl_path, last_offset,
+            )
+            if _inc_lines:
+                turns = _parse_incremental_lines(_inc_lines, _incremental_turns)
+            else:
+                # No new complete lines yet (partial write?) — keep old state
+                turns = list(_incremental_turns)
+            last_offset = _new_offset
 
             # Detect turn count decrease (compact may produce a larger
             # file but with fewer turns if the summary is long)
             if len(turns) < last_turn_count:
                 logger.info(
                     "Turn count decreased for agent %s (%d → %d, "
-                    "likely /compact), resetting sync state",
+                    "likely /compact), resetting offset + full re-parse",
                     agent_id, last_turn_count, len(turns),
                 )
+                # Incremental parse produced fewer turns — full re-parse
+                # to be safe (compact can rewrite the entire file)
+                turns = _parse_session_turns(jsonl_path)
+                _incremental_turns = list(turns)
                 last_turn_count = len(turns)
+                last_offset = current_size
                 _t = turns[-1] if turns else ("", "", None)
                 _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
                 last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
@@ -6050,6 +6344,9 @@ Here are the day's conversations (with timestamps):
                 finally:
                     db_compact.close()
                 continue
+
+            # Update incremental state
+            _incremental_turns = list(turns)
 
             new_turns = turns[last_turn_count:]
 
@@ -6381,10 +6678,18 @@ Here are the day's conversations (with timestamps):
 
             # Check if the CLI session has ended by looking for a 'result' event
             if self._session_has_ended(jsonl_path):
-                # Sync any final turns first
+                # Sync any final turns first (incremental read for remaining bytes)
                 db = SessionLocal()
                 try:
-                    turns = _parse_session_turns(jsonl_path)
+                    _end_lines, _end_offset, _ = _read_jsonl_incremental(
+                        jsonl_path, last_offset,
+                    )
+                    if _end_lines:
+                        turns = _parse_incremental_lines(_end_lines, _incremental_turns)
+                        _incremental_turns = list(turns)
+                        last_offset = _end_offset
+                    else:
+                        turns = list(_incremental_turns)
                     final_new = turns[last_turn_count:]
                     agent = db.get(Agent, agent_id)
                     if agent and final_new:
