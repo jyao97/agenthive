@@ -1222,28 +1222,28 @@ function PermissionCard({ request, agentId, onResolved }) {
             </pre>
           </details>
         )}
-        <div className="flex gap-2">
+        <div className="flex gap-2 mt-1" style={{ touchAction: "manipulation" }}>
           <button
             type="button"
-            onClick={() => handle("allow")}
+            onPointerUp={() => !loading && handle("allow")}
             disabled={!!loading}
-            className="px-3 py-1 text-xs rounded-lg bg-emerald-600/80 hover:bg-emerald-500 text-white transition-colors disabled:opacity-50"
+            className="px-4 py-2.5 text-xs font-medium rounded-xl bg-emerald-600/80 active:bg-emerald-500 text-white transition-colors disabled:opacity-50 min-h-[40px] select-none"
           >
             {loading === "allow" ? "…" : "Allow"}
           </button>
           <button
             type="button"
-            onClick={() => handle("allow_always")}
+            onPointerUp={() => !loading && handle("allow_always")}
             disabled={!!loading}
-            className="px-3 py-1 text-xs rounded-lg bg-cyan-600/60 hover:bg-cyan-500 text-white transition-colors disabled:opacity-50"
+            className="px-4 py-2.5 text-xs font-medium rounded-xl bg-cyan-600/60 active:bg-cyan-500 text-white transition-colors disabled:opacity-50 min-h-[40px] select-none"
           >
             {loading === "allow_always" ? "…" : `Always ${toolLabel}`}
           </button>
           <button
             type="button"
-            onClick={() => handle("deny")}
+            onPointerUp={() => !loading && handle("deny")}
             disabled={!!loading}
-            className="px-3 py-1 text-xs rounded-lg bg-red-600/60 hover:bg-red-500 text-white transition-colors disabled:opacity-50"
+            className="px-4 py-2.5 text-xs font-medium rounded-xl bg-red-600/60 active:bg-red-500 text-white transition-colors disabled:opacity-50 min-h-[40px] select-none"
           >
             {loading === "deny" ? "…" : "Deny"}
           </button>
