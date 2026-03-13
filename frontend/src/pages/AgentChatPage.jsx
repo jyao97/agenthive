@@ -584,58 +584,26 @@ const TOOL_SUMMARY_RE = /^> `(\w+)`\s*(.*)/;
 
 /**
  * Split agent message content into interleaved text + tool segments.
- * Uses `> ToolName` summary lines as delimiters, pairing with tool_log entries.
+ * Uses `> ToolName` summary lines in the content as delimiters.
  * Returns [{type:"text",text}, {type:"tools",entries}, ...].
  */
-function splitMessageSegments(content, toolLog) {
-  if (!toolLog?.length) return [{ type: "text", text: content }];
-
+function splitMessageSegments(content) {
   const lines = content.split("\n");
   const result = [];
-  let textBuf = [];
-  let toolBuf = [];
-  let logIdx = 0;
-
-  const flushText = () => {
-    const t = textBuf.join("\n").trim();
-    if (t) result.push({ type: "text", text: t });
-    textBuf = [];
-  };
-  const flushTools = () => {
-    if (toolBuf.length) result.push({ type: "tools", entries: [...toolBuf] });
-    toolBuf = [];
-  };
-
+  let text = [], tools = [];
   for (const line of lines) {
     const m = line.match(TOOL_SUMMARY_RE);
-    if (m && logIdx < toolLog.length) {
-      const toolName = m[1];
-      // Consume matching tool_log entries (start+end pair)
-      const matched = [];
-      while (logIdx < toolLog.length) {
-        const entry = toolLog[logIdx];
-        matched.push(entry);
-        logIdx++;
-        if (entry.phase === "end" || entry.phase === "permission") break;
-        if (entry.name !== toolName && entry.name !== `Agent:${toolName}`) break;
-      }
-      // Use the richest entry (prefer "end" which has output_summary)
-      const best = matched.find((e) => e.phase === "end") || matched[matched.length - 1];
-      if (textBuf.length) flushText();
-      toolBuf.push(best);
+    if (m) {
+      if (text.length) { const t = text.join("\n").trim(); if (t) result.push({ type: "text", text: t }); text = []; }
+      tools.push({ name: m[1], summary: m[2] });
     } else {
-      if (toolBuf.length) flushTools();
-      textBuf.push(line);
+      if (tools.length) { result.push({ type: "tools", entries: [...tools] }); tools = []; }
+      text.push(line);
     }
   }
-  if (toolBuf.length) flushTools();
-  flushText();
-  // Append any unconsumed tool_log entries
-  while (logIdx < toolLog.length) {
-    toolBuf.push(toolLog[logIdx++]);
-  }
-  if (toolBuf.length) result.push({ type: "tools", entries: toolBuf });
-
+  if (tools.length) result.push({ type: "tools", entries: tools });
+  const t = text.join("\n").trim();
+  if (t) result.push({ type: "text", text: t });
   return result;
 }
 
@@ -1010,57 +978,31 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
 
 // --- Tool log entry rendering helpers ---
 
-const _tlIcon = (e) => {
-  if (e.kind === "permission") return "⏳";
-  if (e.is_error) return "✗";
-  if (e.kind === "subagent") return "◆";
-  if (e.phase === "start") return "▸";
-  return "✓";
-};
-const _tlColor = (e) => {
-  if (e.kind === "permission") return "text-amber-400";
-  if (e.is_error) return "text-red-400";
-  if (e.kind === "subagent") return "text-violet-400";
-  return "text-cyan-300";
-};
+const _tlIcon = () => "▸";
+const _tlColor = () => "text-cyan-300";
 
 function ToolLogEntry({ entry }) {
   return (
-    <div className={`flex items-center gap-1.5 ${entry.is_error ? "text-red-400" : "text-dim"}`}>
+    <div className="flex items-center gap-1.5 text-dim">
       <span className="shrink-0">{_tlIcon(entry)}</span>
       <span className={_tlColor(entry)}>{entry.name}</span>
       {entry.summary && <span className="text-faint truncate max-w-[160px]">{entry.summary}</span>}
-      {entry.output_summary && <span className={entry.is_error ? "text-red-400/70" : "text-faint"}>→ {entry.output_summary}</span>}
     </div>
   );
 }
 
 /**
- * Standalone mini-bubble for persisted tool_log entries.
+ * Standalone mini-bubble for tool entries parsed from message content.
  * Rendered as a separate element between ChatBubble components in the message list.
  */
 function ToolLogBubble({ entries }) {
   const [expanded, setExpanded] = useState(false);
   if (!entries?.length) return null;
 
-  // Deduplicate: keep only "end" phase entries (they have output_summary);
-  // for entries without a matching "end", keep the "start" entry.
-  const deduped = useMemo(() => {
-    const seen = new Map(); // name → best entry
-    for (const e of entries) {
-      const key = `${e.name}:${e.summary || ""}`;
-      const prev = seen.get(key);
-      if (!prev || e.phase === "end") {
-        seen.set(key, e);
-      }
-    }
-    return [...seen.values()];
-  }, [entries]);
-
   const LIMIT = 5;
-  const showAll = expanded || deduped.length <= LIMIT;
-  const visible = showAll ? deduped : deduped.slice(-LIMIT);
-  const hiddenCount = deduped.length - visible.length;
+  const showAll = expanded || entries.length <= LIMIT;
+  const visible = showAll ? entries : entries.slice(-LIMIT);
+  const hiddenCount = entries.length - visible.length;
 
   return (
     <div className="flex justify-start my-2">
@@ -1072,7 +1014,7 @@ function ToolLogBubble({ entries }) {
             </button>
           )}
           {visible.map((e, j) => <ToolLogEntry key={j} entry={e} />)}
-          {showAll && deduped.length > LIMIT && (
+          {showAll && entries.length > LIMIT && (
             <button type="button" onClick={() => setExpanded(false)} className="text-faint hover:text-dim text-[11px] mt-0.5">
               collapse
             </button>
@@ -2263,7 +2205,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
             name: tool_name, summary: summary || "",
             outputSummary: null, isError: false,
             startTime: Date.now(), done: false,
-            kind: tool_name.startsWith("Agent:") ? "subagent" : "tool",
+            kind: tool_name === "Compact" ? "compact" : tool_name.startsWith("Agent:") ? "subagent" : "tool",
           }];
         });
       } else if (phase === "end") {
@@ -2278,13 +2220,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           return updated;
         });
         // Grace period: keep hookActive true for 30s after last tool end.
-        // Covers compact/thinking gaps where no hooks fire.
+        // PreCompact hook will re-trigger hookActive if compact starts.
         clearTimeout(hookGraceRef.current);
         hookGraceRef.current = setTimeout(() => {
-          // Only clear if no new hook arrived since we set the timer
-          if (Date.now() - lastHookTimeRef.current >= 29_000) {
-            setHookActive(false);
-          }
+          // If a new hook arrived within the window, skip clearing
+          if (Date.now() - lastHookTimeRef.current < 29_000) return;
+          setHookActive(false);
         }, 30_000);
       } else if (phase === "permission") {
         // Agent is blocked waiting for permission — show alert entry
@@ -2908,26 +2849,20 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
             )}
 
             {messages.filter((m) => !(m.role === "USER" && m.status === "PENDING")).map((msg) => {
-              // For agent messages with tool_log, interleave text + tool bubbles
-              const toolLog = msg.role === "AGENT" && msg.metadata?.tool_log;
-              if (toolLog?.length) {
-                const segments = splitMessageSegments(msg.content, toolLog);
-                // Find the last text segment — it gets the full ChatBubble (with timestamp, actions)
-                const lastTextIdx = segments.findLastIndex((s) => s.type === "text");
-                return (
-                  <React.Fragment key={msg.id}>
-                    {segments.map((seg, i) => {
-                      if (seg.type === "tools") {
-                        return <ToolLogBubble key={`${msg.id}-t${i}`} entries={seg.entries} />;
-                      }
-                      // Text segment — last one gets full ChatBubble, others get lightweight bubble
-                      if (i === lastTextIdx) {
-                        return <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride={seg.text} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
-                      }
-                      return <AgentTextSegment key={`${msg.id}-s${i}`} text={seg.text} project={agent.project} />;
-                    })}
-                  </React.Fragment>
-                );
+              if (msg.role === "AGENT" && !(msg.content || "").trimStart().startsWith("<task-notification>")) {
+                const segments = splitMessageSegments(msg.content || "");
+                if (segments.length > 1 || segments[0]?.type === "tools") {
+                  const lastTextIdx = segments.findLastIndex((s) => s.type === "text");
+                  return (
+                    <React.Fragment key={msg.id}>
+                      {segments.map((seg, i) => {
+                        if (seg.type === "tools") return <ToolLogBubble key={`${msg.id}-t${i}`} entries={seg.entries} />;
+                        if (i === lastTextIdx) return <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride={seg.text} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
+                        return <AgentTextSegment key={`${msg.id}-s${i}`} text={seg.text} project={agent.project} />;
+                      })}
+                    </React.Fragment>
+                  );
+                }
               }
               return <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
             })}
