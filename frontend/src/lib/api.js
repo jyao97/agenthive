@@ -1,5 +1,7 @@
 /** Centralized API wrapper for AgentHive. */
 
+import { calibrate } from "./serverTime";
+
 const BASE = "";
 const TOKEN_KEY = "cc-auth-token";
 
@@ -47,6 +49,10 @@ async function request(url, opts = {}) {
   const res = await fetch(`${BASE}${url}`, { ...opts, headers });
 
   if (res.status === 401) handle401();
+
+  // Calibrate clock offset from HTTP Date header (works before WS connects)
+  const serverDate = res.headers.get("Date");
+  if (serverDate) calibrate(serverDate);
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);
@@ -205,6 +211,8 @@ export const sendMessage = (agentId, content, { queue = false, scheduled_at = nu
     method: "POST",
     body: JSON.stringify({ content, queue, scheduled_at }),
   });
+export const fetchToolActivities = (agentId) =>
+  request(`/api/agents/${agentId}/tool-activities`);
 export const markAgentRead = (agentId) =>
   request(`/api/agents/${agentId}/read`, { method: "PUT" });
 export const markAllAgentsRead = () =>
