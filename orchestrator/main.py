@@ -4071,6 +4071,7 @@ async def hook_agent_permission(request: Request):
     summary = _tool_input_summary(tool_name, tool_input) if tool_input else ""
     req = pm.create_request(agent_id, tool_name, tool_input, summary)
 
+    from websocket import ws_manager
     await ws_manager.broadcast("permission_request", {
         "request_id": req.id,
         "agent_id": agent_id,
@@ -4128,6 +4129,7 @@ async def respond_permission(
         raise HTTPException(status_code=404, detail="Permission request not found or already resolved")
 
     # Broadcast resolution so all frontend clients update
+    from websocket import ws_manager
     await ws_manager.broadcast("permission_resolved", {
         "request_id": request_id,
         "agent_id": agent_id,
