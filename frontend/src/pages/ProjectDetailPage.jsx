@@ -38,7 +38,7 @@ import FilterTabs from "../components/FilterTabs";
 import ProjectFileModal from "../components/ProjectFileModal";
 import ProjectBrowserModal from "../components/ProjectBrowserModal";
 import ClaudeMdDiffModal from "../components/ClaudeMdDiffModal";
-import useWebSocket from "../hooks/useWebSocket";
+// useWebSocket is consumed internally by useStreamingAgents
 import usePageVisible from "../hooks/usePageVisible";
 import { useStreamingAgents } from "../hooks/useStreamingAgents";
 import { useToast } from "../contexts/ToastContext";
@@ -421,8 +421,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const [progressDiffData, setProgressDiffData] = useState(null);
 
   // Track which agents are actively streaming via WebSocket events + API is_generating
-  const { lastEvent } = useWebSocket();
-  const streamingAgents = useStreamingAgents(agents, lastEvent);
+  const streamingAgents = useStreamingAgents(agents);
 
   // Rename
   const [editingName, setEditingName] = useState(false);

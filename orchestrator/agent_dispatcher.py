@@ -1589,8 +1589,19 @@ def _update_stale_interactive_metadata(
         if not meta or "interactive" not in meta:
             continue
         for item in meta["interactive"]:
-            if item.get("answer") is not None:
-                answered[item["tool_use_id"]] = item["answer"]
+            a = item.get("answer")
+            if a is not None:
+                # Skip dismiss/rejection answers — they shouldn't overwrite
+                # valid answers or be backfilled onto messages that currently
+                # have answer=None (which should stay null so the web UI's
+                # approved answer takes precedence via _merge_interactive_meta).
+                if isinstance(a, str) and (
+                    a.startswith("The user doesn't want to proceed")
+                    or a.startswith("User declined")
+                    or a.startswith("Tool use rejected")
+                ):
+                    continue
+                answered[item["tool_use_id"]] = a
 
     if not answered:
         return False
@@ -1832,7 +1843,6 @@ def _dedup_sig(text: str) -> str:
     Collapse all whitespace runs to single space, THEN truncate —
     the order matters because tab→space expansion changes char count.
     """
-    import re
     return re.sub(r"\s+", " ", text).strip()[:200]
 
 
@@ -2365,6 +2375,15 @@ class AgentDispatcher:
         # Track known subagent claude_agent_ids per parent agent
         # parent_agent_id -> {claude_agent_id: {agent_id, last_size, idle_polls}}
         self._known_subagents: dict[str, dict[str, dict]] = {}
+
+    @staticmethod
+    def next_dispatch_seq(db, agent_id: str) -> int:
+        """Return the next dispatch_seq for an agent (max + 1, or 1)."""
+        from sqlalchemy import func
+        current_max = db.query(func.max(Message.dispatch_seq)).filter(
+            Message.agent_id == agent_id,
+        ).scalar()
+        return (current_max or 0) + 1
 
     def _get_tmux_map(self) -> dict[str, dict]:
         """Get the per-tick cached tmux pane→claude map.
@@ -3103,11 +3122,14 @@ Here are the day's conversations (with timestamps):
         self._generating_agents.add(agent_id)
         return gid
 
-    def wake_sync(self, agent_id: str):
-        """Wake the sync loop for an agent immediately (skip sleep)."""
+    def wake_sync(self, agent_id: str) -> bool:
+        """Wake the sync loop for an agent immediately (skip sleep).
+        Returns True if a wake event was found and set."""
         ev = self._sync_wake.get(agent_id)
         if ev:
             ev.set()
+            return True
+        return False
 
     def _stop_generating(self, agent_id: str):
         """Mark agent as no longer generating and emit stream_end."""
@@ -3774,12 +3796,13 @@ Here are the day's conversations (with timestamps):
         self._cli_detect_counter += 1
         if self._cli_detect_counter >= self._cli_detect_interval:
             self._cli_detect_counter = 0
-            # Flush in-memory status changes (from harvest/dispatch above)
-            # so DB queries in _reap_dead_agents see current state, not stale
-            # EXECUTING status from the previous commit (autoflush=False).
             db.flush()
             self._auto_detect_cli_sessions(db)
             self._dedup_pane_agents(db)
+            # Commit so _reap_dead_agents starts a fresh transaction and sees
+            # status changes committed by the sync loop's separate DB session
+            # (e.g. SYNCING→STOPPED) that are invisible inside this transaction.
+            db.commit()
             self._reap_dead_agents(db)
 
         db.commit()
@@ -3931,6 +3954,7 @@ Here are the day's conversations (with timestamps):
                     if message:
                         message.status = MessageStatus.PENDING
                         message.completed_at = None
+                        message.delivered_at = None  # Clear: message was never actually delivered
                         from websocket import emit_message_update
                         self._emit(emit_message_update(agent_id, message.id, "PENDING"))
                     # cli_sync agents should return to SYNCING (not IDLE)
@@ -4517,7 +4541,11 @@ Here are the day's conversations (with timestamps):
             if ok:
                 due_msg.status = MessageStatus.COMPLETED
                 due_msg.completed_at = _utcnow()
+                # Do NOT set delivered_at here — tmux send-keys only injects
+                # text. The UserPromptSubmit hook fires when Claude actually
+                # accepts the prompt, and THAT marks it delivered.
                 due_msg.scheduled_at = None
+                due_msg.dispatch_seq = self.next_dispatch_seq(db, agent.id)
                 logger.info(
                     "Dispatched pending message %s to SYNCING agent %s via tmux",
                     due_msg.id, agent.id,
@@ -4961,6 +4989,10 @@ Here are the day's conversations (with timestamps):
                 db, agent, "",
                 kill_tmux=False, add_message=False,
             )
+            # If this was a subagent, wake the parent's sync loop so it can
+            # detect that Claude is now unblocked (or stalled).
+            if agent.parent_id:
+                self.wake_sync(agent.parent_id)
 
     # ---- Streaming output ----
 
@@ -5407,13 +5439,14 @@ Here are the day's conversations (with timestamps):
             finally:
                 db.close()
         finally:
-            self._sync_wake.pop(agent_id, None)
-            self._sync_contexts.pop(agent_id, None)
-            # Only clean up if this is still the active sync task.
-            # _rotate_agent_session replaces the task, so the old one
-            # must not remove the new entry from _sync_tasks.
             import asyncio as _aio
+            # Only clean up shared dicts if this is still the active sync task.
+            # _rotate_agent_session may have already installed a new task with a
+            # fresh wake_event and SyncContext — the old task's finally must not
+            # destroy those new entries (they belong to the replacement task).
             if self._sync_tasks.get(agent_id) is _aio.current_task():
+                self._sync_wake.pop(agent_id, None)
+                self._sync_contexts.pop(agent_id, None)
                 self._sync_tasks.pop(agent_id, None)
             # Ensure generating state is cleaned up on any exit path
             if agent_id in self._generating_agents:
@@ -5458,7 +5491,7 @@ Here are the day's conversations (with timestamps):
             _handle_stop,
         )
 
-        POLL_INTERVAL = 10  # hooks are primary sync driver; polling is fallback only
+        POLL_INTERVAL = 30  # hooks are primary sync driver; polling is fallback
 
         # Register wake event so stop hook can interrupt the sleep
         wake_event = asyncio.Event()
@@ -5520,7 +5553,7 @@ Here are the day's conversations (with timestamps):
         await sync_reconcile_initial(self, ctx)
 
         # Background loop — handles streaming preview, session rotation, tmux health
-        _GETSIZE_ERROR_LIMIT = 10  # ~60s at 6s poll interval
+        _GETSIZE_ERROR_LIMIT = 5  # ~5min at 60s poll interval
         while True:
             # Wait up to POLL_INTERVAL, but wake immediately if stop hook fires
             try:
@@ -5596,15 +5629,15 @@ Here are the day's conversations (with timestamps):
             # File hasn't grown — idle polling
             if current_size <= ctx.last_offset:
                 ctx.idle_polls += 1
-                # Heartbeat log every 30 idle polls (~180s)
-                if ctx.idle_polls % 30 == 0 and ctx.idle_polls > 0:
+                # Heartbeat log every 5 idle polls (~5min)
+                if ctx.idle_polls % 5 == 0 and ctx.idle_polls > 0:
                     logger.info(
                         "Sync loop heartbeat for agent %s: idle_polls=%d, session=%s",
                         agent_id, ctx.idle_polls, session_id[:12],
                     )
 
-                # Periodically check if we should still be syncing
-                if ctx.idle_polls % 10 == 0:
+                # Periodically check if we should still be syncing (~2min)
+                if ctx.idle_polls % 2 == 0:
                     db = SessionLocal()
                     try:
                         agent = db.get(Agent, agent_id)
@@ -5629,8 +5662,8 @@ Here are the day's conversations (with timestamps):
                     finally:
                         db.close()
 
-                # Session rotation / tmux health check
-                if ctx.idle_polls >= 3 and ctx.idle_polls % 3 == 0:
+                # Session rotation / tmux health check (~2min)
+                if ctx.idle_polls >= 2 and ctx.idle_polls % 2 == 0:
                     pane_alive = False
                     db_check = SessionLocal()
                     try:
@@ -5643,7 +5676,7 @@ Here are the day's conversations (with timestamps):
                         db_check.close()
 
                     if not pane_alive:
-                        if ctx.idle_polls >= 60:
+                        if ctx.idle_polls >= 3:
                             logger.info(
                                 "Sync loop stopping for agent %s — "
                                 "tmux pane dead for %d idle polls",
@@ -5681,11 +5714,40 @@ Here are the day's conversations (with timestamps):
                         ):
                             return  # new sync task started by _rotate_agent_session
 
-                    if ctx.idle_polls % 30 == 0:
+                    if ctx.idle_polls % 5 == 0:
                         logger.debug(
                             "Successor check: no match for agent %s (idle_polls=%d, pane_alive=%s)",
                             agent_id, ctx.idle_polls, pane_alive,
                         )
+
+                    # Pane is alive but JSONL is completely stale — Claude is
+                    # blocked (e.g. waiting on a reaped subagent that will never
+                    # complete). Stop the agent after _STALE_SESSION_THRESHOLD.
+                    try:
+                        jsonl_age = _time.time() - os.path.getmtime(ctx.jsonl_path)
+                    except OSError:
+                        jsonl_age = 0
+                    if jsonl_age > _STALE_SESSION_THRESHOLD:
+                        logger.warning(
+                            "Sync loop: JSONL stale for %.0fs with alive pane — "
+                            "stopping stuck agent %s (likely blocked on dead subagent)",
+                            jsonl_age, agent_id,
+                        )
+                        db_stop = SessionLocal()
+                        try:
+                            ag_stop = db_stop.get(Agent, agent_id)
+                            if ag_stop and ag_stop.status == AgentStatus.SYNCING:
+                                self.stop_agent_cleanup(
+                                    db_stop, ag_stop,
+                                    "CLI session stalled — stopped after inactivity",
+                                    kill_tmux=False, cancel_tasks=False,
+                                )
+                                ag_stop.last_message_at = _utcnow()
+                                db_stop.commit()
+                        finally:
+                            db_stop.close()
+                        return
+
                 continue
 
             # File grew — do incremental sync

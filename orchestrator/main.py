@@ -128,8 +128,11 @@ def _create_tmux_claude_session(
     pane_result = _sp.run(["tmux", "display-message", "-p", "-t", session_name, "#{pane_id}"],
                           capture_output=True, text=True, timeout=_TMUX_CMD_TIMEOUT)
     pane_id = pane_result.stdout.strip()
-    # Unset problematic env vars and export AHIVE_AGENT_ID for hooks
+    # Unset problematic env vars, export AHIVE_AGENT_ID for hooks,
+    # and disable prompt suggestions so tmux send-keys Enter always
+    # reaches onSubmit (avoids autocomplete intercepting Enter).
     env_setup = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED CLAUDE_CODE_OAUTH_TOKEN"
+    env_setup += " && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"
     if agent_id:
         env_setup += f" && export AHIVE_AGENT_ID={agent_id}"
     _sp.run(["tmux", "send-keys", "-t", pane_id, env_setup, "Enter"],
@@ -410,6 +413,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---- Hook request logger middleware ----
+# Logs EVERY request to /api/hooks/* so we can tell whether Claude Code
+# is even attempting the HTTP call.
+
+@app.middleware("http")
+async def hook_request_logger(request: Request, call_next):
+    if request.url.path.startswith("/api/hooks/"):
+        agent_id = request.headers.get("X-Agent-Id", "<none>")
+        hook_name = request.url.path.split("/api/hooks/")[-1]
+        logger.info(
+            "HOOK_HTTP_IN: %s agent=%s method=%s",
+            hook_name, agent_id[:12] if agent_id != "<none>" else "<none>", request.method,
+        )
+    return await call_next(request)
+
+
 # ---- Auth middleware ----
 
 _AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/api/files/", "/api/uploads/", "/api/thumbs/", "/docs", "/openapi.json")
@@ -635,7 +654,6 @@ async def test_notify(request: Request):
 
     # Emit debug bubble to frontend
     from websocket import ws_manager
-    import asyncio
     try:
         asyncio.get_event_loop().create_task(ws_manager.broadcast(
             "notification_debug",
@@ -3906,14 +3924,15 @@ async def hook_agent_session_end(request: Request):
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
     if not agent_id:
+        logger.warning("hook_agent_session_end: no X-Agent-Id header")
         return {}
 
     ad = getattr(app.state, "agent_dispatcher", None)
     if not ad:
+        logger.warning("hook_agent_session_end: no agent_dispatcher on app.state for agent %s", agent_id[:8])
         return {}
 
     # Trigger final sync + stop cleanup via the sync loop
-    import asyncio
     asyncio.create_task(ad.trigger_sync(agent_id, is_stop=True))
 
     logger.info("hook_agent_session_end: agent=%s", agent_id[:8])
@@ -3947,7 +3966,6 @@ def _mark_slash_command_delivered(agent_id: str, command_prefix: str):
             msg.delivered_at = now
             db.commit()
             from websocket import emit_message_delivered
-            import asyncio
             asyncio.create_task(emit_message_delivered(
                 agent_id, msg.id, now.isoformat(),
             ))
@@ -3958,31 +3976,22 @@ def _mark_slash_command_delivered(agent_id: str, command_prefix: str):
 
 @app.post("/api/hooks/agent-user-prompt")
 async def hook_agent_user_prompt(request: Request):
-    """Receive UserPromptSubmit hook — user typed something in the CLI.
+    """Receive UserPromptSubmit hook — mark message delivered and wake sync.
 
-    Wakes the sync loop immediately so the new JSONL content (user message)
-    is imported without waiting for the next poll cycle.
-
-    Also marks the most recent undelivered web-sent user message as delivered,
-    since Claude has now received and is processing user input.
+    This hook fires when Claude actually accepts a prompt.  That IS the
+    delivery event, so we mark delivered_at directly here rather than
+    waiting for the JSONL sync loop (which can't see the turn yet because
+    Claude writes the JSONL entry *after* this hook fires).
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
     if not agent_id:
+        logger.warning("hook_agent_user_prompt: no X-Agent-Id header (headers: %s)", dict(request.headers))
         return {}
 
-    ad = getattr(app.state, "agent_dispatcher", None)
-    if ad:
-        ad.wake_sync(agent_id)
+    logger.info("hook_agent_user_prompt: received for agent %s", agent_id[:8])
 
-    # Signal frontend that agent is now processing user input
-    from websocket import emit_tool_activity
-    asyncio.ensure_future(emit_tool_activity(
-        agent_id, "Thinking", "start",
-    ))
-
-    # Mark latest undelivered web-sent message as delivered
-    from database import SessionLocal
-    from models import Message, MessageRole
+    # Mark the most recent undelivered web-sent message as delivered.
+    from websocket import emit_message_delivered
     db = SessionLocal()
     try:
         msg = (
@@ -3990,24 +3999,32 @@ async def hook_agent_user_prompt(request: Request):
             .filter(
                 Message.agent_id == agent_id,
                 Message.role == MessageRole.USER,
-                Message.source == "web",
+                Message.source.in_(("web", "task", "plan_continue")),
                 Message.delivered_at.is_(None),
             )
-            .order_by(Message.created_at.desc())
+            .order_by(Message.created_at.asc())
             .first()
         )
         if msg:
             now = _utcnow()
             msg.delivered_at = now
             db.commit()
-            from websocket import emit_message_delivered
-            import asyncio
-            asyncio.create_task(emit_message_delivered(
+            asyncio.ensure_future(emit_message_delivered(
                 agent_id, msg.id, now.isoformat(),
             ))
-            logger.info("Message %s marked delivered for agent %s", msg.id, agent_id[:8])
+            logger.info("hook_agent_user_prompt: message %s delivered for agent %s", msg.id, agent_id[:8])
+        else:
+            logger.info("hook_agent_user_prompt: no undelivered message for agent %s", agent_id[:8])
     finally:
         db.close()
+
+    # Wake sync loop (still useful for importing the turn into messages)
+    ad = getattr(app.state, "agent_dispatcher", None)
+    if ad:
+        ad.wake_sync(agent_id)
+
+    from websocket import emit_tool_activity
+    asyncio.ensure_future(emit_tool_activity(agent_id, "Thinking", "start"))
 
     return {}
 
@@ -4028,11 +4045,13 @@ async def hook_agent_stop(request: Request):
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
     if not agent_id:
-        return {}  # User session — not managed by orchestrator
+        logger.warning("hook_agent_stop: no X-Agent-Id header")
+        return {}
 
     try:
         body = await request.json()
     except Exception:
+        logger.warning("hook_agent_stop: failed to parse JSON body for agent %s", agent_id[:8])
         return {}
 
     last_message = body.get("last_assistant_message") or ""
@@ -4051,8 +4070,9 @@ async def hook_agent_stop(request: Request):
             logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
             ad._stop_generating(agent_id)
         # Agent finished — trigger final sync to import last message + handle notifications
-        import asyncio
         asyncio.create_task(ad.trigger_sync(agent_id, is_stop=True))
+    else:
+        logger.warning("hook_agent_stop: no agent_dispatcher on app.state")
 
     logger.info("hook_agent_stop: agent=%s summary_len=%d", agent_id[:8], len(summary))
 
@@ -4069,11 +4089,13 @@ async def hook_agent_tool_activity(request: Request):
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
     if not agent_id:
+        logger.warning("hook_agent_tool_activity: no X-Agent-Id header")
         return {}
 
     try:
         body = await request.json()
     except Exception:
+        logger.warning("hook_agent_tool_activity: failed to parse JSON body for agent %s", agent_id[:8])
         return {}
 
     hook_event = body.get("hook_event_name", "")
@@ -4162,6 +4184,10 @@ async def hook_agent_tool_activity(request: Request):
                                   tool_input={"description": desc} if desc else None)
         # Create Agent record immediately so UI shows the subagent
         sub_agent_id = body.get("agent_id", "")
+        if not sub_agent_id:
+            logger.warning("SubagentStart hook: no agent_id in body for parent %s", agent_id[:8])
+        elif not ad:
+            logger.warning("SubagentStart hook: no agent_dispatcher for parent %s", agent_id[:8])
         if ad and sub_agent_id:
             try:
                 from database import SessionLocal as _SL
@@ -4215,6 +4241,10 @@ async def hook_agent_tool_activity(request: Request):
         sub_agent_id = body.get("agent_id", "")
         last_msg = body.get("last_assistant_message", "")
         transcript_path = body.get("agent_transcript_path", "")
+        if not sub_agent_id:
+            logger.warning("SubagentStop hook: no agent_id in body for parent %s", agent_id[:8])
+        elif not ad:
+            logger.warning("SubagentStop hook: no agent_dispatcher for parent %s", agent_id[:8])
         if ad and sub_agent_id:
             try:
                 from database import SessionLocal as _SL
@@ -4222,6 +4252,11 @@ async def hook_agent_tool_activity(request: Request):
                 from websocket import emit_agent_update as _eau, emit_new_message as _enm
                 known = ad._known_subagents.get(agent_id, {})
                 info = known.get(sub_agent_id)
+                if not info:
+                    logger.warning(
+                        "SubagentStop hook: unknown subagent %s for parent %s (known: %s)",
+                        sub_agent_id[:12], agent_id[:8], list(known.keys()),
+                    )
                 if info:
                     sub_db_id = info["agent_id"]
                     _db = _SL()
@@ -4346,7 +4381,7 @@ async def hook_agent_tool_activity(request: Request):
             finally:
                 _db2.close()
         except Exception:
-            logger.debug("Failed to persist tool activity for %s", agent_id[:8], exc_info=True)
+            logger.warning("Failed to persist tool activity for %s", agent_id[:8], exc_info=True)
 
     # Wake the JSONL sync loop so new message content is picked up
     # immediately instead of waiting for the next poll cycle.
@@ -4366,14 +4401,17 @@ async def hook_agent_permission(request: Request):
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
     if not agent_id:
+        logger.warning("hook_agent_permission: no X-Agent-Id header")
         return {}
 
     try:
         body = await request.json()
     except Exception:
+        logger.warning("hook_agent_permission: failed to parse JSON body for agent %s", agent_id[:8])
         return {}
 
     if body.get("hook_event_name") != "PreToolUse":
+        logger.warning("hook_agent_permission: unexpected event %s for agent %s", body.get("hook_event_name"), agent_id[:8])
         return {}
 
     tool_name = body.get("tool_name", "")
@@ -4383,6 +4421,7 @@ async def hook_agent_permission(request: Request):
 
     pm: PermissionManager | None = getattr(app.state, "permission_manager", None)
     if not pm:
+        logger.warning("hook_agent_permission: no permission_manager on app.state for agent %s", agent_id[:8])
         return {}
 
     # Check if the agent actually needs permission gating
@@ -4446,6 +4485,11 @@ async def hook_agent_permission(request: Request):
             "permissionDecision": "deny",
             "permissionDecisionReason": "Permission request timed out",
         }}
+
+    # Wake sync after permission resolves — agent will proceed with tool use
+    ad = getattr(app.state, "agent_dispatcher", None)
+    if ad:
+        ad.wake_sync(agent_id)
 
     if decision == "allow":
         return {"hookSpecificOutput": {"permissionDecision": "allow"}}
@@ -4531,6 +4575,7 @@ async def hook_agent_session_start(request: Request):
                 session_id = session.get("session_id", "") or session.get("id", "") or ""
 
     if not session_id:
+        logger.warning("SessionStart hook: no session_id in body (agent=%s)", agent_id[:8] if agent_id else "(none)")
         return {}
 
     source = ""
@@ -4546,7 +4591,6 @@ async def hook_agent_session_start(request: Request):
                 if ctx:
                     ctx.compact_notified = False
                     # Trigger sync to pick up the compacted JSONL
-                    import asyncio
                     asyncio.create_task(ad.trigger_sync(agent_id))
                 from websocket import emit_tool_activity
                 await emit_tool_activity(agent_id, "Compact", "end",
@@ -4558,8 +4602,8 @@ async def hook_agent_session_start(request: Request):
             try:
                 with open(signal_path, "w") as f:
                     f.write(session_id)
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning("SessionStart hook: failed to write rotation signal %s: %s", signal_path, e)
             return {}
 
         # Confirm /clear command execution
@@ -4573,8 +4617,14 @@ async def hook_agent_session_start(request: Request):
                 f.write(session_id)
             logger.info("SessionStart hook: agent=%s session=%s (source=%s)",
                         agent_id[:8], session_id[:12], source or "unknown")
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("SessionStart hook: failed to write signal %s: %s", signal_path, e)
+
+        # Wake sync loop — new session means new JSONL content
+        ad = getattr(app.state, "agent_dispatcher", None)
+        if ad:
+            ad.wake_sync(agent_id)
+
         return {}
 
     # --- Unmanaged session: push-based detection ---
@@ -4608,8 +4658,8 @@ async def hook_agent_session_start(request: Request):
                         "wrote rotation signal for session %s",
                         tmux_pane, pane_owner.id[:8], session_id[:12],
                     )
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.warning("SessionStart hook: failed to write pane-owner signal %s: %s", signal_path, e)
                 return {}
         finally:
             _db.close()
@@ -5578,6 +5628,21 @@ async def _launch_tmux_background(
                 return
             agent.session_id = session_id
             agent.status = AgentStatus.SYNCING
+            _init_msg = (
+                db.query(Message)
+                .filter(
+                    Message.agent_id == agent_id,
+                    Message.role == MessageRole.USER,
+                    Message.status == MessageStatus.PENDING,
+                    Message.delivered_at.is_(None),
+                )
+                .order_by(Message.created_at.asc())
+                .first()
+            )
+            if _init_msg:
+                _init_msg.delivered_at = _utcnow()
+                _init_msg.status = MessageStatus.COMPLETED
+                _init_msg.completed_at = _utcnow()
             try:
                 db.commit()
             except Exception:
@@ -6612,10 +6677,14 @@ async def send_agent_message(
             _now_tmux = _utcnow()
             msg.status = MessageStatus.COMPLETED
             msg.completed_at = _now_tmux
-            msg.delivered_at = _now_tmux
+            # Do NOT set delivered_at here — tmux send-keys only injects text
+            # into the pane. The UserPromptSubmit hook fires when Claude actually
+            # accepts the prompt, and THAT is when we mark it delivered.
+            ad = getattr(request.app.state, "agent_dispatcher", None)
+            if ad:
+                msg.dispatch_seq = ad.next_dispatch_seq(db, agent.id)
             db.commit()
             db.refresh(msg)
-            ad = getattr(request.app.state, "agent_dispatcher", None)
             if ad:
                 ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
             logger.info("Message %s sent to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
@@ -6890,7 +6959,6 @@ async def answer_agent_interactive(
             # Enter to confirm submission.
             total_questions = _count_interactive_questions(db, agent_id, body.tool_use_id)
             if total_questions > 1 and body.question_index == total_questions - 1:
-                import asyncio
                 await asyncio.sleep(0.5)  # Wait for TUI to render submit screen
                 send_tmux_keys(pane_id, ["Enter"])
                 logger.info("Multi-Q submit: sent extra Enter for agent %s (Q%d/%d)",
@@ -6967,7 +7035,6 @@ async def answer_agent_interactive(
                 if has_tmux:
                     _graceful_kill_tmux(pane_id, f"ah-{agent.id[:8]}")
 
-                import asyncio
                 asyncio.ensure_future(emit_task_update(
                     _task.id, _task.status.value, _task.project_name or "",
                     title=_task.title,
@@ -7003,7 +7070,6 @@ async def answer_agent_interactive(
                 logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
 
             # Capture pane content AFTER sending keys for diagnostics
-            import asyncio
             await asyncio.sleep(0.5)
             post_content = capture_tmux_pane(pane_id)
             logger.info(

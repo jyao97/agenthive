@@ -216,6 +216,7 @@ class Message(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dispatch_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)  # dispatch order per agent
 
 
 class ToolActivity(Base):

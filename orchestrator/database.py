@@ -426,6 +426,14 @@ def init_db():
             ))
             conn.commit()
 
+        # --- Add dispatch_seq column to messages if missing ---
+        msg_cols2 = _table_columns(conn, "messages")
+        if "dispatch_seq" not in msg_cols2:
+            conn.execute(text(
+                "ALTER TABLE messages ADD COLUMN dispatch_seq INTEGER"
+            ))
+            conn.commit()
+
         # --- Backfill delivered_at for existing non-PENDING messages ---
         _undelivered = conn.execute(text(
             "SELECT COUNT(*) FROM messages "

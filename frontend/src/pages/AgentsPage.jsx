@@ -135,8 +135,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   const pollRef = useRef(null);
 
   // Track which agents are actively streaming via WebSocket events + API is_generating
-  const { lastEvent } = useWebSocket();
-  const streamingAgents = useStreamingAgents(agents, lastEvent);
+  const streamingAgents = useStreamingAgents(agents);
 
   // Multi-select state
   const [selecting, setSelecting] = useState(false);

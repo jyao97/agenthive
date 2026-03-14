@@ -7,7 +7,7 @@ import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
 import usePageVisible from "../hooks/usePageVisible";
-import useWebSocket, { isTaskNotificationsEnabled, setTaskNotificationsEnabled, registerViewingTasks, unregisterViewingTasks } from "../hooks/useWebSocket";
+import useWebSocket, { useWsEvent, isTaskNotificationsEnabled, setTaskNotificationsEnabled, registerViewingTasks, unregisterViewingTasks } from "../hooks/useWebSocket";
 import { useToast } from "../contexts/ToastContext";
 import InboxView from "./tasks/InboxView";
 import ExecutingView from "./tasks/ExecutingView";
@@ -53,7 +53,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
   const pollRef = useRef(null);
   const countPollRef = useRef(null);
   const visible = usePageVisible();
-  const { lastEvent } = useWebSocket();
+  useWebSocket(); // ensure connection is alive
 
   // --- Multi-select state ---
   const [selecting, setSelecting] = useState(false);
@@ -134,11 +134,15 @@ export default function TasksPage({ theme, onToggleTheme }) {
   }, [perspective]);
 
   // Refresh on task_update WebSocket events
-  useEffect(() => {
-    if (!lastEvent || lastEvent.type !== "task_update") return;
-    loadTasks();
-    loadCounts();
-  }, [lastEvent, loadTasks, loadCounts]);
+  const loadTasksRef = useRef(loadTasks);
+  loadTasksRef.current = loadTasks;
+  const loadCountsRef = useRef(loadCounts);
+  loadCountsRef.current = loadCounts;
+  useWsEvent((event) => {
+    if (event.type !== "task_update") return;
+    loadTasksRef.current();
+    loadCountsRef.current();
+  });
 
   // Register viewing for notification suppression
   useEffect(() => { registerViewingTasks(); return () => unregisterViewingTasks(); }, []);

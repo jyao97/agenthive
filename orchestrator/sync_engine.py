@@ -184,6 +184,14 @@ async def sync_reconcile_initial(ad, ctx: SyncContext):
                                 is_wrapped_dup = True
                                 if uuid and not em.jsonl_uuid:
                                     em.jsonl_uuid = uuid
+                                # Mark delivered when found in JSONL
+                                if not em.delivered_at:
+                                    em.delivered_at = _utcnow()
+                                    from websocket import emit_message_delivered
+                                    asyncio.ensure_future(emit_message_delivered(
+                                        ctx.agent_id, em.id,
+                                        em.delivered_at.isoformat(),
+                                    ))
                                 break
                     if is_wrapped_dup:
                         continue
@@ -419,6 +427,33 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                 agent.last_message_at = _utcnow()
                 db.commit()
                 ad._emit(emit_new_message(agent.id, "sync", ctx.agent_name, ctx.agent_project))
+                # Notify for unanswered interactive items in updated turn
+                if _last_meta and isinstance(_last_meta, dict):
+                    _unanswered = [
+                        i for i in _last_meta.get("interactive", [])
+                        if i.get("answer") is None
+                    ]
+                    if _unanswered and not ad._is_agent_in_use(
+                        agent.id, agent.tmux_pane
+                    ):
+                        from notify import notify as _notify
+                        _itype = _unanswered[0].get("type", "")
+                        if _itype == "exit_plan_mode":
+                            _notify(
+                                "message", agent.id,
+                                agent.name or f"Agent {agent.id[:8]}",
+                                "Plan approval needed",
+                                f"/agents/{agent.id}",
+                                muted=agent.muted, in_use=False,
+                            )
+                        elif _itype == "ask_user_question":
+                            _notify(
+                                "message", agent.id,
+                                agent.name or f"Agent {agent.id[:8]}",
+                                "Question — waiting for your answer",
+                                f"/agents/{agent.id}",
+                                muted=agent.muted, in_use=False,
+                            )
                 ctx.last_tail_hash = tail_hash
                 logger.info(
                     "Updated last turn content for agent %s (%s chars)",
@@ -466,20 +501,31 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                 jsonl_uuid = rest[1] if len(rest) > 1 else None
                 meta_json = json.dumps(meta) if meta else None
                 if role == "user":
+                    from sqlalchemy import or_ as _or
                     if _is_wrapped_prompt(content):
-                        if jsonl_uuid:
-                            from sqlalchemy import or_ as _or
-                            _web_msg = db.query(Message).filter(
-                                Message.agent_id == ctx.agent_id,
-                                Message.role == MessageRole.USER,
-                                _or(
-                                    Message.source == "web",
-                                    Message.source == "plan_continue",
-                                ),
-                                Message.jsonl_uuid.is_(None),
-                            ).order_by(Message.created_at.desc()).first()
-                            if _web_msg:
+                        _web_msg = db.query(Message).filter(
+                            Message.agent_id == ctx.agent_id,
+                            Message.role == MessageRole.USER,
+                            _or(
+                                Message.source == "web",
+                                Message.source == "plan_continue",
+                            ),
+                            Message.jsonl_uuid.is_(None),
+                        ).order_by(Message.created_at.desc()).first()
+                        if _web_msg:
+                            if jsonl_uuid:
                                 _web_msg.jsonl_uuid = jsonl_uuid
+                            if not _web_msg.delivered_at:
+                                _web_msg.delivered_at = _utcnow()
+                                from websocket import emit_message_delivered
+                                asyncio.ensure_future(emit_message_delivered(
+                                    ctx.agent_id, _web_msg.id,
+                                    _web_msg.delivered_at.isoformat(),
+                                ))
+                                logger.info(
+                                    "Message %s delivered for agent %s (JSONL wrapped prompt)",
+                                    _web_msg.id, ctx.agent_id[:8],
+                                )
                         continue
                     # Primary: UUID-based dedup
                     if jsonl_uuid:
@@ -490,12 +536,11 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         if existing_uuid:
                             continue
                     # Secondary: content dedup against unlinked web/plan_continue
-                    from sqlalchemy import or_
                     _norm = _dedup_sig(content)
                     _unlinked = db.query(Message).filter(
                         Message.agent_id == ctx.agent_id,
                         Message.role == MessageRole.USER,
-                        or_(
+                        _or(
                             Message.source == "web",
                             Message.source == "plan_continue",
                         ),
@@ -509,28 +554,19 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     if _match:
                         if jsonl_uuid:
                             _match.jsonl_uuid = jsonl_uuid
-                        logger.debug(
-                            "Skipping duplicate user turn for agent %s "
-                            "(matches unlinked web/plan_continue msg %s)",
-                            ctx.agent_id, _match.id,
-                        )
-                        continue
-                    # Tertiary: broader content fallback
-                    if not jsonl_uuid:
-                        _candidates = db.query(Message).filter(
-                            Message.agent_id == ctx.agent_id,
-                            Message.role == MessageRole.USER,
-                            or_(Message.source != "cli", Message.source.is_(None)),
-                        ).all()
-                        if any(
-                            _dedup_sig(m.content) == _norm
-                            for m in _candidates
-                        ):
-                            logger.debug(
-                                "Skipping duplicate user turn for agent %s "
-                                "(already sent via web)", ctx.agent_id,
+                        # JSONL contains this message — mark delivered
+                        if not _match.delivered_at:
+                            _match.delivered_at = _utcnow()
+                            from websocket import emit_message_delivered
+                            asyncio.ensure_future(emit_message_delivered(
+                                ctx.agent_id, _match.id,
+                                _match.delivered_at.isoformat(),
+                            ))
+                            logger.info(
+                                "Message %s delivered for agent %s (JSONL sync)",
+                                _match.id, ctx.agent_id[:8],
                             )
-                            continue
+                        continue
                     _now = _utcnow()
                     msg = Message(
                         agent_id=ctx.agent_id,
@@ -587,6 +623,49 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             )
             if any(r != "user" for r, *_ in new_turns):
                 ad._emit(emit_new_message(agent.id, "sync", ctx.agent_name, ctx.agent_project))
+
+            # Notify for unanswered interactive items (AskUserQuestion, ExitPlanMode)
+            _has_unanswered_interactive = False
+            for _r, _c, *_rest in new_turns:
+                if _r == "assistant" and _rest:
+                    _meta = _rest[0] if _rest else None
+                    if isinstance(_meta, dict):
+                        for _item in _meta.get("interactive", []):
+                            if _item.get("answer") is None:
+                                _has_unanswered_interactive = True
+                                break
+                if _has_unanswered_interactive:
+                    break
+            if _has_unanswered_interactive and not ad._is_agent_in_use(
+                agent.id, agent.tmux_pane
+            ):
+                _interactive_types = []
+                for _r, _c, *_rest in new_turns:
+                    if _r == "assistant" and _rest:
+                        _meta = _rest[0] if _rest else None
+                        if isinstance(_meta, dict):
+                            for _item in _meta.get("interactive", []):
+                                if _item.get("answer") is None:
+                                    _interactive_types.append(_item.get("type", ""))
+                from notify import notify as _notify
+                if "exit_plan_mode" in _interactive_types:
+                    _notify(
+                        "message", agent.id,
+                        agent.name or f"Agent {agent.id[:8]}",
+                        "Plan approval needed",
+                        f"/agents/{agent.id}",
+                        muted=agent.muted,
+                        in_use=False,
+                    )
+                elif "ask_user_question" in _interactive_types:
+                    _notify(
+                        "message", agent.id,
+                        agent.name or f"Agent {agent.id[:8]}",
+                        "Question — waiting for your answer",
+                        f"/agents/{agent.id}",
+                        muted=agent.muted,
+                        in_use=False,
+                    )
 
             # Generate video thumbnails for new assistant turns
             for _r, _c, *_ in new_turns:

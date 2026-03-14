@@ -62,7 +62,7 @@ import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
 import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
-import useWebSocket, { isAgentMuted, setAgentMuted, clearAgentNotified, registerViewing, unregisterViewing } from "../hooks/useWebSocket";
+import useWebSocket, { useWsEvent, isAgentMuted, setAgentMuted, clearAgentNotified, registerViewing, unregisterViewing } from "../hooks/useWebSocket";
 import useHealthStatus from "../hooks/useHealthStatus";
 import usePageVisible from "../hooks/usePageVisible";
 import { useToast } from "../contexts/ToastContext";
@@ -1862,9 +1862,37 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const initialLoadDone = useRef(false);
   const abortRef = useRef(null);
   const messagesRef = useRef([]);
+  // Buffer for message_delivered events that arrive before the message
+  // exists in state (race condition: WS event beats HTTP POST response).
+  const pendingDeliveriesRef = useRef(new Map());
 
-  // Keep messagesRef in sync
-  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  // Keep messagesRef in sync + apply any buffered delivery events
+  useEffect(() => {
+    messagesRef.current = messages;
+    if (pendingDeliveriesRef.current.size > 0) {
+      const pending = pendingDeliveriesRef.current;
+      let applied = false;
+      const updated = messages.map((m) => {
+        if (!m.delivered_at && pending.has(m.id)) {
+          applied = true;
+          return { ...m, delivered_at: pending.get(m.id) };
+        }
+        return m;
+      });
+      if (applied) {
+        // Clear only the entries we just applied
+        for (const m of updated) {
+          if (pending.has(m.id) && m.delivered_at) pending.delete(m.id);
+        }
+        setMessages(updated.slice().sort((a, b) => {
+          const aKey = a.delivered_at || "\uffff";
+          const bKey = b.delivered_at || "\uffff";
+          if (aKey !== bKey) return aKey < bKey ? -1 : 1;
+          return (a.created_at || "") < (b.created_at || "") ? -1 : 1;
+        }));
+      }
+    }
+  }, [messages]);
 
   // Initial load: fetch agent + latest 50 messages
   const loadData = useCallback(async () => {
@@ -1882,7 +1910,22 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (!agentData || !agentData.id) return;
       setAgent(agentData);
       const msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
-      setMessages(msgs);
+      // Merge API messages with WS-applied state (e.g. delivered_at set by
+      // message_delivered events that arrived before this loadData call).
+      // Prefer the later delivered_at so we never regress delivery status.
+      setMessages((prev) => {
+        if (!prev.length) return msgs;
+        const prevMap = new Map(prev.map((m) => [m.id, m]));
+        return msgs.map((m) => {
+          const p = prevMap.get(m.id);
+          if (!p) return m;
+          const keepDelivered =
+            p.delivered_at && (!m.delivered_at || p.delivered_at > m.delivered_at)
+              ? p.delivered_at
+              : m.delivered_at;
+          return keepDelivered !== m.delivered_at ? { ...m, delivered_at: keepDelivered } : m;
+        });
+      });
       setHasMore(!!msgData?.has_more);
       if (Array.isArray(pendingPerms) && pendingPerms.length > 0) {
         setPendingPermissions(pendingPerms);
@@ -1993,7 +2036,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           let anyChanged = false;
           const merged = result.map((m) => {
             const fresh = tailById.get(m.id);
-            if (fresh && (fresh.content !== m.content || fresh.completed_at !== m.completed_at || fresh.status !== m.status || JSON.stringify(fresh.metadata) !== JSON.stringify(m.metadata))) {
+            if (fresh && (fresh.content !== m.content || fresh.completed_at !== m.completed_at || fresh.status !== m.status || fresh.delivered_at !== m.delivered_at || JSON.stringify(fresh.metadata) !== JSON.stringify(m.metadata))) {
               anyChanged = true;
               return fresh;
             }
@@ -2214,25 +2257,26 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [loading, messages.length, scrollCountKey]);
 
   // WebSocket: re-fetch on new_message events, handle streaming
-  const { lastEvent, sendWsMessage } = useWebSocket();
+  const { sendWsMessage } = useWebSocket();
 
   // Notify backend which agent we're viewing (suppresses notifications)
   useEffect(() => {
     sendWsMessage({ type: "viewing", agent_id: id });
     return () => sendWsMessage({ type: "viewing", agent_id: null, _unview: id });
   }, [id, sendWsMessage]);
-  useEffect(() => {
-    if (!lastEvent) return;
 
-    if (lastEvent.type === "agent_stream" && lastEvent.data?.agent_id === id) {
-      const gid = lastEvent.data.generation_id;
-      // Reject stream chunks from a stale generation
+  // Use subscriber-based WS handler — every event is delivered, none lost
+  // to React 18 batching (unlike the old setLastEvent/useEffect pattern).
+  const refreshMessagesRef = useRef(refreshMessages);
+  refreshMessagesRef.current = refreshMessages;
+  useWsEvent((event) => {
+    if (event.data?.agent_id !== id) return;
+
+    if (event.type === "agent_stream") {
+      const gid = event.data.generation_id;
       if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
-      // Track the current generation
       if (gid != null) generationIdRef.current = gid;
-      setStreamingContent(lastEvent.data.content);
-      // Safety fallback: auto-clear streaming content after inactivity in
-      // case agent_stream_end is never received (e.g., WS disconnect).
+      setStreamingContent(event.data.content);
       clearTimeout(streamTimeoutRef.current);
       streamTimeoutRef.current = setTimeout(() => {
         setStreamingContent(null);
@@ -2240,21 +2284,16 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       return;
     }
 
-    if (lastEvent.type === "agent_stream_end" && lastEvent.data?.agent_id === id) {
-      const gid = lastEvent.data.generation_id;
-      // Ignore end for a stale generation
+    if (event.type === "agent_stream_end") {
+      const gid = event.data.generation_id;
       if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
       clearTimeout(streamTimeoutRef.current);
       setStreamingContent(null);
       return;
     }
 
-    // Hook-driven tool activity (PreToolUse/PostToolUse HTTP hooks)
-    // Much more reliable than JSONL polling — fires synchronously with
-    // each tool call regardless of file growth or idle thresholds.
-    if (lastEvent.type === "tool_activity" && lastEvent.data?.agent_id === id) {
-      const { tool_name, phase, summary, output_summary, is_error } = lastEvent.data;
-      // Any hook event = agent is definitely active
+    if (event.type === "tool_activity") {
+      const { tool_name, phase, summary, output_summary, is_error } = event.data;
       setHookActive(true);
       lastHookTimeRef.current = Date.now();
       clearTimeout(hookGraceRef.current);
@@ -2262,7 +2301,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         setActiveTool({ name: tool_name, summary: summary || "" });
         setToolStartTime(Date.now());
         setToolLog((prev) => {
-          // If there's a pending permission entry for this tool, mark it resolved
           const resolved = prev.map((e) =>
             e.kind === "permission" && e.name === tool_name && !e.done
               ? { ...e, done: true, outputSummary: "granted" }
@@ -2279,23 +2317,18 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         setActiveTool(null);
         setToolStartTime(null);
         setToolLog((prev) => {
-          // Mark the last matching in-progress entry as done
           const idx = prev.findLastIndex((e) => e.name === tool_name && !e.done);
           if (idx === -1) return prev;
           const updated = [...prev];
           updated[idx] = { ...updated[idx], done: true, outputSummary: output_summary || "", isError: !!is_error };
           return updated;
         });
-        // Grace period: keep hookActive true for 30s after last tool end.
-        // PreCompact hook will re-trigger hookActive if compact starts.
         clearTimeout(hookGraceRef.current);
         hookGraceRef.current = setTimeout(() => {
-          // If a new hook arrived within the window, skip clearing
           if (Date.now() - lastHookTimeRef.current < 29_000) return;
           setHookActive(false);
         }, 30_000);
       } else if (phase === "permission") {
-        // Agent is blocked waiting for permission — show alert entry
         setToolLog((prev) => [...prev, {
           name: tool_name, summary: summary || "",
           outputSummary: null, isError: false,
@@ -2306,29 +2339,25 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       return;
     }
 
-    // --- Permission request from supervised agent ---
-    if (lastEvent.type === "permission_request" && lastEvent.data?.agent_id === id) {
+    if (event.type === "permission_request") {
       setPendingPermissions((prev) => {
-        if (prev.some((p) => p.request_id === lastEvent.data.request_id)) return prev;
-        return [...prev, lastEvent.data];
+        if (prev.some((p) => p.request_id === event.data.request_id)) return prev;
+        return [...prev, event.data];
       });
       return;
     }
-    if (lastEvent.type === "permission_resolved" && lastEvent.data?.agent_id === id) {
+    if (event.type === "permission_resolved") {
       setPendingPermissions((prev) =>
-        prev.filter((p) => p.request_id !== lastEvent.data.request_id)
+        prev.filter((p) => p.request_id !== event.data.request_id)
       );
       return;
     }
 
-    if (lastEvent.type === "new_message" && lastEvent.data?.agent_id === id) {
-      // If a Compact tool is in progress, don't clear active state —
-      // the compact system message doesn't mean the agent stopped working.
+    if (event.type === "new_message") {
       const hasActiveCompact = activeTool?.name === "Compact" ||
         toolLog.some((e) => e.name === "Compact" && !e.done);
       if (hasActiveCompact) {
-        // Just refresh messages to show the compact system message
-        refreshMessages({ syncHint: true });
+        refreshMessagesRef.current({ syncHint: true });
         return;
       }
       clearTimeout(streamTimeoutRef.current);
@@ -2339,27 +2368,27 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       setToolLog([]);
       setHookActive(false);
       lastHookTimeRef.current = 0;
-      refreshMessages({ syncHint: lastEvent.data?.message_id === "sync" });
+      refreshMessagesRef.current({ syncHint: event.data?.message_id === "sync" });
       return;
     }
 
-    if (lastEvent.type === "message_delivered" && lastEvent.data?.agent_id === id) {
-      const { message_id, delivered_at } = lastEvent.data;
+    if (event.type === "message_delivered") {
+      const { message_id, delivered_at } = event.data;
       setMessages((prev) => {
-        const updated = prev.map((m) => (m.id === message_id ? { ...m, delivered_at } : m));
-        // Re-sort: delivered messages by delivered_at, undelivered sink to bottom
-        return updated.slice().sort((a, b) => {
-          const aKey = a.delivered_at || "\uffff";
-          const bKey = b.delivered_at || "\uffff";
-          if (aKey !== bKey) return aKey < bKey ? -1 : 1;
-          return (a.created_at || "") < (b.created_at || "") ? -1 : 1;
-        });
+        const found = prev.some((m) => m.id === message_id);
+        if (!found) {
+          // Message not in state yet (race: WS event beat HTTP POST response).
+          // Buffer it so the useEffect on messages can apply it later.
+          pendingDeliveriesRef.current.set(message_id, delivered_at);
+          return prev;
+        }
+        return prev.map((m) => (m.id === message_id ? { ...m, delivered_at } : m));
       });
       return;
     }
 
-    if (lastEvent.type === "message_update" && lastEvent.data?.agent_id === id) {
-      const { message_id, status, error_message } = lastEvent.data;
+    if (event.type === "message_update") {
+      const { message_id, status, error_message } = event.data;
       if (status === "CANCELLED") {
         setMessages((prev) => prev.filter((m) => m.id !== message_id));
       } else {
@@ -2372,10 +2401,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       return;
     }
 
-    if (lastEvent.type === "agent_update" && lastEvent.data?.agent_id === id) {
-      const status = lastEvent.data.status;
+    if (event.type === "agent_update") {
+      const status = event.data.status;
       if (status !== "EXECUTING" && status !== "SYNCING") {
-        // Agent no longer active — clear all streaming & tool state
         clearTimeout(streamTimeoutRef.current);
         clearTimeout(hookGraceRef.current);
         setStreamingContent(null);
@@ -2386,10 +2414,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         lastHookTimeRef.current = 0;
         generationIdRef.current = null;
       }
-      refreshMessages();
+      refreshMessagesRef.current();
     }
-
-  }, [lastEvent, id, refreshMessages]);
+  }, [id]);
 
   // Cleanup
   useEffect(() => {

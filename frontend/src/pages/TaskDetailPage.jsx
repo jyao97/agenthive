@@ -6,7 +6,7 @@ import { relativeTime, renderMarkdown } from "../lib/formatters";
 import { serverNow } from "../lib/serverTime";
 import ProjectSelector from "../components/ProjectSelector";
 import usePageVisible from "../hooks/usePageVisible";
-import useWebSocket, { registerViewingTasks, unregisterViewingTasks } from "../hooks/useWebSocket";
+import useWebSocket, { useWsEvent, registerViewingTasks, unregisterViewingTasks } from "../hooks/useWebSocket";
 import { useToast } from "../contexts/ToastContext";
 
 export default function TaskDetailPage({ theme, onToggleTheme }) {
@@ -25,7 +25,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
   const [editNotifyAt, setEditNotifyAt] = useState("");
   const pollRef = useRef(null);
   const visible = usePageVisible();
-  const { lastEvent, sendWsMessage } = useWebSocket();
+  const { sendWsMessage } = useWebSocket();
 
   const load = useCallback(async () => {
     try {
@@ -59,10 +59,12 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
     return () => sendWsMessage({ type: "viewing", agent_id: null, _unview: agentId });
   }, [agentId, sendWsMessage]);
 
-  useEffect(() => {
-    if (!lastEvent || lastEvent.type !== "task_update") return;
-    if (lastEvent.data?.task_id === id) load();
-  }, [lastEvent, id, load]);
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useWsEvent((event) => {
+    if (event.type !== "task_update") return;
+    if (event.data?.task_id === id) loadRef.current();
+  }, [id]);
 
   const toast = useToast();
   const doAction = async (fn, ...args) => {

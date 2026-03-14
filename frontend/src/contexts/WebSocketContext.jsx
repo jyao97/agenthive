@@ -7,17 +7,28 @@ const WebSocketContext = createContext(null);
 /**
  * Single shared WebSocket connection for the entire browser tab.
  * Place this provider near the root of the component tree (above all routes).
- * All components call useWebSocket() to read events from this one connection.
+ *
+ * Events are delivered via a subscriber/callback pattern so that rapid
+ * successive WebSocket messages are never lost to React 18 batching
+ * (which can collapse multiple setState calls into one render).
  */
 export function WebSocketProvider({ children }) {
   const wsRef = useRef(null);
   const [connected, setConnected] = useState(false);
-  const [lastEvent, setLastEvent] = useState(null);
   const reconnectTimer = useRef(null);
   const reconnectDelay = useRef(1000);
   // Merged viewing state: union of all agent IDs currently being viewed
   // by any component (AgentChatPage panes). Backend receives the full set.
   const viewingAgentsRef = useRef(new Set());
+  // Subscriber callbacks — called synchronously for every WS event
+  const subscribersRef = useRef(new Set());
+
+  // Register a callback that receives every WS event.
+  // Returns an unsubscribe function.
+  const subscribe = useCallback((handler) => {
+    subscribersRef.current.add(handler);
+    return () => subscribersRef.current.delete(handler);
+  }, []);
 
   // Send a raw message to the server (if connected)
   const _send = useCallback((data) => {
@@ -70,7 +81,15 @@ export function WebSocketProvider({ children }) {
         if (event.type === "pong" || event.type === "ping") return;
         // Calibrate client-server clock offset from every event timestamp
         if (event.timestamp) calibrate(event.timestamp);
-        setLastEvent(event);
+        // Deliver to all subscribers synchronously — each callback runs
+        // for every event, bypassing React batching entirely.
+        for (const fn of subscribersRef.current) {
+          try {
+            fn(event);
+          } catch (err) {
+            console.error("WebSocket subscriber error:", err);
+          }
+        }
       };
 
       ws.onclose = () => {
@@ -136,7 +155,7 @@ export function WebSocketProvider({ children }) {
   }, [_send, _syncViewing]);
 
   return (
-    <WebSocketContext.Provider value={{ lastEvent, connected, sendWsMessage }}>
+    <WebSocketContext.Provider value={{ subscribe, connected, sendWsMessage }}>
       {children}
     </WebSocketContext.Provider>
   );
@@ -145,7 +164,7 @@ export function WebSocketProvider({ children }) {
 // Safe fallback so components don't crash if rendered outside the provider
 // (e.g. during HMR transitions or stale service-worker cache).
 const _fallback = {
-  lastEvent: null,
+  subscribe: () => () => {},
   connected: false,
   sendWsMessage: () => {},
 };

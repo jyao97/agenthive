@@ -1,27 +1,40 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useWebSocketContext } from "../contexts/WebSocketContext";
 export * from "../lib/notifications";
 
 /**
+ * Subscribe to WebSocket events with a callback.
+ * The callback is invoked synchronously for every event — no events
+ * are lost to React 18 batching.
+ *
+ * @param {Function} handler - Called with each WebSocket event object
+ * @param {Array} deps - Extra dependencies (handler is always latest via ref)
+ */
+export function useWsEvent(handler, deps = []) {
+  const { subscribe } = useWebSocketContext();
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+  useEffect(() => {
+    return subscribe((event) => handlerRef.current(event));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subscribe, ...deps]);
+}
+
+/**
  * Shared WebSocket hook — delegates to the single WebSocketProvider connection.
- * API-compatible with the old per-component hook.
+ * Provides `lastEvent` for simple consumers that only need the latest event.
  */
 export default function useWebSocket() {
-  const { lastEvent, connected, sendWsMessage: ctxSend } = useWebSocketContext();
+  const { subscribe, connected, sendWsMessage: ctxSend } = useWebSocketContext();
 
-  // Wrap sendWsMessage to handle the "viewing" convention:
-  // Components send { type: "viewing", agent_id } on mount
-  // and { type: "viewing", agent_id: null } on unmount.
-  // We translate the unmount case to include _unview so the provider
-  // can remove the specific agent from the viewing set.
+  // Derive lastEvent from the subscribe stream for backward compatibility.
+  const [lastEvent, setLastEvent] = useState(null);
+  useEffect(() => {
+    return subscribe((event) => setLastEvent(event));
+  }, [subscribe]);
+
+  // Wrap sendWsMessage to handle the "viewing" convention
   const sendWsMessage = useCallback((data) => {
-    if (typeof data === "object" && data.type === "viewing" && data.agent_id === null) {
-      // Unmount: the previous agent_id was sent on mount — we can't know it here.
-      // Components should use the new unview pattern, but for backwards compat
-      // we just forward it (the provider handles null).
-      ctxSend(data);
-      return;
-    }
     ctxSend(data);
   }, [ctxSend]);
 
