@@ -61,7 +61,7 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 15 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 500, tolerance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 750, tolerance: 8 } }),
   );
 
   const handleDragStart = useCallback((event) => setActiveDragId(event.active.id), []);
