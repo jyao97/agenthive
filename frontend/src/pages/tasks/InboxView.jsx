@@ -22,7 +22,7 @@ function SortableTaskCard(props) {
     opacity: isDragging || isGroupDragged ? 0.3 : 1,
   };
   return (
-    <div ref={setNodeRef} style={{ ...style, touchAction: "manipulation", WebkitUserSelect: "none", userSelect: "none" }} {...attributes} {...listeners}>
+    <div ref={setNodeRef} style={{ ...style, touchAction: "manipulation", ...(!props.expanded && { WebkitUserSelect: "none", userSelect: "none" }) }} {...attributes} {...listeners}>
       <InboxCard {...props} />
     </div>
   );
