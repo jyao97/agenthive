@@ -48,7 +48,7 @@ function isImagePath(path) {
   return /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(path);
 }
 
-export default memo(function InboxCard({ task, selecting, selected, onToggle, expanded, onExpand, onRefresh }) {
+export default memo(function InboxCard({ task, selecting, selected, onToggle, expanded, onExpand, onRefresh, dragHandleProps }) {
   const projColor = "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400";
   const isHigh = task.priority >= 1;
   const isExpanded = expanded && !selecting;
@@ -237,6 +237,21 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
           tabIndex={0}
           onKeyDown={(e) => { if (e.key === "Enter" && !editing) handleClick(); }}
         >
+          {dragHandleProps && (
+            <button
+              type="button"
+              {...dragHandleProps.listeners}
+              {...dragHandleProps.attributes}
+              className="touch-none p-1 -ml-2 mr-0 rounded text-faint hover:text-label transition-colors cursor-grab active:cursor-grabbing self-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
+                <circle cx="5" cy="3" r="1.5" /><circle cx="11" cy="3" r="1.5" />
+                <circle cx="5" cy="8" r="1.5" /><circle cx="11" cy="8" r="1.5" />
+                <circle cx="5" cy="13" r="1.5" /><circle cx="11" cy="13" r="1.5" />
+              </svg>
+            </button>
+          )}
           <div className={`flex-1 min-w-0 ${isExpanded ? "flex flex-col" : ""}`}>
             {/* Title + time — pinned to top */}
             <div className="flex items-start justify-between gap-3 shrink-0">

@@ -147,7 +147,7 @@ export default memo(function CardShell({
     };
   }, [canSwipe, taskId, swipeCtx]);
 
-  const baseClasses = `w-full text-left rounded-2xl bg-surface overflow-hidden transform-gpu transition-[transform,box-shadow,ring-color,opacity] duration-400 ease-[cubic-bezier(0.22,1.15,0.36,1)] ${
+  const baseClasses = `w-full text-left rounded-2xl bg-surface overflow-hidden transform-gpu transition-[transform,box-shadow,ring-color,opacity,background-color] duration-400 ease-[cubic-bezier(0.22,1.15,0.36,1)] active:bg-input ${
     expanded && !selecting
       ? "shadow-lg scale-[1.02] ring-1 ring-cyan-500/20 z-10"
       : "shadow-card scale-100"
