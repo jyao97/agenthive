@@ -5,32 +5,26 @@ import { CSS } from "@dnd-kit/utilities";
 import InboxCard from "../../components/cards/InboxCard";
 import { reorderTasks } from "../../lib/api";
 
-// Disable the snap-back animation when dropping — our optimistic update handles the new order
-const noDropAnimation = ({ wasDragging }) => !wasDragging;
-
 function SortableTaskCard(props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: props.task.id,
-    animateLayoutChanges: noDropAnimation,
   });
   const isGroupDragged = props.isGroupDragged && !isDragging;
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging || isGroupDragged ? 0.3 : 1,
-    // When any drag is active, block browser scroll so dnd-kit owns the touch
-    touchAction: props.isDragActive ? "none" : undefined,
     ...(!props.expanded && { WebkitUserSelect: "none", userSelect: "none" }),
   };
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <InboxCard {...props} />
+    <div ref={setNodeRef} style={style}>
+      <InboxCard {...props} dragHandleProps={{ listeners, attributes }} />
     </div>
   );
 }
 
-export default function InboxView({ tasks, loading, selecting, selected, onToggle, expandedTaskId, onExpandTask, onRefresh }) {
-  // Optimistic order: local override until next props update
+export default function InboxView({ tasks, loading, selecting, selected, onToggle, expandedTaskId, onExpandTask, onRefresh, sortMode = "custom" }) {
+  // Optimistic order: local override until next props update (custom sort only)
   const [optimisticIds, setOptimisticIds] = useState(null);
   const prevTasksRef = useRef(tasks);
 
@@ -40,29 +34,39 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
     if (optimisticIds) setOptimisticIds(null);
   }
 
-  const serverSorted = useMemo(() =>
-    [...tasks].sort((a, b) => {
-      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
-      return new Date(b.created_at) - new Date(a.created_at);
-    }),
-    [tasks]
-  );
-
-  // Apply optimistic order if set
   const sorted = useMemo(() => {
-    if (!optimisticIds) return serverSorted;
-    const map = Object.fromEntries(serverSorted.map(t => [t.id, t]));
-    return optimisticIds.map(id => map[id]).filter(Boolean);
-  }, [serverSorted, optimisticIds]);
+    switch (sortMode) {
+      case "newest":
+        return [...tasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      case "oldest":
+        return [...tasks].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      case "name-asc":
+        return [...tasks].sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+      case "name-desc":
+        return [...tasks].sort((a, b) => (b.title || "").localeCompare(a.title || ""));
+      case "custom":
+      default: {
+        const serverSorted = [...tasks].sort((a, b) => {
+          if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+          return new Date(b.created_at) - new Date(a.created_at);
+        });
+        if (!optimisticIds) return serverSorted;
+        const map = Object.fromEntries(serverSorted.map(t => [t.id, t]));
+        return optimisticIds.map(id => map[id]).filter(Boolean);
+      }
+    }
+  }, [tasks, sortMode, optimisticIds]);
 
   const [activeDragId, setActiveDragId] = useState(null);
 
   // Is the dragged item part of a multi-selection?
   const isMultiDrag = activeDragId && selecting && selected.has(activeDragId) && selected.size > 1;
 
+  const isCustom = sortMode === "custom";
+
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 350, tolerance: 999 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
   );
 
   const handleDragStart = useCallback((event) => {
@@ -122,58 +126,78 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
 
   const activeTask = activeDragId ? sorted.find(t => t.id === activeDragId) : null;
 
+  // Non-custom sort: plain list without DnD
+  if (!isCustom) {
+    return (
+      <div className="space-y-3">
+        {sorted.map((task) => (
+          <InboxCard
+            key={task.id}
+            task={task}
+            selecting={selecting}
+            selected={selected.has(task.id)}
+            onToggle={onToggle}
+            expanded={expandedTaskId === task.id}
+            onExpand={onExpandTask}
+            onRefresh={onRefresh}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  // Custom sort: DnD with drag handles
   return (
     <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
-        onDragCancel={handleDragCancel}
-      >
-        <SortableContext items={sorted.map(t => t.id)} strategy={verticalListSortingStrategy}>
-          <div className="space-y-3">
-            {sorted.map((task) => (
-              <SortableTaskCard
-                key={task.id}
-                task={task}
-                selecting={selecting}
-                selected={selected.has(task.id)}
-                onToggle={onToggle}
-                expanded={expandedTaskId === task.id}
-                onExpand={onExpandTask}
-                onRefresh={onRefresh}
-                isGroupDragged={isMultiDrag && selected.has(task.id) && task.id !== activeDragId}
-                isDragActive={!!activeDragId}
-              />
-            ))}
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
+      <SortableContext items={sorted.map(t => t.id)} strategy={verticalListSortingStrategy}>
+        <div className="space-y-3">
+          {sorted.map((task) => (
+            <SortableTaskCard
+              key={task.id}
+              task={task}
+              selecting={selecting}
+              selected={selected.has(task.id)}
+              onToggle={onToggle}
+              expanded={expandedTaskId === task.id}
+              onExpand={onExpandTask}
+              onRefresh={onRefresh}
+              isGroupDragged={isMultiDrag && selected.has(task.id) && task.id !== activeDragId}
+            />
+          ))}
+        </div>
+      </SortableContext>
+      <DragOverlay dropAnimation={null}>
+        {activeTask ? (
+          <div className="relative opacity-90 scale-[1.02] shadow-xl rounded-xl">
+            {isMultiDrag && (
+              <>
+                <div className="absolute inset-0 bg-surface rounded-xl ring-1 ring-edge/20 -rotate-1 translate-y-1 -z-10" />
+                <div className="absolute inset-0 bg-surface rounded-xl ring-1 ring-edge/10 rotate-1 translate-y-2 -z-20" />
+              </>
+            )}
+            <InboxCard
+              task={activeTask}
+              selecting={selecting}
+              selected={false}
+              onToggle={() => {}}
+              expanded={false}
+              onExpand={() => {}}
+              onRefresh={() => {}}
+            />
+            {isMultiDrag && (
+              <div className="absolute -top-2 -right-2 z-10 w-6 h-6 rounded-full bg-cyan-500 text-white text-xs font-bold flex items-center justify-center shadow-md">
+                {selected.size}
+              </div>
+            )}
           </div>
-        </SortableContext>
-        <DragOverlay dropAnimation={null}>
-          {activeTask ? (
-            <div className="relative opacity-90 scale-[1.02] shadow-xl rounded-xl">
-              {isMultiDrag && (
-                <>
-                  <div className="absolute inset-0 bg-surface rounded-xl ring-1 ring-edge/20 -rotate-1 translate-y-1 -z-10" />
-                  <div className="absolute inset-0 bg-surface rounded-xl ring-1 ring-edge/10 rotate-1 translate-y-2 -z-20" />
-                </>
-              )}
-              <InboxCard
-                task={activeTask}
-                selecting={selecting}
-                selected={false}
-                onToggle={() => {}}
-                expanded={false}
-                onExpand={() => {}}
-                onRefresh={() => {}}
-              />
-              {isMultiDrag && (
-                <div className="absolute -top-2 -right-2 z-10 w-6 h-6 rounded-full bg-cyan-500 text-white text-xs font-bold flex items-center justify-center shadow-md">
-                  {selected.size}
-                </div>
-              )}
-            </div>
-          ) : null}
-        </DragOverlay>
+        ) : null}
+      </DragOverlay>
     </DndContext>
   );
 }

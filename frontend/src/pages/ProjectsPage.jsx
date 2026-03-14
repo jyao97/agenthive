@@ -42,6 +42,8 @@ function SortableFolderCard(props) {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.4 : 1,
+    WebkitUserSelect: "none",
+    userSelect: "none",
   };
   return (
     <div ref={setNodeRef} style={style}>
