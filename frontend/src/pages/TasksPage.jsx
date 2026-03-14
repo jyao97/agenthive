@@ -2,51 +2,19 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bell, BellOff, Sparkles } from "lucide-react";
 import { fetchTasksV2, fetchTaskCounts, updateNotificationSettings, dispatchTask, cancelTask, updateTaskV2, batchProcessTasks } from "../lib/api";
-import { TASK_PERSPECTIVE_TABS } from "../lib/constants";
 import PageHeader from "../components/PageHeader";
-import FilterTabs from "../components/FilterTabs";
-import useDraft from "../hooks/useDraft";
 import usePageVisible from "../hooks/usePageVisible";
 import useWebSocket, { useWsEvent, isTaskNotificationsEnabled, setTaskNotificationsEnabled, registerViewingTasks, unregisterViewingTasks } from "../hooks/useWebSocket";
 import { useToast } from "../contexts/ToastContext";
 import InboxView from "./tasks/InboxView";
-import ExecutingView from "./tasks/ExecutingView";
-import ReviewView from "./tasks/ReviewView";
-import PlanningView from "./tasks/PlanningView";
-import DoneView from "./tasks/DoneView";
 import { CardSwipeContext } from "../components/cards/CardShell";
 
-const PERSPECTIVE_STATUSES = {
-  INBOX: "INBOX",
-  PLANNING: "PLANNING",
-  EXECUTING: "PENDING,EXECUTING",
-  REVIEW: "REVIEW,MERGING,CONFLICT",
-  DONE: "COMPLETE,CANCELLED,REJECTED,FAILED,TIMEOUT",
-};
+const INBOX_POLL_INTERVAL = 5000;
 
-const POLL_INTERVALS = {
-  INBOX: 5000,
-  PLANNING: 5000,
-  EXECUTING: 3000,
-  REVIEW: 5000,
-  DONE: 10000,
-};
-
-// Move targets per perspective
-const MOVE_OPTIONS = {
-  INBOX:     [{ label: "Planning", status: "PLANNING" }],
-  PLANNING:  [{ label: "Inbox", status: "INBOX" }],
-  EXECUTING: [],
-  REVIEW:    [],
-  DONE:      [{ label: "Inbox", status: "INBOX" }],
-};
+const INBOX_MOVE_OPTIONS = [{ label: "Planning", status: "PLANNING" }];
 
 export default function TasksPage({ theme, onToggleTheme }) {
   const navigate = useNavigate();
-  const [rawPerspective, setRawPerspective] = useDraft("ui:tasks-v2:perspective", "INBOX");
-  // Migrate stale localStorage values from old QUEUE/ACTIVE tabs
-  const perspective = (rawPerspective === "QUEUE" || rawPerspective === "ACTIVE") ? "EXECUTING" : rawPerspective;
-  const setPerspective = setRawPerspective;
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [counts, setCounts] = useState({});
@@ -61,12 +29,6 @@ export default function TasksPage({ theme, onToggleTheme }) {
   const [expandedTaskId, setExpandedTaskId] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // Clear selection & expansion when perspective changes
-  useEffect(() => {
-    setSelecting(false);
-    setSelected(new Set());
-    setExpandedTaskId(null);
-  }, [perspective]);
 
   const enterSelectMode = useCallback((preSelectId) => {
     setSelecting(true);
@@ -119,19 +81,17 @@ export default function TasksPage({ theme, onToggleTheme }) {
     }
   }, []);
 
-  // Fetch tasks for current perspective
+  // Fetch inbox tasks
   const loadTasks = useCallback(async () => {
     try {
-      const statuses = PERSPECTIVE_STATUSES[perspective];
-      const limit = perspective === "DONE" ? 50 : 100;
-      const data = await fetchTasksV2(`statuses=${statuses}&limit=${limit}`);
+      const data = await fetchTasksV2(`statuses=INBOX&limit=100`);
       setTasks(Array.isArray(data) ? data : []);
     } catch (err) {
       console.warn("Failed to load tasks", err);
     } finally {
       setLoading(false);
     }
-  }, [perspective]);
+  }, []);
 
   // Refresh on task_update WebSocket events
   const loadTasksRef = useRef(loadTasks);
@@ -153,50 +113,19 @@ export default function TasksPage({ theme, onToggleTheme }) {
     setLoading(true);
     loadTasks();
     loadCounts();
-    // DONE perspective contains terminal states — no need to poll repeatedly
-    if (perspective !== "DONE") {
-      const interval = POLL_INTERVALS[perspective] || 5000;
-      pollRef.current = setInterval(loadTasks, interval);
-    }
+    pollRef.current = setInterval(loadTasks, INBOX_POLL_INTERVAL);
     countPollRef.current = setInterval(loadCounts, 10000);
     return () => {
       clearInterval(pollRef.current);
       clearInterval(countPollRef.current);
     };
-  }, [loadTasks, loadCounts, visible, perspective]);
+  }, [loadTasks, loadCounts, visible]);
 
   const onRefresh = useCallback(() => {
     loadTasks();
     loadCounts();
   }, [loadTasks, loadCounts]);
 
-  // Double-tap nav: switch to Review tab and scroll to first review task
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.detail?.tab !== "tasks") return;
-      if (perspective !== "REVIEW") {
-        setPerspective("REVIEW");
-        // Wait for re-render then scroll
-        setTimeout(() => {
-          const el = document.querySelector("[data-review-task]");
-          if (el) {
-            el.scrollIntoView({ behavior: "smooth", block: "center" });
-            el.classList.add("ring-2", "ring-cyan-400");
-            setTimeout(() => el.classList.remove("ring-2", "ring-cyan-400"), 1500);
-          }
-        }, 300);
-      } else {
-        const el = document.querySelector("[data-review-task]");
-        if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "center" });
-          el.classList.add("ring-2", "ring-cyan-400");
-          setTimeout(() => el.classList.remove("ring-2", "ring-cyan-400"), 1500);
-        }
-      }
-    };
-    window.addEventListener("nav-scroll-to-unread", handler);
-    return () => window.removeEventListener("nav-scroll-to-unread", handler);
-  }, [perspective, setPerspective]);
 
   // Notification toggle
   const [taskNotifsOn, setTaskNotifsOn] = useState(() => isTaskNotificationsEnabled());
@@ -224,12 +153,11 @@ export default function TasksPage({ theme, onToggleTheme }) {
   }, []);
 
   // --- Bulk action handlers ---
-  const moveOptions = MOVE_OPTIONS[perspective] || [];
+  const moveOptions = INBOX_MOVE_OPTIONS;
 
   const dispatchableCount = useMemo(() => {
-    if (perspective !== "INBOX" && perspective !== "PLANNING") return 0;
     return tasks.filter((t) => selected.has(t.id) && t.project_name).length;
-  }, [perspective, tasks, selected]);
+  }, [tasks, selected]);
 
   const handleBulkMove = useCallback(async (targetStatus) => {
     if (selected.size === 0 || actionLoading) return;
@@ -298,34 +226,43 @@ export default function TasksPage({ theme, onToggleTheme }) {
     }
   }, [batchProcessing, showToast, navigate]);
 
-  const ViewComponent = {
-    INBOX: InboxView,
-    PLANNING: PlanningView,
-    EXECUTING: ExecutingView,
-    REVIEW: ReviewView,
-    DONE: DoneView,
-  }[perspective] || InboxView;
-
   return (
     <div className="h-full flex flex-col">
       <PageHeader
-        title="Tasks"
+        title="Inbox"
         theme={theme}
         onToggleTheme={onToggleTheme}
         showTaskRing
         actions={!selecting ? (
-          <button
-            type="button"
-            onClick={handleToggleTaskNotifs}
-            title={taskNotifsOn ? "Mute all task notifications" : "Unmute all task notifications"}
-            className={`w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${taskNotifsOn ? "text-cyan-400" : "text-dim"}`}
-          >
-            {taskNotifsOn ? (
-              <Bell className="w-4 h-4" />
-            ) : (
-              <BellOff className="w-4 h-4" />
+          <>
+            {(counts?.INBOX ?? 0) > 0 && (
+              <button
+                type="button"
+                onClick={handleBatchProcess}
+                disabled={batchProcessing}
+                title="AI batch process — refine prompts & move to Planning"
+                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all ${
+                  batchProcessing
+                    ? "text-cyan-400 animate-pulse"
+                    : "text-dim hover:text-heading hover:bg-input"
+                }`}
+              >
+                <Sparkles className="w-4 h-4" />
+              </button>
             )}
-          </button>
+            <button
+              type="button"
+              onClick={handleToggleTaskNotifs}
+              title={taskNotifsOn ? "Mute all task notifications" : "Unmute all task notifications"}
+              className={`w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${taskNotifsOn ? "text-cyan-400" : "text-dim"}`}
+            >
+              {taskNotifsOn ? (
+                <Bell className="w-4 h-4" />
+              ) : (
+                <BellOff className="w-4 h-4" />
+              )}
+            </button>
+          </>
         ) : undefined}
         selectAction={!selecting ? (
           <button
@@ -340,29 +277,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
           </button>
         ) : undefined}
       >
-        {!selecting ? (
-          <FilterTabs
-            tabs={TASK_PERSPECTIVE_TABS}
-            active={perspective}
-            onChange={setPerspective}
-            counts={counts}
-            rightAction={perspective === "INBOX" && (counts?.INBOX ?? 0) > 0 ? (
-              <button
-                type="button"
-                onClick={handleBatchProcess}
-                disabled={batchProcessing}
-                title="AI batch process — refine prompts & move to Planning"
-                className={`min-h-[36px] min-w-[36px] flex items-center justify-center rounded-full transition-all shadow-sm ${
-                  batchProcessing
-                    ? "bg-cyan-500 text-white animate-pulse shadow-cyan-500/30"
-                    : "bg-gradient-to-br from-cyan-500 to-blue-500 text-white hover:from-cyan-400 hover:to-blue-400 active:scale-95"
-                }`}
-              >
-                <Sparkles className="w-4 h-4" />
-              </button>
-            ) : undefined}
-          />
-        ) : (
+        {selecting && (
           <div className="flex items-center justify-between px-4 pb-2">
             <button
               type="button"
@@ -400,7 +315,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
                 </div>
               )}
               {!loading && (
-                <ViewComponent
+                <InboxView
                   tasks={tasks}
                   loading={loading}
                   onRefresh={onRefresh}

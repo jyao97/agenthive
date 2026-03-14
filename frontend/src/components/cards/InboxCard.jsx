@@ -452,47 +452,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                   </button>
                 </div>
               </div>
-            ) : (
-              /* Collapsed tags — read-only: Project → WT → Auto → Priority → Model → Effort → notify(last) */
-              <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
-                <span className={`text-[11px] font-medium rounded-full px-2 py-0.5 ${projColor}`}>
-                  {task.project_name || "Project"}
-                </span>
-                {task.use_worktree !== false && (
-                  <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-purple-500/15 text-purple-500 dark:text-purple-400">
-                    {task.worktree_name ? `WT:${task.worktree_name}` : "WT"}
-                  </span>
-                )}
-                {task.skip_permissions && (
-                  <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-500 dark:text-amber-400">
-                    Auto
-                  </span>
-                )}
-                <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-full ${
-                  isHigh ? "bg-amber-500/15 text-amber-500 dark:text-amber-400" : "bg-elevated text-faint"
-                }`}>
-                  {isHigh ? "H" : "N"}
-                </span>
-                {task.model && (
-                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-elevated text-dim">
-                    {modelDisplayName(task.model)}
-                  </span>
-                )}
-                {task.effort && (
-                  <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-elevated text-dim uppercase">
-                    {task.effort[0]}
-                  </span>
-                )}
-                {task.notify_at && (
-                  <span className="text-[11px] text-amber-500 dark:text-amber-400 flex items-center gap-0.5">
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    {relativeTime(task.notify_at)}
-                  </span>
-                )}
-              </div>
-            )}
+            ) : null}
           </div>
         </div>
       </CardShell>
