@@ -4690,6 +4690,7 @@ Here are the day's conversations (with timestamps):
             f"Project path: {project.path}\n"
             f"\n"
             f"First read the project's CLAUDE.md to understand project conventions.\n"
+            f"Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md.\n"
             f"\n"
             f"{history_block}\n"
             f"{user_message}"
@@ -5720,33 +5721,20 @@ Here are the day's conversations (with timestamps):
                             agent_id, ctx.idle_polls, pane_alive,
                         )
 
-                    # Pane is alive but JSONL is completely stale — Claude is
-                    # blocked (e.g. waiting on a reaped subagent that will never
-                    # complete). Stop the agent after _STALE_SESSION_THRESHOLD.
+                    # Log stale JSONL for debugging but do NOT auto-kill —
+                    # the pane is alive so Claude may be legitimately busy
+                    # (long tool call, waiting for input, etc.).  Auto-killing
+                    # caused a revive/stop loop with _auto_detect_cli_sessions.
                     try:
                         jsonl_age = _time.time() - os.path.getmtime(ctx.jsonl_path)
                     except OSError:
                         jsonl_age = 0
-                    if jsonl_age > _STALE_SESSION_THRESHOLD:
-                        logger.warning(
-                            "Sync loop: JSONL stale for %.0fs with alive pane — "
-                            "stopping stuck agent %s (likely blocked on dead subagent)",
+                    if jsonl_age > _STALE_SESSION_THRESHOLD and ctx.idle_polls % 20 == 0:
+                        logger.info(
+                            "Sync loop: JSONL stale for %.0fs with alive pane "
+                            "for agent %s — not stopping (pane alive)",
                             jsonl_age, agent_id,
                         )
-                        db_stop = SessionLocal()
-                        try:
-                            ag_stop = db_stop.get(Agent, agent_id)
-                            if ag_stop and ag_stop.status == AgentStatus.SYNCING:
-                                self.stop_agent_cleanup(
-                                    db_stop, ag_stop,
-                                    "CLI session stalled — stopped after inactivity",
-                                    kill_tmux=False, cancel_tasks=False,
-                                )
-                                ag_stop.last_message_at = _utcnow()
-                                db_stop.commit()
-                        finally:
-                            db_stop.close()
-                        return
 
                 continue
 
