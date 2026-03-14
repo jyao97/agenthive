@@ -111,6 +111,7 @@ class WorkerManager:
             f"Project path: {project.path}\n"
             f"\n"
             f"First read the project's CLAUDE.md to understand project conventions.\n"
+            f"Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md.\n"
             f"\n"
             f"## Safety Rules (mandatory — violations cause data loss)\n"
             f"- NEVER run `git reset --hard`, `git clean -f`, `git checkout -- .`, `git push --force`, `rm -rf`\n"

@@ -396,6 +396,7 @@ def scaffold_project(project_name: str, project_path: str,
 - Do not delete or modify tests unless asked
 - Do not change dependencies/package versions without explicit approval
 - Do not modify CLAUDE.md
+- Do not write to memory files (.claude/memory/, MEMORY.md) — only the orchestrator manages persistent memory
 
 ## Output Rules
 - Keep responses concise — no long explanations unless asked
