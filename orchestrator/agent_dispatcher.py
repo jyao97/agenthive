@@ -5721,21 +5721,6 @@ Here are the day's conversations (with timestamps):
                             agent_id, ctx.idle_polls, pane_alive,
                         )
 
-                    # Log stale JSONL for debugging but do NOT auto-kill —
-                    # the pane is alive so Claude may be legitimately busy
-                    # (long tool call, waiting for input, etc.).  Auto-killing
-                    # caused a revive/stop loop with _auto_detect_cli_sessions.
-                    try:
-                        jsonl_age = _time.time() - os.path.getmtime(ctx.jsonl_path)
-                    except OSError:
-                        jsonl_age = 0
-                    if jsonl_age > _STALE_SESSION_THRESHOLD and ctx.idle_polls % 20 == 0:
-                        logger.info(
-                            "Sync loop: JSONL stale for %.0fs with alive pane "
-                            "for agent %s — not stopping (pane alive)",
-                            jsonl_age, agent_id,
-                        )
-
                 continue
 
             # File grew — do incremental sync
