@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { fetchTasksV2, fetchTaskCounts, dispatchTask, cancelTask } from "../lib/api";
+import { useNavigate } from "react-router-dom";
+import { Sparkles } from "lucide-react";
+import { fetchTasksV2, fetchTaskCounts, dispatchTask, cancelTask, batchProcessTasks } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import usePageVisible from "../hooks/usePageVisible";
 import useWebSocket, { useWsEvent, registerViewingTasks, unregisterViewingTasks } from "../hooks/useWebSocket";
@@ -10,6 +12,7 @@ import { CardSwipeContext } from "../components/cards/CardShell";
 const INBOX_POLL_INTERVAL = 5000;
 
 export default function TasksPage({ theme, onToggleTheme }) {
+  const navigate = useNavigate();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [counts, setCounts] = useState({});
@@ -166,33 +169,25 @@ export default function TasksPage({ theme, onToggleTheme }) {
     }
   }, [selected, actionLoading, exitSelectMode, showToast, onRefresh]);
 
-  // --- Batch dispatch all inbox tasks ---
-  const [batchDispatching, setBatchDispatching] = useState(false);
+  // --- AI batch process (triage agent) ---
+  const [batchProcessing, setBatchProcessing] = useState(false);
 
-  const handleBatchDispatch = useCallback(async () => {
-    if (batchDispatching) return;
-    const dispatchable = tasks.filter((t) => t.project_name);
-    if (dispatchable.length === 0) {
-      showToast("No tasks with a project to start", "error");
-      return;
-    }
-    setBatchDispatching(true);
+  const handleBatchProcess = useCallback(async () => {
+    if (batchProcessing) return;
+    setBatchProcessing(true);
     try {
-      const results = await Promise.allSettled(dispatchable.map(t => dispatchTask(t.id)));
-      const succeeded = results.filter(r => r.status === "fulfilled").length;
-      const failed = results.filter(r => r.status === "rejected").length;
-      if (failed > 0) {
-        showToast(`Started ${succeeded}, failed ${failed}`, succeeded > 0 ? "success" : "error");
+      const res = await batchProcessTasks();
+      if (res.agent_id) {
+        navigate(`/agents/${res.agent_id}`);
       } else {
-        showToast(`Started ${succeeded} task${succeeded > 1 ? "s" : ""}`);
+        showToast(res.message || "No tasks to process");
       }
-      onRefresh();
     } catch (err) {
-      showToast(`Batch start failed: ${err.message}`, "error");
+      showToast(`Batch process failed: ${err.message}`, "error");
     } finally {
-      setBatchDispatching(false);
+      setBatchProcessing(false);
     }
-  }, [batchDispatching, tasks, showToast, onRefresh]);
+  }, [batchProcessing, showToast, navigate]);
 
   return (
     <div className="h-full flex flex-col">
@@ -204,19 +199,17 @@ export default function TasksPage({ theme, onToggleTheme }) {
           (counts?.INBOX ?? 0) > 0 ? (
             <button
               type="button"
-              onClick={handleBatchDispatch}
-              disabled={batchDispatching}
-              title="Start all inbox tasks that have a project assigned"
+              onClick={handleBatchProcess}
+              disabled={batchProcessing}
+              title="AI batch process — refine prompts & assign projects"
               className={`h-7 px-2.5 flex items-center gap-1.5 rounded-full text-[11px] font-semibold transition-all ${
-                batchDispatching
+                batchProcessing
                   ? "bg-gradient-to-r from-cyan-500 to-blue-500 text-white animate-pulse shadow-md shadow-cyan-500/25"
                   : "bg-gradient-to-r from-cyan-500/15 to-blue-500/15 text-cyan-500 dark:text-cyan-400 hover:from-cyan-500/25 hover:to-blue-500/25 active:scale-95"
               }`}
             >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
-              </svg>
-              Start All
+              <Sparkles className="w-3.5 h-3.5" />
+              AI
             </button>
           ) : undefined
         ) : undefined}
