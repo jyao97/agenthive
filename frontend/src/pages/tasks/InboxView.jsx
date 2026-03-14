@@ -20,9 +20,12 @@ function SortableTaskCard(props) {
     transform: CSS.Transform.toString(yOnlyTransform),
     transition,
     opacity: isDragging || isGroupDragged ? 0.3 : 1,
+    // When any drag is active, block browser scroll so dnd-kit owns the touch
+    touchAction: props.isDragActive ? "none" : undefined,
+    ...(!props.expanded && { WebkitUserSelect: "none", userSelect: "none" }),
   };
   return (
-    <div ref={setNodeRef} style={{ ...style, touchAction: "manipulation", ...(!props.expanded && { WebkitUserSelect: "none", userSelect: "none" }) }} {...attributes} {...listeners}>
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
       <InboxCard {...props} />
     </div>
   );
@@ -127,7 +130,7 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
         onDragCancel={handleDragCancel}
       >
         <SortableContext items={sorted.map(t => t.id)} strategy={verticalListSortingStrategy}>
-          <div className="space-y-3" style={activeDragId ? { touchAction: "none" } : undefined}>
+          <div className="space-y-3">
             {sorted.map((task) => (
               <SortableTaskCard
                 key={task.id}
@@ -139,6 +142,7 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
                 onExpand={onExpandTask}
                 onRefresh={onRefresh}
                 isGroupDragged={isMultiDrag && selected.has(task.id) && task.id !== activeDragId}
+                isDragActive={!!activeDragId}
               />
             ))}
           </div>
