@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useRef } from "react";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
+import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import InboxCard from "../../components/cards/InboxCard";
@@ -125,6 +126,7 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
     <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
+        modifiers={[restrictToVerticalAxis]}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
         onDragCancel={handleDragCancel}
