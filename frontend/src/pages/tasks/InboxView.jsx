@@ -14,8 +14,10 @@ function SortableTaskCard(props) {
     animateLayoutChanges: noDropAnimation,
   });
   const isGroupDragged = props.isGroupDragged && !isDragging;
+  // Only allow vertical movement during drag — suppress horizontal shift
+  const yOnlyTransform = transform ? { ...transform, x: 0 } : transform;
   const style = {
-    transform: CSS.Transform.toString(transform),
+    transform: CSS.Transform.toString(yOnlyTransform),
     transition,
     opacity: isDragging || isGroupDragged ? 0.3 : 1,
   };
@@ -58,8 +60,8 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
   const isMultiDrag = activeDragId && selecting && selected.has(activeDragId) && selected.size > 1;
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 350, tolerance: 10 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 15 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 500, tolerance: 8 } }),
   );
 
   const handleDragStart = useCallback((event) => setActiveDragId(event.active.id), []);

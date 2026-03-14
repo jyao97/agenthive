@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
-import { Sparkles } from "lucide-react";
-import { fetchTasksV2, fetchTaskCounts, dispatchTask, cancelTask, updateTaskV2, batchProcessTasks } from "../lib/api";
+import { fetchTasksV2, fetchTaskCounts, dispatchTask, cancelTask } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import usePageVisible from "../hooks/usePageVisible";
 import useWebSocket, { useWsEvent, registerViewingTasks, unregisterViewingTasks } from "../hooks/useWebSocket";
@@ -11,10 +9,7 @@ import { CardSwipeContext } from "../components/cards/CardShell";
 
 const INBOX_POLL_INTERVAL = 5000;
 
-const INBOX_MOVE_OPTIONS = [{ label: "Planning", status: "PLANNING" }];
-
 export default function TasksPage({ theme, onToggleTheme }) {
-  const navigate = useNavigate();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [counts, setCounts] = useState({});
@@ -135,38 +130,21 @@ export default function TasksPage({ theme, onToggleTheme }) {
   }, [toast]);
 
   // --- Bulk action handlers ---
-  const moveOptions = INBOX_MOVE_OPTIONS;
-
   const dispatchableCount = useMemo(() => {
     return tasks.filter((t) => selected.has(t.id) && t.project_name).length;
   }, [tasks, selected]);
 
-  const handleBulkMove = useCallback(async (targetStatus) => {
-    if (selected.size === 0 || actionLoading) return;
-    setActionLoading(true);
-    try {
-      await Promise.all([...selected].map(id => updateTaskV2(id, { status: targetStatus })));
-      showToast(`Moved ${selected.size} task${selected.size > 1 ? "s" : ""}`);
-      exitSelectMode();
-      onRefresh();
-    } catch (err) {
-      showToast(`Move failed: ${err.message}`, "error");
-    } finally {
-      setActionLoading(false);
-    }
-  }, [selected, actionLoading, exitSelectMode, showToast, onRefresh]);
-
-  const handleBulkDispatch = useCallback(async () => {
+  const handleBulkStart = useCallback(async () => {
     const dispatchable = tasks.filter((t) => selected.has(t.id) && t.project_name);
     if (dispatchable.length === 0 || actionLoading) return;
     setActionLoading(true);
     try {
       await Promise.all(dispatchable.map(t => dispatchTask(t.id)));
-      showToast(`Dispatched ${dispatchable.length} task${dispatchable.length > 1 ? "s" : ""}`);
+      showToast(`Started ${dispatchable.length} task${dispatchable.length > 1 ? "s" : ""}`);
       exitSelectMode();
       onRefresh();
     } catch (err) {
-      showToast(`Dispatch failed: ${err.message}`, "error");
+      showToast(`Start failed: ${err.message}`, "error");
     } finally {
       setActionLoading(false);
     }
@@ -188,25 +166,33 @@ export default function TasksPage({ theme, onToggleTheme }) {
     }
   }, [selected, actionLoading, exitSelectMode, showToast, onRefresh]);
 
-  // --- AI batch process ---
-  const [batchProcessing, setBatchProcessing] = useState(false);
+  // --- Batch dispatch all inbox tasks ---
+  const [batchDispatching, setBatchDispatching] = useState(false);
 
-  const handleBatchProcess = useCallback(async () => {
-    if (batchProcessing) return;
-    setBatchProcessing(true);
-    try {
-      const res = await batchProcessTasks();
-      if (res.agent_id) {
-        navigate(`/agents/${res.agent_id}`);
-      } else {
-        showToast(res.message || "No tasks to process");
-      }
-    } catch (err) {
-      showToast(`Batch process failed: ${err.message}`, "error");
-    } finally {
-      setBatchProcessing(false);
+  const handleBatchDispatch = useCallback(async () => {
+    if (batchDispatching) return;
+    const dispatchable = tasks.filter((t) => t.project_name);
+    if (dispatchable.length === 0) {
+      showToast("No tasks with a project to start", "error");
+      return;
     }
-  }, [batchProcessing, showToast, navigate]);
+    setBatchDispatching(true);
+    try {
+      const results = await Promise.allSettled(dispatchable.map(t => dispatchTask(t.id)));
+      const succeeded = results.filter(r => r.status === "fulfilled").length;
+      const failed = results.filter(r => r.status === "rejected").length;
+      if (failed > 0) {
+        showToast(`Started ${succeeded}, failed ${failed}`, succeeded > 0 ? "success" : "error");
+      } else {
+        showToast(`Started ${succeeded} task${succeeded > 1 ? "s" : ""}`);
+      }
+      onRefresh();
+    } catch (err) {
+      showToast(`Batch start failed: ${err.message}`, "error");
+    } finally {
+      setBatchDispatching(false);
+    }
+  }, [batchDispatching, tasks, showToast, onRefresh]);
 
   return (
     <div className="h-full flex flex-col">
@@ -218,17 +204,19 @@ export default function TasksPage({ theme, onToggleTheme }) {
           (counts?.INBOX ?? 0) > 0 ? (
             <button
               type="button"
-              onClick={handleBatchProcess}
-              disabled={batchProcessing}
-              title="AI batch process — refine prompts & move to Planning"
+              onClick={handleBatchDispatch}
+              disabled={batchDispatching}
+              title="Start all inbox tasks that have a project assigned"
               className={`h-7 px-2.5 flex items-center gap-1.5 rounded-full text-[11px] font-semibold transition-all ${
-                batchProcessing
+                batchDispatching
                   ? "bg-gradient-to-r from-cyan-500 to-blue-500 text-white animate-pulse shadow-md shadow-cyan-500/25"
                   : "bg-gradient-to-r from-cyan-500/15 to-blue-500/15 text-cyan-500 dark:text-cyan-400 hover:from-cyan-500/25 hover:to-blue-500/25 active:scale-95"
               }`}
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              AI
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
+              </svg>
+              Start All
             </button>
           ) : undefined
         ) : undefined}
@@ -303,26 +291,15 @@ export default function TasksPage({ theme, onToggleTheme }) {
       {selecting && selected.size > 0 && (
         <div className="fixed bottom-20 left-0 right-0 z-20 px-4 pb-2 animate-bar-slide-up">
           <div className="max-w-xl mx-auto bg-surface border border-divider rounded-xl shadow-lg p-3 flex items-center justify-center gap-3">
-            {/* Move */}
-            {moveOptions.length > 0 && (
-              <button
-                type="button"
-                onClick={() => handleBulkMove(moveOptions[0].status)}
-                disabled={actionLoading}
-                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-50 transition-colors"
-              >
-                {moveOptions[0].label} {selected.size}
-              </button>
-            )}
-            {/* Dispatch */}
+            {/* Start */}
             {dispatchableCount > 0 && (
               <button
                 type="button"
-                onClick={handleBulkDispatch}
+                onClick={handleBulkStart}
                 disabled={actionLoading}
-                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-50 transition-colors"
               >
-                Dispatch {dispatchableCount}
+                Start {dispatchableCount}
               </button>
             )}
             {/* Delete */}

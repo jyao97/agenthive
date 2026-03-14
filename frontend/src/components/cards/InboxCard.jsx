@@ -1,7 +1,7 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { modelDisplayName, MODEL_OPTIONS } from "../../lib/constants";
 import { relativeTime } from "../../lib/formatters";
-import { updateTaskV2, uploadFile, cancelTask } from "../../lib/api";
+import { updateTaskV2, uploadFile, cancelTask, dispatchTask } from "../../lib/api";
 import useVoiceRecorder from "../../hooks/useVoiceRecorder";
 import useProjects from "../../hooks/useProjects";
 import CardShell, { cardPadding } from "./CardShell";
@@ -198,8 +198,8 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
     }
   };
 
-  // --- move to planning ---
-  const handlePlan = async (e) => {
+  // --- dispatch (launch agent) ---
+  const handleDispatch = async (e) => {
     e.stopPropagation();
     if (editing && editRef.current) {
       const text = editRef.current.innerText.trim();
@@ -207,7 +207,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
         await updateTaskV2(task.id, { description: buildFullDesc(text, parsed.files) });
       }
     }
-    await updateTaskV2(task.id, { status: "PLANNING" });
+    await dispatchTask(task.id);
     onRefresh?.();
   };
 
@@ -440,14 +440,14 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                     </button>
                   </div>
 
-                  <button type="button" onClick={handlePlan}
+                  <button type="button" onClick={handleDispatch}
                     disabled={!task.project_name}
                     className={`w-8 h-8 rounded-full flex items-center justify-center active:scale-90 transition-all ${
                       task.project_name ? "bg-cyan-500 text-white hover:bg-cyan-400" : "bg-elevated text-faint cursor-not-allowed"
                     }`}
-                    title={task.project_name ? "Move to Planning" : "Select a project first"}>
+                    title={task.project_name ? "Start task" : "Select a project first"}>
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
                     </svg>
                   </button>
                 </div>
