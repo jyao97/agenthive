@@ -429,6 +429,27 @@ async def hook_request_logger(request: Request, call_next):
     return await call_next(request)
 
 
+def _resolve_agent_id_from_body(body: dict) -> str:
+    """Resolve agent_id from hook body when X-Agent-Id header is empty.
+
+    Adopted/unlinked sessions don't have AHIVE_AGENT_ID in their process
+    environment, so the header expands to empty.  Fall back to body's
+    session_id → Agent.session_id lookup.
+    """
+    sid = body.get("session_id", "").strip()
+    if not sid:
+        return ""
+    db = SessionLocal()
+    try:
+        agent = db.query(Agent).filter(Agent.session_id == sid).first()
+        if agent:
+            logger.info("_resolve_agent_id_from_body: resolved session %s → agent %s", sid[:12], agent.id[:8])
+            return agent.id
+    finally:
+        db.close()
+    return ""
+
+
 # ---- Auth middleware ----
 
 _AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/api/files/", "/api/uploads/", "/api/thumbs/", "/docs", "/openapi.json")
@@ -3216,6 +3237,7 @@ HOW TO UPDATE:
 SAFETY RULES:
 - You may ONLY call these API endpoints: PUT /api/v2/tasks/TASK_ID (update) and POST /api/v2/tasks/TASK_ID/plan (move to planning)
 - Do NOT call any other endpoints (no /api/agents/*, /api/git/*, /api/projects/*, DELETE endpoints, etc.)
+- Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md
 
 INSTRUCTIONS:
 1. First, analyze all tasks and present a summary table of your proposed changes (title, project assignment, ready status)
@@ -3328,7 +3350,8 @@ IMPORTANT:
 - You MUST finish by calling ExitPlanMode with your complete plan, regardless of whether you had questions
 - Do NOT implement anything — only plan
 - Do NOT skip the plan even if the task seems simple — always produce a plan for review
-- Testing is NOT optional — every plan must include a concrete testing section"""
+- Testing is NOT optional — every plan must include a concrete testing section
+- Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md"""
 
     body = AgentCreate(
         project=task.project_name,
@@ -3599,6 +3622,7 @@ async def verify_task(task_id: str, request: Request, db: Session = Depends(get_
     context_parts.append(f"\n## Safety Rules (mandatory)")
     context_parts.append("- You are a READ-ONLY verifier. Do NOT commit, push, or modify any source code.")
     context_parts.append("- If you find issues, REPORT them — do NOT attempt to fix them")
+    context_parts.append("- Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md")
     context_parts.append(f"\n## Your Verification Checklist")
     context_parts.append("1. Read the diff / changed files to understand what was modified")
     context_parts.append("2. Check if the changes match the task requirements")
@@ -3924,8 +3948,14 @@ async def hook_agent_session_end(request: Request):
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
     if not agent_id:
-        logger.warning("hook_agent_session_end: no X-Agent-Id header")
-        return {}
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        agent_id = _resolve_agent_id_from_body(body)
+        if not agent_id:
+            logger.warning("hook_agent_session_end: no X-Agent-Id and no session match")
+            return {}
 
     ad = getattr(app.state, "agent_dispatcher", None)
     if not ad:
@@ -3985,8 +4015,15 @@ async def hook_agent_user_prompt(request: Request):
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
     if not agent_id:
-        logger.warning("hook_agent_user_prompt: no X-Agent-Id header (headers: %s)", dict(request.headers))
-        return {}
+        # Adopted sessions don't have AHIVE_AGENT_ID — resolve from body
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        agent_id = _resolve_agent_id_from_body(body)
+        if not agent_id:
+            logger.warning("hook_agent_user_prompt: no X-Agent-Id and no session match (headers: %s)", dict(request.headers))
+            return {}
 
     logger.info("hook_agent_user_prompt: received for agent %s", agent_id[:8])
 
@@ -4018,13 +4055,24 @@ async def hook_agent_user_prompt(request: Request):
     finally:
         db.close()
 
-    # Wake sync loop (still useful for importing the turn into messages)
+    # Mark agent as generating — for tmux agents this is the only signal
+    # (subprocess agents get _start_generating via _stream_output_loop).
+    # The Stop hook calls _stop_generating to clear this.
     ad = getattr(app.state, "agent_dispatcher", None)
     if ad:
+        if agent_id not in ad._generating_agents:
+            ad._start_generating(agent_id)
+            logger.info("hook_agent_user_prompt: started generating for %s", agent_id[:8])
+            # Notify frontend immediately so status flips SYNCING → EXECUTING
+            from websocket import emit_agent_update
+            db2 = SessionLocal()
+            try:
+                ag = db2.get(Agent, agent_id)
+                project = ag.project if ag else ""
+            finally:
+                db2.close()
+            asyncio.ensure_future(emit_agent_update(agent_id, "EXECUTING", project))
         ad.wake_sync(agent_id)
-
-    from websocket import emit_tool_activity
-    asyncio.ensure_future(emit_tool_activity(agent_id, "Thinking", "start"))
 
     return {}
 
@@ -4044,15 +4092,15 @@ async def hook_agent_stop(request: Request):
     endpoint deliberately does NOT transition task state.
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
-    if not agent_id:
-        logger.warning("hook_agent_stop: no X-Agent-Id header")
-        return {}
-
     try:
         body = await request.json()
     except Exception:
-        logger.warning("hook_agent_stop: failed to parse JSON body for agent %s", agent_id[:8])
-        return {}
+        body = {}
+    if not agent_id:
+        agent_id = _resolve_agent_id_from_body(body)
+        if not agent_id:
+            logger.warning("hook_agent_stop: no X-Agent-Id and no session match")
+            return {}
 
     last_message = body.get("last_assistant_message") or ""
     if isinstance(last_message, dict):
@@ -4088,15 +4136,15 @@ async def hook_agent_tool_activity(request: Request):
     after the idle threshold (~6s).
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
-    if not agent_id:
-        logger.warning("hook_agent_tool_activity: no X-Agent-Id header")
-        return {}
-
     try:
         body = await request.json()
     except Exception:
-        logger.warning("hook_agent_tool_activity: failed to parse JSON body for agent %s", agent_id[:8])
-        return {}
+        body = {}
+    if not agent_id:
+        agent_id = _resolve_agent_id_from_body(body)
+        if not agent_id:
+            logger.warning("hook_agent_tool_activity: no X-Agent-Id and no session match")
+            return {}
 
     hook_event = body.get("hook_event_name", "")
 
@@ -4172,6 +4220,11 @@ async def hook_agent_tool_activity(request: Request):
         output_summary = _tool_output_summary(tool_name, tool_output, is_error) if tool_output else ""
         await emit_tool_activity(agent_id, tool_name, phase, tool_input=tool_input,
                                   tool_output=tool_output, is_error=is_error)
+        # User interrupted during tool execution — clear generating state
+        if hook_event == "PostToolUseFailure" and body.get("is_interrupt"):
+            if ad and agent_id in ad._generating_agents:
+                logger.info("PostToolUseFailure(interrupt): clearing generating for %s", agent_id[:8])
+                ad._stop_generating(agent_id)
     # --- Subagent lifecycle ---
     elif hook_event == "SubagentStart":
         agent_type = body.get("agent_type", "subagent")
@@ -4400,15 +4453,15 @@ async def hook_agent_permission(request: Request):
     the user has previously marked "always allow" for this agent session.
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
-    if not agent_id:
-        logger.warning("hook_agent_permission: no X-Agent-Id header")
-        return {}
-
     try:
         body = await request.json()
     except Exception:
-        logger.warning("hook_agent_permission: failed to parse JSON body for agent %s", agent_id[:8])
-        return {}
+        body = {}
+    if not agent_id:
+        agent_id = _resolve_agent_id_from_body(body)
+        if not agent_id:
+            logger.warning("hook_agent_permission: no X-Agent-Id and no session match")
+            return {}
 
     if body.get("hook_event_name") != "PreToolUse":
         logger.warning("hook_agent_permission: unexpected event %s for agent %s", body.get("hook_event_name"), agent_id[:8])

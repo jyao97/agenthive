@@ -24,7 +24,7 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
   const navigate = useNavigate();
   const state = agentBotState(agent.status);
   // When hook/stream activity indicates work during SYNCING, promote visual status
-  const effectiveStatus = (agent.status === "SYNCING" && isStreaming) ? "EXECUTING" : agent.status;
+  const effectiveStatus = (agent.status === "SYNCING" && (isStreaming || agent.is_generating)) ? "EXECUTING" : agent.status;
   const statusDotColor = AGENT_STATUS_COLORS[effectiveStatus] || "bg-gray-500";
   const statusTextColor = AGENT_STATUS_TEXT_COLORS[effectiveStatus] || "text-dim";
   const [copied, setCopied] = useState(false);
@@ -135,7 +135,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   const pollRef = useRef(null);
 
   // Track which agents are actively streaming via WebSocket events + API is_generating
-  const streamingAgents = useStreamingAgents(agents);
+  const streamingAgents = useStreamingAgents();
 
   // Multi-select state
   const [selecting, setSelecting] = useState(false);

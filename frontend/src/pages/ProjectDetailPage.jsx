@@ -420,8 +420,8 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const [progressReady, setProgressReady] = useState(false);
   const [progressDiffData, setProgressDiffData] = useState(null);
 
-  // Track which agents are actively streaming via WebSocket events + API is_generating
-  const streamingAgents = useStreamingAgents(agents);
+  // Track which agents are actively streaming via WebSocket hook events
+  const streamingAgents = useStreamingAgents();
 
   // Rename
   const [editingName, setEditingName] = useState(false);

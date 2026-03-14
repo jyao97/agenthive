@@ -2832,9 +2832,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}${effectiveStatus === "EXECUTING" ? " animate-pulse" : ""}`} />
               <span className={`text-xs shrink-0 ${statusText}`}>
                 {effectiveStatus.toLowerCase().replace("_", " ")}
-                {activeTool && (isExecuting || isSyncing) && (
-                  <span className="text-faint">: <span className="font-mono">{activeTool.name}</span></span>
-                )}
               </span>
               {hasTmux && (
                 <span className="text-[10px] text-emerald-400 font-medium px-1.5 py-0.5 rounded bg-emerald-500/15 shrink-0">
@@ -3009,7 +3006,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               }
               // Tool activity log — shows completed + in-progress tool calls
               if (toolLog.length > 0) return <ToolActivityLog toolLog={toolLog} />;
-              return (isExecuting || agent?.is_generating || hookActive) ? <TypingIndicator activeTool={activeTool} toolStartTime={toolStartTime} /> : null;
+              return (isExecuting || hookActive) ? <TypingIndicator activeTool={activeTool} toolStartTime={toolStartTime} /> : null;
             })()}
 
             {/* Pending permission approval cards for supervised agents */}
