@@ -271,7 +271,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                   {task.title}
                 </div>
               ) : (
-                <p className="text-base font-semibold leading-snug text-heading truncate transition-all duration-400 ease-[cubic-bezier(0.22,1.15,0.36,1)]">
+                <p className="text-base font-medium leading-snug text-heading truncate transition-all duration-400 ease-[cubic-bezier(0.22,1.15,0.36,1)]">
                   {task.title}
                 </p>
               )}
@@ -297,11 +297,51 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                 </div>
               </div>
             ) : (
-              preview && (
-                <p className="text-sm text-dim leading-relaxed mt-1.5 line-clamp-2">
-                  {preview.slice(0, 200)}
-                </p>
-              )
+              <>
+                {preview && (
+                  <p className="text-sm text-dim leading-relaxed mt-1 line-clamp-2">
+                    {preview.slice(0, 200)}
+                  </p>
+                )}
+                <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                  <span className={`text-[10px] font-medium rounded-full px-1.5 py-px ${projColor}`}>
+                    {task.project_name || "Project"}
+                  </span>
+                  {task.use_worktree !== false && (
+                    <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-purple-500/15 text-purple-500 dark:text-purple-400">
+                      {task.worktree_name ? `WT:${task.worktree_name}` : "WT"}
+                    </span>
+                  )}
+                  {task.skip_permissions && (
+                    <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 dark:text-amber-400">
+                      Auto
+                    </span>
+                  )}
+                  <span className={`text-[10px] font-semibold px-1.5 py-px rounded-full ${
+                    isHigh ? "bg-amber-500/15 text-amber-500 dark:text-amber-400" : "bg-elevated text-faint"
+                  }`}>
+                    {isHigh ? "H" : "N"}
+                  </span>
+                  {task.model && (
+                    <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-elevated text-dim">
+                      {modelDisplayName(task.model)}
+                    </span>
+                  )}
+                  {task.effort && (
+                    <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-elevated text-dim uppercase">
+                      {task.effort[0]}
+                    </span>
+                  )}
+                  {task.notify_at && (
+                    <span className="text-[10px] text-amber-500 dark:text-amber-400 flex items-center gap-0.5">
+                      <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      {relativeTime(task.notify_at)}
+                    </span>
+                  )}
+                </div>
+              </>
             )}
 
             {/* Bottom area — pinned to bottom */}
