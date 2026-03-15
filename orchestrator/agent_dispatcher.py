@@ -5593,15 +5593,10 @@ Here are the day's conversations (with timestamps):
                     from sync_engine import _end_compact_activity
                     db_fb = SessionLocal()
                     try:
-                        compact_sys = self._add_system_message(
-                            db_fb, agent_id,
-                            "Context compacted — conversation history refreshed",
-                        )
                         _end_compact_activity(db_fb, agent_id, ctx.session_id)
                         db_fb.commit()
-                        self._emit(emit_new_message(
-                            agent_id, compact_sys.id, ctx.agent_name, ctx.agent_project,
-                        ))
+                        # System messages come from JSONL sync — don't
+                        # create our own (causes duplicates).
                         from websocket import emit_tool_activity as _emit_ta
                         self._emit(_emit_ta(
                             agent_id, "Compact", "end",

@@ -4278,7 +4278,12 @@ async def hook_agent_post_compact(request: Request):
         logger.warning("hook_agent_post_compact: no agent_dispatcher")
         return {}
 
-    # 1. Clear compact pause — JSONL is fully rewritten now.
+    # 1. Clear compact pause and generating state.
+    #    No Stop hook fires after compact, so PostCompact must clear it.
+    if agent_id in ad._generating_agents:
+        logger.info("hook_agent_post_compact: clearing generating state for %s", agent_id[:8])
+        ad._stop_generating(agent_id)
+
     ctx = ad._sync_contexts.get(agent_id)
     if ctx:
         ctx.compact_notified = False
@@ -4319,55 +4324,24 @@ async def hook_agent_post_compact(request: Request):
     finally:
         db.close()
 
-    # 5. Purge stale cli messages + run sync BEFORE emitting UI signals,
-    #    so the frontend sees the clean post-compact state.
+    # 5. Defer JSONL read + purge to sync loop — PostCompact is blocking,
+    #    so the rewritten JSONL may not be flushed yet.  The sync loop's
+    #    compact_turn_decrease path handles purge + reconcile.
     if ctx:
-        # Clear the fallback timer — PostCompact is handling it.
         ctx.compact_detected_at = 0.0
 
-        # Purge old cli messages not in the compacted JSONL.
-        from agent_dispatcher import _parse_session_turns
-        _compact_turns = _parse_session_turns(ctx.jsonl_path)
-        _new_uuids = {uuid for _, _, _, uuid in _compact_turns if uuid}
-        from sync_engine import _purge_stale_messages_after_compact
-        db_purge = SessionLocal()
-        try:
-            _purge_stale_messages_after_compact(db_purge, agent_id, _new_uuids)
-            db_purge.commit()
-        finally:
-            db_purge.close()
+        async def _post_compact_sync(_aid):
+            await asyncio.sleep(0.1)
+            ad.wake_sync(_aid)
+        asyncio.ensure_future(_post_compact_sync(agent_id))
 
-        # Run sync inline to import compacted turns before UI update.
-        from sync_engine import sync_import_new_turns
-        _sync_lock = ad._sync_locks.get(agent_id)
-        if _sync_lock:
-            async with _sync_lock:
-                await sync_import_new_turns(ad, ctx)
-        else:
-            await sync_import_new_turns(ad, ctx)
-
-    # 6. Emit authoritative "Compact end" to frontend.
+    # 6. Emit "Compact end" tool activity to frontend.
+    #    System messages ("Conversation compacted", "This session is being
+    #    continued...") come from Claude Code's JSONL — the sync loop
+    #    imports them, so we don't add our own.
     from websocket import emit_tool_activity
     await emit_tool_activity(agent_id, "Compact", "end",
                              tool_output="context compacted")
-
-    # 7. Add system message + notify frontend.
-    if ctx:
-        db2 = SessionLocal()
-        try:
-            compact_sys = ad._add_system_message(
-                db2, agent_id,
-                "Context compacted — conversation history refreshed",
-            )
-            db2.commit()
-            from websocket import emit_new_message
-            ad._emit(emit_new_message(
-                agent_id, compact_sys.id,
-                ctx.agent_name, ctx.agent_project,
-            ))
-        finally:
-            db2.close()
-        ad.wake_sync(agent_id)
 
     logger.info("hook_agent_post_compact: agent=%s", agent_id[:8])
     return {}
