@@ -135,6 +135,8 @@ export const applyProgressSummary = (project) =>
   request(`/api/projects/${e(project)}/apply-progress`, { method: "POST" });
 export const updateProjectSettings = (project, settings) =>
   request(`/api/projects/${e(project)}/settings`, { method: "PATCH", body: JSON.stringify(settings) });
+export const rebuildInsights = (project) =>
+  request(`/api/projects/${e(project)}/rebuild-insights`, { method: "POST" });
 
 // --- Tasks (agent-sourced: each USER message = one task) ---
 export const fetchTask = (id) => request(`/api/tasks/${id}`);
