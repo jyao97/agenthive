@@ -120,7 +120,6 @@
 /* ── Global overflow prevention ── */
 body {
   overflow-wrap: break-word;
-  word-break: break-word;
 }
 /* Make body 1px taller than viewport so window.scrollBy actually
    triggers a real scroll event.  iOS Safari only reflows the visual
