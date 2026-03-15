@@ -48,6 +48,7 @@ class SyncContext:
     # Agent state
     compact_notified: bool = False
     compact_end_emitted: bool = False  # True if PostCompact already emitted "Compact end"
+    compact_detected_at: float = 0.0   # monotonic time when sync detected compact (for fallback)
     idle_polls: int = 0
     getsize_error_count: int = 0
 
@@ -60,6 +61,40 @@ def _content_hash(content: str) -> str:
     """Fast hash of content for change detection."""
     import hashlib
     return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _purge_stale_messages_after_compact(
+    db, agent_id: str,
+    new_jsonl_uuids: set[str],
+):
+    """Remove cli-sourced messages whose jsonl_uuid is no longer in the
+    compacted JSONL.  Web/task/system messages are preserved.
+
+    This prevents duplicate messages after compact rewrites the JSONL
+    (old turns stay in DB alongside newly imported compacted turns).
+    """
+    if not new_jsonl_uuids:
+        # No UUIDs in new JSONL — likely a parse failure or empty file.
+        # Don't purge anything to avoid data loss.
+        return 0
+    stale = (
+        db.query(Message)
+        .filter(
+            Message.agent_id == agent_id,
+            Message.source == "cli",
+            Message.jsonl_uuid.isnot(None),
+            Message.jsonl_uuid.notin_(new_jsonl_uuids),
+        )
+        .all()
+    )
+    if stale:
+        for m in stale:
+            db.delete(m)
+        logger.info(
+            "Purged %d stale cli messages for agent %s after compact",
+            len(stale), agent_id,
+        )
+    return len(stale)
 
 
 def _end_compact_activity(db, agent_id: str, session_id: str):
@@ -360,34 +395,36 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         _t = turns[-1] if turns else ("", "", None)
         _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
         ctx.last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
-        # Notify UI about the compact — skip if PostCompact hook already
-        # emitted "Compact end" (avoids duplicate UI notifications).
-        if not ctx.compact_end_emitted:
-            db_compact = SessionLocal()
-            try:
-                compact_msg = ad._add_system_message(
-                    db_compact, ctx.agent_id,
-                    "Context compacted — conversation history refreshed",
-                )
-                _end_compact_activity(db_compact, ctx.agent_id, ctx.session_id)
-                db_compact.commit()
-                ad._emit(emit_new_message(
-                    ctx.agent_id, compact_msg.id, ctx.agent_name, ctx.agent_project,
-                ))
-                ad._emit(emit_tool_activity(
-                    ctx.agent_id, "Compact", "end",
-                    tool_output="context compacted",
-                ))
-            finally:
-                db_compact.close()
-        else:
+
+        # Purge old cli-sourced messages whose UUIDs are no longer in the
+        # compacted JSONL — prevents duplicate messages in the chat.
+        new_uuids = {uuid for _, _, _, uuid in turns if uuid}
+        db_purge = SessionLocal()
+        try:
+            _purge_stale_messages_after_compact(db_purge, ctx.agent_id, new_uuids)
+            db_purge.commit()
+        finally:
+            db_purge.close()
+
+        # Do NOT emit compact-end UI signals here — PostCompact hook is
+        # the authoritative source.  Emitting here races the hook and
+        # causes premature double-tick / system-message indicators.
+        if ctx.compact_end_emitted:
             logger.info(
                 "Compact end already emitted by PostCompact hook for agent %s, "
-                "skipping duplicate notification",
+                "resetting flag",
+                ctx.agent_id,
+            )
+            ctx.compact_end_emitted = False
+        else:
+            import time as _time
+            ctx.compact_detected_at = _time.monotonic()
+            logger.info(
+                "Turn-count-decrease compact for agent %s but PostCompact not "
+                "yet received, deferring UI signals",
                 ctx.agent_id,
             )
         ctx.compact_notified = False
-        ctx.compact_end_emitted = False
         # After compact, reconcile to import any genuinely new turns that
         # arrived post-compact (the counter reset above marks ALL turns as
         # "processed" including ones not yet in DB).
@@ -747,33 +784,39 @@ async def sync_handle_compact(ad, ctx: SyncContext):
     except OSError:
         ctx.last_offset = 0
     ctx.idle_polls = 0
-    # Notify UI — skip if PostCompact hook already handled it.
-    if not ctx.compact_end_emitted:
-        db_compact = SessionLocal()
-        try:
-            compact_msg = ad._add_system_message(
-                db_compact, ctx.agent_id,
-                "Context compacted — conversation history refreshed",
-            )
-            _end_compact_activity(db_compact, ctx.agent_id, ctx.session_id)
-            db_compact.commit()
-            ad._emit(emit_new_message(
-                ctx.agent_id, compact_msg.id, ctx.agent_name, ctx.agent_project,
-            ))
-            ad._emit(emit_tool_activity(
-                ctx.agent_id, "Compact", "end",
-                tool_output="context compacted",
-            ))
-        finally:
-            db_compact.close()
-    else:
+
+    # Purge old cli-sourced messages whose UUIDs are no longer in the
+    # compacted JSONL — prevents duplicate messages in the chat.
+    new_uuids = {uuid for _, _, _, uuid in turns if uuid}
+    db_purge = SessionLocal()
+    try:
+        _purge_stale_messages_after_compact(db_purge, ctx.agent_id, new_uuids)
+        db_purge.commit()
+    finally:
+        db_purge.close()
+
+    # Do NOT emit compact-end UI signals here.  PostCompact hook is the
+    # authoritative source — emitting here races the hook and causes
+    # premature double-tick / system-message indicators.  If PostCompact
+    # already fired, compact_end_emitted is True and we just reset it.
+    # If PostCompact hasn't fired yet, we note the time so the sync loop
+    # can emit a fallback after a grace period (see _COMPACT_GRACE_SECS).
+    if ctx.compact_end_emitted:
         logger.info(
             "Compact end already emitted by PostCompact hook for agent %s, "
-            "skipping duplicate notification",
+            "resetting flag",
+            ctx.agent_id,
+        )
+        ctx.compact_end_emitted = False
+    else:
+        import time as _time
+        ctx.compact_detected_at = _time.monotonic()
+        logger.info(
+            "Compact detected for agent %s but PostCompact not yet received, "
+            "deferring UI signals",
             ctx.agent_id,
         )
     ctx.compact_notified = False
-    ctx.compact_end_emitted = False
 
 
 # ---------------------------------------------------------------------------

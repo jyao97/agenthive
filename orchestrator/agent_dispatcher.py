@@ -4537,8 +4537,12 @@ Here are the day's conversations (with timestamps):
 
             ok = send_tmux_message(agent.tmux_pane, due_msg.content)
             if ok:
-                due_msg.status = MessageStatus.COMPLETED
-                due_msg.completed_at = _utcnow()
+                _is_slash = (due_msg.content or "").strip().startswith("/")
+                if _is_slash:
+                    due_msg.status = MessageStatus.EXECUTING
+                else:
+                    due_msg.status = MessageStatus.COMPLETED
+                    due_msg.completed_at = _utcnow()
                 # Do NOT set delivered_at here — tmux send-keys only injects
                 # text. The UserPromptSubmit hook fires when Claude actually
                 # accepts the prompt, and THAT marks it delivered.
@@ -4549,7 +4553,8 @@ Here are the day's conversations (with timestamps):
                     due_msg.id, agent.id,
                 )
                 from websocket import emit_message_update
-                self._emit(emit_message_update(agent.id, due_msg.id, "COMPLETED"))
+                _emit_status = "EXECUTING" if _is_slash else "COMPLETED"
+                self._emit(emit_message_update(agent.id, due_msg.id, _emit_status))
             else:
                 self._fail_message(due_msg, "Failed to send via tmux")
                 logger.warning(
@@ -5571,6 +5576,40 @@ Here are the day's conversations (with timestamps):
             # import an intermediate state with 100+ false "new" turns.
             if ctx.compact_notified:
                 continue
+
+            # Fallback: if sync detected compact but PostCompact hook never
+            # arrived (hook failure, race, etc.), emit the UI signals after
+            # a grace period so the user isn't stuck with stale indicators.
+            _COMPACT_GRACE_SECS = 15
+            if ctx.compact_detected_at:
+                import time as _time
+                _elapsed = _time.monotonic() - ctx.compact_detected_at
+                if _elapsed >= _COMPACT_GRACE_SECS:
+                    logger.warning(
+                        "PostCompact hook not received for agent %s after %.0fs, "
+                        "emitting compact-end as fallback",
+                        agent_id, _elapsed,
+                    )
+                    from sync_engine import _end_compact_activity
+                    db_fb = SessionLocal()
+                    try:
+                        compact_sys = self._add_system_message(
+                            db_fb, agent_id,
+                            "Context compacted — conversation history refreshed",
+                        )
+                        _end_compact_activity(db_fb, agent_id, ctx.session_id)
+                        db_fb.commit()
+                        self._emit(emit_new_message(
+                            agent_id, compact_sys.id, ctx.agent_name, ctx.agent_project,
+                        ))
+                        from websocket import emit_tool_activity as _emit_ta
+                        self._emit(_emit_ta(
+                            agent_id, "Compact", "end",
+                            tool_output="context compacted",
+                        ))
+                    finally:
+                        db_fb.close()
+                    ctx.compact_detected_at = 0.0
 
             try:
                 current_size = os.path.getsize(ctx.jsonl_path)

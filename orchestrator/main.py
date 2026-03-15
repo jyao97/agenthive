@@ -2731,6 +2731,70 @@ async def apply_progress(name: str, db: Session = Depends(get_db)):
     return {"success": True, "content": final_content, "lines": len(final_content.splitlines())}
 
 
+_SECTION_DATE_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\b", re.MULTILINE)
+
+
+@app.post("/api/projects/{name}/rebuild-insights")
+async def rebuild_insights(name: str, db: Session = Depends(get_db)):
+    """Purge existing insights and re-import from PROGRESS.md."""
+    from models import ProgressInsight
+    from agent_dispatcher import store_insights
+    from sqlalchemy import text
+
+    project_path = _resolve_project_path(name, db)
+    progress_path = os.path.join(project_path, "PROGRESS.md")
+    if not os.path.isfile(progress_path):
+        raise HTTPException(status_code=404, detail="PROGRESS.md not found")
+
+    with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+
+    # 1. Purge existing insights + FTS5 for this project
+    own_db = SessionLocal()
+    try:
+        existing_ids = [
+            r[0] for r in own_db.query(ProgressInsight.id).filter(
+                ProgressInsight.project == name
+            ).all()
+        ]
+        if existing_ids:
+            # Delete FTS5 entries
+            for rid in existing_ids:
+                try:
+                    own_db.execute(
+                        text("DELETE FROM progress_insights_fts WHERE rowid = :id"),
+                        {"id": rid},
+                    )
+                except Exception:
+                    pass
+            # Delete main table rows
+            own_db.query(ProgressInsight).filter(
+                ProgressInsight.project == name
+            ).delete(synchronize_session=False)
+            own_db.commit()
+        purged = len(existing_ids)
+    except Exception:
+        logger.warning("rebuild-insights: purge failed for %s", name, exc_info=True)
+        own_db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to purge existing insights")
+    finally:
+        own_db.close()
+
+    # 2. Split PROGRESS.md into dated sections and re-import
+    matches = list(_SECTION_DATE_RE.finditer(content))
+    total_stored = 0
+    for i, m in enumerate(matches):
+        date_str = m.group(1)
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        section_text = content[start:end]
+        n = store_insights(db, name, date_str, section_text)
+        total_stored += n
+
+    logger.info("rebuild-insights: purged %d, imported %d for %s", purged, total_stored, name)
+    return {"success": True, "purged": purged, "imported": total_stored}
+
+
 @app.patch("/api/projects/{name}/settings")
 async def update_project_settings(name: str, request: Request, db: Session = Depends(get_db)):
     """Update project toggle settings (auto_progress_summary, etc.)."""
@@ -4149,6 +4213,48 @@ async def hook_agent_stop(request: Request):
                 # flushed when we parsed, the loop catches remaining
                 # data immediately instead of waiting 30s.
                 ad.wake_sync(agent_id)
+
+                # Schedule staggered follow-up wakes.  A single immediate
+                # wake often races the JSONL flush — by the time the sync
+                # loop checks file size, the last writes haven't landed
+                # yet, so it sees no growth and sleeps for 30s.  These
+                # delayed wakes give the flush time to complete.
+                async def _delayed_wake(_aid, delay):
+                    await asyncio.sleep(delay)
+                    ad.wake_sync(_aid)
+                for _dw in (0.5, 2.0, 5.0):
+                    asyncio.ensure_future(_delayed_wake(agent_id, _dw))
+
+                # Mark any EXECUTING slash commands as completed.
+                # For /compact, PostCompact already set completed_at, so
+                # this only fires for other slash commands (/help, etc.).
+                _stop_db = SessionLocal()
+                try:
+                    _exec_msg = (
+                        _stop_db.query(Message)
+                        .filter(
+                            Message.agent_id == agent_id,
+                            Message.role == MessageRole.USER,
+                            Message.status == MessageStatus.EXECUTING,
+                        )
+                        .order_by(Message.created_at.desc())
+                        .first()
+                    )
+                    if _exec_msg and (_exec_msg.content or "").strip().startswith("/"):
+                        _exec_msg.status = MessageStatus.COMPLETED
+                        _exec_msg.completed_at = _utcnow()
+                        _stop_db.commit()
+                        from websocket import emit_message_update
+                        await emit_message_update(
+                            agent_id, _exec_msg.id, "COMPLETED",
+                            completed_at=_exec_msg.completed_at.isoformat(),
+                        )
+                        logger.info(
+                            "hook_agent_stop: marked slash command %s completed for %s",
+                            _exec_msg.id, agent_id[:8],
+                        )
+                finally:
+                    _stop_db.close()
         else:
             logger.warning(
                 "hook_agent_stop: no sync context for %s "
@@ -4229,12 +4335,39 @@ async def hook_agent_post_compact(request: Request):
     finally:
         db.close()
 
-    # 5. Emit authoritative "Compact end" to frontend.
+    # 5. Purge stale cli messages + run sync BEFORE emitting UI signals,
+    #    so the frontend sees the clean post-compact state.
+    if ctx:
+        # Clear the fallback timer — PostCompact is handling it.
+        ctx.compact_detected_at = 0.0
+
+        # Purge old cli messages not in the compacted JSONL.
+        from agent_dispatcher import _parse_session_turns
+        _compact_turns = _parse_session_turns(ctx.jsonl_path)
+        _new_uuids = {uuid for _, _, _, uuid in _compact_turns if uuid}
+        from sync_engine import _purge_stale_messages_after_compact
+        db_purge = SessionLocal()
+        try:
+            _purge_stale_messages_after_compact(db_purge, agent_id, _new_uuids)
+            db_purge.commit()
+        finally:
+            db_purge.close()
+
+        # Run sync inline to import compacted turns before UI update.
+        from sync_engine import sync_import_new_turns
+        _sync_lock = ad._sync_locks.get(agent_id)
+        if _sync_lock:
+            async with _sync_lock:
+                await sync_import_new_turns(ad, ctx)
+        else:
+            await sync_import_new_turns(ad, ctx)
+
+    # 6. Emit authoritative "Compact end" to frontend.
     from websocket import emit_tool_activity
     await emit_tool_activity(agent_id, "Compact", "end",
                              tool_output="context compacted")
 
-    # 6. Add system message + trigger sync to import the rewritten JSONL.
+    # 7. Add system message + notify frontend.
     if ctx:
         db2 = SessionLocal()
         try:
@@ -6860,9 +6993,14 @@ async def send_agent_message(
                     source="web",
                 )
                 db.add(msg)
-            _now_tmux = _utcnow()
-            msg.status = MessageStatus.COMPLETED
-            msg.completed_at = _now_tmux
+            _is_slash = body.content.strip().startswith("/")
+            if _is_slash:
+                # Slash commands stay EXECUTING until the relevant hook marks
+                # completion (PostCompact for /compact, Stop hook for others).
+                msg.status = MessageStatus.EXECUTING
+            else:
+                msg.status = MessageStatus.COMPLETED
+                msg.completed_at = _utcnow()
             # Do NOT set delivered_at here — tmux send-keys only injects text
             # into the pane. The UserPromptSubmit hook fires when Claude actually
             # accepts the prompt, and THAT is when we mark it delivered.
