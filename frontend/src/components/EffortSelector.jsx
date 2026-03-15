@@ -1,44 +1,20 @@
-const LEVELS = [
-  ["low",    [1, 0, 0, 0]],
-  ["medium", [1, 1, 0, 0]],
-  ["high",   [1, 1, 1, 0]],
-  ["max",    [1, 1, 1, 1]],
-];
-
-function PowerGrid({ filled, active }) {
-  return (
-    <span className="inline-flex gap-[2px] items-center">
-      {filled.map((on, i) => (
-        <span
-          key={i}
-          className={`inline-block w-[4px] h-[10px] rounded-[1px] ${
-            on
-              ? active ? "bg-white" : "bg-current"
-              : active ? "bg-white/25" : "bg-current/15"
-          }`}
-        />
-      ))}
-    </span>
-  );
-}
+const LEVELS = ["low", "medium", "high", "max"];
 
 export default function EffortSelector({ value, onChange }) {
+  const activeIdx = LEVELS.indexOf(value);
   return (
-    <div className="flex rounded-lg bg-elevated p-0.5">
-      {LEVELS.map(([lvl, bars]) => (
-        <button
+    <div
+      className="inline-flex gap-[3px] items-center rounded-lg bg-elevated px-2.5 py-2 cursor-pointer"
+      title={value}
+    >
+      {LEVELS.map((lvl, i) => (
+        <span
           key={lvl}
-          type="button"
           onClick={() => onChange(lvl)}
-          title={lvl}
-          className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-            value === lvl
-              ? "bg-cyan-600 text-white shadow-sm"
-              : "text-body hover:text-heading"
+          className={`block w-[5px] h-[12px] rounded-[1px] cursor-pointer transition-colors ${
+            i <= activeIdx ? "bg-cyan-500" : "bg-current/15"
           }`}
-        >
-          <PowerGrid filled={bars} active={value === lvl} />
-        </button>
+        />
       ))}
     </div>
   );
