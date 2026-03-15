@@ -4090,19 +4090,24 @@ async def hook_agent_user_prompt(request: Request):
     # Mark agent as generating — for tmux agents this is the only signal
     # (subprocess agents get _start_generating via _stream_output_loop).
     # The Stop hook calls _stop_generating to clear this.
+    # Persist generating_msg_id to DB so state survives restarts.
     ad = getattr(app.state, "agent_dispatcher", None)
     if ad:
+        _gen_msg_id = msg.id if msg else "unknown"
         if agent_id not in ad._generating_agents:
             ad._start_generating(agent_id)
-            logger.info("hook_agent_user_prompt: started generating for %s", agent_id[:8])
-            # Notify frontend immediately so status flips SYNCING → EXECUTING
+            logger.info("hook_agent_user_prompt: started generating for %s (msg=%s)", agent_id[:8], _gen_msg_id[:8])
             from websocket import emit_agent_update
             db2 = SessionLocal()
             try:
                 ag = db2.get(Agent, agent_id)
+                if ag:
+                    ag.generating_msg_id = _gen_msg_id
+                    db2.commit()
                 project = ag.project if ag else ""
             finally:
                 db2.close()
+            # Notify frontend immediately so status flips SYNCING → EXECUTING
             asyncio.ensure_future(emit_agent_update(agent_id, "EXECUTING", project))
         ad.wake_sync(agent_id)
 
@@ -4248,6 +4253,8 @@ async def hook_agent_post_compact(request: Request):
         if compact_msg:
             compact_msg.completed_at = _utcnow()
             compact_msg.status = MessageStatus.COMPLETED
+            if not compact_msg.delivered_at:
+                compact_msg.delivered_at = compact_msg.completed_at
 
         # 3. End the compact tool activity in DB.
         from sync_engine import _end_compact_activity
@@ -4531,40 +4538,25 @@ async def hook_agent_tool_activity(request: Request):
         await emit_tool_activity(agent_id, tool_name, phase)
         # /compact skips UserPromptSubmit, so mark delivered + generating here.
         import slash_commands as _sc
-        _sc.mark_delivered(agent_id, "/compact")
+        _compact_msg_id = _sc.mark_delivered(agent_id, "/compact")
         if ad and agent_id not in ad._generating_agents:
             ad._start_generating(agent_id)
             logger.info("PreCompact: started generating for %s", agent_id[:8])
+            # Persist generating_msg_id to DB
+            from database import SessionLocal as _SLC
+            _dbc = _SLC()
+            try:
+                _agc = _dbc.get(Agent, agent_id)
+                if _agc:
+                    _agc.generating_msg_id = _compact_msg_id or "compact"
+                    _dbc.commit()
+            finally:
+                _dbc.close()
         # Pause sync — JSONL is being rewritten
         if ad and ad._sync_contexts.get(agent_id):
             ad._sync_contexts[agent_id].compact_notified = True
     else:
         return {}
-
-    # --- Recover generating state ---
-    # Tool/subagent hooks prove the agent IS generating.  If it's not in
-    # _generating_agents (e.g. after server restart, or sync task restart
-    # cleared it), re-add it so the frontend shows EXECUTING.
-    # Exclude PostCompact (clears generating) and interrupt failures.
-    if ad and agent_id not in ad._generating_agents and hook_event not in (
-        "PostCompact",
-    ):
-        _is_interrupt = hook_event == "PostToolUseFailure" and body.get("is_interrupt")
-        if not _is_interrupt:
-            ad._start_generating(agent_id)
-            logger.info(
-                "hook_agent_tool_activity: recovered generating for %s (event=%s)",
-                agent_id[:8], hook_event,
-            )
-            from websocket import emit_agent_update
-            from database import SessionLocal as _SLR
-            _dbr = _SLR()
-            try:
-                _agr = _dbr.get(Agent, agent_id)
-                _proj = _agr.project if _agr else ""
-            finally:
-                _dbr.close()
-            asyncio.ensure_future(emit_agent_update(agent_id, "EXECUTING", _proj))
 
     # --- Persist tool activity to DB ---
     if tool_name and phase:
@@ -4852,10 +4844,11 @@ async def hook_agent_session_start(request: Request):
                 logger.warning("SessionStart hook: failed to write rotation signal %s: %s", signal_path, e)
             return {}
 
-        # Confirm /clear command execution
+        # Confirm /clear command execution — no Stop hook follows,
+        # so mark both delivered and completed here.
         if source == "clear":
             import slash_commands as _sc
-            _sc.mark_delivered(agent_id, "/clear")
+            _sc.mark_delivered_and_completed(agent_id, "/clear")
 
         # Managed agent — session rotation signal
         signal_path = f"/tmp/ahive-{agent_id}.newsession"
@@ -6260,16 +6253,9 @@ async def adopt_unlinked_session(
 
 
 def _enrich_agent_briefs(rows, request) -> list[AgentBrief]:
-    """Convert Agent ORM rows to AgentBrief with live is_generating state."""
-    ad = getattr(request.app.state, "agent_dispatcher", None)
-    generating = ad._generating_agents if ad else set()
-    results = []
-    for row in rows:
-        brief = AgentBrief.model_validate(row)
-        if row.id in generating:
-            brief.is_generating = True
-        results.append(brief)
-    return results
+    """Convert Agent ORM rows to AgentBrief — is_generating is derived
+    from generating_msg_id via property, no runtime enrichment needed."""
+    return [AgentBrief.model_validate(row) for row in rows]
 
 
 @app.get("/api/agents", response_model=list[AgentBrief])
@@ -6390,11 +6376,6 @@ async def get_agent(agent_id: str, request: Request, db: Session = Depends(get_d
                 result.session_size_bytes = os.path.getsize(jsonl_path)
             except OSError:
                 pass
-    # Enrich with live generating state from dispatcher runtime
-    ad = getattr(request.app.state, "agent_dispatcher", None)
-    if ad and agent.id in ad._generating_agents:
-        result.is_generating = True
-
     # Attach child subagents
     child_rows = db.query(Agent).filter(
         Agent.parent_id == agent.id,
@@ -6869,18 +6850,11 @@ async def send_agent_message(
         raise HTTPException(status_code=400, detail="Agent is stopped")
 
     # SYNCING/STARTING agents with a tmux pane: send directly via tmux
-    # But NOT if the agent is currently generating — text injected into
-    # tmux while Claude's TUI is generating gets eaten by the Ink framework.
-    # Queue as PENDING instead and let _dispatch_tmux_pending send it
-    # after the Stop hook fires and Claude is at the input prompt.
-    ad_check = getattr(request.app.state, "agent_dispatcher", None)
-    is_generating = ad_check and agent.id in ad_check._generating_agents
     is_syncing_with_tmux = (
         agent.status in (AgentStatus.SYNCING, AgentStatus.STARTING)
         and agent.tmux_pane
         and not body.queue
         and not body.scheduled_at
-        and not is_generating
     )
     if is_syncing_with_tmux:
         from agent_dispatcher import (
@@ -6963,10 +6937,7 @@ async def send_agent_message(
     # SYNCING agents WITHOUT a tmux pane are dispatched via subprocess
     # (same as IDLE), so they should accept messages directly.
     is_syncing_no_pane = agent.status == AgentStatus.SYNCING and not agent.tmux_pane
-    # SYNCING+generating agents with pane: auto-queue (will be sent via
-    # _dispatch_tmux_pending after Stop hook fires and Claude is at prompt).
-    is_syncing_generating = is_generating and agent.status == AgentStatus.SYNCING and agent.tmux_pane
-    is_busy = agent.status in (AgentStatus.EXECUTING, AgentStatus.SYNCING) and not is_syncing_no_pane and not is_syncing_generating
+    is_busy = agent.status in (AgentStatus.EXECUTING, AgentStatus.SYNCING) and not is_syncing_no_pane
     if is_busy and not body.queue:
         raise HTTPException(status_code=400, detail="Agent is busy — use send later to queue")
 

@@ -3140,6 +3140,15 @@ Here are the day's conversations (with timestamps):
         self._generating_agents.discard(agent_id)
         from websocket import emit_agent_stream_end
         self._emit(emit_agent_stream_end(agent_id, generation_id=gid))
+        # Persist to DB so state survives restarts
+        db = SessionLocal()
+        try:
+            agent = db.get(Agent, agent_id)
+            if agent and agent.generating_msg_id is not None:
+                agent.generating_msg_id = None
+                db.commit()
+        finally:
+            db.close()
 
     async def trigger_sync(self, agent_id: str):
         """Trigger an immediate sync for an agent (called from hooks)."""
@@ -4459,6 +4468,7 @@ Here are the day's conversations (with timestamps):
                 if agent.cli_sync:
                     self._cancel_sync_task(agent.id)
                 agent.status = AgentStatus.EXECUTING
+                agent.generating_msg_id = pending_msg.id
                 if agent.worktree:
                     agent.branch = f"worktree-{agent.worktree}"
                 pending_msg.status = MessageStatus.EXECUTING
@@ -4499,11 +4509,6 @@ Here are the day's conversations (with timestamps):
             # Refresh to catch concurrent status changes (e.g. user stopped agent)
             db.refresh(agent)
             if agent.status not in (AgentStatus.SYNCING, AgentStatus.STARTING) or not agent.tmux_pane:
-                continue
-            # Don't send while Claude is generating — text injected into
-            # tmux during generation is eaten by the Ink TUI framework.
-            # Wait for the Stop hook to clear generating first.
-            if agent.id in self._generating_agents:
                 continue
 
             due_msg = (
@@ -6173,6 +6178,21 @@ Here are the day's conversations (with timestamps):
             relinked = sum(1 for a in stopped_cli if a.status == AgentStatus.SYNCING)
             if relinked:
                 logger.info("Re-linked %d stopped agents with live tmux sessions", relinked)
+
+            # Restore generating state from DB — the in-memory set is lost
+            # on restart, but generating_msg_id persists.
+            generating = db.query(Agent).filter(
+                Agent.generating_msg_id.is_not(None),
+                Agent.status != AgentStatus.STOPPED,
+            ).all()
+            for ag in generating:
+                self._generating_agents.add(ag.id)
+            if generating:
+                logger.info(
+                    "Restored generating state for %d agents: %s",
+                    len(generating),
+                    [a.id[:8] for a in generating],
+                )
 
             # Schedule sync tasks for agents with active CLI sessions
             for aid, sid, ppath in agents_to_sync:
