@@ -479,7 +479,7 @@ export default function NewTaskPage() {
                 </div>
               </div>
               {/* Controls grid — matches project page */}
-              <div className="grid grid-cols-[auto_auto_1fr_auto] gap-y-2 gap-x-2 items-center">
+              <div className="grid grid-cols-[auto_auto_1fr_auto] gap-y-2 gap-x-1.5 items-center">
                 <ModelSelector value={model} onChange={setModel} />
                 <EffortSelector value={effort} onChange={setEffort} />
                 <div />
