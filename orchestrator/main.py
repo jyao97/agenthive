@@ -4672,7 +4672,11 @@ async def hook_agent_session_start(request: Request):
         source = body.get("source", "") or ""
 
     if agent_id:
-        # Compact completion — event-driven, no polling needed
+        # Compact completion — resume sync, but do NOT emit "Compact end"
+        # here.  The sync engine emits the authoritative "end" signal only
+        # after it has actually detected and imported the rewritten JSONL.
+        # Emitting "end" prematurely here caused a false "compact done" in
+        # the UI while the sync engine hadn't processed the new state yet.
         if source == "compact":
             ad = getattr(app.state, "agent_dispatcher", None)
             if ad:
@@ -4681,9 +4685,6 @@ async def hook_agent_session_start(request: Request):
                     ctx.compact_notified = False
                     # Trigger sync to pick up the compacted JSONL
                     asyncio.create_task(ad.trigger_sync(agent_id))
-                from websocket import emit_tool_activity
-                await emit_tool_activity(agent_id, "Compact", "end",
-                                         tool_output="context compacted")
             logger.info("SessionStart hook: agent=%s compact complete, session=%s",
                         agent_id[:8], session_id[:12])
             # Still write the rotation signal — session_id changed
