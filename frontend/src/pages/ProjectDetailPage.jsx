@@ -24,6 +24,7 @@ import {
   summarizeProgressStatus,
   applyProgressSummary,
   updateProjectSettings,
+  rebuildInsights,
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import FolderIcon from "../components/FolderIcon";
@@ -709,6 +710,19 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     }
   }, [name, showToast]);
 
+  const [rebuildingInsights, setRebuildingInsights] = useState(false);
+  const handleRebuildInsights = useCallback(async () => {
+    setRebuildingInsights(true);
+    try {
+      const res = await rebuildInsights(name);
+      showToast(`Rebuilt insights: ${res.purged} purged, ${res.imported} imported`);
+    } catch (err) {
+      showToast(err.message || "Failed to rebuild insights", "error");
+    } finally {
+      setRebuildingInsights(false);
+    }
+  }, [name, showToast]);
+
   useEffect(() => {
     if (!visible) return;
     loadData();
@@ -1257,7 +1271,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             ))}
           </div>
           <div className="flex rounded-lg bg-elevated p-0.5">
-            {[["low", "L"], ["medium", "M"], ["high", "H"]].map(([lvl, label]) => (
+            {[["low", "L"], ["medium", "M"], ["high", "H"], ["max", "Max"]].map(([lvl, label]) => (
               <button
                 key={lvl}
                 type="button"
@@ -1516,6 +1530,20 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
               project.ai_insights ? "translate-x-4" : "translate-x-0"
             }`} />
+          </button>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm text-body">Rebuild Insights DB</p>
+            <p className="text-xs text-dim">Re-import all insights from PROGRESS.md</p>
+          </div>
+          <button
+            type="button"
+            disabled={rebuildingInsights}
+            onClick={handleRebuildInsights}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-cyan-600/20 text-cyan-400 text-xs font-medium hover:bg-cyan-600/30 disabled:opacity-50 transition-colors"
+          >
+            {rebuildingInsights ? "Rebuilding..." : "Rebuild"}
           </button>
         </div>
         {project.active ? (

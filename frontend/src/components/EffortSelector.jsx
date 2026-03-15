@@ -1,7 +1,7 @@
 export default function EffortSelector({ value, onChange }) {
   return (
     <div className="flex rounded-lg bg-elevated p-0.5">
-      {[["low", "L"], ["medium", "M"], ["high", "H"]].map(([lvl, label]) => (
+      {[["low", "L"], ["medium", "M"], ["high", "H"], ["max", "Max"]].map(([lvl, label]) => (
         <button
           key={lvl}
           type="button"
