@@ -173,6 +173,11 @@ class Agent(Base):
     )
     is_subagent: Mapped[bool] = mapped_column(Boolean, default=False)
     claude_agent_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    generating_msg_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    @property
+    def is_generating(self) -> bool:
+        return self.generating_msg_id is not None
 
     # Parent → child subagent relationship (self-referential)
     subagents: Mapped[list["Agent"]] = relationship(

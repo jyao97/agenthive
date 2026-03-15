@@ -320,6 +320,11 @@ def init_db():
                 "ALTER TABLE agents ADD COLUMN claude_agent_id VARCHAR(30)"
             ))
             conn.commit()
+        if "generating_msg_id" not in agent_cols:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN generating_msg_id VARCHAR(36)"
+            ))
+            conn.commit()
 
         # Fix invalid model names in projects and agents
         _valid_list = ", ".join(f"'{m}'" for m in VALID_MODELS)
