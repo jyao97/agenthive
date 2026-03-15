@@ -13,6 +13,7 @@ const EFFORT_PICKER = [
   { value: "low", label: "Low" },
   { value: "medium", label: "Med" },
   { value: "high", label: "High" },
+  { value: "max", label: "Max" },
 ];
 const PRIORITY_PICKER = [
   { value: 0, label: "Normal" },
