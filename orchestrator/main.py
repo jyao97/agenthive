@@ -4033,39 +4033,7 @@ async def hook_agent_session_end(request: Request):
     return {}
 
 
-def _mark_slash_command_delivered(agent_id: str, command_prefix: str):
-    """Mark the latest undelivered web-sent slash command as delivered.
-
-    Used by hooks that confirm a slash command was executed (e.g., PreCompact
-    confirms /compact, SessionStart(source=clear) confirms /clear).
-    """
-    from database import SessionLocal
-    from models import Message, MessageRole
-    db = SessionLocal()
-    try:
-        msg = (
-            db.query(Message)
-            .filter(
-                Message.agent_id == agent_id,
-                Message.role == MessageRole.USER,
-                Message.source == "web",
-                Message.delivered_at.is_(None),
-                Message.content.startswith(command_prefix),
-            )
-            .order_by(Message.created_at.desc())
-            .first()
-        )
-        if msg:
-            now = _utcnow()
-            msg.delivered_at = now
-            db.commit()
-            from websocket import emit_message_delivered
-            asyncio.create_task(emit_message_delivered(
-                agent_id, msg.id, now.isoformat(),
-            ))
-            logger.info("Slash command %s marked executed for agent %s", command_prefix, agent_id[:8])
-    finally:
-        db.close()
+    # Slash command delivery/completion moved to slash_commands module.
 
 
 @app.post("/api/hooks/agent-user-prompt")
@@ -4209,36 +4177,9 @@ async def hook_agent_stop(request: Request):
                     ad.wake_sync(_aid)
                 asyncio.ensure_future(_post_stop_sync(agent_id))
 
-                # Mark any EXECUTING slash commands as completed.
-                # For /compact, PostCompact already set completed_at, so
-                # this only fires for other slash commands (/help, etc.).
-                _stop_db = SessionLocal()
-                try:
-                    _exec_msg = (
-                        _stop_db.query(Message)
-                        .filter(
-                            Message.agent_id == agent_id,
-                            Message.role == MessageRole.USER,
-                            Message.status == MessageStatus.EXECUTING,
-                        )
-                        .order_by(Message.created_at.desc())
-                        .first()
-                    )
-                    if _exec_msg and (_exec_msg.content or "").strip().startswith("/"):
-                        _exec_msg.status = MessageStatus.COMPLETED
-                        _exec_msg.completed_at = _utcnow()
-                        _stop_db.commit()
-                        from websocket import emit_message_update
-                        await emit_message_update(
-                            agent_id, _exec_msg.id, "COMPLETED",
-                            completed_at=_exec_msg.completed_at.isoformat(),
-                        )
-                        logger.info(
-                            "hook_agent_stop: marked slash command %s completed for %s",
-                            _exec_msg.id, agent_id[:8],
-                        )
-                finally:
-                    _stop_db.close()
+                # Mark any EXECUTING slash commands as completed + delivered.
+                import slash_commands as _sc
+                _sc.mark_completed(agent_id)
         else:
             logger.warning(
                 "hook_agent_stop: no sync context for %s "
@@ -4589,7 +4530,8 @@ async def hook_agent_tool_activity(request: Request):
         summary = "context compaction"
         await emit_tool_activity(agent_id, tool_name, phase)
         # /compact skips UserPromptSubmit, so mark delivered + generating here.
-        _mark_slash_command_delivered(agent_id, "/compact")
+        import slash_commands as _sc
+        _sc.mark_delivered(agent_id, "/compact")
         if ad and agent_id not in ad._generating_agents:
             ad._start_generating(agent_id)
             logger.info("PreCompact: started generating for %s", agent_id[:8])
@@ -4912,7 +4854,8 @@ async def hook_agent_session_start(request: Request):
 
         # Confirm /clear command execution
         if source == "clear":
-            _mark_slash_command_delivered(agent_id, "/clear")
+            import slash_commands as _sc
+            _sc.mark_delivered(agent_id, "/clear")
 
         # Managed agent — session rotation signal
         signal_path = f"/tmp/ahive-{agent_id}.newsession"
@@ -6915,6 +6858,10 @@ async def send_agent_message(
     db: Session = Depends(get_db),
 ):
     """Send a follow-up message to an agent."""
+    import slash_commands
+    if slash_commands.is_slash_command(body.content) and not slash_commands.is_allowed(body.content):
+        raise HTTPException(status_code=400, detail=slash_commands.rejection_message(body.content))
+
     agent = db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -6993,8 +6940,7 @@ async def send_agent_message(
                     source="web",
                 )
                 db.add(msg)
-            _is_slash = body.content.strip().startswith("/")
-            if _is_slash:
+            if slash_commands.is_slash_command(body.content):
                 # Slash commands stay EXECUTING until the relevant hook marks
                 # completion (PostCompact for /compact, Stop hook for others).
                 msg.status = MessageStatus.EXECUTING
