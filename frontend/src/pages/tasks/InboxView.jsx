@@ -1,13 +1,21 @@
 import { useState, useCallback, useMemo, useRef } from "react";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
-import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove, defaultAnimateLayoutChanges } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import InboxCard from "../../components/cards/InboxCard";
 import { reorderTasks } from "../../lib/api";
+
+/** Disable layout animation on drop to prevent snap-back */
+function noDropAnimation(args) {
+  if (args.wasDragging) return false;
+  return defaultAnimateLayoutChanges(args);
+}
 
 function SortableTaskCard(props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: props.task.id,
+    animateLayoutChanges: noDropAnimation,
   });
   const isGroupDragged = props.isGroupDragged && !isDragging;
   const style = {
@@ -65,8 +73,8 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
   const isCustom = sortMode === "custom";
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 350, tolerance: 10 } }),
   );
 
   const handleDragStart = useCallback((event) => {
@@ -151,6 +159,7 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
+      modifiers={[restrictToVerticalAxis]}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
@@ -164,7 +173,7 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
               selecting={selecting}
               selected={selected.has(task.id)}
               onToggle={onToggle}
-              expanded={expandedTaskId === task.id}
+              expanded={!activeDragId && expandedTaskId === task.id}
               onExpand={onExpandTask}
               onRefresh={onRefresh}
               isGroupDragged={isMultiDrag && selected.has(task.id) && task.id !== activeDragId}
