@@ -4,6 +4,7 @@ import { createTaskV2, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
 import { DATE_SHORT } from "../lib/formatters";
 import ProjectSelector from "../components/ProjectSelector";
+import EffortSelector from "../components/EffortSelector";
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
 import SendLaterPicker from "../components/SendLaterPicker";
@@ -494,22 +495,7 @@ export default function NewTaskPage() {
                     </button>
                   ))}
                 </div>
-                <div className="flex rounded-lg bg-elevated p-0.5">
-                  {[["low", "L"], ["medium", "M"], ["high", "H"], ["max", "Max"]].map(([lvl, label]) => (
-                    <button
-                      key={lvl}
-                      type="button"
-                      onClick={() => setEffort(lvl)}
-                      className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                        effort === lvl
-                          ? "bg-cyan-600 text-white shadow-sm"
-                          : "text-body hover:text-heading"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                <EffortSelector value={effort} onChange={setEffort} />
                 <div />
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <div

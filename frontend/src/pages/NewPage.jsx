@@ -635,22 +635,7 @@ function NewAgentForm({ showToast, navigate }) {
               </button>
             ))}
           </div>
-          <div className="flex rounded-lg bg-elevated p-0.5">
-            {[["low", "L"], ["medium", "M"], ["high", "H"], ["max", "Max"]].map(([lvl, label]) => (
-              <button
-                key={lvl}
-                type="button"
-                onClick={() => setEffort(lvl)}
-                className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                  effort === lvl
-                    ? "bg-cyan-600 text-white shadow-sm"
-                    : "text-body hover:text-heading"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <EffortSelector value={effort} onChange={setEffort} />
           <div />
           <label className="flex items-center gap-1.5 cursor-pointer">
             <div
