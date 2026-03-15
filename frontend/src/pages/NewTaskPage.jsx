@@ -480,12 +480,9 @@ export default function NewTaskPage() {
               </div>
               {/* Controls — matches project page */}
               <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
                   <ModelSelector value={model} onChange={setModel} />
-                  <EffortSelector value={effort} onChange={setEffort} />
-                </div>
-                <div className="flex items-center gap-3 flex-wrap">
-                  <label className="flex items-center gap-1.5 cursor-pointer">
+                  <label className="flex items-center gap-1.5 cursor-pointer ml-auto whitespace-nowrap">
                     <div
                       role="switch"
                       aria-checked={skipPermissions}
@@ -496,6 +493,9 @@ export default function NewTaskPage() {
                     </div>
                     <span className="text-sm text-label">Auto</span>
                   </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <EffortSelector value={effort} onChange={setEffort} />
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
@@ -507,14 +507,14 @@ export default function NewTaskPage() {
                         setWorktree(val);
                         try { localStorage.setItem("pref:worktree", val); } catch {}
                       }}
-                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
                         worktree
                           ? "bg-purple-500/15 text-purple-400 ring-1 ring-purple-500/30"
                           : "bg-elevated text-dim hover:text-label"
                       }`}
                       title={worktree ? "Disable worktree" : "Enable worktree"}
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
                       </svg>
                       Worktree
@@ -524,12 +524,12 @@ export default function NewTaskPage() {
                         type="text"
                         value={worktree === "auto" || worktree === "..." ? "" : worktree}
                         onChange={(e) => setWorktree(e.target.value || "auto")}
-                        className="flex-1 min-w-0 rounded-lg bg-elevated px-2.5 py-1.5 text-xs text-heading placeholder:text-faint outline-none focus:ring-1 focus:ring-purple-500/40"
-                        placeholder={worktree === "..." ? "generating..." : "worktree name"}
+                        className="w-24 rounded-lg bg-elevated px-2.5 py-1.5 text-xs text-heading placeholder:text-faint outline-none focus:ring-1 focus:ring-purple-500/40"
+                        placeholder={worktree === "..." ? "generating..." : "name"}
                       />
                     )}
                   </div>
-                  <label className="flex items-center gap-1.5 cursor-pointer ml-auto">
+                  <label className="flex items-center gap-1.5 cursor-pointer ml-auto whitespace-nowrap">
                     <div
                       role="switch"
                       aria-checked={autoVoice}
