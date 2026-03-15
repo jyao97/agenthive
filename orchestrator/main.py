@@ -4407,8 +4407,9 @@ async def hook_agent_tool_activity(request: Request):
         # Mark compact as starting so sync loop handles offset reset
         if ad and ad._sync_contexts.get(agent_id):
             ad._sync_contexts[agent_id].compact_notified = True
-        # Confirm /compact command execution
-        _mark_slash_command_delivered(agent_id, "/compact")
+        # Do NOT mark /compact delivered here — PreCompact fires BEFORE
+        # the rewrite.  Delivery is marked in SessionStart(compact) after
+        # the JSONL has actually been rewritten.
     else:
         return {}
 
@@ -4685,6 +4686,9 @@ async def hook_agent_session_start(request: Request):
                     ctx.compact_notified = False
                     # Trigger sync to pick up the compacted JSONL
                     asyncio.create_task(ad.trigger_sync(agent_id))
+            # Mark /compact delivered NOW — the JSONL has been rewritten.
+            # (Moved from PreCompact, which fires before the rewrite.)
+            _mark_slash_command_delivered(agent_id, "/compact")
             logger.info("SessionStart hook: agent=%s compact complete, session=%s",
                         agent_id[:8], session_id[:12])
             # Still write the rotation signal — session_id changed
