@@ -1255,10 +1255,10 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             </button>
           </div>
         </div>
-        <div className="grid grid-cols-[auto_auto_1fr_auto] gap-y-2 gap-x-2 items-center">
+        <div className="flex flex-wrap gap-2 items-center">
           <ModelSelector value={model} onChange={setModel} />
           <EffortSelector value={effort} onChange={setEffort} />
-          <div />
+          <div className="flex-1" />
           <label className="flex items-center gap-1.5 cursor-pointer">
             <div
               role="switch"
@@ -1270,7 +1270,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             </div>
             <span className="text-sm text-label">Auto</span>
           </label>
-          <div className="col-span-2 flex items-center gap-1.5">
+          <div className="w-full flex items-center gap-1.5">
             <button
               type="button"
               onClick={async () => {
@@ -1301,7 +1301,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
               />
             )}
           </div>
-          <div />
+          <div className="flex-1" />
           <label className="flex items-center gap-1.5 cursor-pointer">
             <div
               role="switch"
