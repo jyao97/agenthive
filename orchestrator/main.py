@@ -4087,28 +4087,24 @@ async def hook_agent_user_prompt(request: Request):
     finally:
         db.close()
 
-    # Mark agent as generating — for tmux agents this is the only signal
-    # (subprocess agents get _start_generating via _stream_output_loop).
-    # The Stop hook calls _stop_generating to clear this.
-    # Persist generating_msg_id to DB so state survives restarts.
+    # Unconditionally mark executing — latest signal wins.
+    # UserPromptSubmit = executing, Stop = idle. No accumulated state.
     ad = getattr(app.state, "agent_dispatcher", None)
     if ad:
         _gen_msg_id = msg.id if msg else "unknown"
-        if agent_id not in ad._generating_agents:
-            ad._start_generating(agent_id)
-            logger.info("hook_agent_user_prompt: started generating for %s (msg=%s)", agent_id[:8], _gen_msg_id[:8])
-            from websocket import emit_agent_update
-            db2 = SessionLocal()
-            try:
-                ag = db2.get(Agent, agent_id)
-                if ag:
-                    ag.generating_msg_id = _gen_msg_id
-                    db2.commit()
-                project = ag.project if ag else ""
-            finally:
-                db2.close()
-            # Notify frontend immediately so status flips SYNCING → EXECUTING
-            asyncio.ensure_future(emit_agent_update(agent_id, "EXECUTING", project))
+        ad._start_generating(agent_id)
+        logger.info("hook_agent_user_prompt: started generating for %s (msg=%s)", agent_id[:8], _gen_msg_id[:8])
+        from websocket import emit_agent_update
+        db2 = SessionLocal()
+        try:
+            ag = db2.get(Agent, agent_id)
+            if ag:
+                ag.generating_msg_id = _gen_msg_id
+                db2.commit()
+            project = ag.project if ag else ""
+        finally:
+            db2.close()
+        asyncio.ensure_future(emit_agent_update(agent_id, "EXECUTING", project))
         ad.wake_sync(agent_id)
 
     return {}
@@ -4147,13 +4143,11 @@ async def hook_agent_stop(request: Request):
     if summary:
         write_stop_summary(agent_id, summary)
 
-    # Clear generating state immediately — the Stop hook is a deterministic
-    # signal that Claude finished this turn.
+    # Unconditionally clear generating — latest signal wins.
     ad = getattr(app.state, "agent_dispatcher", None)
     if ad:
-        if agent_id in ad._generating_agents:
-            logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
-            ad._stop_generating(agent_id)
+        logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
+        ad._stop_generating(agent_id)
         # Run sync directly — by the time the Stop hook fires, the JSONL
         # is fully flushed.  Deferring to the poll loop would add up to
         # 30s latency.
@@ -4226,9 +4220,8 @@ async def hook_agent_post_compact(request: Request):
 
     # 1. Clear compact pause and generating state.
     #    No Stop hook fires after compact, so PostCompact must clear it.
-    if agent_id in ad._generating_agents:
-        logger.info("hook_agent_post_compact: clearing generating state for %s", agent_id[:8])
-        ad._stop_generating(agent_id)
+    logger.info("hook_agent_post_compact: clearing generating state for %s", agent_id[:8])
+    ad._stop_generating(agent_id)
 
     ctx = ad._sync_contexts.get(agent_id)
     if ctx:
@@ -4390,7 +4383,7 @@ async def hook_agent_tool_activity(request: Request):
                                   tool_output=tool_output, is_error=is_error)
         # User interrupted during tool execution — clear generating state
         if hook_event == "PostToolUseFailure" and body.get("is_interrupt"):
-            if ad and agent_id in ad._generating_agents:
+            if ad:
                 logger.info("PostToolUseFailure(interrupt): clearing generating for %s", agent_id[:8])
                 ad._stop_generating(agent_id)
     # --- Subagent lifecycle ---
@@ -4539,10 +4532,9 @@ async def hook_agent_tool_activity(request: Request):
         # /compact skips UserPromptSubmit, so mark delivered + generating here.
         import slash_commands as _sc
         _compact_msg_id = _sc.mark_delivered(agent_id, "/compact")
-        if ad and agent_id not in ad._generating_agents:
+        if ad:
             ad._start_generating(agent_id)
             logger.info("PreCompact: started generating for %s", agent_id[:8])
-            # Persist generating_msg_id to DB
             from database import SessionLocal as _SLC
             _dbc = _SLC()
             try:
