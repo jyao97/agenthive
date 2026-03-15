@@ -2,7 +2,7 @@ import { MODEL_OPTIONS } from "../lib/constants";
 
 export default function ModelSelector({ value, onChange }) {
   return (
-    <div className="flex shrink-0 rounded-lg bg-elevated p-0.5">
+    <div className="flex rounded-lg bg-elevated p-0.5">
       {MODEL_OPTIONS.map((opt) => (
         <button
           key={opt.value}

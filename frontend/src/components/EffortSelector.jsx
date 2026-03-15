@@ -7,7 +7,7 @@ const LEVELS = [
 
 export default function EffortSelector({ value, onChange }) {
   return (
-    <div className="flex shrink-0 rounded-lg bg-elevated p-0.5">
+    <div className="flex rounded-lg bg-elevated p-0.5">
       {LEVELS.map(([lvl, label]) => (
         <button
           key={lvl}
