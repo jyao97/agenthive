@@ -243,13 +243,13 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
               type="button"
               {...dragHandleProps.listeners}
               {...dragHandleProps.attributes}
-              className="touch-none p-1 -ml-2 mr-0 rounded text-faint hover:text-label transition-colors cursor-grab active:cursor-grabbing self-center"
+              className="touch-none p-1 -ml-2 mr-0 rounded text-ghost hover:text-faint transition-colors cursor-grab active:cursor-grabbing self-center"
               onClick={(e) => e.stopPropagation()}
             >
-              <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
-                <circle cx="5" cy="3" r="1.5" /><circle cx="11" cy="3" r="1.5" />
-                <circle cx="5" cy="8" r="1.5" /><circle cx="11" cy="8" r="1.5" />
-                <circle cx="5" cy="13" r="1.5" /><circle cx="11" cy="13" r="1.5" />
+              <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
+                <rect x="3" y="4" width="10" height="1.5" rx="0.75" />
+                <rect x="3" y="8" width="10" height="1.5" rx="0.75" />
+                <rect x="3" y="12" width="10" height="1.5" rx="0.75" />
               </svg>
             </button>
           )}
