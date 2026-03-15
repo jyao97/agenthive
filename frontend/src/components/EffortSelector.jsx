@@ -2,7 +2,7 @@ const LEVELS = [
   ["low", "L"],
   ["medium", "M"],
   ["high", "H"],
-  ["max", "M"],
+  ["max", "Max"],
 ];
 
 export default function EffortSelector({ value, onChange }) {
