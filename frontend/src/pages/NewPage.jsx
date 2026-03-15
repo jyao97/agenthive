@@ -618,66 +618,64 @@ function NewAgentForm({ showToast, navigate }) {
             </button>
           </div>
         </div>
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <ModelSelector value={model} onChange={setModel} />
-            <label className="flex items-center gap-1.5 cursor-pointer ml-auto whitespace-nowrap">
-              <div
-                role="switch"
-                aria-checked={skipPermissions}
-                onClick={() => setSkipPermissions(!skipPermissions)}
-                className={`relative w-9 h-[20px] rounded-full transition-colors ${skipPermissions ? "bg-amber-500" : "bg-elevated"}`}
-              >
-                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${skipPermissions ? "translate-x-[16px]" : ""}`} />
-              </div>
-              <span className="text-sm text-label">Auto</span>
-            </label>
-          </div>
-          <div className="flex items-center gap-2">
-            <EffortSelector value={effort} onChange={setEffort} />
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={async () => {
-                  if (worktree) { setWorktree(null); return; }
-                  setWorktree("...");
-                  const name = prompt.trim() ? await generateWorktreeName(prompt) : null;
-                  setWorktree(name || "auto");
-                }}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
-                  worktree
-                    ? "bg-purple-500/15 text-purple-400 ring-1 ring-purple-500/30"
-                    : "bg-elevated text-dim hover:text-label"
-                }`}
-                title={worktree ? "Disable worktree" : "Enable worktree"}
-              >
-                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
-                </svg>
-                Worktree
-              </button>
-              {worktree && (
-                <input
-                  type="text"
-                  value={worktree === "auto" || worktree === "..." ? "" : worktree}
-                  onChange={(e) => setWorktree(e.target.value || "auto")}
-                  className="w-24 rounded-lg bg-elevated px-2.5 py-1.5 text-xs text-heading placeholder:text-faint outline-none focus:ring-1 focus:ring-purple-500/40"
-                  placeholder={worktree === "..." ? "generating..." : "name"}
-                />
-              )}
+        <div className="grid grid-cols-[auto_auto_1fr_auto] gap-y-2 gap-x-2 items-center">
+          <ModelSelector value={model} onChange={setModel} />
+          <EffortSelector value={effort} onChange={setEffort} />
+          <div />
+          <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
+            <div
+              role="switch"
+              aria-checked={skipPermissions}
+              onClick={() => setSkipPermissions(!skipPermissions)}
+              className={`relative w-9 h-[20px] rounded-full transition-colors ${skipPermissions ? "bg-amber-500" : "bg-elevated"}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${skipPermissions ? "translate-x-[16px]" : ""}`} />
             </div>
-            <label className="flex items-center gap-1.5 cursor-pointer ml-auto whitespace-nowrap">
-              <div
-                role="switch"
-                aria-checked={syncMode}
-                onClick={() => setSyncMode(!syncMode)}
-                className={`relative w-9 h-[20px] rounded-full transition-colors ${syncMode ? "bg-emerald-500" : "bg-elevated"}`}
-              >
-                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${syncMode ? "translate-x-[16px]" : ""}`} />
-              </div>
-              <span className="text-sm text-label">Tmux</span>
-            </label>
+            <span className="text-sm text-label">Auto</span>
+          </label>
+          <div className="col-span-2 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={async () => {
+                if (worktree) { setWorktree(null); return; }
+                setWorktree("...");
+                const name = prompt.trim() ? await generateWorktreeName(prompt) : null;
+                setWorktree(name || "auto");
+              }}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
+                worktree
+                  ? "bg-purple-500/15 text-purple-400 ring-1 ring-purple-500/30"
+                  : "bg-elevated text-dim hover:text-label"
+              }`}
+              title={worktree ? "Disable worktree" : "Enable worktree"}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
+              </svg>
+              Worktree
+            </button>
+            {worktree && (
+              <input
+                type="text"
+                value={worktree === "auto" || worktree === "..." ? "" : worktree}
+                onChange={(e) => setWorktree(e.target.value || "auto")}
+                className="flex-1 min-w-0 rounded-lg bg-elevated px-2.5 py-1.5 text-xs text-heading placeholder:text-faint outline-none focus:ring-1 focus:ring-purple-500/40"
+                placeholder={worktree === "..." ? "generating..." : "worktree name"}
+              />
+            )}
           </div>
+          <div />
+          <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
+            <div
+              role="switch"
+              aria-checked={syncMode}
+              onClick={() => setSyncMode(!syncMode)}
+              className={`relative w-9 h-[20px] rounded-full transition-colors ${syncMode ? "bg-emerald-500" : "bg-elevated"}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${syncMode ? "translate-x-[16px]" : ""}`} />
+            </div>
+            <span className="text-sm text-label">Tmux</span>
+          </label>
         </div>
       </div>
 
