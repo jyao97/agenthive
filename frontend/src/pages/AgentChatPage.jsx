@@ -905,12 +905,20 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
             )}
             {isUser && message.source === "web" && (isSlashCommand ? (
               message.delivered_at && (
-                <span className="ml-auto text-green-400" title={`Executed ${new Date(message.delivered_at).toLocaleTimeString()}`}>
-                  <svg className="w-4 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 28 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M2 13l4 4L16 7" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M10 13l4 4L24 7" />
-                  </svg>
-                </span>
+                message.completed_at ? (
+                  <span className="ml-auto text-green-400" title={`Executed ${new Date(message.completed_at).toLocaleTimeString()}`}>
+                    <svg className="w-4 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 28 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M2 13l4 4L16 7" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M10 13l4 4L24 7" />
+                    </svg>
+                  </span>
+                ) : (
+                  <span className="ml-auto text-cyan-300/60" title="Received — executing...">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </span>
+                )
               )
             ) : (
               <span className={`ml-auto ${message.delivered_at ? "text-green-400" : "text-cyan-300/40"}`}
@@ -2388,13 +2396,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
 
     if (event.type === "message_update") {
-      const { message_id, status, error_message } = event.data;
+      const { message_id, status, error_message, completed_at } = event.data;
       if (status === "CANCELLED") {
         setMessages((prev) => prev.filter((m) => m.id !== message_id));
       } else {
         setMessages((prev) =>
           prev.map((m) => (m.id === message_id
-            ? { ...m, status, ...(error_message ? { error_message } : {}) }
+            ? { ...m, status, ...(error_message ? { error_message } : {}), ...(completed_at ? { completed_at } : {}) }
             : m))
         );
       }

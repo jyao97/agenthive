@@ -206,7 +206,8 @@ async def emit_message_delivered(agent_id: str, message_id: str,
 
 
 async def emit_message_update(agent_id: str, message_id: str, status: str,
-                              error_message: str | None = None):
+                              error_message: str | None = None,
+                              completed_at: str | None = None):
     """Notify clients that a message's status changed (e.g. PENDING→EXECUTING)."""
     payload: dict = {
         "agent_id": agent_id,
@@ -215,6 +216,8 @@ async def emit_message_update(agent_id: str, message_id: str, status: str,
     }
     if error_message:
         payload["error_message"] = error_message
+    if completed_at:
+        payload["completed_at"] = completed_at
     await ws_manager.broadcast("message_update", payload)
 
 

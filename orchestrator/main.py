@@ -4163,6 +4163,99 @@ async def hook_agent_stop(request: Request):
     return {}
 
 
+@app.post("/api/hooks/agent-post-compact")
+async def hook_agent_post_compact(request: Request):
+    """Receive PostCompact hook — deterministic signal that /compact finished.
+
+    This is the authoritative compact-completion signal.  It fires after
+    Claude has rewritten the JSONL, so the file is safe to read.  Sets
+    completed_at on the /compact message (double tick) and emits the
+    "Compact end" tool activity event.
+    """
+    agent_id = request.headers.get("X-Agent-Id", "").strip()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not agent_id:
+        agent_id = _resolve_agent_id_from_body(body)
+        if not agent_id:
+            logger.warning("hook_agent_post_compact: no agent_id")
+            return {}
+
+    ad = getattr(app.state, "agent_dispatcher", None)
+    if not ad:
+        logger.warning("hook_agent_post_compact: no agent_dispatcher")
+        return {}
+
+    # 1. Clear compact pause — JSONL is fully rewritten now.
+    ctx = ad._sync_contexts.get(agent_id)
+    if ctx:
+        ctx.compact_notified = False
+        ctx.compact_end_emitted = True  # prevent duplicate from sync engine
+
+    # 2. Mark /compact message completed (double tick).
+    db = SessionLocal()
+    try:
+        compact_msg = (
+            db.query(Message)
+            .filter(
+                Message.agent_id == agent_id,
+                Message.role == MessageRole.USER,
+                Message.source == "web",
+                Message.completed_at.is_(None),
+                Message.content.startswith("/compact"),
+            )
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if compact_msg:
+            compact_msg.completed_at = _utcnow()
+            compact_msg.status = MessageStatus.COMPLETED
+
+        # 3. End the compact tool activity in DB.
+        from sync_engine import _end_compact_activity
+        if ctx:
+            _end_compact_activity(db, agent_id, ctx.session_id)
+        db.commit()
+
+        # 4. Emit completed_at update so frontend shows double tick.
+        if compact_msg:
+            from websocket import emit_message_update
+            asyncio.ensure_future(emit_message_update(
+                agent_id, compact_msg.id, "COMPLETED",
+                completed_at=compact_msg.completed_at.isoformat(),
+            ))
+    finally:
+        db.close()
+
+    # 5. Emit authoritative "Compact end" to frontend.
+    from websocket import emit_tool_activity
+    await emit_tool_activity(agent_id, "Compact", "end",
+                             tool_output="context compacted")
+
+    # 6. Add system message + trigger sync to import the rewritten JSONL.
+    if ctx:
+        db2 = SessionLocal()
+        try:
+            compact_sys = ad._add_system_message(
+                db2, agent_id,
+                "Context compacted — conversation history refreshed",
+            )
+            db2.commit()
+            from websocket import emit_new_message
+            ad._emit(emit_new_message(
+                agent_id, compact_sys.id,
+                ctx.agent_name, ctx.agent_project,
+            ))
+        finally:
+            db2.close()
+        ad.wake_sync(agent_id)
+
+    logger.info("hook_agent_post_compact: agent=%s", agent_id[:8])
+    return {}
+
+
 @app.post("/api/hooks/agent-tool-activity")
 async def hook_agent_tool_activity(request: Request):
     """Receive PreToolUse/PostToolUse hooks — broadcast tool activity to frontend.
@@ -4679,17 +4772,16 @@ async def hook_agent_session_start(request: Request):
         # Emitting "end" prematurely here caused a false "compact done" in
         # the UI while the sync engine hadn't processed the new state yet.
         if source == "compact":
+            # Fallback for compact completion — PostCompact is the primary
+            # handler, but if it didn't fire (older Claude Code version,
+            # hook failure), SessionStart still resumes sync.
             ad = getattr(app.state, "agent_dispatcher", None)
             if ad:
                 ctx = ad._sync_contexts.get(agent_id)
                 if ctx:
                     ctx.compact_notified = False
-                    # Trigger sync to pick up the compacted JSONL
                     asyncio.create_task(ad.trigger_sync(agent_id))
-            # Mark /compact delivered NOW — the JSONL has been rewritten.
-            # (Moved from PreCompact, which fires before the rewrite.)
-            _mark_slash_command_delivered(agent_id, "/compact")
-            logger.info("SessionStart hook: agent=%s compact complete, session=%s",
+            logger.info("SessionStart hook: agent=%s compact complete (fallback), session=%s",
                         agent_id[:8], session_id[:12])
             # Still write the rotation signal — session_id changed
             signal_path = f"/tmp/ahive-{agent_id}.newsession"

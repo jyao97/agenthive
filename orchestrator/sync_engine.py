@@ -47,6 +47,7 @@ class SyncContext:
 
     # Agent state
     compact_notified: bool = False
+    compact_end_emitted: bool = False  # True if PostCompact already emitted "Compact end"
     idle_polls: int = 0
     getsize_error_count: int = 0
 
@@ -359,29 +360,37 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         _t = turns[-1] if turns else ("", "", None)
         _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
         ctx.last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
-        # Notify UI about the compact
-        db_compact = SessionLocal()
-        try:
-            compact_msg = ad._add_system_message(
-                db_compact, ctx.agent_id,
-                "Context compacted — conversation history refreshed",
+        # Notify UI about the compact — skip if PostCompact hook already
+        # emitted "Compact end" (avoids duplicate UI notifications).
+        if not ctx.compact_end_emitted:
+            db_compact = SessionLocal()
+            try:
+                compact_msg = ad._add_system_message(
+                    db_compact, ctx.agent_id,
+                    "Context compacted — conversation history refreshed",
+                )
+                _end_compact_activity(db_compact, ctx.agent_id, ctx.session_id)
+                db_compact.commit()
+                ad._emit(emit_new_message(
+                    ctx.agent_id, compact_msg.id, ctx.agent_name, ctx.agent_project,
+                ))
+                ad._emit(emit_tool_activity(
+                    ctx.agent_id, "Compact", "end",
+                    tool_output="context compacted",
+                ))
+            finally:
+                db_compact.close()
+        else:
+            logger.info(
+                "Compact end already emitted by PostCompact hook for agent %s, "
+                "skipping duplicate notification",
+                ctx.agent_id,
             )
-            # Mark the compact tool activity as ended in DB
-            _end_compact_activity(db_compact, ctx.agent_id, ctx.session_id)
-            db_compact.commit()
-            ad._emit(emit_new_message(
-                ctx.agent_id, compact_msg.id, ctx.agent_name, ctx.agent_project,
-            ))
-            ad._emit(emit_tool_activity(
-                ctx.agent_id, "Compact", "end",
-                tool_output="context compacted",
-            ))
-            ctx.compact_notified = False
-        finally:
-            db_compact.close()
-        # After compact notification, reconcile to import any genuinely
-        # new turns that arrived post-compact (the counter reset above
-        # marks ALL turns as "processed" including ones not yet in DB).
+        ctx.compact_notified = False
+        ctx.compact_end_emitted = False
+        # After compact, reconcile to import any genuinely new turns that
+        # arrived post-compact (the counter reset above marks ALL turns as
+        # "processed" including ones not yet in DB).
         await sync_reconcile_initial(ad, ctx)
         return "compact_turn_decrease"
 
@@ -738,26 +747,33 @@ async def sync_handle_compact(ad, ctx: SyncContext):
     except OSError:
         ctx.last_offset = 0
     ctx.idle_polls = 0
-    # Notify UI about the compact
-    db_compact = SessionLocal()
-    try:
-        compact_msg = ad._add_system_message(
-            db_compact, ctx.agent_id,
-            "Context compacted — conversation history refreshed",
+    # Notify UI — skip if PostCompact hook already handled it.
+    if not ctx.compact_end_emitted:
+        db_compact = SessionLocal()
+        try:
+            compact_msg = ad._add_system_message(
+                db_compact, ctx.agent_id,
+                "Context compacted — conversation history refreshed",
+            )
+            _end_compact_activity(db_compact, ctx.agent_id, ctx.session_id)
+            db_compact.commit()
+            ad._emit(emit_new_message(
+                ctx.agent_id, compact_msg.id, ctx.agent_name, ctx.agent_project,
+            ))
+            ad._emit(emit_tool_activity(
+                ctx.agent_id, "Compact", "end",
+                tool_output="context compacted",
+            ))
+        finally:
+            db_compact.close()
+    else:
+        logger.info(
+            "Compact end already emitted by PostCompact hook for agent %s, "
+            "skipping duplicate notification",
+            ctx.agent_id,
         )
-        # Mark the compact tool activity as ended in DB
-        _end_compact_activity(db_compact, ctx.agent_id, ctx.session_id)
-        db_compact.commit()
-        ad._emit(emit_new_message(
-            ctx.agent_id, compact_msg.id, ctx.agent_name, ctx.agent_project,
-        ))
-        ad._emit(emit_tool_activity(
-            ctx.agent_id, "Compact", "end",
-            tool_output="context compacted",
-        ))
-        ctx.compact_notified = False
-    finally:
-        db_compact.close()
+    ctx.compact_notified = False
+    ctx.compact_end_emitted = False
 
 
 # ---------------------------------------------------------------------------
