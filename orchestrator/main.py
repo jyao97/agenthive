@@ -4588,12 +4588,14 @@ async def hook_agent_tool_activity(request: Request):
         kind = "compact"
         summary = "context compaction"
         await emit_tool_activity(agent_id, tool_name, phase)
-        # Mark compact as starting so sync loop handles offset reset
+        # /compact skips UserPromptSubmit, so mark delivered + generating here.
+        _mark_slash_command_delivered(agent_id, "/compact")
+        if ad and agent_id not in ad._generating_agents:
+            ad._start_generating(agent_id)
+            logger.info("PreCompact: started generating for %s", agent_id[:8])
+        # Pause sync — JSONL is being rewritten
         if ad and ad._sync_contexts.get(agent_id):
             ad._sync_contexts[agent_id].compact_notified = True
-        # Do NOT mark /compact delivered here — PreCompact fires BEFORE
-        # the rewrite.  Delivery is marked in SessionStart(compact) after
-        # the JSONL has actually been rewritten.
     else:
         return {}
 
