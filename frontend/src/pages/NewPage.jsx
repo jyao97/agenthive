@@ -618,7 +618,7 @@ function NewAgentForm({ showToast, navigate }) {
             </button>
           </div>
         </div>
-        <div className="grid grid-cols-[1fr_auto] gap-y-2 gap-x-2 items-center">
+        <div className="grid grid-cols-[1fr_max-content] gap-y-2 gap-x-2 items-center">
           <div className="flex items-center gap-1.5 min-w-0">
             <ModelSelector value={model} onChange={setModel} />
             <EffortSelector value={effort} onChange={setEffort} />
