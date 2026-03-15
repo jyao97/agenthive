@@ -4197,33 +4197,17 @@ async def hook_agent_stop(request: Request):
                 )
                 ad.wake_sync(agent_id)
             else:
-                from sync_engine import sync_import_new_turns, _handle_stop
-                _sync_lock = ad._sync_locks.get(agent_id)
-                if _sync_lock:
-                    async with _sync_lock:
-                        _result = await sync_import_new_turns(ad, ctx)
-                else:
-                    _result = await sync_import_new_turns(ad, ctx)
-                logger.info(
-                    "hook_agent_stop: sync result=%s for %s",
-                    _result, agent_id[:8],
-                )
+                from sync_engine import _handle_stop
                 await _handle_stop(ad, ctx)
-                # Wake sync loop as safety net — if JSONL wasn't fully
-                # flushed when we parsed, the loop catches remaining
-                # data immediately instead of waiting 30s.
-                ad.wake_sync(agent_id)
-
-                # Schedule staggered follow-up wakes.  A single immediate
-                # wake often races the JSONL flush — by the time the sync
-                # loop checks file size, the last writes haven't landed
-                # yet, so it sees no growth and sleeps for 30s.  These
-                # delayed wakes give the flush time to complete.
-                async def _delayed_wake(_aid, delay):
-                    await asyncio.sleep(delay)
+                # The Stop hook is BLOCKING — Claude Code waits for our
+                # response before writing JSONL.  Syncing inline here is
+                # pointless because the file can't change while we hold
+                # the hook.  Schedule a delayed wake so the sync loop
+                # picks up the new content right after we return.
+                async def _post_stop_sync(_aid):
+                    await asyncio.sleep(0.1)  # let Claude flush JSONL
                     ad.wake_sync(_aid)
-                for _dw in (0.5, 2.0, 5.0):
-                    asyncio.ensure_future(_delayed_wake(agent_id, _dw))
+                asyncio.ensure_future(_post_stop_sync(agent_id))
 
                 # Mark any EXECUTING slash commands as completed.
                 # For /compact, PostCompact already set completed_at, so
@@ -5225,6 +5209,14 @@ def _write_agent_hooks_config(project_path: str):
         }],
         "PreCompact": [{
             "hooks": [_tool_activity_hook],
+        }],
+        "PostCompact": [{
+            "hooks": [{
+                "type": "http",
+                "url": f"{base_url}/agent-post-compact",
+                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+            }],
         }],
         "Stop": [{
             "hooks": [{
