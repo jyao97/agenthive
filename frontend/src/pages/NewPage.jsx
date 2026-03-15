@@ -618,10 +618,11 @@ function NewAgentForm({ showToast, navigate }) {
             </button>
           </div>
         </div>
-        <div className="grid grid-cols-[auto_auto_1fr_auto] gap-y-2 gap-x-1.5 items-center">
-          <ModelSelector value={model} onChange={setModel} />
-          <EffortSelector value={effort} onChange={setEffort} />
-          <div />
+        <div className="grid grid-cols-[1fr_auto] gap-y-2 gap-x-2 items-center">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <ModelSelector value={model} onChange={setModel} />
+            <EffortSelector value={effort} onChange={setEffort} />
+          </div>
           <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
             <div
               role="switch"
@@ -633,7 +634,7 @@ function NewAgentForm({ showToast, navigate }) {
             </div>
             <span className="text-sm text-label">Auto</span>
           </label>
-          <div className="col-span-2 flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 min-w-0">
             <button
               type="button"
               onClick={async () => {
@@ -664,7 +665,6 @@ function NewAgentForm({ showToast, navigate }) {
               />
             )}
           </div>
-          <div />
           <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
             <div
               role="switch"
