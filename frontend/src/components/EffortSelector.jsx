@@ -5,18 +5,17 @@ const LEVELS = [
   ["max",    [1, 1, 1, 1]],
 ];
 
-function PowerBars({ filled, active }) {
+function PowerGrid({ filled, active }) {
   return (
-    <span className="inline-flex gap-[2px] items-end">
+    <span className="inline-flex gap-[2px] items-center">
       {filled.map((on, i) => (
         <span
           key={i}
-          className={`inline-block w-[3px] rounded-[1px] ${
+          className={`inline-block w-[4px] h-[10px] rounded-[1px] ${
             on
               ? active ? "bg-white" : "bg-current"
-              : active ? "bg-white/30" : "bg-current/20"
+              : active ? "bg-white/25" : "bg-current/15"
           }`}
-          style={{ height: `${8 + i * 2}px` }}
         />
       ))}
     </span>
@@ -38,7 +37,7 @@ export default function EffortSelector({ value, onChange }) {
               : "text-body hover:text-heading"
           }`}
         >
-          <PowerBars filled={bars} active={value === lvl} />
+          <PowerGrid filled={bars} active={value === lvl} />
         </button>
       ))}
     </div>
