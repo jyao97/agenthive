@@ -3,18 +3,20 @@ const LEVELS = ["low", "medium", "high", "max"];
 export default function EffortSelector({ value, onChange }) {
   const activeIdx = LEVELS.indexOf(value);
   return (
-    <div
-      className="inline-flex gap-[4px] items-center rounded-lg bg-elevated px-2.5 py-1.5 cursor-pointer"
-      title={value}
-    >
+    <div className="flex rounded-lg bg-elevated p-0.5" title={value}>
       {LEVELS.map((lvl, i) => (
-        <span
+        <button
           key={lvl}
+          type="button"
           onClick={() => onChange(lvl)}
-          className={`block w-[10px] h-[10px] rounded-[2px] cursor-pointer transition-colors ${
-            i <= activeIdx ? "bg-cyan-500" : "bg-current/15"
-          }`}
-        />
+          className="flex-1 px-2.5 py-1.5 rounded-md flex items-center justify-center cursor-pointer"
+        >
+          <span
+            className={`block w-full h-[10px] rounded-[2px] transition-colors ${
+              i <= activeIdx ? "bg-cyan-500" : "bg-current/15"
+            }`}
+          />
+        </button>
       ))}
     </div>
   );
