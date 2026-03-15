@@ -4599,6 +4599,31 @@ async def hook_agent_tool_activity(request: Request):
     else:
         return {}
 
+    # --- Recover generating state ---
+    # Tool/subagent hooks prove the agent IS generating.  If it's not in
+    # _generating_agents (e.g. after server restart, or sync task restart
+    # cleared it), re-add it so the frontend shows EXECUTING.
+    # Exclude PostCompact (clears generating) and interrupt failures.
+    if ad and agent_id not in ad._generating_agents and hook_event not in (
+        "PostCompact",
+    ):
+        _is_interrupt = hook_event == "PostToolUseFailure" and body.get("is_interrupt")
+        if not _is_interrupt:
+            ad._start_generating(agent_id)
+            logger.info(
+                "hook_agent_tool_activity: recovered generating for %s (event=%s)",
+                agent_id[:8], hook_event,
+            )
+            from websocket import emit_agent_update
+            from database import SessionLocal as _SLR
+            _dbr = _SLR()
+            try:
+                _agr = _dbr.get(Agent, agent_id)
+                _proj = _agr.project if _agr else ""
+            finally:
+                _dbr.close()
+            asyncio.ensure_future(emit_agent_update(agent_id, "EXECUTING", _proj))
+
     # --- Persist tool activity to DB ---
     if tool_name and phase:
         try:
@@ -6897,11 +6922,18 @@ async def send_agent_message(
         raise HTTPException(status_code=400, detail="Agent is stopped")
 
     # SYNCING/STARTING agents with a tmux pane: send directly via tmux
+    # But NOT if the agent is currently generating — text injected into
+    # tmux while Claude's TUI is generating gets eaten by the Ink framework.
+    # Queue as PENDING instead and let _dispatch_tmux_pending send it
+    # after the Stop hook fires and Claude is at the input prompt.
+    ad_check = getattr(request.app.state, "agent_dispatcher", None)
+    is_generating = ad_check and agent.id in ad_check._generating_agents
     is_syncing_with_tmux = (
         agent.status in (AgentStatus.SYNCING, AgentStatus.STARTING)
         and agent.tmux_pane
         and not body.queue
         and not body.scheduled_at
+        and not is_generating
     )
     if is_syncing_with_tmux:
         from agent_dispatcher import (
@@ -6985,7 +7017,10 @@ async def send_agent_message(
     # SYNCING agents WITHOUT a tmux pane are dispatched via subprocess
     # (same as IDLE), so they should accept messages directly.
     is_syncing_no_pane = agent.status == AgentStatus.SYNCING and not agent.tmux_pane
-    is_busy = agent.status in (AgentStatus.EXECUTING, AgentStatus.SYNCING) and not is_syncing_no_pane
+    # SYNCING+generating agents with pane: auto-queue (will be sent via
+    # _dispatch_tmux_pending after Stop hook fires and Claude is at prompt).
+    is_syncing_generating = is_generating and agent.status == AgentStatus.SYNCING and agent.tmux_pane
+    is_busy = agent.status in (AgentStatus.EXECUTING, AgentStatus.SYNCING) and not is_syncing_no_pane and not is_syncing_generating
     if is_busy and not body.queue:
         raise HTTPException(status_code=400, detail="Agent is busy — use send later to queue")
 

@@ -4500,6 +4500,11 @@ Here are the day's conversations (with timestamps):
             db.refresh(agent)
             if agent.status not in (AgentStatus.SYNCING, AgentStatus.STARTING) or not agent.tmux_pane:
                 continue
+            # Don't send while Claude is generating — text injected into
+            # tmux during generation is eaten by the Ink TUI framework.
+            # Wait for the Stop hook to clear generating first.
+            if agent.id in self._generating_agents:
+                continue
 
             due_msg = (
                 db.query(Message)
@@ -5453,9 +5458,12 @@ Here are the day's conversations (with timestamps):
                 self._sync_locks.pop(agent_id, None)
                 self._sync_contexts.pop(agent_id, None)
                 self._sync_tasks.pop(agent_id, None)
-            # Ensure generating state is cleaned up on any exit path
-            if agent_id in self._generating_agents:
-                self._stop_generating(agent_id)
+                # Only clear generating if this is still the active sync task.
+                # If a replacement task was installed (e.g. session rotation,
+                # server restart), generating state is owned by the new task
+                # and hooks — clearing it here would falsely show "syncing".
+                if agent_id in self._generating_agents:
+                    self._stop_generating(agent_id)
             # Stop any tracked subagents when parent sync exits
             known_subs = self._known_subagents.pop(agent_id, {})
             if known_subs:
