@@ -28,6 +28,7 @@ import {
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import EffortSelector from "../components/EffortSelector";
+import ModelSelector from "../components/ModelSelector";
 import FolderIcon from "../components/FolderIcon";
 import VoiceRecorder from "../components/VoiceRecorder";
 import WaveformVisualizer from "../components/WaveformVisualizer";
@@ -1255,22 +1256,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           </div>
         </div>
         <div className="grid grid-cols-[auto_auto_1fr_auto] gap-y-2 gap-x-2 items-center">
-          <div className="flex rounded-lg bg-elevated p-0.5">
-            {MODEL_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setModel(opt.value)}
-                className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                  model === opt.value
-                    ? "bg-cyan-600 text-white shadow-sm"
-                    : "text-body hover:text-heading"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          <ModelSelector value={model} onChange={setModel} />
           <EffortSelector value={effort} onChange={setEffort} />
           <div />
           <label className="flex items-center gap-1.5 cursor-pointer">
