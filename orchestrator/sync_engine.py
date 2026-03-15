@@ -49,7 +49,6 @@ class SyncContext:
     compact_notified: bool = False
     idle_polls: int = 0
     getsize_error_count: int = 0
-    pending_stop: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -337,10 +336,13 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     from thumbnails import generate_thumbnails_for_message
 
     # Full parse — reliable, avoids incremental merge bugs
+    # Save offset in local var first — only commit to ctx after successful
+    # processing.  Otherwise an early "exit" poisons ctx.last_offset and
+    # the sync loop thinks the file hasn't grown (30s stall).
     try:
-        ctx.last_offset = os.path.getsize(ctx.jsonl_path)
+        _current_offset = os.path.getsize(ctx.jsonl_path)
     except OSError:
-        pass
+        _current_offset = ctx.last_offset
     turns = _parse_session_turns(ctx.jsonl_path)
 
     # Detect turn count decrease (compact may produce a larger
@@ -353,6 +355,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         )
         ctx.incremental_turns = list(turns)
         ctx.last_turn_count = len(turns)
+        ctx.last_offset = _current_offset
         _t = turns[-1] if turns else ("", "", None)
         _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
         ctx.last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
@@ -376,6 +379,10 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             ctx.compact_notified = False
         finally:
             db_compact.close()
+        # After compact notification, reconcile to import any genuinely
+        # new turns that arrived post-compact (the counter reset above
+        # marks ALL turns as "processed" including ones not yet in DB).
+        await sync_reconcile_initial(ad, ctx)
         return "compact_turn_decrease"
 
     # Update incremental state
@@ -396,6 +403,9 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     )
 
     if not new_turns and not last_turn_updated:
+        # Commit offset even on no_change — the full parse succeeded,
+        # so we know the file state is consistent up to this point.
+        ctx.last_offset = _current_offset
         return "no_change"
 
     db = SessionLocal()
@@ -455,6 +465,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                                 muted=agent.muted, in_use=False,
                             )
                 ctx.last_tail_hash = tail_hash
+                ctx.last_offset = _current_offset
                 logger.info(
                     "Updated last turn content for agent %s (%s chars)",
                     ctx.agent_id, len(_last_content),
@@ -579,6 +590,15 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         delivered_at=_now,
                     )
                 elif role == "assistant":
+                    # UUID-based dedup for assistant turns (prevents
+                    # duplicates after compact resets turn counters)
+                    if jsonl_uuid:
+                        _existing_asst = db.query(Message.id).filter(
+                            Message.agent_id == ctx.agent_id,
+                            Message.jsonl_uuid == jsonl_uuid,
+                        ).first()
+                        if _existing_asst:
+                            continue
                     _now = _utcnow()
                     msg = Message(
                         agent_id=ctx.agent_id,
@@ -613,6 +633,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
 
             ctx.last_turn_count = len(turns)
             ctx.last_tail_hash = tail_hash
+            ctx.last_offset = _current_offset
             ad._emit(emit_agent_update(
                 agent.id, agent.status.value, agent.project
             ))
@@ -743,22 +764,11 @@ async def sync_handle_compact(ad, ctx: SyncContext):
 # 4. trigger_sync — public entry point for hooks
 # ---------------------------------------------------------------------------
 
-async def trigger_sync(ad, agent_id: str, *, is_stop: bool = False):
-    """Public entry point for hooks to trigger an immediate sync.
-
-    Sets pending_stop if needed and wakes the sync loop to do the work.
-    The sync loop is the single sync path — hooks just wake it.
-
-    Args:
-        ad: AgentDispatcher instance
-        agent_id: The agent to sync
-        is_stop: If True, handle post-stop logic on next sync cycle
-    """
+async def trigger_sync(ad, agent_id: str):
+    """Public entry point for hooks to wake the sync loop."""
     ctx = ad._sync_contexts.get(agent_id)
     if not ctx:
         return
-    if is_stop:
-        ctx.pending_stop = True
     ad.wake_sync(agent_id)
 
 

@@ -2344,6 +2344,9 @@ class AgentDispatcher:
         self._generating_agents: set[str] = set()
         # Per-agent events to wake sync loops immediately on stop hook
         self._sync_wake: dict[str, asyncio.Event] = {}
+        # Per-agent sync locks — serialise sync_import_new_turns calls
+        # between the sync loop and Stop hook to prevent stale-state races
+        self._sync_locks: dict[str, asyncio.Lock] = {}
         # Per-agent sync contexts (used by sync_engine)
         from sync_engine import SyncContext
         self._sync_contexts: dict[str, SyncContext] = {}
@@ -3138,10 +3141,10 @@ Here are the day's conversations (with timestamps):
         from websocket import emit_agent_stream_end
         self._emit(emit_agent_stream_end(agent_id, generation_id=gid))
 
-    async def trigger_sync(self, agent_id: str, *, is_stop: bool = False):
+    async def trigger_sync(self, agent_id: str):
         """Trigger an immediate sync for an agent (called from hooks)."""
         from sync_engine import trigger_sync
-        await trigger_sync(self, agent_id, is_stop=is_stop)
+        await trigger_sync(self, agent_id)
 
     # ---- v2 Task dispatch/harvest ----
 
@@ -5442,6 +5445,7 @@ Here are the day's conversations (with timestamps):
             # destroy those new entries (they belong to the replacement task).
             if self._sync_tasks.get(agent_id) is _aio.current_task():
                 self._sync_wake.pop(agent_id, None)
+                self._sync_locks.pop(agent_id, None)
                 self._sync_contexts.pop(agent_id, None)
                 self._sync_tasks.pop(agent_id, None)
             # Ensure generating state is cleaned up on any exit path
@@ -5492,6 +5496,10 @@ Here are the day's conversations (with timestamps):
         # Register wake event so stop hook can interrupt the sleep
         wake_event = asyncio.Event()
         self._sync_wake[agent_id] = wake_event
+
+        # Register sync lock so Stop hook serialises with this loop
+        sync_lock = asyncio.Lock()
+        self._sync_locks[agent_id] = sync_lock
 
         from websocket import emit_agent_update, emit_new_message
 
@@ -5558,11 +5566,10 @@ Here are the day's conversations (with timestamps):
             except asyncio.TimeoutError:
                 pass
 
-            # Handle pending_stop (set by trigger_sync via Stop hook)
-            if ctx.pending_stop:
-                ctx.pending_stop = False
-                await sync_import_new_turns(self, ctx)
-                await _handle_stop(self, ctx)
+            # Pause sync during compact (PreCompact → SessionStart gap).
+            # The JSONL is being rewritten; reading it mid-rewrite would
+            # import an intermediate state with 100+ false "new" turns.
+            if ctx.compact_notified:
                 continue
 
             try:
@@ -5599,7 +5606,8 @@ Here are the day's conversations (with timestamps):
 
             # Compact detection — file shrink
             if current_size < ctx.last_offset:
-                await sync_handle_compact(self, ctx)
+                async with sync_lock:
+                    await sync_handle_compact(self, ctx)
                 continue
 
             # File hasn't grown — idle polling
@@ -5680,7 +5688,8 @@ Here are the day's conversations (with timestamps):
 
             # File grew — do incremental sync
             ctx.idle_polls = 0
-            result = await sync_import_new_turns(self, ctx)
+            async with sync_lock:
+                result = await sync_import_new_turns(self, ctx)
             if result == "exit":
                 break
 

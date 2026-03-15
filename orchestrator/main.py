@@ -3962,8 +3962,8 @@ async def hook_agent_session_end(request: Request):
         logger.warning("hook_agent_session_end: no agent_dispatcher on app.state for agent %s", agent_id[:8])
         return {}
 
-    # Trigger final sync + stop cleanup via the sync loop
-    asyncio.create_task(ad.trigger_sync(agent_id, is_stop=True))
+    # Trigger final sync via the sync loop
+    asyncio.create_task(ad.trigger_sync(agent_id))
 
     logger.info("hook_agent_session_end: agent=%s", agent_id[:8])
     return {}
@@ -4117,8 +4117,44 @@ async def hook_agent_stop(request: Request):
         if agent_id in ad._generating_agents:
             logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
             ad._stop_generating(agent_id)
-        # Agent finished — trigger final sync to import last message + handle notifications
-        asyncio.create_task(ad.trigger_sync(agent_id, is_stop=True))
+        # Run sync directly — by the time the Stop hook fires, the JSONL
+        # is fully flushed.  Deferring to the poll loop would add up to
+        # 30s latency.
+        ctx = ad._sync_contexts.get(agent_id)
+        if ctx:
+            if ctx.compact_notified:
+                # JSONL is being rewritten by /compact — reading it now
+                # would import garbage turns.  Wake the sync loop so it
+                # picks up changes as soon as compact finishes.
+                logger.info(
+                    "hook_agent_stop: compact in progress for %s, "
+                    "deferring sync to loop",
+                    agent_id[:8],
+                )
+                ad.wake_sync(agent_id)
+            else:
+                from sync_engine import sync_import_new_turns, _handle_stop
+                _sync_lock = ad._sync_locks.get(agent_id)
+                if _sync_lock:
+                    async with _sync_lock:
+                        _result = await sync_import_new_turns(ad, ctx)
+                else:
+                    _result = await sync_import_new_turns(ad, ctx)
+                logger.info(
+                    "hook_agent_stop: sync result=%s for %s",
+                    _result, agent_id[:8],
+                )
+                await _handle_stop(ad, ctx)
+                # Wake sync loop as safety net — if JSONL wasn't fully
+                # flushed when we parsed, the loop catches remaining
+                # data immediately instead of waiting 30s.
+                ad.wake_sync(agent_id)
+        else:
+            logger.warning(
+                "hook_agent_stop: no sync context for %s "
+                "— sync loop may not be running",
+                agent_id[:8],
+            )
     else:
         logger.warning("hook_agent_stop: no agent_dispatcher on app.state")
 
