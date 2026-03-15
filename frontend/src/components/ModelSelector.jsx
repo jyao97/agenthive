@@ -8,7 +8,7 @@ export default function ModelSelector({ value, onChange }) {
           key={opt.value}
           type="button"
           onClick={() => onChange(opt.value)}
-          className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
+          className={`px-1.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
             value === opt.value
               ? "bg-cyan-600 text-white shadow-sm"
               : "text-body hover:text-heading"
