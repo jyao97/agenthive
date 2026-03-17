@@ -218,7 +218,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
         selectAction={!selecting ? (
           <button
             type="button"
-            onClick={enterSelectMode}
+            onClick={() => enterSelectMode()}
             title="Select tasks"
             className="w-8 h-8 flex items-center justify-center rounded-lg text-dim hover:text-heading hover:bg-input transition-colors"
           >
