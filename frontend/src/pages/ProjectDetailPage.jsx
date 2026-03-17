@@ -386,13 +386,13 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const [model, setModel, clearModel] = useDraft(`project-agent:${name}:model`, MODEL_OPTIONS[0].value);
   const [effort, setEffort, clearEffort] = useDraft(`project-agent:${name}:effort`, "high");
   const [worktree, setWorktree] = useState(() => {
-    try { const v = localStorage.getItem("pref:worktree"); return v !== null ? (v === "" ? null : v) : null; } catch { return null; }
+    try { const v = localStorage.getItem("pref:project-agent:worktree"); return v !== null ? (v === "" ? null : v) : null; } catch { return null; }
   });
   const [syncMode, setSyncMode] = useState(() => {
-    try { const v = localStorage.getItem("pref:syncMode"); return v !== null ? v === "true" : true; } catch { return true; }
+    try { const v = localStorage.getItem("pref:project-agent:syncMode"); return v !== null ? v === "true" : true; } catch { return true; }
   });
   const [skipPermissions, setSkipPermissions] = useState(() => {
-    try { return localStorage.getItem("pref:skipPermissions") !== "false"; } catch { return true; }
+    try { return localStorage.getItem("pref:project-agent:skipPermissions") !== "false"; } catch { return true; }
   });
   const clearAllDrafts = () => { clearPrompt(); clearModel(); clearEffort(); };
   const [submitting, setSubmitting] = useState(false);
@@ -1269,7 +1269,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             <div
               role="switch"
               aria-checked={skipPermissions}
-              onClick={() => { const next = !skipPermissions; setSkipPermissions(next); try { localStorage.setItem("pref:skipPermissions", String(next)); } catch {} }}
+              onClick={() => { const next = !skipPermissions; setSkipPermissions(next); try { localStorage.setItem("pref:project-agent:skipPermissions", String(next)); } catch {} }}
               className={`relative w-9 h-[20px] rounded-full transition-colors ${skipPermissions ? "bg-amber-500" : "bg-elevated"}`}
             >
               <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${skipPermissions ? "translate-x-[16px]" : ""}`} />
@@ -1280,12 +1280,12 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             <button
               type="button"
               onClick={async () => {
-                if (worktree) { setWorktree(null); try { localStorage.setItem("pref:worktree", ""); } catch {} return; }
+                if (worktree) { setWorktree(null); try { localStorage.setItem("pref:project-agent:worktree", ""); } catch {} return; }
                 setWorktree("...");
                 const name = prompt.trim() ? await generateWorktreeName(prompt) : null;
                 const val = name || "auto";
                 setWorktree(val);
-                try { localStorage.setItem("pref:worktree", val); } catch {}
+                try { localStorage.setItem("pref:project-agent:worktree", val); } catch {}
               }}
               className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 worktree
@@ -1303,7 +1303,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
               <input
                 type="text"
                 value={worktree === "auto" || worktree === "..." ? "" : worktree}
-                onChange={(e) => { const v = e.target.value || "auto"; setWorktree(v); try { localStorage.setItem("pref:worktree", v); } catch {} }}
+                onChange={(e) => { const v = e.target.value || "auto"; setWorktree(v); try { localStorage.setItem("pref:project-agent:worktree", v); } catch {} }}
                 className="flex-1 min-w-0 rounded-lg bg-elevated px-2.5 py-1.5 text-xs text-heading placeholder:text-faint outline-none focus:ring-1 focus:ring-purple-500/40"
                 placeholder={worktree === "..." ? "generating..." : "worktree name"}
               />
@@ -1314,7 +1314,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             <div
               role="switch"
               aria-checked={syncMode}
-              onClick={() => { const next = !syncMode; setSyncMode(next); try { localStorage.setItem("pref:syncMode", String(next)); } catch {} }}
+              onClick={() => { const next = !syncMode; setSyncMode(next); try { localStorage.setItem("pref:project-agent:syncMode", String(next)); } catch {} }}
               className={`relative w-9 h-[20px] rounded-full transition-colors ${syncMode ? "bg-emerald-500" : "bg-elevated"}`}
             >
               <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${syncMode ? "translate-x-[16px]" : ""}`} />
