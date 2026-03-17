@@ -4,7 +4,7 @@ import useLongPress from "./hooks/useLongPress";
 import LoginPage from "./pages/LoginPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import useTheme from "./hooks/useTheme";
-import { authCheck, clearAuthToken, fetchUnreadCount, fetchClaudeMdPending, fetchTaskCounts, getAuthToken } from "./lib/api";
+import { authCheck, clearAuthToken, fetchUnreadCount, fetchClaudeMdPending, getAuthToken } from "./lib/api";
 import { isPushSupported, setupPushNotifications, reRegisterExistingSubscription } from "./lib/pushNotifications";
 import useIdleLock from "./hooks/useIdleLock";
 import usePageVisible from "./hooks/usePageVisible";
@@ -344,7 +344,6 @@ export default function App() {
   const hideNav = location.pathname.match(/^\/agents\/[^/]+$/) || location.pathname.match(/^\/tasks\/[^/]+$/) || location.pathname === "/login" || location.pathname === "/split";
   const [unread, setUnread] = useState(0);
   const [claudeMdPending, setClaudeMdPending] = useState(0);
-  const [reviewCount, setReviewCount] = useState(0);
   const visible = usePageVisible();
   const lastTapRef = useRef({});
 
@@ -379,21 +378,12 @@ export default function App() {
     return () => clearInterval(id);
   }, [location.pathname, visible]);
 
+  // PWA app icon badge — agent unread count
   useEffect(() => {
-    if (!visible || location.pathname === "/login" || !getAuthToken()) return;
-    const poll = () => fetchTaskCounts().then((r) => setReviewCount(r.REVIEW ?? 0)).catch(() => {});
-    poll();
-    const id = setInterval(poll, 10000);
-    return () => clearInterval(id);
-  }, [location.pathname, visible]);
-
-  // PWA app icon badge — total of agent unread + task review count
-  useEffect(() => {
-    const total = unread + reviewCount;
     if (!navigator.setAppBadge) return;
-    if (total > 0) navigator.setAppBadge(total).catch(() => {});
+    if (unread > 0) navigator.setAppBadge(unread).catch(() => {});
     else navigator.clearAppBadge?.().catch(() => {});
-  }, [unread, reviewCount]);
+  }, [unread]);
 
   // Safari iOS: after keyboard dismiss the visual viewport desyncs from
   // the layout viewport.  The ONLY thing that fixes it is an actual
@@ -528,11 +518,6 @@ export default function App() {
                   {tab.key === "agents" && unread > 0 && (
                     <span className="absolute top-1.5 left-[calc(50%+6px)] inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold leading-none">
                       {unread > 99 ? "99+" : unread}
-                    </span>
-                  )}
-                  {tab.key === "tasks" && reviewCount > 0 && (
-                    <span className="absolute top-1.5 left-[calc(50%+6px)] inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold leading-none">
-                      {reviewCount > 99 ? "99+" : reviewCount}
                     </span>
                   )}
                   {tab.key === "projects" && claudeMdPending > 0 && (
