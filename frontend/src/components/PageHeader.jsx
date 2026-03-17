@@ -46,11 +46,11 @@ function QueuePopover({ onClose, containerRef }) {
   const pending = tasks.filter(t => t.status === "PENDING");
   const running = tasks.filter(t => t.status === "EXECUTING");
   const activeProjects = Object.entries(capacity)
-    .filter(([, c]) => c.active > 0 || pending.some(t => t.project_name === arguments[0]) || c.max_concurrent > 0)
+    .filter(([name, c]) => c.active > 0 || pending.some(t => t.project_name === name))
     .sort(([, a], [, b]) => b.active - a.active);
 
   return (
-    <div className="absolute right-0 top-full mt-2 z-50" style={{ minWidth: 280, maxWidth: 320 }}>
+    <div className="absolute right-0 top-full mt-2 z-50" style={{ width: 260 }}>
       <div className="absolute -top-1.5 right-3"
         style={{ width: 12, height: 12, transform: "rotate(45deg)", background: "var(--color-surface)", borderTop: "1px solid var(--color-edge)", borderLeft: "1px solid var(--color-edge)" }} />
       <div className="bg-surface border border-edge rounded-xl shadow-lg overflow-hidden" style={{ boxShadow: "0 8px 30px var(--color-shadow)" }}>
