@@ -1,12 +1,13 @@
 import { useState, useCallback, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import {
-  useNavigate, useLocation, MemoryRouter, Routes, Route, Navigate, NavLink,
+  useNavigate, useLocation, MemoryRouter, Routes, Route, Navigate,
   useNavigate as usePaneNavigate,
   useLocation as usePaneLocation,
   UNSAFE_LocationContext, UNSAFE_NavigationContext, UNSAFE_RouteContext,
 } from "react-router";
 import useTheme from "../hooks/useTheme";
 import DraggableFab from "../components/DraggableFab";
+import BottomNavBar from "../components/BottomNavBar";
 
 // Reset parent router context so MemoryRouter can be nested inside BrowserRouter.
 const ROUTE_CTX_DEFAULT = { outlet: null, matches: [], isDataRoute: false };
@@ -90,56 +91,6 @@ const LAYOUTS = [
   },
 ];
 
-// --- Pane tabs (simplified — no center fab, no badges) ---
-
-const paneTabs = [
-  {
-    to: "/projects",
-    label: "Projects",
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-      </svg>
-    ),
-  },
-  {
-    to: "/agents",
-    label: "Agents",
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-      </svg>
-    ),
-  },
-  {
-    to: "/new",
-    isCenter: true,
-    label: "New",
-    icon: (
-      <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-      </svg>
-    ),
-  },
-  {
-    to: "/tasks",
-    label: "Tasks",
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-      </svg>
-    ),
-  },
-  {
-    to: "/git",
-    label: "Git",
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
-      </svg>
-    ),
-  },
-];
 
 // --- PaneShell: mini-app rendered inside each MemoryRouter pane ---
 
@@ -187,45 +138,9 @@ function PaneShell({ theme, onToggleTheme, onPathChange }) {
         </Suspense>
       </main>
 
-      {/* Pane bottom nav — floating glass pill, mirrors main app nav */}
+      {/* Pane bottom nav — reuses shared BottomNavBar component */}
       {!hideNav && (
-        <div className="shrink-0 flex justify-center px-3 pb-1.5 -mt-1 pointer-events-none">
-          <nav className="glass-bar-nav rounded-[22px] grid grid-cols-5 items-center w-full pointer-events-auto" style={{ maxWidth: "22rem" }}>
-            {paneTabs.map((tab) =>
-              tab.isCenter ? (
-                <NavLink
-                  key={tab.to}
-                  to={tab.to}
-                  replace
-                  className={({ isActive }) =>
-                    `flex items-center justify-center mx-auto -mt-3 w-11 h-11 rounded-full transition-colors shadow-lg shadow-cyan-500/20 ${
-                      isActive
-                        ? "bg-cyan-500 text-white"
-                        : "bg-cyan-600 text-white hover:bg-cyan-500"
-                    }`
-                  }
-                >
-                  {tab.icon}
-                </NavLink>
-              ) : (
-                <NavLink
-                  key={tab.to}
-                  to={tab.to}
-                  replace
-                  className={({ isActive }) => {
-                    const active = tab.to === "/projects" ? location.pathname.startsWith("/projects") : isActive;
-                    return `relative flex flex-col items-center justify-center min-h-[48px] py-2 transition-colors ${
-                      active ? "text-cyan-400" : "text-dim hover:text-body"
-                    }`;
-                  }}
-                >
-                  {tab.icon}
-                  <span className="text-[10px] mt-0.5">{tab.label}</span>
-                </NavLink>
-              )
-            )}
-          </nav>
-        </div>
+        <BottomNavBar className="shrink-0 flex justify-center px-3 pb-1.5 -mt-1" />
       )}
     </div>
   );
