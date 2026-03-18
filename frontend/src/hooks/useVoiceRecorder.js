@@ -40,9 +40,37 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
   useEffect(() => { limitRef.current = limit; }, [limit]);
 
-  // When limit changes while not recording, reset the displayed countdown
+  // When limit changes while not recording, reset the displayed countdown.
+  // When limit changes mid-recording, reschedule the auto-stop timer.
   useEffect(() => {
-    if (!recording) setRemainingSeconds(limit / 1000);
+    if (!recording) {
+      setRemainingSeconds(limit / 1000);
+      return;
+    }
+    if (!startTimeRef.current) return;
+    const elapsed = Date.now() - startTimeRef.current;
+    const remainingMs = limit - elapsed;
+
+    setRemainingSeconds(Math.max(0, Math.ceil(remainingMs / 1000)));
+
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (remainingMs <= 0) {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+        setRecording(false);
+      }
+      if (countdownRef.current) clearInterval(countdownRef.current);
+      setRemainingSeconds(0);
+    } else {
+      timerRef.current = setTimeout(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+          setRecording(false);
+        }
+        if (countdownRef.current) clearInterval(countdownRef.current);
+        setRemainingSeconds(0);
+      }, remainingMs);
+    }
   }, [limit, recording]);
 
   // Cleanup on unmount
