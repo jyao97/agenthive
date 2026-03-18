@@ -1,21 +1,27 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { transcribeVoice } from "../lib/api";
 
-const MAX_RECORDING_MS = 300000; // 5 minutes
+export const DEFAULT_MAX_RECORDING_MS = 300000; // 5 minutes
 
 /**
  * Voice recording hook with AnalyserNode for waveform visualisation.
  *
+ * @param {object} opts
+ * @param {function} opts.onTranscript - called with transcribed text
+ * @param {function} opts.onError - called with error message string
+ * @param {number}   [opts.maxDurationMs] - recording time limit in ms (default 5 min)
+ *
  * Returns:
- *  recording, voiceLoading, micError, analyserNode,
+ *  recording, voiceLoading, micError, analyserNode, remainingSeconds,
  *  startRecording, stopRecording, toggleRecording
  */
-export default function useVoiceRecorder({ onTranscript, onError }) {
+export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs }) {
+  const limit = maxDurationMs || DEFAULT_MAX_RECORDING_MS;
   const [recording, setRecording] = useState(false);
   const [voiceLoading, setVoiceLoading] = useState(false);
   const [micError, setMicError] = useState(null);
   const [analyserNode, setAnalyserNode] = useState(null);
-  const [remainingSeconds, setRemainingSeconds] = useState(MAX_RECORDING_MS / 1000);
+  const [remainingSeconds, setRemainingSeconds] = useState(limit / 1000);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -29,8 +35,15 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
   // Keep stable refs for callbacks to avoid stale closures
   const onTranscriptRef = useRef(onTranscript);
   const onErrorRef = useRef(onError);
+  const limitRef = useRef(limit);
   useEffect(() => { onTranscriptRef.current = onTranscript; }, [onTranscript]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
+  useEffect(() => { limitRef.current = limit; }, [limit]);
+
+  // When limit changes while not recording, reset the displayed countdown
+  useEffect(() => {
+    if (!recording) setRemainingSeconds(limit / 1000);
+  }, [limit, recording]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -117,19 +130,20 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
         }
       };
 
+      const curLimit = limitRef.current;
       mediaRecorder.start();
       setRecording(true);
       startTimeRef.current = Date.now();
-      setRemainingSeconds(MAX_RECORDING_MS / 1000);
+      setRemainingSeconds(curLimit / 1000);
 
       // Update countdown every second
       countdownRef.current = setInterval(() => {
         const elapsed = Date.now() - startTimeRef.current;
-        const remaining = Math.max(0, Math.ceil((MAX_RECORDING_MS - elapsed) / 1000));
+        const remaining = Math.max(0, Math.ceil((limitRef.current - elapsed) / 1000));
         setRemainingSeconds(remaining);
       }, 1000);
 
-      // Auto-stop after MAX_RECORDING_MS
+      // Auto-stop after limit
       timerRef.current = setTimeout(() => {
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
           mediaRecorderRef.current.stop();
@@ -137,7 +151,7 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
         }
         if (countdownRef.current) clearInterval(countdownRef.current);
         setRemainingSeconds(0);
-      }, MAX_RECORDING_MS);
+      }, curLimit);
     } catch (err) {
       // Cleanup stream if MediaRecorder or AudioContext setup failed
       stream.getTracks().forEach((t) => t.stop());
@@ -155,7 +169,7 @@ export default function useVoiceRecorder({ onTranscript, onError }) {
       mediaRecorderRef.current.stop();
     }
     setRecording(false);
-    setRemainingSeconds(MAX_RECORDING_MS / 1000);
+    setRemainingSeconds(limitRef.current / 1000);
   }, []);
 
   const toggleRecording = useCallback(() => {
