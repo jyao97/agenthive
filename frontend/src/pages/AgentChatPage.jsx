@@ -3084,13 +3084,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           )}
           {agent.task_id && (
             <span
-              className="shrink-0 flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer hover:text-amber-300 transition-colors"
+              className="shrink-0 text-[10px] text-amber-400 underline cursor-pointer hover:text-amber-300 transition-colors"
               onClick={() => navigate(`/tasks/${agent.task_id}`)}
               title="View task"
             >
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-              </svg>
               Working on task
             </span>
           )}
