@@ -3084,7 +3084,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           )}
           {agent.task_id && (
             <span
-              className="shrink-0 text-[10px] text-amber-400 underline cursor-pointer hover:text-amber-300 transition-colors"
+              className="shrink-0 text-[10px] text-amber-400 opacity-50 cursor-pointer hover:opacity-80 transition-colors"
               onClick={() => navigate(`/tasks/${agent.task_id}`)}
               title="View task"
             >
