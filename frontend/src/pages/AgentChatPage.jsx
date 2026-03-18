@@ -1980,6 +1980,18 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [generateSummary, setGenerateSummary] = useState(false);
+  // Sync generateSummary with per-project localStorage preference
+  const generateSummaryInitialized = useRef(false);
+  useEffect(() => {
+    if (!agent?.project || generateSummaryInitialized.current) return;
+    const stored = localStorage.getItem(`pref:generateSummary:${agent.project}`);
+    if (stored !== null) setGenerateSummary(stored === "true");
+    generateSummaryInitialized.current = true;
+  }, [agent?.project]);
+  useEffect(() => {
+    if (!agent?.project || !generateSummaryInitialized.current) return;
+    localStorage.setItem(`pref:generateSummary:${agent.project}`, String(generateSummary));
+  }, [generateSummary, agent?.project]);
   const [resuming, setResuming] = useState(false);
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [starred, setStarred] = useState(false);
