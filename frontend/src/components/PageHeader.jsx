@@ -6,7 +6,7 @@ import { restartServer, fetchHealth, fetchQueueStatus, updateProjectSettings } f
 import { isSystemHealthy } from "../lib/constants";
 
 /* ── Queue Capacity Popover ── */
-function QueuePopover({ onClose, containerRef }) {
+function QueuePopover({ onClose, containerRef, navigate }) {
   const [data, setData] = useState(null);
 
   useEffect(() => {
@@ -131,7 +131,8 @@ function QueuePopover({ onClose, containerRef }) {
         {(pending.length > 0 || running.length > 0) && (
           <div className="border-t border-divider px-4 py-2.5 space-y-1.5 max-h-[180px] overflow-y-auto">
             {pending.map((t, i) => (
-              <div key={t.id} className="flex items-center gap-2 text-xs">
+              <div key={t.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5"
+                onClick={() => { onClose(); navigate(`/tasks/${t.id}`); }}>
                 <span className="w-4 h-4 rounded-full bg-amber-500/15 text-amber-500 flex items-center justify-center text-[9px] font-bold shrink-0">
                   {i + 1}
                 </span>
@@ -140,7 +141,8 @@ function QueuePopover({ onClose, containerRef }) {
               </div>
             ))}
             {running.map(t => (
-              <div key={t.id} className="flex items-center gap-2 text-xs">
+              <div key={t.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5"
+                onClick={() => { onClose(); navigate(t.agent_id ? `/agents/${t.agent_id}` : `/tasks/${t.id}`); }}>
                 <span className="w-4 h-4 rounded-full bg-cyan-500/15 text-cyan-500 flex items-center justify-center shrink-0">
                   <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -452,7 +454,7 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
               </svg>
             </button>
-            {showQueuePopover && <QueuePopover onClose={closeQueuePopover} containerRef={queueContainerRef} />}
+            {showQueuePopover && <QueuePopover onClose={closeQueuePopover} containerRef={queueContainerRef} navigate={navigate} />}
           </div>
         )}
         <button
