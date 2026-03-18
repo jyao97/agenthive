@@ -101,7 +101,7 @@ export function MonitorProvider({ children }) {
   }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats, fetchStorage, fetchTasks]);
 
   // Initial fetch on mount
-  useEffect(() => { refreshAll(); }, [refreshAll]);
+  useEffect(() => { refreshAll(); fetchUsage(); }, [refreshAll, fetchUsage]);
 
   // Background 5-minute poll (always running when tab is visible)
   useEffect(() => {
@@ -123,12 +123,15 @@ export function MonitorProvider({ children }) {
     const slowId = setInterval(() => {
       fetchStorage(); fetchTasks();
     }, 30000);
+    // Token usage: every 10 minutes
+    const usageId = setInterval(fetchUsage, 10 * 60 * 1000);
     return () => {
       clearInterval(fastId);
       clearInterval(healthId);
       clearInterval(slowId);
+      clearInterval(usageId);
     };
-  }, [visible, monitorActive, fetchAgents, fetchProcesses, fetchSysStats, fetchHealth, fetchStorage, fetchTasks]);
+  }, [visible, monitorActive, fetchAgents, fetchProcesses, fetchSysStats, fetchHealth, fetchStorage, fetchTasks, fetchUsage]);
 
   const activate = useCallback(() => setMonitorActive(true), []);
   const deactivate = useCallback(() => setMonitorActive(false), []);
