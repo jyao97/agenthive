@@ -3362,14 +3362,31 @@ async def task_queue_status(db: Session = Depends(get_db)):
             .filter(Agent.project == proj.name, Agent.status.in_(alive_statuses))
             .scalar()
         )
+        syncing = (
+            db.query(func.count(Agent.id))
+            .filter(Agent.project == proj.name, Agent.status == AgentStatus.SYNCING)
+            .scalar()
+        )
         capacity[proj.name] = {
             "max_concurrent": proj.max_concurrent,
             "active": active,
             "alive": alive,
+            "syncing": syncing,
         }
 
+    # Attach agent_status to each task for UI display
+    task_list = []
+    for t in queue_tasks:
+        d = TaskOut.model_validate(t).model_dump()
+        if t.agent_id:
+            agent = db.get(Agent, t.agent_id)
+            d["agent_status"] = agent.status.value if agent else None
+        else:
+            d["agent_status"] = None
+        task_list.append(d)
+
     return {
-        "tasks": [TaskOut.model_validate(t) for t in queue_tasks],
+        "tasks": task_list,
         "capacity": capacity,
     }
 
