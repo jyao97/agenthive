@@ -185,13 +185,14 @@ export default function NewTaskPage() {
     return msg;
   };
 
-  // ---- Dismiss (swipe down / backdrop tap) → save to inbox ----
+  // ---- Dismiss (swipe down / backdrop tap) → launch if project set, else inbox ----
   const dismissClosingRef = useRef(false);
   const submittingRef = useRef(false);
   const dismiss = async () => {
     if (dismissClosingRef.current || submittingRef.current) return;
-    dismissClosingRef.current = true;
     const hasContent = description.trim() || title.trim() || attachments.some((a) => a.uploadedPath);
+    if (hasContent && project) return launchAgent();
+    dismissClosingRef.current = true;
     if (hasContent) {
       try {
         const uploaded = attachments.filter((a) => a.uploadedPath);
@@ -230,8 +231,9 @@ export default function NewTaskPage() {
     await dismiss();
   };
 
-  // ---- Quick save: store to inbox, clear input, keep settings ----
+  // ---- Quick save: launch directly if project set, otherwise inbox ----
   const quickSave = async () => {
+    if (project) return launchAgent();
     if (submittingRef.current) return;
     const hasText = description.trim() || title.trim() || attachments.some((a) => a.uploadedPath);
     if (!hasText || attachments.some((a) => a.uploading)) return;
