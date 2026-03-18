@@ -64,3 +64,7 @@
 ### 2026-03-17 | Task: Make voice recording duration configurable | Status: success
 - What: `useVoiceRecorder` had a hardcoded `MAX_RECORDING_MS`. Refactored to accept `maxDurationMs` param (default `DEFAULT_MAX_RECORDING_MS = 300000`). Used a ref (`limitRef`) so in-flight timer closures always read the latest limit. Added effect to reset countdown display when limit changes while idle.
 - Lesson: Any value captured inside `useCallback` closures with minimal deps arrays must use refs to avoid stale reads — especially timers set once at recording start.
+
+### 2026-03-17 | Task: Unify split screen nav bar with main nav bar | Status: success
+- What: SplitScreenPage had its own `paneTabs` with different tab order, labels ("Tasks" vs "Inbox"), icon sizes, and center button — visually and behaviorally inconsistent with the main App.jsx nav. Extracted `tabs`, `CenterFab`, and nav rendering into a shared `BottomNavBar` component (`frontend/src/components/BottomNavBar.jsx`). Both App.jsx and SplitScreenPage now reuse it.
+- Lesson: Straightforward — no issues. Net reduction of ~56 lines. Key design: accept `badges`, `onDoubleTap`, `onProjectsTap`, and `className` as optional props so the same component works in both fixed-position (main app) and inline (split pane) contexts.
