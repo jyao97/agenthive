@@ -184,7 +184,7 @@ function TokenUsageSection({ tokenUsage, onRefresh }) {
       <div className="rounded-xl bg-surface shadow-card p-4 space-y-3">
         {!tokenUsage || tokenUsage._error ? (
           <p className="text-xs text-faint">
-            {tokenUsage?._error ? "Unable to fetch — tap refresh to retry" : "Tap refresh to load"}
+            {tokenUsage?._error ? "Unable to fetch — tap refresh to retry" : "Loading..."}
           </p>
         ) : (
           <>
@@ -387,7 +387,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
           </section>
         )}
 
-        {/* Token Usage — manual refresh only */}
+        {/* Token Usage — auto-refreshes every 10 min */}
         <TokenUsageSection tokenUsage={tokenUsage} onRefresh={refreshTokenUsage} />
 
         {/* Storage */}

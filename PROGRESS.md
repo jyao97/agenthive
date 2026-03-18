@@ -52,3 +52,7 @@
 ### 2026-03-17 | Task: NewTaskPage launch agent button | Status: success
 - What: Added "Launch Agent" button (cyan send icon) to NewTaskPage bottom sheet that appears when a project is selected. Calls `launchTmuxAgent` directly, navigates to agent chat page. Grid columns adjust dynamically (6 → 7 cols when project selected).
 - Lesson: Straightforward — reused existing `launchTmuxAgent` API and matched the button pattern from NewAgentForm
+
+### 2026-03-17 | Task: Monitor page token usage auto-refresh (10 min) | Status: success
+- What: Token usage was manual-refresh only. Added `fetchUsage` to mount effect and a 10-minute `setInterval` in the active polling `useEffect`. Backend already has 120s cache TTL so no rate-limit concerns.
+- Lesson: Straightforward — `fetchUsage` was already defined but just wasn't wired into any polling interval
