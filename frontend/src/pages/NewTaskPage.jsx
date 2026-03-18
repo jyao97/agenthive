@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { createTaskV2, uploadFile, generateWorktreeName } from "../lib/api";
+import { createTaskV2, launchTmuxAgent, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
 import { DATE_SHORT } from "../lib/formatters";
 import ProjectSelector from "../components/ProjectSelector";
@@ -264,6 +264,37 @@ export default function NewTaskPage() {
     }
   };
 
+  // ---- Launch agent directly (when project is selected) ----
+  const launchAgent = async () => {
+    if (submittingRef.current || !project) return;
+    const hasText = description.trim() || title.trim() || attachments.some((a) => a.uploadedPath);
+    if (!hasText || attachments.some((a) => a.uploading)) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      const uploaded = attachments.filter((a) => a.uploadedPath);
+      const fullPrompt = buildDescriptionText(description.trim() || title.trim(), uploaded);
+      const agent = await launchTmuxAgent({
+        project,
+        prompt: fullPrompt,
+        model: model || undefined,
+        effort: effort || undefined,
+        worktree: worktree || undefined,
+        skip_permissions: skipPermissions,
+      });
+      clearAllDrafts();
+      clearAttachments();
+      setNotifyAt(null);
+      setIsClosing(true);
+      setTimeout(() => navigate(`/agents/${agent.id}`), 250);
+    } catch (err) {
+      showToast("Launch failed: " + err.message, "error");
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
   // ---- Attach/detach notify_at reminder time ----
   const handlePickReminder = (isoString) => {
     setNotifyAt(isoString);
@@ -397,7 +428,7 @@ export default function NewTaskPage() {
                   </div>
                 )}
                 <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={handleFileSelect} />
-                <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-1.5 items-center px-1">
+                <div className={`grid gap-1.5 items-center px-1 ${project ? "grid-cols-[auto_1fr_auto_auto_auto_auto_auto]" : "grid-cols-[auto_1fr_auto_auto_auto_auto]"}`}>
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
@@ -446,6 +477,23 @@ export default function NewTaskPage() {
                       />
                     )}
                   </div>
+                  {project && (
+                    <button
+                      type="button"
+                      onClick={launchAgent}
+                      disabled={!hasContent || submitting || anyUploading}
+                      className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                        !hasContent || submitting || anyUploading
+                          ? "bg-elevated text-dim cursor-not-allowed"
+                          : "bg-cyan-500 hover:bg-cyan-400 text-white"
+                      }`}
+                      title="Launch agent"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                      </svg>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => dismiss()}
