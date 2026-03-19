@@ -28,7 +28,6 @@ from models import (
     Task,
     TaskStatus,
 )
-from task_state import TaskStateMachine
 from session_cache import (
     session_source_dir,
     cache_session,
@@ -1572,7 +1571,7 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, s
 
 def _update_stale_interactive_metadata(
     db: "Session", agent_id: str, turns: list[tuple]
-) -> bool:
+) -> list[tuple[str, dict]]:
     """Update DB messages whose interactive metadata has stale (null) answers.
 
     When a user answers an AskUserQuestion in the terminal, the tool_result
@@ -1581,7 +1580,7 @@ def _update_stale_interactive_metadata(
     But the sync loop may have already stored the assistant message with
     answer=null.  This function re-checks and patches those stale entries.
 
-    Returns True if any DB messages were updated.
+    Returns a list of (message_id, metadata_dict) tuples for each changed message.
     """
     # 1. Collect all interactive items with non-null answers, keyed by tool_use_id
     answered: dict[str, str] = {}
@@ -1603,16 +1602,38 @@ def _update_stale_interactive_metadata(
                     continue
                 answered[item["tool_use_id"]] = a
 
-    if not answered:
-        return False
-
     # 2. Query DB messages with metadata for this agent
     db_msgs = db.query(Message).filter(
         Message.agent_id == agent_id,
         Message.meta_json.is_not(None),
     ).all()
 
+    # 2b. Also collect answers from DB messages (cross-message propagation).
+    # This handles the case where one message (e.g. JSONL-sourced) has the
+    # answer but a sibling message (e.g. hook-created) with the same
+    # tool_use_id still has answer=None.
+    for msg in db_msgs:
+        try:
+            meta = json.loads(msg.meta_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for item in meta.get("interactive", []):
+            a = item.get("answer")
+            tid = item.get("tool_use_id", "")
+            if a is not None and tid and tid not in answered:
+                if isinstance(a, str) and (
+                    a.startswith("The user doesn't want to proceed")
+                    or a.startswith("User declined")
+                    or a.startswith("Tool use rejected")
+                ):
+                    continue
+                answered[tid] = a
+
+    if not answered:
+        return []
+
     updated = False
+    changed_msgs: list[tuple[str, dict]] = []
     for msg in db_msgs:
         try:
             meta = json.loads(msg.meta_json)
@@ -1631,6 +1652,7 @@ def _update_stale_interactive_metadata(
                 msg_changed = True
         if msg_changed:
             msg.meta_json = json.dumps(meta)
+            changed_msgs.append((msg.id, meta))
             updated = True
 
     if updated:
@@ -1676,6 +1698,7 @@ def _update_stale_interactive_metadata(
                 if turn_uuid and msg.jsonl_uuid and turn_uuid == msg.jsonl_uuid:
                     msg.meta_json = json.dumps(turn_meta)
                     existing_tids.update(turn_tids)
+                    changed_msgs.append((msg.id, turn_meta))
                     updated = True
                     break
                 # Secondary: content prefix fallback
@@ -1690,12 +1713,13 @@ def _update_stale_interactive_metadata(
                 ):
                     msg.meta_json = json.dumps(turn_meta)
                     existing_tids.update(turn_tids)
+                    changed_msgs.append((msg.id, turn_meta))
                     updated = True
                     break
         if updated:
             db.commit()
 
-    return updated
+    return changed_msgs
 
 
 # ---- tmux helpers ----
@@ -3276,18 +3300,6 @@ Here are the day's conversations (with timestamps):
             task.worktree_name = wt_name
             branch = f"worktree-{wt_name}"
             task.branch_name = branch
-        else:
-            # Non-worktree: record HEAD so we can revert agent's changes later
-            import subprocess
-            try:
-                head = subprocess.run(
-                    ["git", "rev-parse", "HEAD"], cwd=proj.path,
-                    capture_output=True, text=True, timeout=10,
-                ).stdout.strip()
-                if head and len(head) >= 7:
-                    task.try_base_commit = head
-            except Exception:
-                logger.warning("Failed to capture git HEAD for task %s in %s", task.id, proj.path, exc_info=True)
 
         model = task.model or proj.default_model or CC_MODEL
         prompt = self._build_task_prompt(task, db)
@@ -3333,9 +3345,6 @@ Here are the day's conversations (with timestamps):
         if task.attempt_number > 1 and task.retry_context:
             parts.append(f"\n## Previous Attempt Context (attempt #{task.attempt_number})")
             parts.append(task.retry_context)
-        if task.rejection_reason:
-            parts.append(f"\n## Rejection Reason from Previous Attempt")
-            parts.append(task.rejection_reason)
         if task.attempt_number > 1:
             parts.append(f"\n## Redo Context")
             parts.append(
@@ -3345,7 +3354,7 @@ Here are the day's conversations (with timestamps):
             )
 
         # Inject relevant insights from FTS5 RAG
-        project_name = task.project_name or task.project
+        project_name = task.project_name
         insights_block = ""
         if db and project_name:
             try:
@@ -3371,376 +3380,6 @@ Here are the day's conversations (with timestamps):
         parts.append("- Leave a summary of what was done as your final message")
         return "\n".join(parts)
 
-    def _build_planning_prompt(self, task: Task, db: Session | None = None) -> str:
-        """Build a planning-phase prompt that encourages exploration and Q&A.
-
-        Note: insights are NOT embedded here — _prepare_dispatch handles them
-        via metadata (for InsightsBubble) and _build_agent_prompt (for Claude).
-        """
-        return (
-            f"# Planning: {task.title}\n"
-            f"\n"
-            f"{task.description or '(no description provided)'}\n"
-            f"\n"
-            f"## Your Role\n"
-            f"You are a **planning agent**. Your goal is to thoroughly explore the codebase, "
-            f"understand the problem, and produce a detailed implementation plan. "
-            f"Do NOT write any code or make changes yet.\n"
-            f"\n"
-            f"## Process\n"
-            f"1. **Read CLAUDE.md** and PROGRESS.md to understand project conventions and recent work\n"
-            f"2. **Explore the codebase** — read relevant files, trace the full code flow, "
-            f"understand the architecture. Be thorough: check all related files, not just the obvious ones\n"
-            f"3. **Ask questions** if anything is unclear or if the task is ambiguous. "
-            f"Don't assume — ask early, ask often. The user is here to answer.\n"
-            f"4. **Identify risks** — what could go wrong? Are there edge cases? "
-            f"Will this break existing functionality?\n"
-            f"5. **Produce a plan** — when you have enough understanding, output a clear, "
-            f"step-by-step implementation plan\n"
-            f"\n"
-            f"## Plan Output Format\n"
-            f"When ready, present your plan as:\n"
-            f"```\n"
-            f"## Implementation Plan\n"
-            f"### Summary\n"
-            f"(1-2 sentence overview)\n"
-            f"\n"
-            f"### Files to Modify\n"
-            f"- `path/to/file.py` — what changes and why\n"
-            f"\n"
-            f"### Steps\n"
-            f"1. Step one (specific, actionable)\n"
-            f"2. Step two\n"
-            f"...\n"
-            f"\n"
-            f"### Risks & Edge Cases\n"
-            f"- Risk description and mitigation\n"
-            f"\n"
-            f"### Open Questions (if any)\n"
-            f"- Questions that still need answers before execution\n"
-            f"```\n"
-            f"\n"
-            f"## Safety Rules\n"
-            f"- Do NOT modify any code, commit, or push — planning only\n"
-            f"- Do NOT run destructive commands (`git reset --hard`, `rm -rf`, etc.)\n"
-            f"- You may run read-only commands (tests, builds, grep) to understand the codebase\n"
-        )
-
-    def _dispatch_planning_tasks(self, db: Session):
-        """Auto-create tmux planning agents for PLANNING tasks without agents."""
-        import secrets
-        import shlex
-        from main import _preflight_claude_project, _create_tmux_claude_session, _launch_tmux_background
-
-        tasks = (
-            db.query(Task)
-            .filter(
-                Task.status == TaskStatus.PLANNING,
-                Task.agent_id.is_(None),
-            )
-            .order_by(Task.created_at.asc())
-            .limit(3)
-            .all()
-        )
-        if not tasks:
-            return
-
-        for task in tasks:
-            proj = db.query(Project).filter(Project.name == task.project_name).first()
-            if not proj:
-                logger.warning("Planning task %s: project %s not found, skipping", task.id, task.project_name)
-                continue
-
-            # Check project capacity
-            active = (
-                db.query(Agent)
-                .filter(Agent.project == proj.name)
-                .filter(Agent.status.in_(ACTIVE_STATUSES))
-                .count()
-            )
-            if active >= proj.max_concurrent:
-                continue
-
-            try:
-                # Generate unique agent ID
-                for _ in range(20):
-                    agent_hex = secrets.token_hex(6)
-                    if db.get(Agent, agent_hex) is None:
-                        break
-                else:
-                    continue
-
-                model = task.model or proj.default_model or CC_MODEL
-                prompt = self._build_planning_prompt(task, db)
-
-                # Pre-generate session UUID for identity tracking
-                import uuid as _uuid
-                pre_session_id = str(_uuid.uuid4())
-
-                # Build tmux claude command (interactive, no -p)
-                from config import CLAUDE_BIN
-                cmd_parts = [
-                    CLAUDE_BIN,
-                    "--session-id", pre_session_id,
-                    "--output-format", "stream-json", "--verbose",
-                    "--dangerously-skip-permissions",
-                ]
-                if model:
-                    cmd_parts += ["--model", model]
-                effort = task.effort or "high"
-                if effort:
-                    cmd_parts += ["--effort", effort]
-                claude_cmd = " ".join(shlex.quote(p) for p in cmd_parts)
-
-                # Pre-write .owner sidecar before launching Claude
-                _sdir = session_source_dir(proj.path)
-                os.makedirs(_sdir, exist_ok=True)
-                _write_session_owner(_sdir, pre_session_id, agent_hex)
-
-                # Create tmux session
-                tmux_session = f"ah-{agent_hex[:8]}"
-                _preflight_claude_project(proj.path)
-                pane_id = _create_tmux_claude_session(tmux_session, proj.path, claude_cmd, agent_id=agent_hex)
-
-                # Create Agent record
-                agent = Agent(
-                    id=agent_hex,
-                    project=proj.name,
-                    name=f"Plan: {task.title[:80]}",
-                    mode=AgentMode.AUTO,
-                    status=AgentStatus.STARTING,
-                    model=model,
-                    cli_sync=True,
-                    tmux_pane=pane_id,
-                    effort=effort,
-                    skip_permissions=True,
-                    task_id=task.id,
-                    muted=True,  # task agents: message notifications off by default
-                    last_message_preview=f"Planning: {task.title[:60]}",
-                    last_message_at=_utcnow(),
-                )
-                db.add(agent)
-                db.flush()
-
-                # Link task → agent
-                task.agent_id = agent.id
-                task.started_at = _utcnow()
-
-                # Save prompt as completed message + prepare wrapped version
-                msg, launch_prompt, _ = self._prepare_dispatch(
-                    db, agent, proj, prompt,
-                    source="task",
-                    wrap_prompt=True,
-                )
-                msg.status = MessageStatus.COMPLETED
-                msg.completed_at = _utcnow()
-
-                db.commit()
-                db.refresh(agent)
-
-                # Schedule background launch: wait for TUI, send prompt, start sync
-                launch_task = asyncio.ensure_future(
-                    _launch_tmux_background(
-                        self, agent.id, pane_id, launch_prompt, proj.path,
-                        pre_session_id=pre_session_id,
-                    )
-                )
-                self.track_launch_task(agent.id, launch_task)
-
-                from websocket import emit_task_update, emit_agent_update
-                self._emit(emit_task_update(
-                    task.id, task.status.value, task.project_name or "",
-                    title=task.title, agent_id=agent.id,
-                ))
-                self._emit(emit_agent_update(agent.id, AgentStatus.STARTING.value, proj.name))
-
-                logger.info("Planning task %s: launched tmux agent %s", task.id, agent.id)
-
-            except Exception:
-                db.rollback()
-                logger.exception("Failed to launch planning agent for task %s", task.id)
-
-    def _harvest_task_completions(self, db: Session):
-        """Check EXECUTING v2 tasks — update summaries, handle errors.
-
-        New lifecycle: tasks stay EXECUTING until user manually stops.
-        Agent stopping just means it finished a response — user can send
-        more messages to continue the conversation.
-        """
-        tasks = (
-            db.query(Task)
-            .filter(Task.status == TaskStatus.EXECUTING)
-            .filter(Task.agent_id.isnot(None))
-            .all()
-        )
-        for task in tasks:
-            agent = db.get(Agent, task.agent_id)
-            if not agent:
-                # Agent deleted while task was EXECUTING — fail the task
-                TaskStateMachine.transition(task, TaskStatus.FAILED)
-                task.error_message = "Agent was deleted while task was executing"
-                db.commit()
-                from websocket import emit_task_update
-                self._emit(emit_task_update(
-                    task.id, task.status.value, task.project_name or "",
-                    title=task.title,
-                ))
-                logger.info("Task %s FAILED (agent deleted)", task.id)
-                continue
-            if agent.status in (AgentStatus.IDLE, AgentStatus.STOPPED):
-                # Skip agents that haven't executed yet (still waiting for dispatch)
-                has_pending = (
-                    db.query(Message)
-                    .filter(Message.agent_id == agent.id, Message.status == MessageStatus.PENDING)
-                    .count()
-                )
-                if has_pending and agent.status == AgentStatus.IDLE:
-                    continue
-                # Agent finished a response — update summary but keep task EXECUTING.
-                # User can continue chatting; only manual stop ends the task.
-                last_msg = (
-                    db.query(Message)
-                    .filter(Message.agent_id == agent.id, Message.role == MessageRole.AGENT)
-                    .order_by(Message.created_at.desc())
-                    .first()
-                )
-                from main import read_stop_summary
-                hook_summary = read_stop_summary(agent.id)
-                msg_summary = last_msg.content[:2000] if (last_msg and last_msg.content) else None
-                if msg_summary or hook_summary:
-                    task.agent_summary = msg_summary or hook_summary
-                    if task.agent_summary and (task.project_name or task.project):
-                        try:
-                            today_str = _utcnow().strftime("%Y-%m-%d")
-                            clean_summary = " ".join(task.agent_summary[:500].split())
-                            summary_line = f"1. {task.title[:80]}: {clean_summary}"
-                            store_insights(db, task.project_name or task.project, today_str, summary_line, agent_id=agent.id)
-                        except Exception:
-                            logger.debug("Failed to store task-completion insight for task %s", task.id, exc_info=True)
-                    db.commit()
-                # Task stays EXECUTING — no auto-transition, no agent cleanup
-            elif agent.status == AgentStatus.ERROR:
-                TaskStateMachine.transition(task, TaskStatus.FAILED)
-                task.error_message = "Agent encountered an error"
-                db.commit()
-                from websocket import emit_task_update
-                self._emit(emit_task_update(
-                    task.id, task.status.value, task.project_name or "",
-                    title=task.title,
-                ))
-
-        # --- MERGING tasks: legacy cleanup ---
-        # Merges are now performed synchronously in approve_task_v2.
-        # Fail any stale MERGING tasks that may have been left over.
-        stale_merging = (
-            db.query(Task)
-            .filter(Task.status == TaskStatus.MERGING)
-            .all()
-        )
-        for task in stale_merging:
-            # Stop linked agent if still running/idle
-            if task.agent_id:
-                agent = db.get(Agent, task.agent_id)
-                if agent:
-                    self.stop_agent_cleanup(
-                        db, agent, "",
-                        add_message=False, emit=True, cancel_tasks=False,
-                    )
-            # Stop verify sub-agents
-            for va in _query_verify_agents(db, task.id):
-                self.stop_agent_cleanup(
-                    db, va, "",
-                    add_message=False, emit=True, cancel_tasks=False,
-                )
-            TaskStateMachine.transition(task, TaskStatus.FAILED)
-            task.error_message = "Stale merge task — please re-approve"
-            db.commit()
-            from websocket import emit_task_update
-            self._emit(emit_task_update(
-                task.id, task.status.value, task.project_name or "",
-                title=task.title,
-            ))
-            logger.info("Task %s: failed stale MERGING task", task.id)
-
-
-    def _harvest_verify_completions(self, db: Session):
-        """Check verification sub-agents — when done, update task review_artifacts."""
-        verify_agents = (
-            db.query(Agent)
-            .filter(
-                Agent.is_subagent == True,
-                Agent.name.like("Verify:%"),
-                Agent.task_id.isnot(None),
-                Agent.status.in_([AgentStatus.STOPPED, AgentStatus.ERROR, AgentStatus.IDLE]),
-            )
-            .all()
-        )
-        for agent in verify_agents:
-            task = db.get(Task, agent.task_id)
-            if not task:
-                continue
-
-            # Parse current review_artifacts
-            import json as _json
-            artifacts = {}
-            if task.review_artifacts:
-                try:
-                    artifacts = _json.loads(task.review_artifacts)
-                except (ValueError, TypeError):
-                    logger.warning("Bad review_artifacts JSON for task %s", task.id, exc_info=True)
-                    artifacts = {}
-
-            # Skip if already harvested
-            if artifacts.get("verify_status") != "running":
-                continue
-            if artifacts.get("verify_agent_id") != agent.id:
-                continue
-
-            # Get the agent's last message (verification result)
-            last_msg = (
-                db.query(Message)
-                .filter(Message.agent_id == agent.id, Message.role == MessageRole.AGENT)
-                .order_by(Message.created_at.desc())
-                .first()
-            )
-
-            # Skip IDLE agents that haven't been dispatched yet (no messages)
-            if agent.status == AgentStatus.IDLE and not last_msg:
-                continue
-
-            if agent.status == AgentStatus.ERROR or not last_msg:
-                artifacts["verify_status"] = "error"
-                artifacts["verify_result"] = "Verification agent failed without output"
-            else:
-                content = last_msg.content or ""
-                # Parse verdict from output
-                verdict = "UNKNOWN"
-                for line in content.split("\n"):
-                    stripped = line.strip()
-                    if stripped.startswith("VERDICT:"):
-                        verdict = stripped.split(":", 1)[1].strip().upper()
-                        break
-
-                if verdict.startswith("PASS"):
-                    artifacts["verify_status"] = "pass"
-                elif verdict.startswith("FAIL"):
-                    artifacts["verify_status"] = "fail"
-                elif verdict.startswith("WARN"):
-                    artifacts["verify_status"] = "warn"
-                else:
-                    artifacts["verify_status"] = "done"
-                artifacts["verify_result"] = content[:3000]
-
-            task.review_artifacts = _json.dumps(artifacts)
-            db.commit()
-
-            from websocket import emit_task_update
-            self._emit(emit_task_update(
-                task.id, task.status.value, task.project_name or "",
-                title=task.title,
-            ))
-            logger.info("Task %s: verification %s (agent %s)", task.id, artifacts["verify_status"], agent.id)
-
     def _tick(self, db: Session):
         # Invalidate per-tick tmux map cache
         self._tmux_map_cache = None
@@ -3754,17 +3393,8 @@ Here are the day's conversations (with timestamps):
         # 0pre. Check scheduled tasks (notify_at reminders + dispatch_at auto-dispatch)
         self._check_scheduled_tasks(db)
 
-        # 0a-1. Dispatch PLANNING v2 tasks → create planning agents (tmux)
-        self._dispatch_planning_tasks(db)
-
-        # 0a-2. Dispatch PENDING v2 tasks → create execution agents
+        # 0a. Dispatch PENDING v2 tasks → create execution agents
         self._dispatch_pending_tasks(db)
-
-        # 0b. Harvest v2 task completions (agent done → REVIEW)
-        self._harvest_task_completions(db)
-
-        # 0c. Harvest verification agent completions
-        self._harvest_verify_completions(db)
 
         # 0. Early session_id assignment — grab session_id from output init
         #    event as soon as Claude starts, so auto-detect can see it.
@@ -3994,6 +3624,52 @@ Here are the day's conversations (with timestamps):
                     delivered_at=_now,
                 )
                 db.add(resp)
+
+                # Backfill hook-created interactive cards with answers from result
+                if result_meta_json:
+                    try:
+                        result_meta = json.loads(result_meta_json)
+                        result_items = result_meta.get("interactive", [])
+                        # Build map of answered items from result
+                        answered_items = {}
+                        for ri in result_items:
+                            if ri.get("answer") is not None:
+                                answered_items[ri["tool_use_id"]] = ri
+                        if answered_items:
+                            # Find hook-created card messages with null answers
+                            card_msgs = db.query(Message).filter(
+                                Message.agent_id == agent.id,
+                                Message.meta_json.is_not(None),
+                                Message.id != resp.id,  # not the message we just created
+                            ).all()
+                            for cm in card_msgs:
+                                try:
+                                    cm_meta = json.loads(cm.meta_json)
+                                except (json.JSONDecodeError, TypeError):
+                                    continue
+                                cm_items = cm_meta.get("interactive", [])
+                                if not cm_items:
+                                    continue
+                                cm_changed = False
+                                for ci in cm_items:
+                                    tid = ci.get("tool_use_id", "")
+                                    if ci.get("answer") is None and tid in answered_items:
+                                        ri = answered_items[tid]
+                                        ci["answer"] = ri["answer"]
+                                        if "selected_index" in ri:
+                                            ci["selected_index"] = ri["selected_index"]
+                                        if "selected_indices" in ri:
+                                            ci["selected_indices"] = ri["selected_indices"]
+                                        if ri.get("auto_approved"):
+                                            ci["auto_approved"] = True
+                                        cm_changed = True
+                                if cm_changed:
+                                    cm.meta_json = json.dumps(cm_meta)
+                                    from websocket import emit_metadata_update
+                                    self._emit(emit_metadata_update(agent.id, cm.id, cm_meta))
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning("Failed to backfill interactive cards for agent %s", agent.id, exc_info=True)
+
                 agent.status = post_exec_status
                 # Successful completion — reset retry counters
                 self._stale_session_retries.pop(agent_id, None)

@@ -266,6 +266,25 @@ async def emit_tool_activity(agent_id: str, tool_name: str, phase: str,
     await ws_manager.broadcast("tool_activity", payload)
 
 
+async def emit_metadata_update(agent_id: str, message_id: str,
+                                metadata: dict):
+    """Notify clients that a message's interactive metadata changed."""
+    await ws_manager.broadcast("metadata_update", {
+        "agent_id": agent_id,
+        "message_id": message_id,
+        "metadata": metadata,
+    })
+
+
+async def emit_progress_suggestions_ready(agent_id: str, count: int, project: str):
+    """Notify clients that agent insight suggestions are ready for review."""
+    await ws_manager.broadcast("progress_suggestions_ready", {
+        "agent_id": agent_id,
+        "count": count,
+        "project": project,
+    })
+
+
 def _tool_input_summary(tool_name: str, tool_input: dict) -> str:
     """Build a short human-readable summary from tool input."""
     if tool_name == "Bash":

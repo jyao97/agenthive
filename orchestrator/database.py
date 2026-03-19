@@ -465,6 +465,14 @@ def init_db():
                 ))
                 conn.commit()
 
+        # --- Add has_pending_suggestions column to agents if missing ---
+        agent_cols_suggestions = _table_columns(conn, "agents")
+        if "has_pending_suggestions" not in agent_cols_suggestions:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN has_pending_suggestions BOOLEAN NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+
         # --- progress_insights FTS5 ---
         tables = [r[0] for r in conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table'"

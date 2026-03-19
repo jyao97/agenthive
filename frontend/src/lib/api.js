@@ -138,10 +138,7 @@ export const updateProjectSettings = (project, settings) =>
 export const rebuildInsights = (project) =>
   request(`/api/projects/${e(project)}/rebuild-insights`, { method: "POST" });
 
-// --- Tasks (agent-sourced: each USER message = one task) ---
-export const fetchTask = (id) => request(`/api/tasks/${id}`);
-
-// --- Tasks v2 (first-class Task entity) ---
+// --- Tasks ---
 export const fetchTasksV2 = (params = "") =>
   request(`/api/v2/tasks${params ? `?${params}` : ""}`);
 export const fetchTaskCounts = () => request("/api/v2/tasks/counts");
@@ -152,31 +149,13 @@ export const updateTaskV2 = (id, data) =>
   request(`/api/v2/tasks/${id}`, { method: "PUT", body: JSON.stringify(data) });
 export const reorderTasks = (taskIds) =>
   request("/api/v2/tasks/reorder", { method: "PUT", body: JSON.stringify({ task_ids: taskIds }) });
-export const planTask = (id) =>
-  request(`/api/v2/tasks/${id}/plan`, { method: "POST" });
 export const dispatchTask = (id) =>
   request(`/api/v2/tasks/${id}/dispatch`, { method: "POST" });
-export const approveTask = (id) =>
-  request(`/api/v2/tasks/${id}/approve`, { method: "POST" });
-export const rejectTask = (id, reason) =>
-  request(`/api/v2/tasks/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
 export const cancelTask = (id) =>
   request(`/api/v2/tasks/${id}/cancel`, { method: "POST" });
 export const completeTask = (id) =>
   request(`/api/v2/tasks/${id}/complete`, { method: "POST" });
-export const tryTaskChanges = (id) =>
-  request(`/api/v2/tasks/${id}/try-changes`, { method: "POST" });
-export const revertTaskChanges = (id) =>
-  request(`/api/v2/tasks/${id}/revert-try`, { method: "POST" });
-export const verifyTask = (id) =>
-  request(`/api/v2/tasks/${id}/verify`, { method: "POST" });
 export const fetchQueueStatus = () => request("/api/v2/tasks/queue");
-export const batchProcessTasks = (taskIds) =>
-  request("/api/v2/tasks/batch-process", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(taskIds ? { task_ids: taskIds } : {}),
-  });
 
 // --- Agents ---
 export const fetchAgents = (params = "") =>

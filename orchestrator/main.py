@@ -43,15 +43,13 @@ from models import (
     Task,
     TaskStatus,
 )
-from agent_dispatcher import ACTIVE_STATUSES, ALIVE_STATUSES, TERMINAL_STATUSES, _query_verify_agents
+from agent_dispatcher import ACTIVE_STATUSES, ALIVE_STATUSES, TERMINAL_STATUSES
 from utils import utcnow as _utcnow
 from schemas import (
     AgentBrief,
     AgentCreate,
     AgentInsightSuggestionOut,
     AgentOut,
-    AgentTaskBrief,
-    AgentTaskDetail,
     HealthResponse,
     MessageOut,
     MessageSearchResponse,
@@ -66,7 +64,6 @@ from schemas import (
     TaskCreate,
     TaskDetailOut,
     TaskOut,
-    TaskRejectRequest,
     TaskUpdate,
     UpdateMessage,
 )
@@ -181,25 +178,6 @@ def _graceful_kill_tmux(pane_id: str, session_name: str):
         logger.debug("tmux kill-session %s failed (may already be dead)", session_name)
 
 
-def _effective_task_status(msg: Message, agent: Agent) -> str:
-    """Derive a user-facing task status from message + agent state."""
-    if msg.status == MessageStatus.COMPLETED:
-        return "COMPLETED"
-    if msg.status == MessageStatus.FAILED:
-        return "FAILED"
-    if msg.status == MessageStatus.TIMEOUT:
-        return "TIMEOUT"
-    if msg.status == MessageStatus.EXECUTING:
-        return "EXECUTING"
-    # PENDING — derive from agent state
-    if agent.status == AgentStatus.SYNCING:
-        return "SYNCING"
-    if agent.status == AgentStatus.ERROR:
-        return "FAILED"
-    if agent.status == AgentStatus.STOPPED:
-        return "CANCELLED"
-    return "PENDING"
-
 
 def _compute_successor_id(agent_id: str, db: Session) -> str | None:
     """Return the ID of the most recent successor (non-subagent) agent, if any."""
@@ -312,28 +290,23 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to disable session cleanup")
 
     # Start dispatchers and git manager
-    dispatch_task = None
     agent_dispatch_task = None
     backup_task = None
     session_cache_task = None
     try:
         from agent_dispatcher import AgentDispatcher
-        from dispatcher import TaskDispatcher
         from git_manager import GitManager
         from worker_manager import WorkerManager
         wm = WorkerManager()
-        dispatcher = TaskDispatcher(wm)
         agent_dispatcher = AgentDispatcher(wm)
         gm = GitManager()
         from permissions import PermissionManager
         app.state.permission_manager = PermissionManager()
-        app.state.dispatcher = dispatcher
         app.state.agent_dispatcher = agent_dispatcher
         app.state.worker_manager = wm
         app.state.git_manager = gm
-        dispatch_task = asyncio.create_task(dispatcher.run())
         agent_dispatch_task = asyncio.create_task(agent_dispatcher.run())
-        logger.info("Dispatchers started")
+        logger.info("Dispatcher started")
 
         # Start session cache loop
         try:
@@ -407,7 +380,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    for task in (dispatch_task, agent_dispatch_task, backup_task, session_cache_task, ws_prune_task):
+    for task in (agent_dispatch_task, backup_task, session_cache_task, ws_prune_task):
         if task:
             task.cancel()
             try:
@@ -416,8 +389,6 @@ async def lifespan(app: FastAPI):
                 pass
             except Exception:
                 logger.exception("Background task raised during shutdown")
-    if dispatch_task:
-        dispatcher.stop()
     if agent_dispatch_task:
         agent_dispatcher.stop()
     logger.info("AgentHive shutting down...")
@@ -3077,97 +3048,7 @@ async def browse_project_file(name: str, path: str, db: Session = Depends(get_db
                 "message": f"Cannot read file: {e}"}
 
 
-# ---- Tasks (agent-sourced: each USER message = one task) ----
-
-# DEPRECATED: v1 task listing (treats each USER message as a task).
-# Only the GET-by-id variant (/api/tasks/{task_id}) is still used by TaskDetail.jsx.
-# Prefer /api/v2/tasks for all new code. Will be removed after TaskDetail.jsx migration.
-@app.get("/api/tasks", response_model=list[AgentTaskBrief])
-async def list_tasks(
-    project: str | None = None,
-    status: str | None = None,
-    limit: int = 50,
-    db: Session = Depends(get_db),
-):
-    """List tasks (each USER message is a task) with optional filters."""
-    q = (
-        db.query(Message, Agent)
-        .join(Agent, Message.agent_id == Agent.id)
-        .filter(Message.role == MessageRole.USER)
-    )
-    if project:
-        q = q.filter(Agent.project == project)
-    rows = q.order_by(Message.created_at.desc()).limit(limit * 2).all()
-
-    tasks = []
-    for msg, agent in rows:
-        eff = _effective_task_status(msg, agent)
-        if status and eff != status:
-            continue
-        tasks.append(AgentTaskBrief(
-            id=msg.id,
-            agent_id=agent.id,
-            agent_name=agent.name,
-            project=agent.project,
-            mode=agent.mode,
-            prompt=msg.content,
-            status=eff,
-            created_at=msg.created_at,
-            completed_at=msg.completed_at,
-        ))
-        if len(tasks) >= limit:
-            break
-    return tasks
-
-
-@app.get("/api/tasks/{task_id}", response_model=AgentTaskDetail)
-async def get_task(task_id: str, db: Session = Depends(get_db)):
-    """Get task detail with the conversation thread for this prompt."""
-    msg = db.get(Message, task_id)
-    if not msg or msg.role != MessageRole.USER:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    agent = db.get(Agent, msg.agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    # Find the next USER message from this agent (boundary of this task's conversation)
-    next_user_msg = (
-        db.query(Message)
-        .filter(
-            Message.agent_id == msg.agent_id,
-            Message.role == MessageRole.USER,
-            Message.created_at > msg.created_at,
-        )
-        .order_by(Message.created_at.asc())
-        .first()
-    )
-
-    # Get all messages in this task's conversation range
-    conv_q = db.query(Message).filter(
-        Message.agent_id == msg.agent_id,
-        Message.created_at >= msg.created_at,
-    )
-    if next_user_msg:
-        conv_q = conv_q.filter(Message.created_at < next_user_msg.created_at)
-    conversation = conv_q.order_by(Message.created_at.asc()).all()
-
-    eff = _effective_task_status(msg, agent)
-    return AgentTaskDetail(
-        id=msg.id,
-        agent_id=agent.id,
-        agent_name=agent.name,
-        project=agent.project,
-        mode=agent.mode,
-        prompt=msg.content,
-        status=eff,
-        created_at=msg.created_at,
-        completed_at=msg.completed_at,
-        conversation=[MessageOut.model_validate(m, from_attributes=True) for m in conversation],
-    )
-
-
-# ---- Tasks v2 (first-class Task entity) ----
+# ---- Tasks ----
 
 from task_state_machine import can_transition, InvalidTransitionError
 from task_state import TaskStateMachine
@@ -3175,7 +3056,7 @@ from websocket import emit_task_update, emit_agent_update
 
 
 def _stop_task_agents(db: Session, task, ad, reason, *, emit=True, add_message=False):
-    """Stop the agent and verify sub-agents linked to a task."""
+    """Stop the agent linked to a task."""
     if task.agent_id:
         agent = db.get(Agent, task.agent_id)
         if agent:
@@ -3192,20 +3073,6 @@ def _stop_task_agents(db: Session, task, ad, reason, *, emit=True, add_message=F
                     agent.tmux_pane = None
                 if emit:
                     asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
-    for va in _query_verify_agents(db, task.id):
-        if ad:
-            ad.stop_agent_cleanup(db, va, reason, add_message=add_message, emit=emit)
-        elif va.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
-            import subprocess as _sp
-            va.status = AgentStatus.STOPPED
-            if va.tmux_pane:
-                _kill = _sp.run(["tmux", "kill-session", "-t", f"ah-{va.id[:8]}"],
-                        capture_output=True, timeout=5)
-                if _kill.returncode != 0:
-                    logger.debug("tmux kill-session failed for agent %s", va.id[:8])
-                va.tmux_pane = None
-            if emit:
-                asyncio.ensure_future(emit_agent_update(va.id, "STOPPED", va.project))
 
 
 @app.post("/api/v2/tasks", response_model=TaskOut, status_code=201)
@@ -3263,14 +3130,13 @@ async def task_counts(db: Session = Depends(get_db)):
     by_status = {s.value: c for s, c in rows}
 
     done_statuses = ["COMPLETE", "CANCELLED", "REJECTED", "FAILED", "TIMEOUT"]
-    review_statuses = ["REVIEW", "MERGING", "CONFLICT"]
 
     counts = {
         "INBOX": by_status.get("INBOX", 0),
-        "PLANNING": by_status.get("PLANNING", 0),
+        "PLANNING": 0,
         "QUEUE": by_status.get("PENDING", 0),
         "ACTIVE": by_status.get("EXECUTING", 0),
-        "REVIEW": sum(by_status.get(s, 0) for s in review_statuses),
+        "REVIEW": 0,
         "DONE": sum(by_status.get(s, 0) for s in done_statuses),
         "DONE_COMPLETED": by_status.get("COMPLETE", 0),
     }
@@ -3422,64 +3288,24 @@ async def list_tasks_v2(
         q = q.filter(Task.project_name == project)
     tasks = q.order_by(Task.created_at.desc()).limit(limit).all()
 
-    # Enrich EXECUTING and PLANNING tasks with agent info
+    # Enrich EXECUTING tasks with agent info
     results = []
-    enrich_statuses = (TaskStatus.EXECUTING, TaskStatus.PLANNING)
-    enrich_agent_ids = [t.agent_id for t in tasks if t.status in enrich_statuses and t.agent_id]
+    enrich_agent_ids = [t.agent_id for t in tasks if t.status == TaskStatus.EXECUTING and t.agent_id]
     agent_map = {}
     if enrich_agent_ids:
         agents = db.query(Agent).filter(Agent.id.in_(enrich_agent_ids)).all()
         agent_map = {a.id: a for a in agents}
 
-    # For planning tasks, fetch last agent message to derive interactive state
-    planning_agent_ids = [a_id for a_id in enrich_agent_ids if any(
-        t.agent_id == a_id and t.status == TaskStatus.PLANNING for t in tasks
-    )]
-    # Get last message with interactive meta for planning agents
-    planning_interactive: dict[str, str | None] = {}
-    if planning_agent_ids:
-        for aid in planning_agent_ids:
-            last_msg = (
-                db.query(Message)
-                .filter(Message.agent_id == aid, Message.role == MessageRole.AGENT)
-                .order_by(Message.created_at.desc())
-                .first()
-            )
-            if last_msg and last_msg.meta_json:
-                try:
-                    meta = json.loads(last_msg.meta_json)
-                    items = meta.get("interactive", [])
-                    has_ask = any(i.get("type") == "ask_user_question" and not i.get("answer") for i in items)
-                    has_plan = any(i.get("type") == "exit_plan_mode" for i in items)
-                    if has_ask:
-                        planning_interactive[aid] = "needs_answer"
-                    elif has_plan:
-                        planning_interactive[aid] = "needs_approval"
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-
     now = datetime.now(timezone.utc)
     for t in tasks:
         out = TaskOut.model_validate(t)
-        if t.status in enrich_statuses and t.agent_id:
+        if t.status == TaskStatus.EXECUTING and t.agent_id:
             agent = agent_map.get(t.agent_id)
             if agent and agent.last_message_preview:
                 out.last_agent_message = agent.last_message_preview[:200]
             if t.started_at:
                 started = t.started_at if t.started_at.tzinfo else t.started_at.replace(tzinfo=timezone.utc)
                 out.elapsed_seconds = int((now - started).total_seconds())
-        # Derive planning sub-state
-        if t.status == TaskStatus.PLANNING:
-            if not t.agent_id:
-                out.planning_status = "queued"
-            elif t.agent_id in planning_interactive:
-                out.planning_status = planning_interactive[t.agent_id]
-            else:
-                agent = agent_map.get(t.agent_id)
-                if agent and agent.status == AgentStatus.IDLE:
-                    out.planning_status = "needs_approval"
-                else:
-                    out.planning_status = "planning"
         results.append(out)
     return results
 
@@ -3505,81 +3331,6 @@ async def get_task_v2(task_id: str, db: Session = Depends(get_db)):
         conversation=conversation,
     )
 
-
-@app.post("/api/v2/tasks/batch-process")
-async def batch_process_tasks(request: Request, db: Session = Depends(get_db)):
-    """Spawn an agent to triage inbox tasks: refine prompts, assign projects, dispatch."""
-    # Accept optional task_ids to process only selected tasks
-    try:
-        body_raw = await request.json()
-    except Exception:
-        body_raw = {}
-    task_ids = body_raw.get("task_ids")
-
-    query = db.query(Task).filter(Task.status == TaskStatus.INBOX)
-    if task_ids:
-        query = query.filter(Task.id.in_(task_ids))
-    inbox_tasks = query.order_by(Task.sort_order, Task.created_at.desc()).all()
-    if not inbox_tasks:
-        raise HTTPException(400, "No inbox tasks to process")
-
-    # Gather available projects
-    projects = db.query(Project).filter(Project.archived == False).all()
-    project_list = [{"name": p.name, "display_name": getattr(p, "display_name", None) or p.name,
-                     "description": getattr(p, "description", None) or ""} for p in projects]
-
-    tasks_data = [{"id": t.id, "title": t.title or "", "description": t.description or "",
-                   "project_name": t.project_name or None} for t in inbox_tasks]
-
-    # Pick first available project as agent host (prefer cc-orchestrator)
-    host_project = "cc-orchestrator"
-    if not db.get(Project, host_project):
-        host_project = projects[0].name if projects else None
-    if not host_project:
-        raise HTTPException(400, "No projects available to host the agent")
-
-    # Build the agent prompt with API instructions
-    api_base = "http://localhost:8080"
-    prompt = f"""You are a task triage assistant for AgentHive. Analyze the inbox tasks below, then update each one via the local API.
-
-FOR EACH TASK:
-1. **Title**: Rewrite to be clear, specific, and actionable (<80 chars). Keep good titles unchanged.
-2. **Description**: Focus on making the problem definition crystal clear — what is the current behavior, what is the desired outcome, and why it matters. Do NOT add implementation steps or technical solutions — the executing agent will explore the codebase and figure out the approach itself. Preserve existing good content. Keep the original language.
-3. **Project**: If project_name is null, assign the best-matching project. If none fits, leave null.
-4. **Dispatch**: If the task has enough detail AND a project, dispatch it for execution.
-
-AVAILABLE PROJECTS:
-{json.dumps(project_list, ensure_ascii=False, indent=2)}
-
-INBOX TASKS:
-{json.dumps(tasks_data, ensure_ascii=False, indent=2)}
-
-HOW TO UPDATE:
-- Update a task: curl -s -X PUT {api_base}/api/v2/tasks/TASK_ID -H "Content-Type: application/json" -d '{{"title":"...","description":"...","project_name":"..."}}'
-- Dispatch for execution: curl -s -X POST {api_base}/api/v2/tasks/TASK_ID/dispatch
-
-SAFETY RULES:
-- You may ONLY call these API endpoints: PUT /api/v2/tasks/TASK_ID (update) and POST /api/v2/tasks/TASK_ID/dispatch (start execution)
-- Do NOT call any other endpoints (no /api/agents/*, /api/git/*, /api/projects/*, DELETE endpoints, etc.)
-- Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md
-
-INSTRUCTIONS:
-1. First, analyze all tasks and present a summary table of your proposed changes (title, project assignment, ready status)
-2. If anything is ambiguous — unclear intent, multiple possible projects, vague descriptions that could go different directions — ask the user to clarify before proceeding. Don't guess on important decisions.
-3. Ask the user to confirm before applying changes
-4. After confirmation, execute the curl commands to update each task
-5. Report a final summary of what was changed and dispatched"""
-
-    # Create the agent via the same flow as POST /api/agents
-    body = AgentCreate(
-        project=host_project,
-        prompt=prompt,
-        mode=AgentMode.AUTO,
-        skip_permissions=True,
-        timeout_seconds=600,
-    )
-    agent = await create_agent(body, request, db)
-    return {"ok": True, "agent_id": agent.id}
 
 
 @app.put("/api/v2/tasks/reorder")
@@ -3635,67 +3386,6 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
     return TaskOut.model_validate(task)
 
 
-@app.post("/api/v2/tasks/{task_id}/plan", response_model=TaskOut)
-async def plan_task_v2(task_id: str, request: Request, db: Session = Depends(get_db)):
-    """Move task from INBOX to PLANNING. Requires project_name."""
-    task = db.get(Task, task_id)
-    if not task:
-        raise HTTPException(404, "Task not found")
-    if not task.project_name:
-        raise HTTPException(400, "Task requires a project_name before entering PLANNING")
-    try:
-        TaskStateMachine.transition(task, TaskStatus.PLANNING)
-    except InvalidTransitionError as e:
-        raise HTTPException(409, str(e))
-    db.commit()
-    db.refresh(task)
-
-    # Auto-spawn a planning agent for this task
-    planning_prompt = f"""You are a planning agent for the task: "{task.title}"
-
-Task description:
-{task.description or "(no description)"}
-
-Project: {task.project_name}
-
-YOUR JOB:
-1. Explore the project codebase to understand the current state relevant to this task
-2. If anything about the task is unclear or ambiguous, ask the user using the AskUserQuestion tool — do NOT guess on important decisions
-3. Produce a clear, detailed implementation plan. Focus on WHAT needs to change and WHERE, not step-by-step code
-
-YOUR PLAN MUST INCLUDE:
-- Files that need to be modified or created
-- What changes are needed in each file (high level)
-- Testing strategy: what tests to add or update, how to verify the changes work
-- Any dependencies, risks, or edge cases to consider
-- Estimated complexity (small/medium/large)
-
-IMPORTANT:
-- You MUST finish by calling ExitPlanMode with your complete plan, regardless of whether you had questions
-- Do NOT implement anything — only plan
-- Do NOT skip the plan even if the task seems simple — always produce a plan for review
-- Testing is NOT optional — every plan must include a concrete testing section
-- Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md"""
-
-    body = AgentCreate(
-        project=task.project_name,
-        prompt=planning_prompt,
-        mode=AgentMode.AUTO,
-        skip_permissions=True,
-        timeout_seconds=900,
-    )
-    agent = await create_agent(body, request, db)
-    agent.task_id = task.id  # Link agent to task
-    task.agent_id = agent.id  # Link task to agent
-    db.commit()
-    db.refresh(task)
-
-    asyncio.ensure_future(emit_task_update(
-        task.id, task.status.value, task.project_name or "",
-        title=task.title,
-    ))
-    return TaskOut.model_validate(task)
-
 
 @app.post("/api/v2/tasks/{task_id}/dispatch", response_model=TaskOut)
 async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
@@ -3714,7 +3404,7 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
     expected_status = task.status
     update_dict: dict = {"status": TaskStatus.PENDING}
     # Redo: auto-increment attempt and prepare context
-    if expected_status in (TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.TIMEOUT):
+    if expected_status in (TaskStatus.FAILED, TaskStatus.TIMEOUT):
         update_dict["attempt_number"] = task.attempt_number + 1
         if task.agent_summary:
             update_dict["retry_context"] = task.agent_summary
@@ -3722,7 +3412,6 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
         update_dict["agent_summary"] = None
         update_dict["started_at"] = None
         update_dict["completed_at"] = None
-        update_dict["review_artifacts"] = None  # Clear stale verify data
     # Atomic CAS: only update if status hasn't changed since we read it
     rows = (
         db.query(Task)
@@ -3740,420 +3429,8 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
     return TaskOut.model_validate(task)
 
 
-@app.post("/api/v2/tasks/{task_id}/approve", response_model=TaskOut)
-async def approve_task_v2(task_id: str, request: Request, db: Session = Depends(get_db)):
-    """Approve a REVIEW task → transition to MERGING (agent-based merge).
-
-    For tasks with a branch, sets status to MERGING and lets the dispatcher
-    create a merge agent. For no-branch tasks, completes immediately.
-    """
-    task = db.get(Task, task_id)
-    if not task:
-        raise HTTPException(404, "Task not found")
-    try:
-        TaskStateMachine.transition(task, TaskStatus.MERGING)
-    except InvalidTransitionError as e:
-        raise HTTPException(409, str(e))
-
-    proj = db.query(Project).filter(Project.name == task.project_name).first()
-    if not proj:
-        raise HTTPException(400, "Missing project for merge")
-
-    ad = getattr(request.app.state, "agent_dispatcher", None)
-
-    # No branch to merge (use_worktree=False) — skip merge, go straight to COMPLETE
-    if not task.branch_name:
-        _stop_task_agents(db, task, ad, "Agent stopped — task approved")
-        TaskStateMachine.transition(task, TaskStatus.COMPLETE)
-        task.try_base_commit = None
-        db.commit()
-        db.refresh(task)
-        asyncio.ensure_future(emit_task_update(
-            task.id, task.status.value, task.project_name or "",
-            title=task.title,
-        ))
-        return TaskOut.model_validate(task)
-
-    # Has branch + already tried (merge already applied) — skip MERGING, complete directly
-    if task.try_base_commit:
-        _stop_task_agents(db, task, ad, "Agent stopped — task approved")
-        # Merge was already done via Try — clean up worktree & branch
-        gm = getattr(request.app.state, "git_manager", None)
-        if gm and task.worktree_name:
-            wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
-            gm.remove_worktree(proj.path, wt_path)
-            gm.delete_branch(proj.path, task.branch_name)
-        TaskStateMachine.transition(task, TaskStatus.COMPLETE)
-        task.try_base_commit = None
-        db.commit()
-        db.refresh(task)
-        asyncio.ensure_future(emit_task_update(
-            task.id, task.status.value, task.project_name or "",
-            title=task.title,
-        ))
-        logger.info("Task %s: approved (already tried), completing directly", task.id)
-        return TaskOut.model_validate(task)
-
-    # Has branch, not tried — perform merge synchronously
-    _stop_task_agents(db, task, ad, "Agent stopped — task approved")
-    TaskStateMachine.transition(task, TaskStatus.MERGING)
-    task.error_message = None
-    db.commit()
-    asyncio.ensure_future(emit_task_update(
-        task.id, task.status.value, task.project_name or "",
-        title=task.title,
-    ))
-    logger.info("Task %s: approved, merging branch %s", task.id, task.branch_name)
-
-    gm = getattr(request.app.state, "git_manager", None)
-    if not gm:
-        TaskStateMachine.transition(task, TaskStatus.CONFLICT)
-        task.error_message = "Git manager not available"
-        db.commit()
-        db.refresh(task)
-        asyncio.ensure_future(emit_task_update(
-            task.id, task.status.value, task.project_name or "", title=task.title,
-        ))
-        return TaskOut.model_validate(task)
-
-    # Ensure on main branch
-    main_branch = gm.get_main_branch(proj.path)
-    current_branch = gm.get_current_branch(proj.path)
-    if current_branch != main_branch:
-        co_result = gm.checkout(proj.path, main_branch)
-        if co_result.startswith("ERROR:"):
-            TaskStateMachine.transition(task, TaskStatus.CONFLICT)
-            task.error_message = f"Cannot checkout {main_branch}: {co_result}"
-            db.commit()
-            db.refresh(task)
-            asyncio.ensure_future(emit_task_update(
-                task.id, task.status.value, task.project_name or "", title=task.title,
-            ))
-            return TaskOut.model_validate(task)
-
-    # Merge
-    result = gm.merge_branch(proj.path, task.branch_name)
-    if not result.get("success"):
-        TaskStateMachine.transition(task, TaskStatus.CONFLICT)
-        task.error_message = f"Merge failed: {result.get('error', 'unknown')}"
-        db.commit()
-        db.refresh(task)
-        asyncio.ensure_future(emit_task_update(
-            task.id, task.status.value, task.project_name or "", title=task.title,
-        ))
-        return TaskOut.model_validate(task)
-
-    # Merge succeeded — clean up worktree & branch, mark COMPLETE
-    if task.worktree_name:
-        wt_path = os.path.join(proj.path, ".claude", "worktrees", task.worktree_name)
-        gm.remove_worktree(proj.path, wt_path)
-        del_result = gm.delete_branch(proj.path, task.branch_name)
-        # delete_branch uses -d which fails if branch is not merged — treat as merge failure
-        if del_result.startswith("ERROR:") and "not yet merged" in del_result:
-            TaskStateMachine.transition(task, TaskStatus.CONFLICT)
-            task.error_message = "Merge appeared to succeed but branch was not actually merged. Please retry."
-            db.commit()
-            db.refresh(task)
-            asyncio.ensure_future(emit_task_update(
-                task.id, task.status.value, task.project_name or "", title=task.title,
-            ))
-            logger.warning("Task %s: merge succeeded but branch not merged (phantom merge)", task.id)
-            return TaskOut.model_validate(task)
-    TaskStateMachine.transition(task, TaskStatus.COMPLETE)
-    db.commit()
-    db.refresh(task)
-    asyncio.ensure_future(emit_task_update(
-        task.id, task.status.value, task.project_name or "",
-        title=task.title,
-    ))
-    logger.info("Task %s: merge complete", task.id)
-    return TaskOut.model_validate(task)
 
 
-@app.post("/api/v2/tasks/{task_id}/reject", response_model=TaskOut)
-async def reject_task_v2(
-    task_id: str,
-    body: TaskRejectRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    """Reject a task with a reason → REJECTED."""
-    task = db.get(Task, task_id)
-    if not task:
-        raise HTTPException(404, "Task not found")
-    if not can_transition(task.status, TaskStatus.REJECTED):
-        raise HTTPException(409, f"Invalid task transition: {task.status.value} -> rejected (task {task.id})")
-    ad = getattr(request.app.state, "agent_dispatcher", None)
-    _stop_task_agents(db, task, ad, "Agent stopped — task rejected", emit=True)
-    TaskStateMachine.transition(task, TaskStatus.REJECTED)
-    task.rejection_reason = body.reason
-    task.try_base_commit = None  # Clear try state on reject
-    task.review_artifacts = None  # Clear stale verify data
-    db.commit()
-    db.refresh(task)
-    asyncio.ensure_future(emit_task_update(
-        task.id, task.status.value, task.project_name or "",
-        title=task.title,
-    ))
-    return TaskOut.model_validate(task)
-
-
-@app.post("/api/v2/tasks/{task_id}/verify")
-async def verify_task(task_id: str, request: Request, db: Session = Depends(get_db)):
-    """Spawn a verification sub-agent to check the task's output (tests, build, etc.)."""
-    task = db.get(Task, task_id)
-    if not task:
-        raise HTTPException(404, "Task not found")
-    if task.status != TaskStatus.REVIEW:
-        raise HTTPException(409, f"Task must be in REVIEW state (currently {task.status.value})")
-    if not task.agent_id:
-        raise HTTPException(409, "Task has no agent — nothing to verify")
-    if not task.project_name:
-        raise HTTPException(409, "Task has no project assigned")
-
-    # Check if a verification agent is already running for this task
-    if _query_verify_agents(db, task.id):
-        raise HTTPException(409, "A verification agent is already running for this task")
-
-    proj = db.get(Project, task.project_name)
-    if not proj:
-        raise HTTPException(404, f"Project '{task.project_name}' not found")
-
-    original_agent = db.get(Agent, task.agent_id)
-    if not original_agent:
-        raise HTTPException(404, "Original agent not found")
-
-    # Build verification prompt
-    context_parts = [
-        f"# Verification Task",
-        f"You are a **verification agent**. Your job is to independently check whether a completed coding task was done correctly.",
-        f"",
-        f"## Original Task",
-        f"**Title:** {task.title}",
-    ]
-    if task.description:
-        context_parts.append(f"**Description:** {task.description}")
-    if task.agent_summary:
-        context_parts.append(f"\n## Agent's Summary of What Was Done")
-        context_parts.append(task.agent_summary)
-
-    # If worktree task, tell the agent which branch to check
-    if task.branch_name:
-        context_parts.append(f"\n## Branch")
-        context_parts.append(f"The changes are on branch `{task.branch_name}`.")
-        context_parts.append(f"Use `git diff main...{task.branch_name}` to see the full diff.")
-
-    context_parts.append(f"\n## Safety Rules (mandatory)")
-    context_parts.append("- You are a READ-ONLY verifier. Do NOT commit, push, or modify any source code.")
-    context_parts.append("- If you find issues, REPORT them — do NOT attempt to fix them")
-    context_parts.append("- Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md")
-    context_parts.append(f"\n## Your Verification Checklist")
-    context_parts.append("1. Read the diff / changed files to understand what was modified")
-    context_parts.append("2. Check if the changes match the task requirements")
-    context_parts.append("3. Run the project's test suite (if any) — look for test commands in CLAUDE.md, package.json, Makefile, etc.")
-    context_parts.append("4. Run the build (if applicable) to check for compilation/bundling errors")
-    context_parts.append("5. Look for obvious issues: missing imports, unused variables, broken logic, security problems")
-    context_parts.append("")
-    context_parts.append("## Output Format")
-    context_parts.append("End your response with a structured verdict:")
-    context_parts.append("```")
-    context_parts.append("VERDICT: PASS | FAIL | WARN")
-    context_parts.append("ISSUES: (list any issues found, or 'none')")
-    context_parts.append("TESTS: (test results summary, or 'no tests found')")
-    context_parts.append("BUILD: (build result, or 'not applicable')")
-    context_parts.append("```")
-    context_parts.append("")
-    context_parts.append("Be thorough but concise. Focus on correctness, not style.")
-
-    verify_prompt = "\n".join(context_parts)
-
-    # Create the verification agent — runs in the same project dir (not a worktree)
-    import secrets
-    for _ in range(20):
-        agent_hex = secrets.token_hex(6)
-        if db.get(Agent, agent_hex) is None:
-            break
-    else:
-        raise HTTPException(500, "Failed to generate agent ID")
-
-    agent = Agent(
-        id=agent_hex,
-        project=proj.name,
-        name=f"Verify: {task.title[:70]}",
-        mode=AgentMode.AUTO,
-        status=AgentStatus.IDLE,
-        model=task.model or proj.default_model or CC_MODEL,
-        effort="low",  # Verification is lightweight
-        skip_permissions=True,
-        task_id=task.id,
-        parent_id=task.agent_id,
-        is_subagent=True,
-        last_message_preview=f"Verifying: {task.title[:70]}",
-        last_message_at=_utcnow(),
-    )
-    db.add(agent)
-    db.flush()
-
-    msg = Message(
-        agent_id=agent.id,
-        role=MessageRole.USER,
-        content=verify_prompt,
-        status=MessageStatus.PENDING,
-        source="verify",
-    )
-    db.add(msg)
-
-    # Store verification agent ID in review_artifacts
-    import json as _json
-    artifacts = {}
-    if task.review_artifacts:
-        try:
-            artifacts = _json.loads(task.review_artifacts)
-        except (ValueError, TypeError):
-            logger.warning("Invalid review_artifacts JSON for task %s", task.id)
-            artifacts = {}
-    artifacts["verify_agent_id"] = agent.id
-    artifacts["verify_status"] = "running"
-    task.review_artifacts = _json.dumps(artifacts)
-
-    db.commit()
-
-    from websocket import emit_agent_update, emit_task_update
-    asyncio.ensure_future(emit_agent_update(agent.id, agent.status.value, proj.name))
-    asyncio.ensure_future(emit_task_update(
-        task.id, task.status.value, task.project_name or "",
-        title=task.title,
-    ))
-
-    return {
-        "status": "started",
-        "verify_agent_id": agent.id,
-        "task_id": task.id,
-    }
-
-
-@app.post("/api/v2/tasks/{task_id}/try-changes", response_model=TaskOut)
-async def try_task_changes(task_id: str, request: Request, db: Session = Depends(get_db)):
-    """Merge task branch into main so user can test locally. Records pre-merge HEAD for revert."""
-    task = db.get(Task, task_id)
-    if not task:
-        raise HTTPException(404, "Task not found")
-    if task.status != TaskStatus.REVIEW:
-        raise HTTPException(409, "Task must be in REVIEW status to try changes")
-    if not task.branch_name:
-        raise HTTPException(400, "Task has no branch to try")
-    if task.try_base_commit:
-        raise HTTPException(409, "Changes already applied — revert first")
-
-    proj = db.query(Project).filter(Project.name == task.project_name).first()
-    if not proj:
-        raise HTTPException(400, "Project not found")
-
-    # Guard: only one task per project can be "tried" at a time
-    other_tried = (
-        db.query(Task)
-        .filter(Task.project_name == task.project_name)
-        .filter(Task.id != task.id)
-        .filter(Task.try_base_commit.isnot(None))
-        .filter(Task.status == TaskStatus.REVIEW)
-        .first()
-    )
-    if other_tried:
-        raise HTTPException(
-            409,
-            f"Another task is already being tried: \"{other_tried.title}\" — revert it first",
-        )
-
-    gm = getattr(request.app.state, "git_manager", None)
-    if not gm:
-        raise HTTPException(503, "Git manager not available")
-
-    # Ensure we're on the main branch
-    current_branch = gm.get_current_branch(proj.path)
-    if not current_branch:
-        raise HTTPException(500, "Cannot determine current branch")
-
-    main_branch = gm.get_main_branch(proj.path)
-    if current_branch != main_branch:
-        co_result = gm.checkout(proj.path, main_branch)
-        if co_result.startswith("ERROR:"):
-            raise HTTPException(500, f"Cannot checkout {main_branch}: {co_result}")
-
-    # Save current HEAD before merge
-    head_before = gm.get_head(proj.path)
-    if not head_before:
-        raise HTTPException(500, "Cannot determine current HEAD")
-
-    # Merge the task branch
-    result = gm.merge_branch(proj.path, task.branch_name)
-    if not result.get("success"):
-        raise HTTPException(409, f"Merge failed: {result.get('error', 'unknown error')}")
-
-    # Record pre-merge commit for revert
-    task.try_base_commit = head_before
-    db.commit()
-    db.refresh(task)
-    asyncio.ensure_future(emit_task_update(
-        task.id, task.status.value, task.project_name or "",
-        title=task.title,
-    ))
-    return TaskOut.model_validate(task)
-
-
-@app.post("/api/v2/tasks/{task_id}/revert-try", response_model=TaskOut)
-async def revert_task_try(task_id: str, request: Request, db: Session = Depends(get_db)):
-    """Revert a previously tried merge — reset main to pre-merge HEAD.
-
-    For non-worktree tasks (no branch_name), creates a backup branch first
-    so the agent's commits are preserved and can be re-tried or approved later.
-    """
-    task = db.get(Task, task_id)
-    if not task:
-        raise HTTPException(404, "Task not found")
-    if not task.try_base_commit:
-        raise HTTPException(409, "No tried changes to revert")
-
-    proj = db.query(Project).filter(Project.name == task.project_name).first()
-    if not proj:
-        raise HTTPException(400, "Project not found")
-
-    gm = getattr(request.app.state, "git_manager", None)
-    if not gm:
-        raise HTTPException(503, "Git manager not available")
-
-    # Non-worktree task: save agent's commits to a backup branch before resetting
-    if not task.branch_name:
-        backup_branch = f"task/{task.id}/backup"
-        import subprocess
-        subprocess.run(
-            ["git", "branch", "-f", backup_branch, "HEAD"],
-            cwd=proj.path, capture_output=True, timeout=10,
-        )
-        task.branch_name = backup_branch
-
-    # Validate commit exists before resetting
-    import subprocess as _sp_verify
-    verify = _sp_verify.run(
-        ["git", "rev-parse", "--verify", task.try_base_commit],
-        cwd=proj.path, capture_output=True, timeout=10,
-    )
-    if verify.returncode != 0:
-        raise HTTPException(400, f"Invalid commit SHA: {task.try_base_commit}")
-
-    # Reset to the pre-merge commit
-    result = gm.reset_hard(proj.path, task.try_base_commit)
-    if result.startswith("ERROR:"):
-        raise HTTPException(500, f"Reset failed: {result}")
-
-    # Clear the try state
-    task.try_base_commit = None
-    db.commit()
-    db.refresh(task)
-    asyncio.ensure_future(emit_task_update(
-        task.id, task.status.value, task.project_name or "",
-        title=task.title,
-    ))
-    return TaskOut.model_validate(task)
 
 
 @app.post("/api/v2/tasks/{task_id}/cancel", response_model=TaskOut)

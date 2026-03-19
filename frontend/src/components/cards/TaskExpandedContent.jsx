@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { updateTaskV2, planTask, dispatchTask, approveTask, rejectTask, cancelTask, tryTaskChanges, revertTaskChanges, verifyTask } from "../../lib/api";
+import { updateTaskV2, dispatchTask, cancelTask } from "../../lib/api";
 import { relativeTime, renderMarkdown } from "../../lib/formatters";
 import ProjectSelector from "../ProjectSelector";
 import { useToast } from "../../contexts/ToastContext";
@@ -9,8 +9,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
   const navigate = useNavigate();
   const toast = useToast();
   const [actionLoading, setActionLoading] = useState(false);
-  const [rejectOpen, setRejectOpen] = useState(false);
-  const [rejectReason, setRejectReason] = useState("");
 
   const canEdit = task.status === "INBOX" || task.status === "PLANNING";
 
@@ -71,16 +69,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
     }
   };
 
-  // Parse verify artifacts
-  let verifyStatus = null, verifyResult = null;
-  if (task.review_artifacts) {
-    try {
-      const arts = JSON.parse(task.review_artifacts);
-      verifyStatus = arts.verify_status;
-      verifyResult = arts.verify_result;
-    } catch {}
-  }
-
   return (
     <div
       className={canEdit ? "px-5 pb-4 pt-1 space-y-2" : "border-t border-divider mx-4 pb-4 pt-3 space-y-3"}
@@ -131,13 +119,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
               className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 disabled:opacity-50 transition-colors">
               Save
             </button>
-            {task.status === "INBOX" && (
-              <button type="button" onClick={() => saveAndAction(planTask, task.id)}
-                disabled={actionLoading || (!editProject && !task.project_name)}
-                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-violet-500/15 text-violet-400 hover:bg-violet-500/25 disabled:opacity-50 transition-colors">
-                Plan
-              </button>
-            )}
             <button type="button" onClick={() => saveAndAction(dispatchTask, task.id)}
               disabled={actionLoading || (!editProject && !task.project_name)}
               className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400 hover:bg-green-500/25 disabled:opacity-50 transition-colors">
@@ -196,11 +177,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
                   className="inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300">
                   View agent conversation &rarr;
                 </button>
-              )}
-              {verifyStatus && verifyStatus !== "running" && verifyResult && (
-                <div className="text-xs bg-inset rounded-lg p-3 max-h-[200px] overflow-y-auto">
-                  <pre className="whitespace-pre-wrap font-mono text-body">{verifyResult}</pre>
-                </div>
               )}
             </div>
           )}
@@ -264,27 +240,7 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             </div>
           )}
 
-          {rejectOpen && (
-            <div className="space-y-2">
-              <textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)}
-                placeholder="Why are you rejecting this?" rows={2} autoFocus
-                className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:border-red-500 focus:outline-none" />
-              <div className="flex gap-2">
-                <button type="button" disabled={!rejectReason.trim() || actionLoading}
-                  onClick={() => { doAction(rejectTask, task.id, rejectReason); setRejectOpen(false); setRejectReason(""); }}
-                  className="px-3 py-1 rounded-lg text-xs font-medium bg-red-500 text-white hover:bg-red-400 disabled:opacity-50 transition-colors">
-                  Confirm Reject
-                </button>
-                <button type="button" onClick={() => { setRejectOpen(false); setRejectReason(""); }}
-                  className="px-3 py-1 rounded-lg text-xs font-medium bg-elevated text-label hover:text-heading transition-colors">
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          {!rejectOpen && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2 pt-1">
               {task.status === "PENDING" && (
                 <button type="button" onClick={doDelete} disabled={actionLoading}
                   className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors">
@@ -300,59 +256,11 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
                 </button>
               )}
 
-              {task.status === "REVIEW" && (
-                <>
-                  {verifyStatus === "running" ? (
-                    <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 flex items-center gap-1">
-                      <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
-                        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" />
-                      </svg>
-                      Verifying
-                    </span>
-                  ) : (
-                    <button type="button" onClick={() => doAction(verifyTask, task.id)} disabled={actionLoading}
-                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25 transition-colors">
-                      {verifyStatus === "error" ? "Retry Verify" : "Verify"}
-                    </button>
-                  )}
-                  {task.branch_name && !task.try_base_commit && (
-                    <button type="button" onClick={() => doAction(tryTaskChanges, task.id)} disabled={actionLoading}
-                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25 transition-colors">
-                      Try
-                    </button>
-                  )}
-                  {task.try_base_commit && (
-                    <button type="button" onClick={() => doAction(revertTaskChanges, task.id)} disabled={actionLoading}
-                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-orange-500/15 text-orange-400 hover:bg-orange-500/25 transition-colors">
-                      {task.branch_name ? "Revert" : "Rollback"}
-                    </button>
-                  )}
-                  <button type="button" onClick={() => doAction(approveTask, task.id)} disabled={actionLoading}
-                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/15 text-green-400 hover:bg-green-500/25 transition-colors">
-                    Approve
-                  </button>
-                  <button type="button" onClick={() => setRejectOpen(true)} disabled={actionLoading}
-                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors">
-                    Reject
-                  </button>
-                  <button type="button" onClick={doDelete} disabled={actionLoading}
-                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors">
-                    Delete
-                  </button>
-                </>
-              )}
-
-              {task.status === "CONFLICT" && (
-                <>
-                  <button type="button" onClick={() => doAction(approveTask, task.id)} disabled={actionLoading}
-                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors">
-                    Retry Merge
-                  </button>
-                  <button type="button" onClick={doDelete} disabled={actionLoading}
-                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors">
-                    Delete
-                  </button>
-                </>
+              {(task.status === "REVIEW" || task.status === "CONFLICT") && (
+                <button type="button" onClick={doDelete} disabled={actionLoading}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors">
+                  Delete
+                </button>
               )}
 
               {(task.status === "REJECTED" || task.status === "FAILED" || task.status === "TIMEOUT") && (
@@ -376,7 +284,6 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
                 </button>
               )}
             </div>
-          )}
         </>
       )}
     </div>

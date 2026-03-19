@@ -135,7 +135,7 @@ async def sync_reconcile_initial(ad, ctx: SyncContext):
         _merge_interactive_meta,
         _update_stale_interactive_metadata,
     )
-    from websocket import emit_new_message
+    from websocket import emit_new_message, emit_metadata_update
 
     initial_turns = list(ctx.incremental_turns)
 
@@ -149,10 +149,13 @@ async def sync_reconcile_initial(ad, ctx: SyncContext):
     try:
         if not conv_turns:
             # Still check stale interactive metadata even with no turns
-            if _update_stale_interactive_metadata(db, ctx.agent_id, initial_turns):
+            _stale_updates = _update_stale_interactive_metadata(db, ctx.agent_id, initial_turns)
+            if _stale_updates:
                 ad._emit(emit_new_message(
                     ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
                 ))
+                for _upd_msg_id, _upd_meta in _stale_updates:
+                    ad._emit(emit_metadata_update(ctx.agent_id, _upd_msg_id, _upd_meta))
                 logger.debug(
                     "Updated stale interactive metadata for agent %s "
                     "(initial reconciliation)", ctx.agent_id,
@@ -336,10 +339,13 @@ async def sync_reconcile_initial(ad, ctx: SyncContext):
                 ))
 
         # Update stale interactive metadata
-        if _update_stale_interactive_metadata(db, ctx.agent_id, initial_turns):
+        _stale_updates = _update_stale_interactive_metadata(db, ctx.agent_id, initial_turns)
+        if _stale_updates:
             ad._emit(emit_new_message(
                 ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
             ))
+            for _upd_msg_id, _upd_meta in _stale_updates:
+                ad._emit(emit_metadata_update(ctx.agent_id, _upd_msg_id, _upd_meta))
             logger.debug(
                 "Updated stale interactive metadata for agent %s "
                 "(initial reconciliation)", ctx.agent_id,
@@ -366,6 +372,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     )
     from websocket import (
         emit_agent_update,
+        emit_metadata_update,
         emit_new_message,
         emit_tool_activity,
     )
@@ -558,6 +565,19 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                 jsonl_uuid = rest[1] if len(rest) > 1 else None
                 meta_json = json.dumps(meta) if meta else None
                 if role == "user":
+                    # Detect user interrupt — Claude Code writes this when
+                    # Escape/Ctrl+C stops generation.  Clear generating state
+                    # so the UI reflects the actual idle status.
+                    if "[Request interrupted by user" in (content or ""):
+                        if ctx.agent_id in ad._generating_agents or (
+                            agent and agent.generating_msg_id is not None
+                        ):
+                            ad._stop_generating(ctx.agent_id)
+                            logger.info(
+                                "Interrupt detected for agent %s, cleared generating state",
+                                ctx.agent_id[:8],
+                            )
+
                     from sqlalchemy import or_ as _or
                     if _is_wrapped_prompt(content):
                         _web_msg = db.query(Message).filter(
@@ -742,10 +762,13 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     ))
 
         # Update stale interactive metadata on EARLIER messages
-        if _update_stale_interactive_metadata(db, ctx.agent_id, turns):
+        _stale_updates = _update_stale_interactive_metadata(db, ctx.agent_id, turns)
+        if _stale_updates:
             ad._emit(emit_new_message(
                 ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
             ))
+            for _upd_msg_id, _upd_meta in _stale_updates:
+                ad._emit(emit_metadata_update(ctx.agent_id, _upd_msg_id, _upd_meta))
             logger.debug(
                 "Updated stale interactive metadata for agent %s",
                 ctx.agent_id,

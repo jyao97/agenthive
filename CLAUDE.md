@@ -13,7 +13,6 @@
 - Do not refactor or rename files unless the task explicitly requires it
 - Do not delete or modify tests unless asked
 - Do not change dependencies/package versions without explicit approval
-- Do not modify CLAUDE.md
 
 ## Output Rules
 - Keep responses concise — no long explanations unless asked
@@ -23,7 +22,7 @@
 ## Git Conventions
 - Commit message format: `[scope] brief description` (e.g. `[frontend] fix image zoom gesture`)
 - Commit frequently — small atomic commits, not one giant commit at the end
-- Never commit to master directly, always work on assigned branch/worktree
+- Commit to master directly when appropriate
 
 ## Concurrency Rules
 - Check which files other agents are currently modifying before editing shared files

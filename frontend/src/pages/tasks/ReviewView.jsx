@@ -1,7 +1,7 @@
 import useAsyncHandler from "../../hooks/useAsyncHandler";
 import ErrorAlert from "../../components/ErrorAlert";
 import ReviewCard from "../../components/cards/ReviewCard";
-import { approveTask, rejectTask, cancelTask, verifyTask } from "../../lib/api";
+import { cancelTask } from "../../lib/api";
 
 const STATUS_ORDER = { REVIEW: 0, CONFLICT: 1, MERGING: 2 };
 
@@ -43,11 +43,7 @@ export default function ReviewView({ tasks, loading, onRefresh, selecting, selec
           merging={loadingIds.has(task.id)}
           rejecting={false}
           verifying={loadingIds.has(`verify-${task.id}`)}
-          onApprove={(t) => handle(t.id, () => approveTask(t.id).then(() => onRefresh?.()), "Approve failed")}
-          onReject={(t, reason) => handle(t.id, () => rejectTask(t.id, reason).then(() => onRefresh?.()), "Reject failed")}
-          onRetryMerge={(t) => handle(t.id, () => approveTask(t.id).then(() => onRefresh?.()), "Retry merge failed")}
           onCancel={(t) => handle(t.id, () => cancelTask(t.id).then(() => onRefresh?.()), "Cancel failed")}
-          onVerify={(t) => handle(`verify-${t.id}`, () => verifyTask(t.id).then(() => onRefresh?.()), "Verify failed")}
         />
       ))}
     </div>

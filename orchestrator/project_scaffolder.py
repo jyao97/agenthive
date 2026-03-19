@@ -406,7 +406,7 @@ def scaffold_project(project_name: str, project_path: str,
 ## Git Conventions
 - Commit message format: `[scope] brief description` (e.g. `[frontend] fix image zoom gesture`)
 - Commit frequently — small atomic commits, not one giant commit at the end
-- Never commit to master directly, always work on assigned branch/worktree
+- Commit to master directly when appropriate
 
 ## Concurrency Rules
 - Check which files other agents are currently modifying before editing shared files

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Sparkles } from "lucide-react";
-import { fetchTasksV2, fetchTaskCounts, dispatchTask, cancelTask, batchProcessTasks } from "../lib/api";
+import { fetchTasksV2, fetchTaskCounts, dispatchTask, cancelTask } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import usePageVisible from "../hooks/usePageVisible";
 import useWebSocket, { useWsEvent, registerViewingTasks, unregisterViewingTasks } from "../hooks/useWebSocket";
@@ -167,27 +166,6 @@ export default function TasksPage({ theme, onToggleTheme }) {
     }
   }, [selected, actionLoading, exitSelectMode, showToast, onRefresh]);
 
-  // --- AI batch process (triage agent) ---
-  const [batchProcessing, setBatchProcessing] = useState(false);
-
-  const handleBatchProcess = useCallback(async (taskIds) => {
-    if (batchProcessing) return;
-    setBatchProcessing(true);
-    try {
-      const res = await batchProcessTasks(taskIds);
-      if (res.agent_id) {
-        if (selecting) exitSelectMode();
-        navigate(`/agents/${res.agent_id}`);
-      } else {
-        showToast(res.message || "No tasks to process");
-      }
-    } catch (err) {
-      showToast(`Batch process failed: ${err.message}`, "error");
-    } finally {
-      setBatchProcessing(false);
-    }
-  }, [batchProcessing, selecting, exitSelectMode, showToast, navigate]);
-
   return (
     <div className="h-full flex flex-col">
       <PageHeader
@@ -196,24 +174,6 @@ export default function TasksPage({ theme, onToggleTheme }) {
         onToggleTheme={onToggleTheme}
         showQueueButton
         hideMonitor
-        actions={!selecting ? (
-          (counts?.INBOX ?? 0) > 0 ? (
-            <button
-              type="button"
-              onClick={() => handleBatchProcess()}
-              disabled={batchProcessing}
-              title="AI batch process — refine prompts & assign projects"
-              className={`h-7 px-2.5 flex items-center gap-1.5 rounded-full text-[11px] font-semibold transition-all ${
-                batchProcessing
-                  ? "bg-gradient-to-r from-cyan-500 to-blue-500 text-white animate-pulse shadow-md shadow-cyan-500/25"
-                  : "bg-gradient-to-r from-cyan-500/15 to-blue-500/15 text-cyan-500 dark:text-cyan-400 hover:from-cyan-500/25 hover:to-blue-500/25 active:scale-95"
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              AI
-            </button>
-          ) : undefined
-        ) : undefined}
         selectAction={!selecting ? (
           <button
             type="button"
@@ -285,20 +245,6 @@ export default function TasksPage({ theme, onToggleTheme }) {
       {selecting && selected.size > 0 && (
         <div className="fixed bottom-20 left-0 right-0 z-20 px-4 pb-2 animate-bar-slide-up">
           <div className="max-w-xl mx-auto bg-surface border border-divider rounded-xl shadow-lg p-3 flex items-center justify-center gap-3">
-            {/* AI batch process selected */}
-            <button
-              type="button"
-              onClick={() => handleBatchProcess([...selected])}
-              disabled={batchProcessing || actionLoading}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 transition-all ${
-                batchProcessing
-                  ? "bg-gradient-to-r from-cyan-500 to-blue-500 text-white animate-pulse"
-                  : "bg-gradient-to-r from-cyan-600 to-blue-600 text-white hover:from-cyan-500 hover:to-blue-500"
-              } disabled:opacity-50`}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              AI {selected.size}
-            </button>
             {/* Start */}
             {dispatchableCount > 0 && (
               <button

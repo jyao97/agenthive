@@ -13,27 +13,7 @@ from models import AgentMode, AgentStatus, MessageRole, MessageStatus, TaskStatu
 logger = logging.getLogger("orchestrator.schemas")
 
 
-# --- Task schemas (agent-sourced: each task = a user prompt → agent response cycle) ---
-
-class AgentTaskBrief(BaseModel):
-    """A task is a user message sent to an agent, with derived status."""
-    id: str
-    agent_id: str
-    agent_name: str
-    project: str
-    mode: AgentMode
-    prompt: str
-    status: str
-    created_at: datetime
-    completed_at: datetime | None = None
-
-
-class AgentTaskDetail(AgentTaskBrief):
-    """Task detail with the conversation thread for this prompt."""
-    conversation: list["MessageOut"] = []
-
-
-# --- Task v2 schemas (first-class Task entity) ---
+# --- Task schemas (first-class Task entity) ---
 
 class TaskCreate(BaseModel):
     title: str = Field("", max_length=300)
@@ -86,25 +66,19 @@ class TaskOut(BaseModel):
     branch_name: str | None = None
     attempt_number: int = 1
     agent_summary: str | None = None
-    rejection_reason: str | None = None
     error_message: str | None = None
-    merge_agent_id: str | None = None
     model: str | None = None
     effort: str | None = None
     skip_permissions: bool = True
     sync_mode: bool = False
     use_worktree: bool = True
     sort_order: int = 0
-    try_base_commit: str | None = None
-    review_artifacts: str | None = None
     notify_at: datetime | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
     last_agent_message: str | None = None
     elapsed_seconds: int | None = None
-    planning_status: str | None = None  # queued | planning | needs_answer | needs_approval
-
     model_config = {"from_attributes": True}
 
     @field_validator("created_at", "started_at", "completed_at", "notify_at", mode="before")
@@ -118,10 +92,6 @@ class TaskOut(BaseModel):
 class TaskDetailOut(TaskOut):
     retry_context: str | None = None
     conversation: list["MessageOut"] = []
-
-
-class TaskRejectRequest(BaseModel):
-    reason: str = Field(..., min_length=1)
 
 
 # --- Agent schemas ---

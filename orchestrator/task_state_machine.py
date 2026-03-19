@@ -9,18 +9,19 @@ class InvalidTransitionError(Exception):
 
 
 VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-    TaskStatus.INBOX: {TaskStatus.PLANNING, TaskStatus.PENDING, TaskStatus.CANCELLED},
-    TaskStatus.PLANNING: {TaskStatus.PENDING, TaskStatus.INBOX, TaskStatus.CANCELLED},
+    TaskStatus.INBOX: {TaskStatus.PENDING, TaskStatus.EXECUTING, TaskStatus.COMPLETE, TaskStatus.CANCELLED},
     TaskStatus.PENDING: {TaskStatus.EXECUTING, TaskStatus.FAILED, TaskStatus.CANCELLED},
-    TaskStatus.EXECUTING: {TaskStatus.REVIEW, TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT, TaskStatus.CANCELLED},
-    TaskStatus.REVIEW: {TaskStatus.MERGING, TaskStatus.REJECTED, TaskStatus.CANCELLED},
-    TaskStatus.MERGING: {TaskStatus.COMPLETE, TaskStatus.CONFLICT, TaskStatus.FAILED, TaskStatus.CANCELLED},
-    TaskStatus.CONFLICT: {TaskStatus.MERGING, TaskStatus.CANCELLED},
-    TaskStatus.REJECTED: {TaskStatus.PENDING, TaskStatus.CANCELLED},
-    TaskStatus.FAILED: {TaskStatus.PENDING, TaskStatus.CANCELLED},
-    TaskStatus.TIMEOUT: {TaskStatus.PENDING, TaskStatus.CANCELLED},
+    TaskStatus.EXECUTING: {TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT, TaskStatus.CANCELLED},
     TaskStatus.COMPLETE: set(),
     TaskStatus.CANCELLED: set(),
+    TaskStatus.FAILED: {TaskStatus.PENDING, TaskStatus.CANCELLED},
+    TaskStatus.TIMEOUT: {TaskStatus.PENDING, TaskStatus.CANCELLED},
+    # Legacy statuses kept for DB compatibility — only allow cancel for cleanup
+    TaskStatus.PLANNING: {TaskStatus.CANCELLED},
+    TaskStatus.REVIEW: {TaskStatus.CANCELLED},
+    TaskStatus.MERGING: {TaskStatus.CANCELLED},
+    TaskStatus.CONFLICT: {TaskStatus.CANCELLED},
+    TaskStatus.REJECTED: {TaskStatus.CANCELLED},
 }
 
 TERMINAL_STATES = {TaskStatus.COMPLETE, TaskStatus.CANCELLED}
