@@ -355,6 +355,34 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("Failed to clean stale unlinked sessions", exc_info=True)
 
+    # Recover tasks stuck in EXECUTING whose agent already stopped/errored
+    try:
+        from task_state import TaskStateMachine as _TSM
+        _rdb = SessionLocal()
+        try:
+            _stuck_tasks = (
+                _rdb.query(Task)
+                .join(Agent, Task.agent_id == Agent.id)
+                .filter(
+                    Task.status == TaskStatus.EXECUTING,
+                    Agent.status.in_([AgentStatus.STOPPED, AgentStatus.ERROR]),
+                )
+                .all()
+            )
+            for _st in _stuck_tasks:
+                _agent = _rdb.get(Agent, _st.agent_id)
+                if _agent and _agent.status == AgentStatus.ERROR:
+                    _TSM.transition(_st, TaskStatus.FAILED, strict=False)
+                else:
+                    _TSM.transition(_st, TaskStatus.COMPLETE, strict=False)
+            if _stuck_tasks:
+                _rdb.commit()
+                logger.info("Recovered %d stuck EXECUTING tasks at startup", len(_stuck_tasks))
+        finally:
+            _rdb.close()
+    except Exception:
+        logger.debug("Failed to recover stuck tasks", exc_info=True)
+
     # Start backup loop
     try:
         from backup import run_backup_loop
@@ -6016,6 +6044,8 @@ async def get_agent(agent_id: str, request: Request, db: Session = Depends(get_d
 @app.delete("/api/agents/{agent_id}", response_model=AgentOut)
 async def stop_agent(agent_id: str, request: Request,
                      generate_summary: bool = False,
+                     task_complete: bool = True,
+                     incomplete_reason: str | None = None,
                      db: Session = Depends(get_db)):
     """Stop an agent — marks STOPPED."""
     agent = db.get(Agent, agent_id)
@@ -6047,7 +6077,8 @@ async def stop_agent(agent_id: str, request: Request,
         ad.stop_agent_cleanup(db, agent, "Agent stopped",
                               kill_tmux=False, fail_executing=True,
                               fail_reason="Agent stopped by user",
-                              cascade_subagents=True)
+                              cascade_subagents=True,
+                              skip_task_transition=True)
     else:
         agent.status = AgentStatus.STOPPED
         agent.tmux_pane = None
@@ -6093,6 +6124,32 @@ async def stop_agent(agent_id: str, request: Request,
     db.commit()
     db.refresh(agent)
     logger.info("Agent %s stopped", agent.id)
+
+    # Transition linked task based on user choice
+    if agent.task_id:
+        _linked_task = db.get(Task, agent.task_id)
+        if _linked_task and _linked_task.status == TaskStatus.EXECUTING:
+            if task_complete:
+                TaskStateMachine.transition(_linked_task, TaskStatus.COMPLETE, strict=False)
+                logger.info("Task %s marked COMPLETE (agent %s stopped by user)", _linked_task.id, agent.id)
+            else:
+                # Build human-readable retry_context for _build_task_prompt
+                _ctx_parts = []
+                if incomplete_reason:
+                    _ctx_parts.append(f"User feedback: {incomplete_reason}")
+                if getattr(agent, "agent_summary", None):
+                    _ctx_parts.append(f"Agent summary: {agent.agent_summary}")
+                if _ctx_parts:
+                    _linked_task.retry_context = "\n".join(_ctx_parts)
+                _linked_task.attempt_number = (_linked_task.attempt_number or 0) + 1
+                TaskStateMachine.transition(_linked_task, TaskStatus.INBOX, strict=False)
+                logger.info("Task %s returned to INBOX attempt=%d (agent %s stopped by user)",
+                            _linked_task.id, _linked_task.attempt_number, agent.id)
+            db.commit()
+            asyncio.ensure_future(emit_task_update(
+                _linked_task.id, _linked_task.status.value, _linked_task.project_name or "",
+                title=_linked_task.title, agent_id=agent.id,
+            ))
 
     # Spawn background summary thread if requested
     if _should_summarize:

@@ -11,7 +11,7 @@ class InvalidTransitionError(Exception):
 VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.INBOX: {TaskStatus.PENDING, TaskStatus.EXECUTING, TaskStatus.COMPLETE, TaskStatus.CANCELLED},
     TaskStatus.PENDING: {TaskStatus.EXECUTING, TaskStatus.FAILED, TaskStatus.CANCELLED},
-    TaskStatus.EXECUTING: {TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT, TaskStatus.CANCELLED},
+    TaskStatus.EXECUTING: {TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT, TaskStatus.CANCELLED, TaskStatus.INBOX},
     TaskStatus.COMPLETE: set(),
     TaskStatus.CANCELLED: set(),
     TaskStatus.FAILED: {TaskStatus.PENDING, TaskStatus.CANCELLED},
