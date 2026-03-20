@@ -141,7 +141,8 @@ export const rebuildInsights = (project) =>
 // --- Tasks ---
 export const fetchTasksV2 = (params = "") =>
   request(`/api/v2/tasks${params ? `?${params}` : ""}`);
-export const fetchTaskCounts = () => request("/api/v2/tasks/counts");
+export const fetchTaskCounts = (project) =>
+  request(`/api/v2/tasks/counts${project ? `?project=${encodeURIComponent(project)}` : ""}`);
 export const fetchTaskV2 = (id) => request(`/api/v2/tasks/${id}`);
 export const createTaskV2 = (data) =>
   request("/api/v2/tasks", { method: "POST", body: JSON.stringify(data) });
@@ -179,8 +180,14 @@ export const adoptUnlinkedSession = (sessionId, data) =>
     method: "POST",
     body: JSON.stringify(data),
   });
-export const stopAgent = (id, generateSummary = false) =>
-  request(`/api/agents/${id}${generateSummary ? "?generate_summary=true" : ""}`, { method: "DELETE" });
+export const stopAgent = (id, { generateSummary = false, taskComplete = true, incompleteReason = null } = {}) => {
+  const params = new URLSearchParams();
+  if (generateSummary) params.set("generate_summary", "true");
+  if (!taskComplete) params.set("task_complete", "false");
+  if (incompleteReason) params.set("incomplete_reason", incompleteReason);
+  const qs = params.toString();
+  return request(`/api/agents/${id}${qs ? "?" + qs : ""}`, { method: "DELETE" });
+};
 export const deleteAgent = (id) =>
   request(`/api/agents/${id}/permanent`, { method: "DELETE" });
 export const resumeAgent = (id, body = null) =>

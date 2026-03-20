@@ -3150,12 +3150,19 @@ async def create_task_v2(body: TaskCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/api/v2/tasks/counts")
-async def task_counts(db: Session = Depends(get_db)):
-    """Return perspective counts + weekly success stats."""
+async def task_counts(project: str | None = None, db: Session = Depends(get_db)):
+    """Return perspective counts + weekly success stats.
+
+    Optional ``project`` query param filters to a single project.
+    """
     from datetime import timedelta
 
+    # Base filter — optionally scoped to a project
+    def _pf(q):
+        return q.filter(Task.project_name == project) if project else q
+
     # Perspective counts (server-side)
-    rows = db.query(Task.status, func.count(Task.id)).group_by(Task.status).all()
+    rows = _pf(db.query(Task.status, func.count(Task.id))).group_by(Task.status).all()
     by_status = {s.value: c for s, c in rows}
 
     done_statuses = ["COMPLETE", "CANCELLED", "REJECTED", "FAILED", "TIMEOUT"]
@@ -3175,9 +3182,9 @@ async def task_counts(db: Session = Depends(get_db)):
     week_ago = now - timedelta(days=7)
     terminal = [TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT,
                 TaskStatus.REJECTED, TaskStatus.CANCELLED]
-    weekly_q = db.query(
+    weekly_q = _pf(db.query(
         Task.status, func.count(Task.id)
-    ).filter(
+    )).filter(
         Task.status.in_(terminal),
         Task.completed_at >= week_ago,
     ).group_by(Task.status).all()
@@ -3188,11 +3195,11 @@ async def task_counts(db: Session = Depends(get_db)):
     weekly_pct = round(weekly_completed / weekly_total * 100) if weekly_total else 0
 
     # Daily breakdown for the last 7 days (for sparkline chart)
-    daily_rows = db.query(
+    daily_rows = _pf(db.query(
         func.date(Task.completed_at).label("day"),
         Task.status,
         func.count(Task.id),
-    ).filter(
+    )).filter(
         Task.status.in_(terminal),
         Task.completed_at >= week_ago,
     ).group_by("day", Task.status).all()

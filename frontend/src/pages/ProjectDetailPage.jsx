@@ -25,6 +25,7 @@ import {
   applyProgressSummary,
   updateProjectSettings,
   rebuildInsights,
+  fetchTaskCounts,
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import EffortSelector from "../components/EffortSelector";
@@ -72,6 +73,156 @@ function TaskRing({ total, completed, size = 22 }) {
         {pct}
       </text>
     </svg>
+  );
+}
+
+function ProjectStatsPopover({ stats, onClose, containerRef }) {
+  useEffect(() => {
+    const handler = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) onClose();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose, containerRef]);
+
+  const wTotal = stats?.weekly_total ?? 0;
+  const wCompleted = stats?.weekly_completed ?? 0;
+  const wFailed = stats?.weekly_failed ?? 0;
+  const wTimeout = stats?.weekly_timeout ?? 0;
+  const wCancelled = stats?.weekly_cancelled ?? 0;
+  const wRejected = stats?.weekly_rejected ?? 0;
+  const wPct = stats?.weekly_success_pct ?? 0;
+  const ringColor = wTotal === 0 ? "#9ca3af" : wPct >= 80 ? "#22c55e" : wPct >= 50 ? "#eab308" : "#f87171";
+
+  const rows = [
+    { label: "Completed", count: wCompleted, color: "#22c55e" },
+    { label: "Failed",    count: wFailed,    color: "#f87171" },
+    { label: "Timeout",   count: wTimeout,   color: "#f59e0b" },
+    { label: "Cancelled", count: wCancelled, color: "#9ca3af" },
+    { label: "Rejected",  count: wRejected,  color: "#a78bfa" },
+  ].filter(r => r.count > 0);
+
+  const daily = stats?.daily;
+  const hasDaily = daily && daily.some(d => d.total > 0);
+
+  return (
+    <div className="absolute right-0 top-full mt-2 z-50" style={{ minWidth: 260 }}>
+      <div className="absolute -top-1.5 right-3"
+        style={{ width: 12, height: 12, transform: "rotate(45deg)", background: "var(--color-surface)", borderTop: "1px solid var(--color-edge)", borderLeft: "1px solid var(--color-edge)" }} />
+      <div className="bg-surface border border-edge rounded-xl shadow-lg overflow-hidden" style={{ boxShadow: "0 8px 30px var(--color-shadow)" }}>
+        {/* Header */}
+        <div className="px-4 pt-4 pb-3 flex items-center gap-3">
+          <svg width="44" height="44" viewBox="0 0 44 44">
+            <circle cx="22" cy="22" r="17" fill="transparent" stroke={ringColor} strokeWidth="3.5" opacity={0.18} />
+            <circle cx="22" cy="22" r="17" fill="transparent" stroke={ringColor} strokeWidth="3.5"
+              strokeLinecap="round" strokeDasharray={2 * Math.PI * 17} strokeDashoffset={2 * Math.PI * 17 * (1 - wPct / 100)}
+              transform="rotate(-90 22 22)" style={{ transition: "stroke-dashoffset 0.6s ease" }} />
+            <text x="22" y="22" textAnchor="middle" dominantBaseline="central"
+              fill={ringColor} style={{ fontSize: "12px", fontWeight: 700 }}>{wPct}%</text>
+          </svg>
+          <div>
+            <div className="text-heading text-sm font-semibold">Weekly Success Rate</div>
+            <div className="text-dim text-xs mt-0.5">{wTotal} tasks this week</div>
+          </div>
+        </div>
+
+        <div className="border-t border-divider" />
+
+        {/* Breakdown */}
+        <div className="px-4 py-2.5 space-y-1.5">
+          {rows.length === 0 ? (
+            <div className="text-dim text-xs py-1">No completed tasks this week</div>
+          ) : rows.map(r => (
+            <div key={r.label} className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: r.color }} />
+                <span className="text-body">{r.label}</span>
+              </div>
+              <span className="text-heading font-medium tabular-nums">{r.count}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Progress bar */}
+        {wTotal > 0 && (
+          <div className="px-4 pb-3">
+            <div className="h-1.5 rounded-full overflow-hidden flex" style={{ backgroundColor: "var(--color-input)" }}>
+              {wCompleted > 0 && <div style={{ width: `${(wCompleted / wTotal) * 100}%`, backgroundColor: "#22c55e" }} />}
+              {wFailed > 0 && <div style={{ width: `${(wFailed / wTotal) * 100}%`, backgroundColor: "#f87171" }} />}
+              {wTimeout > 0 && <div style={{ width: `${(wTimeout / wTotal) * 100}%`, backgroundColor: "#f59e0b" }} />}
+              {wCancelled > 0 && <div style={{ width: `${(wCancelled / wTotal) * 100}%`, backgroundColor: "#9ca3af" }} />}
+              {wRejected > 0 && <div style={{ width: `${(wRejected / wTotal) * 100}%`, backgroundColor: "#a78bfa" }} />}
+            </div>
+          </div>
+        )}
+
+        {/* Daily sparkline */}
+        {hasDaily && (() => {
+          const W = 228, H = 68, PX = 8, PY = 10;
+          const plotW = W - PX * 2, plotH = H - PY * 2;
+          const points = daily.map((d, i) => ({
+            x: PX + (i / Math.max(daily.length - 1, 1)) * plotW,
+            pct: d.success_pct, total: d.total, date: d.date,
+          }));
+          const validPts = points.filter(p => p.pct != null);
+          const yOf = (pct) => PY + plotH - (pct / 100) * plotH;
+          const linePath = validPts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${yOf(p.pct).toFixed(1)}`).join(" ");
+          const fillPath = validPts.length >= 2
+            ? `${linePath} L${validPts[validPts.length - 1].x.toFixed(1)},${H - PY} L${validPts[0].x.toFixed(1)},${H - PY} Z` : "";
+          const dayLabels = daily.map(d => ["S","M","T","W","T","F","S"][new Date(d.date + "T00:00:00").getDay()]);
+
+          return (
+            <div className="border-t border-divider px-4 py-2.5">
+              <div className="text-faint text-[10px] uppercase tracking-wider font-medium mb-1.5">Daily Success Rate</div>
+              <svg width={W} height={H + 14} viewBox={`0 0 ${W} ${H + 14}`} className="w-full" style={{ maxWidth: W }}>
+                <defs>
+                  <linearGradient id="projSparkFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#22c55e" stopOpacity="0.25" />
+                    <stop offset="100%" stopColor="#22c55e" stopOpacity="0.02" />
+                  </linearGradient>
+                </defs>
+                {[0, 50, 100].map(pct => (
+                  <line key={pct} x1={PX} x2={W - PX} y1={yOf(pct)} y2={yOf(pct)}
+                    stroke="var(--color-edge)" strokeWidth="0.5" strokeDasharray={pct === 50 ? "2,2" : "none"} opacity={0.5} />
+                ))}
+                {fillPath && <path d={fillPath} fill="url(#projSparkFill)" />}
+                {validPts.length >= 2 && <path d={linePath} fill="none" stroke="#22c55e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />}
+                {validPts.map((p, i) => (
+                  <circle key={i} cx={p.x} cy={yOf(p.pct)} r="2.5" fill="#22c55e" stroke="var(--color-surface)" strokeWidth="1" />
+                ))}
+                {validPts.map((p, i) => (
+                  <text key={`lbl${i}`} x={p.x} y={yOf(p.pct) - 5} textAnchor="middle" fill="var(--color-heading)"
+                    style={{ fontSize: "9px", fontWeight: 600 }}>{p.pct}%</text>
+                ))}
+                {points.map((p, i) => (
+                  <text key={`day${i}`} x={p.x} y={H + 10} textAnchor="middle" fill="var(--color-dim)"
+                    style={{ fontSize: "9px" }}>{dayLabels[i]}</text>
+                ))}
+              </svg>
+            </div>
+          );
+        })()}
+
+        {/* All Tasks counts */}
+        <div className="border-t border-divider px-4 py-2.5">
+          <div className="text-faint text-[10px] uppercase tracking-wider font-medium mb-1.5">All Tasks</div>
+          <div className="grid grid-cols-3 gap-y-1.5 gap-x-3 text-xs">
+            {[
+              { label: "Inbox", val: stats?.INBOX },
+              { label: "Queue", val: stats?.QUEUE },
+              { label: "Active", val: stats?.ACTIVE },
+              { label: "Review", val: stats?.REVIEW },
+              { label: "Done", val: stats?.DONE },
+            ].filter(r => r.val != null).map(r => (
+              <div key={r.label} className="flex items-center justify-between">
+                <span className="text-dim">{r.label}</span>
+                <span className="text-heading font-medium tabular-nums">{r.val}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -459,6 +610,11 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const [showRenameConfirm, setShowRenameConfirm] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const nameInputRef = useRef(null);
+
+  // Task stats popover
+  const [showStats, setShowStats] = useState(false);
+  const [projectStats, setProjectStats] = useState(null);
+  const statsRingRef = useRef(null);
 
   // Activate / Archive / Delete
   const [activating, setActivating] = useState(false);
@@ -1081,14 +1237,24 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                 )}
                 <div className="ml-auto flex items-center gap-1">
                   {(project.task_total || 0) > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/tasks?project=${encodeURIComponent(project.name)}`)}
-                      title={`${project.task_completed || 0}/${project.task_total} tasks completed`}
-                      className="shrink-0 flex items-center justify-center rounded-md hover:bg-white/5 transition-colors p-0.5"
-                    >
-                      <TaskRing total={project.task_total} completed={project.task_completed || 0} size={24} />
-                    </button>
+                    <div className="relative" ref={statsRingRef}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!showStats) {
+                            fetchTaskCounts(project.name).then(setProjectStats).catch(() => {});
+                          }
+                          setShowStats(v => !v);
+                        }}
+                        title={`${project.task_completed || 0}/${project.task_total} tasks completed`}
+                        className="shrink-0 flex items-center justify-center rounded-md hover:bg-white/5 transition-colors p-0.5"
+                      >
+                        <TaskRing total={project.task_total} completed={project.task_completed || 0} size={24} />
+                      </button>
+                      {showStats && projectStats && (
+                        <ProjectStatsPopover stats={projectStats} onClose={() => setShowStats(false)} containerRef={statsRingRef} />
+                      )}
+                    </div>
                   )}
                   {["CLAUDE.md", "PROGRESS.md"].map((fn) => {
                     const letter = fn === "CLAUDE.md" ? "C" : "P";
