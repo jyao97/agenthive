@@ -3791,10 +3791,6 @@ Here are the day's conversations (with timestamps):
             self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
             self._emit(emit_new_message(agent.id, resp.id, agent.name, agent.project))
 
-            status_emoji = "\u274c" if is_error else "\u2705"
-            from notify import notify
-            notify("task_complete", agent.id, f"{status_emoji} {agent.name}", preview[:100], f"/agents/{agent.id}")
-
             # Generate video thumbnails in background thread
             if result_text:
                 _proj = db.get(Project, agent.project)
@@ -3919,9 +3915,6 @@ Here are the day's conversations (with timestamps):
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
                 self._emit(emit_new_message(agent.id, sys_msg.id, agent.name, agent.project))
 
-                from notify import notify
-                notify("task_complete", agent.id, f"\u23f0 {agent.name}", timeout_note, f"/agents/{agent.id}")
-
                 timed_out.append(agent_id)
 
         for agent_id in timed_out:
@@ -3967,7 +3960,8 @@ Here are the day's conversations (with timestamps):
                 reason = f"Project '{agent.project}' not found"
                 self.error_agent_cleanup(db, agent, reason)
                 from notify import notify
-                notify("task_complete", agent.id, f"\u274c {agent.name}", reason, f"/agents/{agent.id}")
+                notify("message", agent.id, f"\u274c {agent.name}", reason, f"/agents/{agent.id}",
+                       in_use=self._is_agent_in_use(agent.id, agent.tmux_pane))
                 continue
 
             try:
@@ -3984,7 +3978,8 @@ Here are the day's conversations (with timestamps):
                 reason = "Failed to start — project directory not found"
                 self.error_agent_cleanup(db, agent, reason)
                 from notify import notify
-                notify("task_complete", agent.id, f"\u274c {agent.name}", reason, f"/agents/{agent.id}")
+                notify("message", agent.id, f"\u274c {agent.name}", reason, f"/agents/{agent.id}",
+                       in_use=self._is_agent_in_use(agent.id, agent.tmux_pane))
 
     # ---- Step 4: Dispatch pending messages ----
 
@@ -5531,14 +5526,16 @@ Here are the day's conversations (with timestamps):
                         self._emit(emit_new_message(agent.id, sys_msg.id, ctx.agent_name, ctx.agent_project))
 
                         from notify import notify
-                        _tc_decision = notify("task_complete", agent_id,
+                        _in_use = self._is_agent_in_use(agent_id, agent.tmux_pane if agent else None)
+                        _tc_decision = notify("message", agent_id,
                                f"\u2705 {ctx.agent_name or agent_id[:8]}",
                                "CLI session ended — sync complete",
-                               f"/agents/{agent_id}")
+                               f"/agents/{agent_id}",
+                               in_use=_in_use)
                         self._emit({"type": "notification_debug",
                                     "agent_id": agent_id,
                                     "decision": _tc_decision,
-                                    "channel": "task_complete",
+                                    "channel": "message",
                                     "body": "session ended"})
                 finally:
                     db.close()
