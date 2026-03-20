@@ -1080,6 +1080,16 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                   <span className="shrink-0 px-2 py-0.5 text-[10px] font-bold uppercase rounded-full bg-zinc-500/15 text-zinc-400 tracking-wide">Inactive</span>
                 )}
                 <div className="ml-auto flex items-center gap-1">
+                  {(project.task_total || 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/tasks?project=${encodeURIComponent(project.name)}`)}
+                      title={`${project.task_completed || 0}/${project.task_total} tasks completed`}
+                      className="shrink-0 flex items-center justify-center rounded-md hover:bg-white/5 transition-colors p-0.5"
+                    >
+                      <TaskRing total={project.task_total} completed={project.task_completed || 0} size={24} />
+                    </button>
+                  )}
                   {["CLAUDE.md", "PROGRESS.md"].map((fn) => {
                     const letter = fn === "CLAUDE.md" ? "C" : "P";
                     const exists = fileExists[fn];
@@ -1141,12 +1151,9 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                   <span className="text-cyan-400">{project.agent_active} active</span>
                 )}
                 {(project.task_total || 0) > 0 && (
-                  <>
-                    <span className="text-label">
-                      <span className="font-medium text-heading">{project.task_total}</span> task{project.task_total !== 1 ? "s" : ""}
-                    </span>
-                    <TaskRing total={project.task_total} completed={project.task_completed || 0} />
-                  </>
+                  <span className="text-label">
+                    <span className="font-medium text-heading">{project.task_total}</span> task{project.task_total !== 1 ? "s" : ""}
+                  </span>
                 )}
               </div>
             </div>
