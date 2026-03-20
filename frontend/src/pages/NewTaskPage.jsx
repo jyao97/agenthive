@@ -6,9 +6,11 @@ import { DATE_SHORT } from "../lib/formatters";
 import ProjectSelector from "../components/ProjectSelector";
 import EffortSelector from "../components/EffortSelector";
 import ModelSelector from "../components/ModelSelector";
+import VoiceRecorder from "../components/VoiceRecorder";
 import SendLaterPicker from "../components/SendLaterPicker";
 import ImageLightbox from "../components/ImageLightbox";
 import useDraft from "../hooks/useDraft";
+import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import { useToast } from "../contexts/ToastContext";
 
 function deriveTitle(description) {
@@ -79,6 +81,11 @@ export default function NewTaskPage() {
 
   const toast = useToast();
   const showToast = (message, type = "success") => type === "error" ? toast.error(message) : toast.success(message);
+
+  const voice = useVoiceRecorder({
+    onTranscript: (text) => setDescription((prev) => (prev ? prev + " " + text : text)),
+    onError: (msg) => showToast(msg, "error"),
+  });
 
   // Auto-resize textarea
   useEffect(() => {
@@ -418,7 +425,7 @@ export default function NewTaskPage() {
                   </div>
                 )}
                 <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={handleFileSelect} />
-                <div className={`grid gap-1.5 items-center px-1 ${project ? "grid-cols-[auto_1fr_auto_auto_auto_auto]" : "grid-cols-[auto_1fr_auto_auto_auto]"}`}>
+                <div className={`grid gap-1.5 items-center px-1 ${project ? "grid-cols-[auto_1fr_auto_auto_auto_auto_auto]" : "grid-cols-[auto_1fr_auto_auto_auto_auto]"}`}>
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
@@ -429,7 +436,21 @@ export default function NewTaskPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                     </svg>
                   </button>
-                  <div />
+                  <div className="flex items-center gap-1.5 justify-end">
+                    {voice.recording && voice.remainingSeconds != null && (
+                      <span className={`text-xs font-semibold tabular-nums ${voice.remainingSeconds <= 10 ? "text-red-400" : "text-red-500"}`}>
+                        {voice.remainingSeconds >= 60
+                          ? `${Math.floor(voice.remainingSeconds / 60)}:${String(voice.remainingSeconds % 60).padStart(2, "0")}`
+                          : voice.remainingSeconds}
+                      </span>
+                    )}
+                    <VoiceRecorder
+                      recording={voice.recording}
+                      voiceLoading={voice.voiceLoading}
+                      micError={voice.micError}
+                      onToggle={voice.toggleRecording}
+                    />
+                  </div>
                   <div className="relative">
                     <button
                       type="button"
