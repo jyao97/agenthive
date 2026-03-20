@@ -176,11 +176,15 @@ async def sync_reconcile_initial(ad, ctx: SyncContext):
         }
 
         # Secondary: content multiset for backward compat
-        db_sig_counts: dict[tuple[str, str], int] = {}
+        # Track actual messages (not just counts) so we can update
+        # jsonl_uuid / delivered_at when a content match is found after
+        # compact — otherwise the matched message keeps its old timestamp
+        # and appears before the compact boundary in the UI.
+        db_sig_msgs: dict[tuple[str, str], list] = {}
         for m in all_db:
             role_char = "u" if m.role == MessageRole.USER else "a"
             sig = (role_char, _dedup_sig(m.content))
-            db_sig_counts[sig] = db_sig_counts.get(sig, 0) + 1
+            db_sig_msgs.setdefault(sig, []).append(m)
 
         # Walk through JSONL turns and collect missing ones
         missing: list[tuple[str, str, dict | None, str | None]] = []
@@ -192,14 +196,26 @@ async def sync_reconcile_initial(ad, ctx: SyncContext):
             role_char = "u" if r == "user" else "a"
             content_sig = _dedup_sig(c)
             sig = (role_char, content_sig)
-            if db_sig_counts.get(sig, 0) > 0:
-                db_sig_counts[sig] -= 1
+            if db_sig_msgs.get(sig):
+                matched = db_sig_msgs[sig].pop(0)
+                # After compact the same content reappears under a new
+                # JSONL uuid.  Stamp the matched DB message so it (a) is
+                # trackable by uuid in future compacts and (b) sorts
+                # after the compact boundary in the UI.
+                if uuid and not matched.jsonl_uuid:
+                    matched.jsonl_uuid = uuid
+                    matched.delivered_at = _utcnow()
+                    logger.info(
+                        "Reconcile: linked msg %s to jsonl_uuid %s "
+                        "(content dedup after compact) for agent %s",
+                        matched.id, uuid[:12], ctx.agent_id[:8],
+                    )
                 continue
             # Check opposite role (e.g. task-notification fixed
             # from USER->AGENT)
             alt = ("a" if role_char == "u" else "u", content_sig)
-            if db_sig_counts.get(alt, 0) > 0:
-                db_sig_counts[alt] -= 1
+            if db_sig_msgs.get(alt):
+                db_sig_msgs[alt].pop(0)
                 continue
             missing.append((r, c, mt, uuid))
 
