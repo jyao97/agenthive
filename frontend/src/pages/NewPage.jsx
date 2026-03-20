@@ -194,13 +194,20 @@ function NewTaskForm({ showToast, navigate }) {
         <div>
           <label className="block text-sm font-medium text-label mb-2">Description</label>
           <div className="flex items-end gap-2">
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Detailed requirements (optional)"
-              rows={4}
-              className="flex-1 rounded-lg bg-input border border-edge px-3 py-2 text-heading placeholder-hint resize-none focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors"
-            />
+            <div className="flex-1">
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Detailed requirements (optional)"
+                rows={4}
+                className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-heading placeholder-hint resize-none focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors"
+              />
+              {voice.streamingText && (
+                <div className="px-3 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
+                  {voice.streamingText}
+                </div>
+              )}
+            </div>
             <VoiceRecorder
               recording={voice.recording}
               voiceLoading={voice.voiceLoading}
@@ -528,6 +535,11 @@ function NewAgentForm({ showToast, navigate }) {
             rows={3}
             className="w-full min-h-[72px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors"
           />
+          {voice.streamingText && (
+            <div className="px-3 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
+              {voice.streamingText}
+            </div>
+          )}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-1">
               {attachments.map((att, i) => (

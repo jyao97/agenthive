@@ -40,6 +40,11 @@ export default function PromptInputBar({
         rows={3}
         className="w-full min-h-[72px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors"
       />
+      {voice?.streamingText && (
+        <div className="px-3 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
+          {voice.streamingText}
+        </div>
+      )}
       {/* Attachment preview chips */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-1">
