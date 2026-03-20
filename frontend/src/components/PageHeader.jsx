@@ -4,10 +4,12 @@ import useHealthStatus from "../hooks/useHealthStatus";
 import { useMonitor } from "../contexts/MonitorContext";
 import { restartServer, fetchHealth, fetchQueueStatus, updateProjectSettings } from "../lib/api";
 import { isSystemHealthy } from "../lib/constants";
+import { relativeTime, durationDisplay } from "../lib/formatters";
 
 /* ── Queue Capacity Popover ── */
 function QueuePopover({ onClose, containerRef, navigate }) {
   const [data, setData] = useState(null);
+  const [showDone, setShowDone] = useState(false);
 
   useEffect(() => {
     const handler = (e) => {
@@ -43,6 +45,8 @@ function QueuePopover({ onClose, containerRef, navigate }) {
 
   const tasks = data?.tasks ?? [];
   const capacity = data?.capacity ?? {};
+  const todayDone = data?.today_done ?? [];
+  const todayCompleted = todayDone.filter(t => t.status === "COMPLETE");
   const pending = tasks.filter(t => t.status === "PENDING");
   const running = tasks.filter(t => t.status === "EXECUTING")
     .sort((a, b) => {
@@ -77,6 +81,18 @@ function QueuePopover({ onClose, containerRef, navigate }) {
               {running.length === 0 && pending.length === 0 && <span>idle</span>}
             </div>
           </div>
+          {todayCompleted.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowDone(v => !v)}
+              className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-full bg-green-500/12 text-green-500 hover:bg-green-500/20 transition-colors"
+            >
+              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+              </svg>
+              <span className="text-[11px] font-semibold tabular-nums">{todayCompleted.length}</span>
+            </button>
+          )}
         </div>
 
         {/* Per-project slot grid */}
@@ -178,6 +194,29 @@ function QueuePopover({ onClose, containerRef, navigate }) {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Today's completed tasks */}
+        {showDone && todayCompleted.length > 0 && (
+          <div className="border-t border-divider px-4 py-2.5 space-y-1.5 max-h-[200px] overflow-y-auto">
+            <div className="text-faint text-[10px] uppercase tracking-wider font-medium mb-1">
+              Completed today · {todayCompleted.length}
+            </div>
+            {todayCompleted.map(t => (
+              <div key={t.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5"
+                onClick={() => { onClose(); navigate(`/tasks/${t.id}`); }}>
+                <span className="w-4 h-4 rounded-full bg-green-500/15 text-green-500 flex items-center justify-center shrink-0">
+                  <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                  </svg>
+                </span>
+                <span className="text-body truncate flex-1 min-w-0">{t.title}</span>
+                <span className="text-faint text-[10px] shrink-0 whitespace-nowrap">
+                  {t.started_at && t.completed_at ? durationDisplay(t.started_at, t.completed_at) : relativeTime(t.completed_at)}
+                </span>
+              </div>
+            ))}
           </div>
         )}
 

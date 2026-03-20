@@ -3279,9 +3279,22 @@ async def task_queue_status(db: Session = Depends(get_db)):
             d["agent_status"] = None
         task_list.append(d)
 
+    # Today's completed tasks
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    terminal = [TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT,
+                TaskStatus.REJECTED, TaskStatus.CANCELLED]
+    today_done = (
+        db.query(Task)
+        .filter(Task.status.in_(terminal), Task.completed_at >= today_start)
+        .order_by(Task.completed_at.desc())
+        .all()
+    )
+    today_done_list = [TaskOut.model_validate(t).model_dump() for t in today_done]
+
     return {
         "tasks": task_list,
         "capacity": capacity,
+        "today_done": today_done_list,
     }
 
 
