@@ -110,9 +110,9 @@ const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArc
             {folder.process_running && (
               <span className="shrink-0 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Processes active" />
             )}
-            {(folder.task_total || 0) > 0 && (
+            {(folder.weekly_total || 0) > 0 && (
               <span className="ml-auto">
-                <TaskRing total={folder.task_total} completed={folder.task_completed || 0} />
+                <TaskRing total={folder.weekly_total} completed={folder.weekly_completed || 0} />
               </span>
             )}
           </div>

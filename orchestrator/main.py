@@ -1370,9 +1370,25 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
                 .filter(Task.project_name == dirname)
                 .one()
             )
+            # Weekly stats for task ring
+            from datetime import timedelta as _td
+            _week_ago = datetime.now(timezone.utc) - _td(days=7)
+            _w_terminal = [TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT,
+                           TaskStatus.REJECTED, TaskStatus.CANCELLED]
+            _w_rows = (
+                db.query(Task.status, func.count(Task.id))
+                .filter(Task.project_name == dirname, Task.status.in_(_w_terminal),
+                        Task.completed_at >= _week_ago)
+                .group_by(Task.status).all()
+            )
+            _w_by = {s.value: c for s, c in _w_rows}
+            _w_total = sum(_w_by.values())
+            _w_completed = _w_by.get("COMPLETE", 0)
             entry["agent_active"] = agent_active_count
             entry["task_total"] = task_row.total
             entry["task_completed"] = task_row.completed
+            entry["weekly_total"] = _w_total
+            entry["weekly_completed"] = _w_completed
 
         results.append(entry)
 
