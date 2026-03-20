@@ -3279,6 +3279,10 @@ Here are the day's conversations (with timestamps):
             return
 
         for task in tasks:
+            # Tmux tasks need synchronous dispatch via dispatch_task_v2 endpoint
+            if getattr(task, "use_tmux", False):
+                continue
+
             proj = db.query(Project).filter(Project.name == task.project_name).first()
             if not proj:
                 logger.warning("Task %s: project %s not found, skipping", task.id, task.project_name)

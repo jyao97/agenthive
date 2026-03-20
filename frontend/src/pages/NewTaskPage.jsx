@@ -1,17 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { createTaskV2, launchTmuxAgent, uploadFile, generateWorktreeName } from "../lib/api";
+import { createTaskV2, dispatchTask, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
 import { DATE_SHORT } from "../lib/formatters";
 import ProjectSelector from "../components/ProjectSelector";
 import EffortSelector from "../components/EffortSelector";
 import ModelSelector from "../components/ModelSelector";
-import VoiceRecorder from "../components/VoiceRecorder";
-import WaveformVisualizer from "../components/WaveformVisualizer";
 import SendLaterPicker from "../components/SendLaterPicker";
 import ImageLightbox from "../components/ImageLightbox";
 import useDraft from "../hooks/useDraft";
-import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import { useToast } from "../contexts/ToastContext";
 
 function deriveTitle(description) {
@@ -25,8 +22,8 @@ function deriveTitle(description) {
 
 export default function NewTaskPage() {
   const navigate = useNavigate();
-  const [autoVoice, setAutoVoice] = useState(() => {
-    try { return localStorage.getItem("pref:autoVoice") !== "false"; } catch { return true; }
+  const [useTmux, setUseTmux] = useState(() => {
+    try { return localStorage.getItem("pref:useTmux") === "true"; } catch { return false; }
   });
   const [title, setTitle, clearTitle] = useDraft("new-task:title", "");
   const [description, setDescription, clearDesc] = useDraft("new-task:description", "");
@@ -48,7 +45,6 @@ export default function NewTaskPage() {
   const [notifyAt, setNotifyAt] = useState(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
-  const voiceAutoStarted = useRef(false);
 
   // Sheet animation state
   const [mounted, setMounted] = useState(false);
@@ -83,28 +79,6 @@ export default function NewTaskPage() {
 
   const toast = useToast();
   const showToast = (message, type = "success") => type === "error" ? toast.error(message) : toast.success(message);
-
-  const voice = useVoiceRecorder({
-    onTranscript: (text) => setDescription((prev) => (prev ? prev + " " + text : text)),
-    onError: (msg) => showToast(msg, "error"),
-  });
-
-  // Auto-start voice on mount if preference is on and no draft exists
-  useEffect(() => {
-    if (!autoVoice) return;
-    if (description || title) return;
-    voiceAutoStarted.current = true;
-    const timer = setTimeout(() => { voice.toggleRecording(); }, 400);
-    return () => {
-      clearTimeout(timer);
-      voiceAutoStarted.current = false; // reset for StrictMode double-mount
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Stop recording when voice toggle is turned off
-  useEffect(() => {
-    if (!autoVoice && voice.recording) voice.stopRecording();
-  }, [autoVoice]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-resize textarea
   useEffect(() => {
@@ -207,6 +181,7 @@ export default function NewTaskPage() {
           skip_permissions: skipPermissions,
           sync_mode: false,
           use_worktree: !!worktree,
+          use_tmux: useTmux,
           notify_at: notifyAt || undefined,
           auto_dispatch: false, // inbox only
         });
@@ -251,6 +226,7 @@ export default function NewTaskPage() {
         skip_permissions: skipPermissions,
         sync_mode: false,
         use_worktree: !!worktree,
+        use_tmux: useTmux,
         notify_at: notifyAt || undefined,
         auto_dispatch: false,
       });
@@ -268,8 +244,8 @@ export default function NewTaskPage() {
     }
   };
 
-  // ---- Launch agent directly (when project is selected) ----
-  // Creates a task first, then launches a tmux agent linked to it.
+  // ---- Launch agent (when project is selected) ----
+  // Unified pipeline: create task → dispatch → navigate to agent
   const launchAgent = async () => {
     if (submittingRef.current || !project) return;
     const hasText = description.trim() || title.trim() || attachments.some((a) => a.uploadedPath);
@@ -281,7 +257,7 @@ export default function NewTaskPage() {
       const fullPrompt = buildDescriptionText(description.trim() || title.trim(), uploaded);
       let finalTitle = title.trim() || deriveTitle(description);
       if (!finalTitle && uploaded.length > 0) finalTitle = "Untitled task";
-      // Create task first
+      // Unified pipeline: create task → dispatch → navigate to agent
       const task = await createTaskV2({
         title: finalTitle,
         description: fullPrompt || undefined,
@@ -291,23 +267,16 @@ export default function NewTaskPage() {
         effort: effort || undefined,
         skip_permissions: skipPermissions,
         use_worktree: !!worktree,
+        use_tmux: useTmux,
         auto_dispatch: false,
       });
-      // Launch agent linked to task
-      const agent = await launchTmuxAgent({
-        project,
-        prompt: fullPrompt,
-        model: model || undefined,
-        effort: effort || undefined,
-        worktree: worktree || undefined,
-        skip_permissions: skipPermissions,
-        task_id: task.id,
-      });
+      // Dispatch creates agent synchronously — returns task with agent_id
+      const dispatched = await dispatchTask(task.id);
       clearAllDrafts();
       clearAttachments();
       setNotifyAt(null);
       setIsClosing(true);
-      setTimeout(() => navigate(`/agents/${agent.id}`), 250);
+      setTimeout(() => navigate(`/agents/${dispatched.agent_id}`), 250);
     } catch (err) {
       showToast("Launch failed: " + err.message, "error");
     } finally {
@@ -449,7 +418,7 @@ export default function NewTaskPage() {
                   </div>
                 )}
                 <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={handleFileSelect} />
-                <div className={`grid gap-1.5 items-center px-1 ${project ? "grid-cols-[auto_1fr_auto_auto_auto_auto_auto]" : "grid-cols-[auto_1fr_auto_auto_auto_auto]"}`}>
+                <div className={`grid gap-1.5 items-center px-1 ${project ? "grid-cols-[auto_1fr_auto_auto_auto_auto]" : "grid-cols-[auto_1fr_auto_auto_auto]"}`}>
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
@@ -461,23 +430,6 @@ export default function NewTaskPage() {
                     </svg>
                   </button>
                   <div />
-                  {autoVoice && (
-                    <div className="flex items-center gap-1.5">
-                      {voice.recording && voice.remainingSeconds != null && (
-                        <span className={`text-xs font-semibold tabular-nums ${voice.remainingSeconds <= 10 ? "text-red-400" : "text-red-500"}`}>
-                          {voice.remainingSeconds >= 60
-                            ? `${Math.floor(voice.remainingSeconds / 60)}:${String(voice.remainingSeconds % 60).padStart(2, "0")}`
-                            : voice.remainingSeconds}
-                        </span>
-                      )}
-                      <VoiceRecorder
-                        recording={voice.recording}
-                        voiceLoading={voice.voiceLoading}
-                        micError={voice.micError}
-                        onToggle={voice.toggleRecording}
-                      />
-                    </div>
-                  )}
                   <div className="relative">
                     <button
                       type="button"
@@ -602,17 +554,17 @@ export default function NewTaskPage() {
                 <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
                   <div
                     role="switch"
-                    aria-checked={autoVoice}
+                    aria-checked={useTmux}
                     onClick={() => {
-                      const next = !autoVoice;
-                      setAutoVoice(next);
-                      try { localStorage.setItem("pref:autoVoice", String(next)); } catch {}
+                      const next = !useTmux;
+                      setUseTmux(next);
+                      try { localStorage.setItem("pref:useTmux", String(next)); } catch {}
                     }}
-                    className={`relative w-9 h-[20px] rounded-full transition-colors ${autoVoice ? "bg-cyan-500" : "bg-elevated"}`}
+                    className={`relative w-9 h-[20px] rounded-full transition-colors ${useTmux ? "bg-green-500" : "bg-elevated"}`}
                   >
-                    <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${autoVoice ? "translate-x-[16px]" : ""}`} />
+                    <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${useTmux ? "translate-x-[16px]" : ""}`} />
                   </div>
-                  <span className="text-sm text-label">Voice</span>
+                  <span className="text-sm text-label">Tmux</span>
                 </label>
               </div>
             </form>

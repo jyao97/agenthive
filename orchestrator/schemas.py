@@ -25,6 +25,7 @@ class TaskCreate(BaseModel):
     skip_permissions: bool = True
     sync_mode: bool = False
     use_worktree: bool = True
+    use_tmux: bool = False
     notify_at: datetime | None = None
     auto_dispatch: bool = False
 
@@ -50,6 +51,7 @@ class TaskUpdate(BaseModel):
     notify_at: datetime | None = None
     skip_permissions: bool | None = None
     use_worktree: bool | None = None
+    use_tmux: bool | None = None
     worktree_name: str | None = Field(None, max_length=200)
     sort_order: int | None = None
 
@@ -72,6 +74,7 @@ class TaskOut(BaseModel):
     skip_permissions: bool = True
     sync_mode: bool = False
     use_worktree: bool = True
+    use_tmux: bool = False
     sort_order: int = 0
     notify_at: datetime | None = None
     created_at: datetime

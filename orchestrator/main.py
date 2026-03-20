@@ -3135,6 +3135,7 @@ async def create_task_v2(body: TaskCreate, db: Session = Depends(get_db)):
         skip_permissions=body.skip_permissions,
         sync_mode=body.sync_mode,
         use_worktree=body.use_worktree,
+        use_tmux=body.use_tmux,
         notify_at=body.notify_at,
         status=initial_status,
     )
@@ -3408,7 +3409,7 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
         if val is not None:
             setattr(task, field, val)
     # Boolean fields: explicit set check (None means "not sent")
-    for field in ("skip_permissions", "use_worktree"):
+    for field in ("skip_permissions", "use_worktree", "use_tmux"):
         if field in body.model_fields_set:
             setattr(task, field, getattr(body, field))
     if "worktree_name" in body.model_fields_set:
@@ -3429,8 +3430,12 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
 
 
 @app.post("/api/v2/tasks/{task_id}/dispatch", response_model=TaskOut)
-async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
-    """Move task to PENDING for auto-dispatch."""
+async def dispatch_task_v2(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Dispatch a task: create agent synchronously and move to EXECUTING.
+
+    Supports both subprocess (default) and tmux (use_tmux=True) agents.
+    Returns the task with agent_id set so the frontend can navigate immediately.
+    """
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
@@ -3438,22 +3443,55 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
         raise HTTPException(400, "Task requires a project_name before dispatch")
     if not task.title:
         raise HTTPException(400, "Task requires a title before dispatch")
-    # Validate transition before atomic CAS (transition applied via atomic update below)
-    if not can_transition(task.status, TaskStatus.PENDING):
-        raise HTTPException(409, f"Invalid task transition: {task.status.value} -> pending (task {task.id})")
-    # Build atomic update dict — prevents TOCTOU race on concurrent dispatches
+    # Validate transition
+    if not can_transition(task.status, TaskStatus.EXECUTING):
+        raise HTTPException(409, f"Invalid task transition: {task.status.value} -> executing (task {task.id})")
+
+    proj = db.query(Project).filter(Project.name == task.project_name).first()
+    if not proj:
+        raise HTTPException(400, f"Project not found: {task.project_name}")
+
+    # Enforce per-project capacity
+    _check_project_capacity(db, task.project_name)
+
     expected_status = task.status
-    update_dict: dict = {"status": TaskStatus.PENDING}
-    # Redo: auto-increment attempt and prepare context
+
+    # Redo: prepare retry context before creating agent
     if expected_status in (TaskStatus.FAILED, TaskStatus.TIMEOUT):
-        update_dict["attempt_number"] = task.attempt_number + 1
+        task.attempt_number += 1
         if task.agent_summary:
-            update_dict["retry_context"] = task.agent_summary
-        update_dict["agent_id"] = None
-        update_dict["agent_summary"] = None
-        update_dict["started_at"] = None
-        update_dict["completed_at"] = None
+            task.retry_context = task.agent_summary
+        task.agent_id = None
+        task.agent_summary = None
+        task.started_at = None
+        task.completed_at = None
+
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+
+    if task.use_tmux:
+        agent_id = _dispatch_task_tmux(db, task, proj, ad)
+    else:
+        # Subprocess path: create Agent(IDLE) + Message(PENDING)
+        if not ad:
+            raise HTTPException(500, "Dispatcher not available")
+        agent_id = ad._create_task_agent(db, task, proj)
+
+    if not agent_id:
+        raise HTTPException(500, "Failed to create agent for task")
+
     # Atomic CAS: only update if status hasn't changed since we read it
+    from task_state import TaskStateMachine
+    update_dict: dict = {
+        "status": TaskStatus.EXECUTING,
+        "agent_id": agent_id,
+        "started_at": _utcnow(),
+    }
+    # Include retry fields in the CAS for FAILED/TIMEOUT
+    if expected_status in (TaskStatus.FAILED, TaskStatus.TIMEOUT):
+        update_dict["attempt_number"] = task.attempt_number
+        update_dict["retry_context"] = task.retry_context
+        update_dict["agent_summary"] = None
+        update_dict["completed_at"] = None
     rows = (
         db.query(Task)
         .filter(Task.id == task_id, Task.status == expected_status)
@@ -3465,9 +3503,122 @@ async def dispatch_task_v2(task_id: str, db: Session = Depends(get_db)):
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(
         task.id, task.status.value, task.project_name or "",
-        title=task.title,
+        title=task.title, agent_id=agent_id,
     ))
     return TaskOut.model_validate(task)
+
+
+def _dispatch_task_tmux(db: Session, task: Task, proj: Project, ad) -> str | None:
+    """Create a tmux agent for a task. Returns agent_id or None.
+
+    Extracted from launch_tmux_agent endpoint so dispatch_task_v2 can
+    create tmux agents through the unified pipeline.
+    """
+    import secrets
+    import shlex
+    import subprocess as _sp
+    import uuid as _uuid
+
+    from config import CLAUDE_BIN
+
+    prompt = task.description or task.title
+    model = task.model or proj.default_model or CC_MODEL
+    if model not in VALID_MODELS:
+        model = CC_MODEL
+    effort = task.effort or "high"
+    worktree = None
+    if getattr(task, "use_worktree", True):
+        worktree = task.worktree_name or _generate_worktree_name_local(prompt)
+        task.worktree_name = worktree
+        task.branch_name = task.branch_name or f"worktree-{worktree}"
+    skip_permissions = getattr(task, "skip_permissions", True)
+
+    # Get existing tmux session names for collision check
+    try:
+        _tmux_ls = _sp.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        _existing_tmux = set(_tmux_ls.stdout.strip().splitlines()) if _tmux_ls.returncode == 0 else set()
+    except (OSError, _sp.TimeoutExpired):
+        _existing_tmux = set()
+
+    # Generate unique agent ID
+    for _ in range(20):
+        agent_hex = secrets.token_hex(6)
+        tmux_session = f"ah-{agent_hex[:8]}"
+        if db.get(Agent, agent_hex) is None and tmux_session not in _existing_tmux:
+            break
+    else:
+        return None
+
+    # Pre-generate session UUID and write .owner sidecar
+    pre_session_id = str(_uuid.uuid4())
+    from agent_dispatcher import _write_session_owner
+    from session_cache import session_source_dir
+    _sdir = session_source_dir(proj.path)
+    os.makedirs(_sdir, exist_ok=True)
+    _write_session_owner(_sdir, pre_session_id, agent_hex)
+
+    # Build claude command (interactive mode)
+    cmd_parts = [CLAUDE_BIN, "--session-id", pre_session_id,
+                 "--output-format", "stream-json", "--verbose"]
+    if skip_permissions:
+        cmd_parts.append("--dangerously-skip-permissions")
+    if model:
+        cmd_parts += ["--model", model]
+    if effort:
+        cmd_parts += ["--effort", effort]
+    if worktree:
+        cmd_parts += ["--worktree", worktree]
+    claude_cmd = " ".join(shlex.quote(p) for p in cmd_parts)
+
+    _preflight_claude_project(proj.path)
+    pane_id = _create_tmux_claude_session(tmux_session, proj.path, claude_cmd, agent_id=agent_hex)
+
+    # Create Agent record
+    agent = Agent(
+        id=agent_hex,
+        project=proj.name,
+        name=f"Task: {task.title[:80]}",
+        mode=AgentMode.AUTO,
+        status=AgentStatus.STARTING,
+        model=model,
+        cli_sync=True,
+        tmux_pane=pane_id,
+        effort=effort,
+        worktree=worktree if worktree else None,
+        skip_permissions=skip_permissions,
+        task_id=task.id,
+        muted=True,
+        last_message_preview=f"Task: {task.title[:80]}",
+        last_message_at=_utcnow(),
+    )
+    db.add(agent)
+    db.flush()
+
+    # Prepare prompt with insights via _prepare_dispatch
+    launch_prompt = None
+    if prompt and ad:
+        msg, launch_prompt, _ = ad._prepare_dispatch(
+            db, agent, proj, prompt,
+            source="task",
+            wrap_prompt=True,
+        )
+        msg.status = MessageStatus.COMPLETED
+        msg.completed_at = _utcnow()
+
+    # Schedule background task to send prompt to tmux
+    if ad and launch_prompt:
+        launch_task = asyncio.ensure_future(
+            _launch_tmux_background(
+                ad, agent_hex, pane_id, launch_prompt, proj.path,
+                pre_session_id=pre_session_id,
+            )
+        )
+        ad.track_launch_task(agent_hex, launch_task)
+
+    return agent_hex
 
 
 

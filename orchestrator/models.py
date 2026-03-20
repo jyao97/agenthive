@@ -89,6 +89,7 @@ class Task(Base):
     skip_permissions: Mapped[bool] = mapped_column(Boolean, default=True)
     sync_mode: Mapped[bool] = mapped_column(Boolean, default=False)
     use_worktree: Mapped[bool] = mapped_column(Boolean, default=True)
+    use_tmux: Mapped[bool] = mapped_column(Boolean, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     notify_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
