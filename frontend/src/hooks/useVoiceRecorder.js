@@ -231,14 +231,20 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
 
-    // Send stop signal and wait briefly for final transcription
+    // Stop mic/audio immediately but keep WS open for final transcription
+    cleanup();
+    setRecording(false);
+    startTimeRef.current = null;
+    setRemainingSeconds(limitRef.current / 1000);
+
+    // Send stop signal and wait for server to flush remaining transcription
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "stop" }));
-      // Don't close immediately — let the server flush final transcription
       setVoiceLoading(true);
+      try { ws.send(JSON.stringify({ type: "stop" })); } catch {}
+
+      // Keep WS open to receive final committed text, then close
       setTimeout(() => {
-        // Commit any remaining streaming text
         if (streamingTextRef.current) {
           onTranscriptRef.current?.(streamingTextRef.current);
           streamingTextRef.current = "";
@@ -247,13 +253,8 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
         try { ws.close(); } catch {}
         wsRef.current = null;
         setVoiceLoading(false);
-      }, 1500);
+      }, 2500);
     }
-
-    cleanup();
-    setRecording(false);
-    startTimeRef.current = null;
-    setRemainingSeconds(limitRef.current / 1000);
   }, [cleanup]);
 
   const stopRecording = useCallback(() => {
