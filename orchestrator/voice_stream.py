@@ -1,4 +1,13 @@
-"""WebSocket proxy for OpenAI Realtime API streaming transcription."""
+"""WebSocket proxy for OpenAI Realtime API streaming transcription.
+
+The OpenAI Realtime transcription API only emits transcription events
+AFTER audio is committed (either by server VAD on silence, or manually).
+Delta events are the model's token-by-token output, not live-as-you-speak.
+
+To give the user near-real-time feedback during continuous speech, we run
+a periodic commit timer (~3s) alongside server VAD. This ensures long
+stretches of uninterrupted speech still produce incremental text updates.
+"""
 
 import asyncio
 import json
@@ -15,6 +24,10 @@ logger = logging.getLogger("orchestrator.voice_stream")
 
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 OPENAI_REALTIME_MODEL = "gpt-4o-mini-transcribe"
+
+# How often to force-commit audio buffer during continuous speech (seconds).
+# Shorter = more responsive but more API calls and potential word splits.
+PERIODIC_COMMIT_INTERVAL = 3.0
 
 
 async def _safe_send(ws: WebSocket, data: dict) -> bool:
@@ -68,7 +81,7 @@ async def transcribe_stream_endpoint(ws: WebSocket):
 
     openai_ws = None
     relay_task = None
-    # Track whether we've received any audio to avoid empty-buffer commits
+    periodic_task = None
     has_pending_audio = False
     stop_event = asyncio.Event()
 
@@ -87,7 +100,7 @@ async def transcribe_stream_endpoint(ws: WebSocket):
         init_data = json.loads(init_msg)
         logger.info("OpenAI init: %s", init_data.get("type"))
 
-        # Configure transcription session
+        # Configure transcription session — keep server VAD for natural pauses
         await openai_ws.send(json.dumps({
             "type": "transcription_session.update",
             "session": {
@@ -97,14 +110,16 @@ async def transcribe_stream_endpoint(ws: WebSocket):
                 },
                 "turn_detection": {
                     "type": "server_vad",
-                    "threshold": 0.5,
-                    "silence_duration_ms": 600,
+                    "threshold": 0.4,
+                    "silence_duration_ms": 500,
                     "prefix_padding_ms": 300,
                 },
             },
         }))
 
-        # Relay OpenAI → browser
+        # -- Relay: OpenAI → browser --
+        audio_chunks_sent = 0
+
         async def relay_from_openai():
             nonlocal has_pending_audio
             try:
@@ -119,6 +134,7 @@ async def transcribe_stream_endpoint(ws: WebSocket):
 
                     elif msg_type == "conversation.item.input_audio_transcription.completed":
                         text = msg.get("transcript", "")
+                        logger.info("Transcription: %r", text[:120] if text else "")
                         if text:
                             await _safe_send(ws, {"type": "committed", "text": text})
                         has_pending_audio = False
@@ -126,11 +142,12 @@ async def transcribe_stream_endpoint(ws: WebSocket):
                     elif msg_type == "error":
                         err = msg.get("error", {})
                         err_msg = err.get("message", "Unknown OpenAI error")
-                        # Don't forward "buffer too small" errors to the user
-                        if "buffer too small" not in err_msg:
-                            await _safe_send(ws, {"type": "error", "message": err_msg})
+                        # Suppress expected empty-buffer errors from periodic commits
+                        if "buffer too small" in err_msg:
+                            logger.debug("Empty buffer commit (expected)")
                         else:
-                            logger.debug("Ignoring empty buffer commit error")
+                            logger.warning("OpenAI error: %s", err_msg)
+                            await _safe_send(ws, {"type": "error", "message": err_msg})
 
                     elif msg_type == "input_audio_buffer.speech_started":
                         await _safe_send(ws, {"type": "speech_started"})
@@ -140,27 +157,42 @@ async def transcribe_stream_endpoint(ws: WebSocket):
 
                     elif msg_type == "input_audio_buffer.committed":
                         has_pending_audio = False
-                        logger.debug("Audio buffer committed by VAD")
 
-                    elif msg_type in (
-                        "transcription_session.created",
-                        "transcription_session.updated",
-                    ):
-                        logger.debug("Session event: %s", msg_type)
-
-                    else:
-                        logger.debug("Unhandled OpenAI event: %s", msg_type)
+                    # Silently ignore session events, other events
 
             except websockets.exceptions.ConnectionClosed:
                 logger.debug("OpenAI WS closed")
             except Exception:
-                logger.debug("Relay from OpenAI ended", exc_info=True)
+                logger.warning("Relay from OpenAI ended", exc_info=True)
             finally:
                 stop_event.set()
 
         relay_task = asyncio.create_task(relay_from_openai())
 
-        # Read from browser, forward to OpenAI
+        # -- Periodic commit: force transcription during continuous speech --
+        async def periodic_commit():
+            """Every N seconds, commit the audio buffer so long continuous
+            speech still produces incremental transcription updates.
+            Server VAD handles natural pauses; this handles the case where
+            the user speaks without pausing."""
+            nonlocal has_pending_audio
+            try:
+                while not stop_event.is_set():
+                    await asyncio.sleep(PERIODIC_COMMIT_INTERVAL)
+                    if has_pending_audio and openai_ws and openai_ws.open:
+                        try:
+                            await openai_ws.send(json.dumps({
+                                "type": "input_audio_buffer.commit",
+                            }))
+                            logger.debug("Periodic commit sent")
+                        except Exception:
+                            break
+            except asyncio.CancelledError:
+                pass
+
+        periodic_task = asyncio.create_task(periodic_commit())
+
+        # -- Read from browser, forward audio to OpenAI --
         while True:
             raw = await ws.receive_text()
             msg = json.loads(raw)
@@ -170,26 +202,28 @@ async def transcribe_stream_endpoint(ws: WebSocket):
                 audio_b64 = msg.get("data", "")
                 if audio_b64:
                     has_pending_audio = True
+                    audio_chunks_sent += 1
                     await openai_ws.send(json.dumps({
                         "type": "input_audio_buffer.append",
                         "audio": audio_b64,
                     }))
 
             elif msg_type == "stop":
-                # Only commit if there's unsent audio in the buffer
+                logger.info("Stop received (%d chunks sent)", audio_chunks_sent)
+                # Final commit for any remaining audio
                 if has_pending_audio:
                     try:
                         await openai_ws.send(json.dumps({
                             "type": "input_audio_buffer.commit",
                         }))
                     except Exception:
-                        logger.debug("Failed to commit final buffer")
+                        pass
 
-                # Wait for OpenAI to flush remaining transcription
+                # Wait for final transcription to arrive
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=3.0)
                 except asyncio.TimeoutError:
-                    logger.debug("Timed out waiting for final transcription")
+                    pass
                 break
 
     except WebSocketDisconnect:
@@ -198,6 +232,12 @@ async def transcribe_stream_endpoint(ws: WebSocket):
         logger.warning("Transcribe stream error", exc_info=True)
         await _safe_send(ws, {"type": "error", "message": "Transcription stream failed"})
     finally:
+        if periodic_task and not periodic_task.done():
+            periodic_task.cancel()
+            try:
+                await periodic_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if relay_task and not relay_task.done():
             relay_task.cancel()
             try:
