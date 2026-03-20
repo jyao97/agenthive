@@ -3590,7 +3590,7 @@ def _dispatch_task_tmux(db: Session, task: Task, proj: Project, ad) -> str | Non
         worktree=worktree if worktree else None,
         skip_permissions=skip_permissions,
         task_id=task.id,
-        muted=True,
+        muted=False,
         last_message_preview=f"Task: {task.title[:80]}",
         last_message_at=_utcnow(),
     )

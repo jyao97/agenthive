@@ -3368,7 +3368,7 @@ Here are the day's conversations (with timestamps):
             worktree=wt_name if wt_name else None,
             skip_permissions=getattr(task, 'skip_permissions', True),
             task_id=task.id,
-            muted=True,  # task agents: message notifications off by default
+            muted=False,
             last_message_preview=f"Task: {task.title[:80]}",
             last_message_at=_utcnow(),
         )

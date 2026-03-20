@@ -2,12 +2,8 @@
 
 Channels:
   notify_at      — user-initiated reminder, always sends
-  task_complete  — agent/task lifecycle terminal event, only respects global toggle
+  permission     — permission requests, always sends
   message        — conversational content, respects global toggle + per-agent mute + in-use
-
-Task-linked agents default to muted=True (set at agent creation), so they only
-receive task_complete notifications.  If a user manually unmutes a task agent,
-both channels fire independently — no dedup needed.
 """
 
 import logging
