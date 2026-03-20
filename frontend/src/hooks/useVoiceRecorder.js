@@ -1,19 +1,23 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { transcribeVoice } from "../lib/api";
+import { getAuthToken } from "../lib/api";
 
 export const DEFAULT_MAX_RECORDING_MS = 300000; // 5 minutes
 
 /**
- * Voice recording hook with AnalyserNode for waveform visualisation.
+ * Streaming voice recorder — audio is sent via WebSocket to the backend
+ * which proxies to OpenAI Realtime API for real-time transcription.
+ *
+ * Text appears word-by-word as the user speaks (via `streamingText`).
+ * When the user pauses (server VAD), a full turn is committed via `onTranscript`.
  *
  * @param {object} opts
- * @param {function} opts.onTranscript - called with transcribed text
+ * @param {function} opts.onTranscript - called with committed turn text
  * @param {function} opts.onError - called with error message string
  * @param {number}   [opts.maxDurationMs] - recording time limit in ms (default 5 min)
  *
  * Returns:
  *  recording, voiceLoading, micError, analyserNode, remainingSeconds,
- *  startRecording, stopRecording, toggleRecording
+ *  streamingText, startRecording, stopRecording, toggleRecording
  */
 export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs }) {
   const limit = maxDurationMs || DEFAULT_MAX_RECORDING_MS;
@@ -22,17 +26,19 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   const [micError, setMicError] = useState(null);
   const [analyserNode, setAnalyserNode] = useState(null);
   const [remainingSeconds, setRemainingSeconds] = useState(limit / 1000);
+  const [streamingText, setStreamingText] = useState("");
 
-  const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
   const audioCtxRef = useRef(null);
+  const workletNodeRef = useRef(null);
+  const wsRef = useRef(null);
   const timerRef = useRef(null);
   const countdownRef = useRef(null);
   const startTimeRef = useRef(null);
-  const startingRef = useRef(false); // guard against double-tap
+  const startingRef = useRef(false);
+  const streamingTextRef = useRef("");
 
-  // Keep stable refs for callbacks to avoid stale closures
+  // Keep stable refs for callbacks
   const onTranscriptRef = useRef(onTranscript);
   const onErrorRef = useRef(onError);
   const limitRef = useRef(limit);
@@ -41,55 +47,57 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   useEffect(() => { limitRef.current = limit; }, [limit]);
 
   // When limit changes while not recording, reset the displayed countdown.
-  // When limit changes mid-recording, reschedule the auto-stop timer.
   useEffect(() => {
     if (!recording) {
       setRemainingSeconds(limit / 1000);
-      return;
-    }
-    if (!startTimeRef.current) return;
-    const elapsed = Date.now() - startTimeRef.current;
-    const remainingMs = limit - elapsed;
-
-    setRemainingSeconds(Math.max(0, Math.ceil(remainingMs / 1000)));
-
-    if (timerRef.current) clearTimeout(timerRef.current);
-    if (remainingMs <= 0) {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        mediaRecorderRef.current.stop();
-        setRecording(false);
-      }
-      if (countdownRef.current) clearInterval(countdownRef.current);
-      setRemainingSeconds(0);
-    } else {
-      timerRef.current = setTimeout(() => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-          mediaRecorderRef.current.stop();
-          setRecording(false);
-        }
-        if (countdownRef.current) clearInterval(countdownRef.current);
-        setRemainingSeconds(0);
-      }, remainingMs);
     }
   }, [limit, recording]);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      if (countdownRef.current) clearInterval(countdownRef.current);
-      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
-      if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
-    };
+  // Helper: clean up all recording resources
+  const cleanup = useCallback(() => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+    if (workletNodeRef.current) {
+      try { workletNodeRef.current.disconnect(); } catch {}
+      workletNodeRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+    setAnalyserNode(null);
   }, []);
 
+  // Helper: close WebSocket
+  const closeWs = useCallback(() => {
+    if (wsRef.current) {
+      try {
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "stop" }));
+        }
+        wsRef.current.close();
+      } catch {}
+      wsRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => { cleanup(); closeWs(); };
+  }, [cleanup, closeWs]);
+
   const startRecording = useCallback(async () => {
-    // Guard against re-entry (rapid double-tap)
     if (startingRef.current || voiceLoading) return;
     startingRef.current = true;
     setMicError(null);
+    setStreamingText("");
+    streamingTextRef.current = "";
 
-    // Check browser support / secure context before attempting
+    // Check browser support
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       startingRef.current = false;
       if (window.location.protocol === "http:" && window.location.hostname !== "localhost") {
@@ -120,46 +128,79 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     try {
       streamRef.current = stream;
 
-      // Setup AnalyserNode for waveform
+      // AudioContext at default sample rate — the worklet will downsample to 24kHz
       const audioCtx = new AudioContext();
       audioCtxRef.current = audioCtx;
+
       const source = audioCtx.createMediaStreamSource(stream);
+
+      // AnalyserNode for waveform visualization
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
       source.connect(analyser);
       setAnalyserNode(analyser);
 
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
+      // Load PCM processor worklet
+      await audioCtx.audioWorklet.addModule("/pcm-processor.js");
+      const workletNode = new AudioWorkletNode(audioCtx, "pcm-processor");
+      workletNodeRef.current = workletNode;
+      source.connect(workletNode);
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      // Open WebSocket to backend transcription proxy
+      const token = getAuthToken();
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${proto}//${window.location.host}/ws/transcribe${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      await new Promise((resolve, reject) => {
+        ws.onopen = resolve;
+        ws.onerror = () => reject(new Error("WebSocket connection failed"));
+        setTimeout(() => reject(new Error("WebSocket connection timeout")), 5000);
+      });
+
+      // Handle messages from server
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "delta") {
+            streamingTextRef.current += msg.text;
+            setStreamingText(streamingTextRef.current);
+          } else if (msg.type === "committed") {
+            // Full turn committed — pass to caller and reset streaming text
+            onTranscriptRef.current?.(msg.text);
+            streamingTextRef.current = "";
+            setStreamingText("");
+          } else if (msg.type === "error") {
+            onErrorRef.current?.(msg.message || "Transcription error");
+          }
+        } catch {}
       };
 
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        audioCtx.close().catch(() => {});
-        setAnalyserNode(null);
+      ws.onclose = () => {
+        // If WS closes unexpectedly while recording, stop
+        if (startTimeRef.current) {
+          cleanup();
+          setRecording(false);
+          setRemainingSeconds(limitRef.current / 1000);
+          // Commit any pending streaming text
+          if (streamingTextRef.current) {
+            onTranscriptRef.current?.(streamingTextRef.current);
+            streamingTextRef.current = "";
+            setStreamingText("");
+          }
+        }
+      };
 
-        // Use the actual MIME type from MediaRecorder (Safari = mp4, Chrome = webm)
-        const mimeType = mediaRecorder.mimeType || "audio/webm";
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-        if (audioBlob.size === 0) return;
-
-        setVoiceLoading(true);
-        try {
-          const data = await transcribeVoice(audioBlob, mimeType);
-          if (data.text) onTranscriptRef.current?.(data.text);
-        } catch (err) {
-          onErrorRef.current?.("Voice transcription failed: " + err.message);
-        } finally {
-          setVoiceLoading(false);
+      // Forward PCM16 chunks from worklet → WebSocket
+      workletNode.port.onmessage = (e) => {
+        if (e.data.type === "pcm16" && ws.readyState === WebSocket.OPEN) {
+          const b64 = arrayBufferToBase64(e.data.buffer);
+          ws.send(JSON.stringify({ type: "audio", data: b64 }));
         }
       };
 
       const curLimit = limitRef.current;
-      mediaRecorder.start();
       setRecording(true);
       startTimeRef.current = Date.now();
       setRemainingSeconds(curLimit / 1000);
@@ -173,32 +214,51 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
 
       // Auto-stop after limit
       timerRef.current = setTimeout(() => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-          mediaRecorderRef.current.stop();
-          setRecording(false);
-        }
-        if (countdownRef.current) clearInterval(countdownRef.current);
-        setRemainingSeconds(0);
+        stopRecordingInternal();
       }, curLimit);
+
     } catch (err) {
-      // Cleanup stream if MediaRecorder or AudioContext setup failed
       stream.getTracks().forEach((t) => t.stop());
       if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
-      setMicError("Could not start recording — try again.");
+      closeWs();
+      setMicError("Could not start streaming transcription — try again.");
     } finally {
       startingRef.current = false;
     }
-  }, [voiceLoading]);
+  }, [voiceLoading, cleanup, closeWs]);
+
+  const stopRecordingInternal = useCallback(() => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+
+    // Send stop signal and wait briefly for final transcription
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "stop" }));
+      // Don't close immediately — let the server flush final transcription
+      setVoiceLoading(true);
+      setTimeout(() => {
+        // Commit any remaining streaming text
+        if (streamingTextRef.current) {
+          onTranscriptRef.current?.(streamingTextRef.current);
+          streamingTextRef.current = "";
+          setStreamingText("");
+        }
+        try { ws.close(); } catch {}
+        wsRef.current = null;
+        setVoiceLoading(false);
+      }, 1500);
+    }
+
+    cleanup();
+    setRecording(false);
+    startTimeRef.current = null;
+    setRemainingSeconds(limitRef.current / 1000);
+  }, [cleanup]);
 
   const stopRecording = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    if (countdownRef.current) clearInterval(countdownRef.current);
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-    }
-    setRecording(false);
-    setRemainingSeconds(limitRef.current / 1000);
-  }, []);
+    stopRecordingInternal();
+  }, [stopRecordingInternal]);
 
   const toggleRecording = useCallback(() => {
     if (recording) stopRecording();
@@ -211,8 +271,19 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     micError,
     analyserNode,
     remainingSeconds,
+    streamingText,
     startRecording,
     stopRecording,
     toggleRecording,
   };
+}
+
+/** Convert ArrayBuffer to base64 string. */
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }

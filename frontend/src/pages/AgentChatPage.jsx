@@ -27,6 +27,7 @@ import {
   discardAgentSuggestions,
 } from "../lib/api";
 import ProjectFileModal from "../components/ProjectFileModal";
+import FloatingTaskCard from "../components/FloatingTaskCard";
 import ProjectBrowserModal from "../components/ProjectBrowserModal";
 import { relativeTime, renderMarkdown, extractFileAttachments, stripAttachmentTags } from "../lib/formatters";
 import { serverNow } from "../lib/serverTime";
@@ -1837,6 +1838,11 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
           rows={2}
           className="w-full min-h-[48px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors disabled:opacity-50"
         />
+        {voice.streamingText && (
+          <div className="px-3 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
+            {voice.streamingText}
+          </div>
+        )}
         {/* Attachment preview chips */}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-1">
@@ -1986,6 +1992,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [generateSummary, setGenerateSummary] = useState(false);
+  const [taskComplete, setTaskComplete] = useState(true);
+  const [incompleteReason, setIncompleteReason] = useState("");
+  const [showTaskCard, setShowTaskCard] = useState(false);
   // Sync generateSummary with per-project localStorage preference
   const generateSummaryInitialized = useRef(false);
   useEffect(() => {
@@ -2750,8 +2759,17 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const handleStop = async () => {
     setStopping(true);
     try {
-      await stopAgent(id, generateSummary && !!agent?.task_id);
-      showToast(generateSummary && agent?.task_id ? "Agent stopped — generating insights..." : "Agent stopped");
+      await stopAgent(id, {
+        generateSummary: generateSummary && !!agent?.task_id,
+        taskComplete: agent?.task_id ? taskComplete : true,
+        incompleteReason: (!taskComplete && incompleteReason.trim()) ? incompleteReason.trim() : null,
+      });
+      const label = !agent?.task_id
+        ? "Agent stopped"
+        : taskComplete
+          ? "Agent stopped — task complete"
+          : "Agent stopped — task returned to inbox";
+      showToast(generateSummary && agent?.task_id ? label + " (generating insights...)" : label);
       loadData();
       window.dispatchEvent(new CustomEvent("agents-data-changed"));
     } catch (err) {
@@ -2759,6 +2777,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     } finally {
       setStopping(false);
       setShowStopConfirm(false);
+      setTaskComplete(true);
+      setIncompleteReason("");
     }
   };
 
@@ -3141,7 +3161,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           {agent.task_id && (
             <span
               className="shrink-0 text-[10px] text-orange-500 opacity-50 cursor-pointer hover:opacity-80 transition-colors"
-              onClick={() => navigate(`/tasks/${agent.task_id}`)}
+              onClick={() => setShowTaskCard(true)}
               title="View task"
             >
               Working on task
@@ -3296,15 +3316,53 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               This will stop the agent. You won't be able to send more messages.
             </p>
             {agent?.task_id && (
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={generateSummary}
-                  onChange={(e) => setGenerateSummary(e.target.checked)}
-                  className="w-4 h-4 rounded border-divider bg-input text-amber-500 focus:ring-amber-500/50"
-                />
-                <span className="text-sm text-body">Generate progress summary</span>
-              </label>
+              <>
+                {/* Task outcome toggle */}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTaskComplete(true)}
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      taskComplete
+                        ? "bg-green-600 text-white"
+                        : "bg-input text-body hover:bg-elevated"
+                    }`}
+                  >
+                    Task complete
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTaskComplete(false)}
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      !taskComplete
+                        ? "bg-amber-600 text-white"
+                        : "bg-input text-body hover:bg-elevated"
+                    }`}
+                  >
+                    Incomplete
+                  </button>
+                </div>
+                {/* Incomplete reason */}
+                {!taskComplete && (
+                  <textarea
+                    value={incompleteReason}
+                    onChange={(e) => setIncompleteReason(e.target.value)}
+                    placeholder="What should be done differently? (optional)"
+                    rows={3}
+                    className="w-full px-3 py-2 rounded-lg bg-input border border-divider text-body text-sm placeholder:text-dim resize-none focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                  />
+                )}
+                {/* Generate summary checkbox */}
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={generateSummary}
+                    onChange={(e) => setGenerateSummary(e.target.checked)}
+                    className="w-4 h-4 rounded border-divider bg-input text-amber-500 focus:ring-amber-500/50"
+                  />
+                  <span className="text-sm text-body">Generate progress summary</span>
+                </label>
+              </>
             )}
             <div className="flex gap-3">
               <button
@@ -3317,7 +3375,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               </button>
               <button
                 type="button"
-                onClick={() => setShowStopConfirm(false)}
+                onClick={() => { setShowStopConfirm(false); setTaskComplete(true); setIncompleteReason(""); }}
                 className="flex-1 min-h-[44px] rounded-lg bg-input hover:bg-elevated text-body text-sm transition-colors"
               >
                 Cancel
@@ -3383,6 +3441,23 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         <ProjectBrowserModal
           project={agent.project}
           onClose={() => setShowBrowser(false)}
+        />
+      )}
+
+      {showTaskCard && agent?.task_id && (
+        <FloatingTaskCard
+          taskId={agent.task_id}
+          onClose={() => setShowTaskCard(false)}
+          onAction={(action) => {
+            setShowTaskCard(false);
+            if (action === "complete") {
+              setTaskComplete(true);
+              setShowStopConfirm(true);
+            } else if (action === "incomplete") {
+              setTaskComplete(false);
+              setShowStopConfirm(true);
+            }
+          }}
         />
       )}
     </div>
