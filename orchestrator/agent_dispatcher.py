@@ -4184,8 +4184,10 @@ Here are the day's conversations (with timestamps):
                 if agent.worktree:
                     agent.branch = f"worktree-{agent.worktree}"
                 pending_msg.status = MessageStatus.EXECUTING
+                _just_delivered = False
                 if not pending_msg.delivered_at:
                     pending_msg.delivered_at = _utcnow()
+                    _just_delivered = True
                 executing_count += 1
 
                 # Start streaming output to frontend
@@ -4198,6 +4200,12 @@ Here are the day's conversations (with timestamps):
                 from websocket import emit_agent_update, emit_message_update
                 self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
                 self._emit(emit_message_update(agent.id, pending_msg.id, "EXECUTING"))
+                if _just_delivered:
+                    from websocket import emit_message_delivered
+                    self._emit(emit_message_delivered(
+                        agent.id, pending_msg.id,
+                        pending_msg.delivered_at.isoformat(),
+                    ))
             except Exception:
                 logger.exception(
                     "Failed to exec claude for agent %s", agent.id
