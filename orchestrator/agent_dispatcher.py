@@ -2989,6 +2989,7 @@ Here are the day's conversations (with timestamps):
         fail_reason: str | None = None,
         cancel_tasks: bool = True,
         cascade_subagents: bool = False,
+        skip_task_transition: bool = False,
     ) -> bool:
         """Centralized agent stop — sets STOPPED and performs cleanup.
 
@@ -3008,6 +3009,8 @@ Here are the day's conversations (with timestamps):
             cancel_tasks: Cancel dispatcher sync/launch tasks and clear
                           retry state for this agent.
             cascade_subagents: Also stop child subagents (is_subagent=True).
+            skip_task_transition: Skip auto-transitioning the linked task
+                                  (caller will handle it, e.g. user-initiated stop).
         """
         if agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
             return False
@@ -3078,6 +3081,9 @@ Here are the day's conversations (with timestamps):
                     cancel_tasks=True, cascade_subagents=False,
                 )
 
+        if not skip_task_transition:
+            self._transition_linked_task(db, agent)
+
         return True
 
     def error_agent_cleanup(
@@ -3141,7 +3147,49 @@ Here are the day's conversations (with timestamps):
             from websocket import emit_agent_update
             self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
 
+        self._transition_linked_task(db, agent, TaskStatus.FAILED)
+
         return True
+
+    def _transition_linked_task(
+        self,
+        db: Session,
+        agent: Agent,
+        target_status: TaskStatus | None = None,
+    ) -> None:
+        """Transition the agent's linked task based on agent final status.
+
+        Called from stop/error cleanup paths to auto-transition the task.
+        """
+        if not agent.task_id:
+            return
+
+        task = db.get(Task, agent.task_id)
+        if not task:
+            logger.warning("Agent %s: linked task %s not found", agent.id, agent.task_id)
+            return
+
+        if task.status != TaskStatus.EXECUTING:
+            return  # already transitioned
+
+        if target_status is None:
+            if agent.status == AgentStatus.ERROR:
+                target_status = TaskStatus.FAILED
+            else:
+                target_status = TaskStatus.COMPLETE
+
+        from task_state import TaskStateMachine
+        TaskStateMachine.transition(task, target_status, strict=False)
+        logger.info(
+            "Task %s auto-transitioned to %s (agent %s status=%s)",
+            task.id, target_status.value, agent.id, agent.status.value,
+        )
+
+        from websocket import emit_task_update
+        self._emit(emit_task_update(
+            task.id, target_status.value, task.project_name or "",
+            title=task.title, agent_id=agent.id,
+        ))
 
     def _next_generation_id(self, agent_id: str) -> int:
         """Return the next monotonic generation ID for an agent."""
@@ -3302,7 +3350,7 @@ Here are the day's conversations (with timestamps):
             task.branch_name = branch
 
         model = task.model or proj.default_model or CC_MODEL
-        prompt = self._build_task_prompt(task, db)
+        prompt, insights_list = self._build_task_prompt(task, db)
 
         # Create agent record — IDLE so _dispatch_pending_messages picks it up
         agent = Agent(
@@ -3324,20 +3372,26 @@ Here are the day's conversations (with timestamps):
         db.flush()
 
         # Save initial message as PENDING — dispatch loop will execute it
+        meta = {"insights": insights_list} if insights_list else None
         msg = Message(
             agent_id=agent.id,
             role=MessageRole.USER,
             content=prompt,
             status=MessageStatus.PENDING,
             source="task",
+            meta_json=json.dumps(meta) if meta else None,
         )
         db.add(msg)
         db.flush()  # Don't commit — caller does atomic CAS + commit
 
         return agent.id
 
-    def _build_task_prompt(self, task: Task, db: Session | None = None) -> str:
-        """Build the full prompt for a task agent."""
+    def _build_task_prompt(self, task: Task, db: Session | None = None) -> tuple[str, list[str]]:
+        """Build the full prompt for a task agent.
+
+        Returns ``(prompt_text, insights_list)`` so the caller can store
+        the insights in ``meta_json`` for frontend rendering.
+        """
         parts = [f"# Task: {task.title}"]
         if task.description:
             parts.append(f"\n{task.description}")
@@ -3355,13 +3409,14 @@ Here are the day's conversations (with timestamps):
 
         # Inject relevant insights from FTS5 RAG
         project_name = task.project_name
+        insights_list: list[str] = []
         insights_block = ""
         if db and project_name:
             try:
                 query_text = f"{task.title} {task.description or ''}"
-                insights = query_insights(db, project_name, query_text, limit=15, pad_recent=True)
-                if insights:
-                    insights_block = "\n".join(f"- {i}" for i in insights)
+                insights_list = query_insights(db, project_name, query_text, limit=15, pad_recent=True)
+                if insights_list:
+                    insights_block = "\n".join(f"- {i}" for i in insights_list)
             except Exception:
                 logger.debug("Failed to query insights for task %s", task.id, exc_info=True)
 
@@ -3378,7 +3433,7 @@ Here are the day's conversations (with timestamps):
         parts.append("- Commit all changes with descriptive messages")
         parts.append("- Before your final message, append a short entry to PROGRESS.md with today's date, task title, and any lessons learned (gotchas, workarounds, or 'straightforward — no issues' if none)")
         parts.append("- Leave a summary of what was done as your final message")
-        return "\n".join(parts)
+        return "\n".join(parts), insights_list
 
     def _tick(self, db: Session):
         # Invalidate per-tick tmux map cache

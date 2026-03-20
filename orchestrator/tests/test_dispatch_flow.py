@@ -662,17 +662,18 @@ def test_create_task_agent_unique_id(db_session, proj, dispatcher):
 def test_build_prompt_basic(dispatcher):
     """Basic prompt should include title and guidelines."""
     t = Task(title="Simple task", attempt_number=1)
-    prompt = dispatcher._build_task_prompt(t)
+    prompt, insights = dispatcher._build_task_prompt(t)
     assert "# Task: Simple task" in prompt
     assert "## Guidelines" in prompt
     assert "Work autonomously" in prompt
     assert "PROGRESS.md" in prompt
+    assert insights == []
 
 
 def test_build_prompt_with_description(dispatcher):
     """Prompt should include description when present."""
     t = Task(title="Desc task", description="This is the detailed description", attempt_number=1)
-    prompt = dispatcher._build_task_prompt(t)
+    prompt, _insights = dispatcher._build_task_prompt(t)
     assert "This is the detailed description" in prompt
 
 
@@ -683,7 +684,7 @@ def test_build_prompt_retry_context(dispatcher):
         attempt_number=2,
         retry_context="Previous attempt failed because of timeout",
     )
-    prompt = dispatcher._build_task_prompt(t)
+    prompt, _insights = dispatcher._build_task_prompt(t)
     assert "Previous Attempt Context" in prompt
     assert "attempt #2" in prompt
     assert "Previous attempt failed because of timeout" in prompt
@@ -697,7 +698,7 @@ def test_build_prompt_rejection_reason(dispatcher):
         attempt_number=1,
         rejection_reason="The CSS was not responsive",
     )
-    prompt = dispatcher._build_task_prompt(t)
+    prompt, _insights = dispatcher._build_task_prompt(t)
     assert "Rejection Reason" in prompt
     assert "The CSS was not responsive" in prompt
 
@@ -705,7 +706,7 @@ def test_build_prompt_rejection_reason(dispatcher):
 def test_build_prompt_no_redo_on_first_attempt(dispatcher):
     """First attempt should not include redo context."""
     t = Task(title="First attempt", attempt_number=1)
-    prompt = dispatcher._build_task_prompt(t)
+    prompt, _insights = dispatcher._build_task_prompt(t)
     assert "Redo Context" not in prompt
     assert "Previous Attempt" not in prompt
 
