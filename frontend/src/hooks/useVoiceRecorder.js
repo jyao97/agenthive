@@ -130,6 +130,8 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
       // AudioContext at default sample rate — the worklet will downsample to 24kHz
       const audioCtx = new AudioContext();
       audioCtxRef.current = audioCtx;
+      // Ensure context is running (some browsers start suspended)
+      if (audioCtx.state === "suspended") await audioCtx.resume();
 
       const source = audioCtx.createMediaStreamSource(stream);
 
@@ -144,6 +146,13 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
       const workletNode = new AudioWorkletNode(audioCtx, "pcm-processor");
       workletNodeRef.current = workletNode;
       source.connect(workletNode);
+
+      // Connect worklet to destination (with zero gain) so the browser
+      // actually calls process() — disconnected nodes may be skipped.
+      const silentGain = audioCtx.createGain();
+      silentGain.gain.value = 0;
+      workletNode.connect(silentGain);
+      silentGain.connect(audioCtx.destination);
 
       // Open WebSocket to backend transcription proxy
       const token = getAuthToken();
