@@ -1889,7 +1889,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
             </svg>
           </button>
-          <div className="flex items-center gap-1.5">
+          <div className="flex-1 min-w-0 flex items-center justify-end gap-1.5">
             {voice.recording && voice.remainingSeconds != null && (
               <span className={`text-xs font-semibold tabular-nums ${voice.remainingSeconds <= 10 ? "text-red-400" : "text-red-500"}`}>
                 {voice.remainingSeconds >= 60
