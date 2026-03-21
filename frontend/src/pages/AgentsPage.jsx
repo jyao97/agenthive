@@ -17,8 +17,8 @@ const FILTER_TABS = [
   { key: "ALL", label: "All" },
   { key: "SYNCING", label: "Syncing" },
   { key: "ACTIVE", label: "Active" },
-  { key: "STOPPED", label: "Stopped" },
   { key: "INSIGHTS", label: "Insights" },
+  { key: "STOPPED", label: "Stopped" },
 ];
 
 const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }) {
