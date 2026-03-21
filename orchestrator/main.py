@@ -3381,13 +3381,46 @@ async def task_queue_status(
     # All non-stopped agents (full picture for UI)
     alive_statuses = [AgentStatus.STARTING, AgentStatus.IDLE, AgentStatus.EXECUTING, AgentStatus.SYNCING]
 
-    # Pending + executing tasks
-    queue_tasks = (
+    # ── Source of truth: agents table ──
+    # All non-stopped, non-subagent agents
+    active_agents = (
+        db.query(Agent)
+        .filter(Agent.status.in_(alive_statuses), Agent.is_subagent == False)
+        .order_by(Agent.created_at.asc())
+        .all()
+    )
+
+    # Build unified agent list with effective status + task info
+    agents_list = []
+    for a in active_agents:
+        # Effective status: SYNCING + is_generating → EXECUTING (matches Agents page logic)
+        effective = a.status.value
+        if a.status == AgentStatus.SYNCING and a.is_generating:
+            effective = "EXECUTING"
+        entry = {
+            "agent_id": a.id,
+            "name": a.name,
+            "project": a.project,
+            "status": effective,
+            "model": a.model,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        }
+        # Attach task info if linked
+        if a.task_id:
+            task = db.get(Task, a.task_id)
+            if task:
+                entry["task_id"] = task.id
+                entry["task_title"] = task.title
+        agents_list.append(entry)
+
+    # Pending tasks (no agent assigned yet) — still need to show in queue
+    pending_tasks = (
         db.query(Task)
-        .filter(Task.status.in_([TaskStatus.PENDING, TaskStatus.EXECUTING]))
+        .filter(Task.status == TaskStatus.PENDING)
         .order_by(Task.priority.desc(), Task.created_at.asc())
         .all()
     )
+    pending_list = [TaskOut.model_validate(t).model_dump() for t in pending_tasks]
 
     # Per-project capacity
     projects = db.query(Project).filter(Project.archived == False).all()
@@ -3415,17 +3448,6 @@ async def task_queue_status(
             "syncing": syncing,
         }
 
-    # Attach agent_status to each task for UI display
-    task_list = []
-    for t in queue_tasks:
-        d = TaskOut.model_validate(t).model_dump()
-        if t.agent_id:
-            agent = db.get(Agent, t.agent_id)
-            d["agent_status"] = agent.status.value if agent else None
-        else:
-            d["agent_status"] = None
-        task_list.append(d)
-
     # Today's completed tasks (in client's local timezone)
     client_tz = timezone(timedelta(minutes=-tz_offset))
     today_start = datetime.now(client_tz).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
@@ -3439,35 +3461,11 @@ async def task_queue_status(
     )
     today_done_list = [TaskOut.model_validate(t).model_dump() for t in today_done]
 
-    # Active agents without a task (standalone / synced sessions)
-    task_agent_ids = {t.agent_id for t in queue_tasks if t.agent_id}
-    standalone_agents = (
-        db.query(Agent)
-        .filter(
-            Agent.status.in_(alive_statuses),
-            Agent.task_id.is_(None),
-            Agent.is_subagent == False,
-        )
-        .order_by(Agent.created_at.desc())
-        .all()
-    )
-    standalone_list = [
-        {
-            "id": a.id,
-            "name": a.name,
-            "project": a.project,
-            "status": a.status.value,
-            "model": a.model,
-            "created_at": a.created_at.isoformat() if a.created_at else None,
-        }
-        for a in standalone_agents
-    ]
-
     return {
-        "tasks": task_list,
+        "agents": agents_list,
+        "pending": pending_list,
         "capacity": capacity,
         "today_done": today_done_list,
-        "standalone_agents": standalone_list,
     }
 
 

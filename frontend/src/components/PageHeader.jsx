@@ -77,20 +77,17 @@ function QueuePopover({ onClose, containerRef, navigate }) {
     } catch { /* skip */ }
   };
 
-  const tasks = data?.tasks ?? [];
+  const agents = data?.agents ?? [];
+  const pending = data?.pending ?? [];
   const capacity = data?.capacity ?? {};
   const todayDone = data?.today_done ?? [];
   const todayCompleted = todayDone.filter(t => t.status === "COMPLETE");
-  const standaloneAgents = data?.standalone_agents ?? [];
-  const pending = tasks.filter(t => t.status === "PENDING");
-  const running = tasks.filter(t => t.status === "EXECUTING")
-    .sort((a, b) => {
-      // SYNCING agents last so they visually group
-      const aSync = a.agent_status === "SYNCING" ? 1 : 0;
-      const bSync = b.agent_status === "SYNCING" ? 1 : 0;
-      return aSync - bSync;
-    });
-  const totalRunning = running.length + standaloneAgents.length;
+  // Sort: EXECUTING first, then STARTING, SYNCING, IDLE last
+  const statusOrder = { EXECUTING: 0, STARTING: 1, SYNCING: 2, IDLE: 3 };
+  const sortedAgents = [...agents].sort((a, b) =>
+    (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
+  );
+  const totalRunning = agents.length;
   const activeProjects = Object.entries(capacity)
     .filter(([name, c]) => (c.alive ?? c.active) > 0 || pending.some(t => t.project_name === name))
     .sort(([, a], [, b]) => (b.alive ?? b.active) - (a.alive ?? a.active));
@@ -195,8 +192,8 @@ function QueuePopover({ onClose, containerRef, navigate }) {
           </div>
         )}
 
-        {/* Task list */}
-        {(pending.length > 0 || running.length > 0 || standaloneAgents.length > 0) && (
+        {/* Agent + pending task list */}
+        {(pending.length > 0 || sortedAgents.length > 0) && (
           <div className="border-t border-divider px-4 py-2.5 space-y-1.5 max-h-[180px] overflow-y-auto">
             {pending.map((t, i) => (
               <div key={t.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5"
@@ -208,13 +205,12 @@ function QueuePopover({ onClose, containerRef, navigate }) {
                 <span className="text-faint text-[10px] shrink-0">{(t.project_name || "").slice(0, 8)}</span>
               </div>
             ))}
-            {running.map(t => (
-              <QueueItem key={t.id} status={t.agent_status} label={t.title} sub={(t.project_name || "").slice(0, 8)}
-                onClick={() => { onClose(); navigate(t.agent_id ? `/agents/${t.agent_id}` : `/tasks/${t.id}`); }} />
-            ))}
-            {standaloneAgents.map(a => (
-              <QueueItem key={a.id} status={a.status} label={a.name} sub={(a.project || "").slice(0, 8)} dim
-                onClick={() => { onClose(); navigate(`/agents/${a.id}`); }} />
+            {sortedAgents.map(a => (
+              <QueueItem key={a.agent_id} status={a.status}
+                label={a.task_title || a.name}
+                sub={(a.project || "").slice(0, 8)}
+                dim={!a.task_id}
+                onClick={() => { onClose(); navigate(`/agents/${a.agent_id}`); }} />
             ))}
           </div>
         )}
