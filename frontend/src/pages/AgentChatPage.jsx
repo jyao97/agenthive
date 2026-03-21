@@ -63,7 +63,6 @@ import {
 } from "../lib/constants";
 import { DATE_SHORT, TIME_SHORT } from "../lib/formatters";
 import VoiceRecorder from "../components/VoiceRecorder";
-import WaveformVisualizer from "../components/WaveformVisualizer";
 import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import useWebSocket, { useWsEvent, isAgentMuted, setAgentMuted, clearAgentNotified, registerViewing, unregisterViewing } from "../hooks/useWebSocket";
@@ -1889,17 +1888,21 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
             </svg>
           </button>
-          <div className="flex-1 min-w-0 overflow-hidden">
-            {voice.recording && voice.analyserNode && (
-              <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} onTap={voice.toggleRecording} className="h-8" />
+          <div className="flex items-center gap-1.5">
+            {voice.recording && voice.remainingSeconds != null && (
+              <span className={`text-xs font-semibold tabular-nums ${voice.remainingSeconds <= 10 ? "text-red-400" : "text-red-500"}`}>
+                {voice.remainingSeconds >= 60
+                  ? `${Math.floor(voice.remainingSeconds / 60)}:${String(voice.remainingSeconds % 60).padStart(2, "0")}`
+                  : voice.remainingSeconds}
+              </span>
             )}
+            <VoiceRecorder
+              recording={voice.recording}
+              voiceLoading={voice.voiceLoading}
+              micError={voice.micError}
+              onToggle={voice.toggleRecording}
+            />
           </div>
-          <VoiceRecorder
-            recording={voice.recording}
-            voiceLoading={voice.voiceLoading}
-            micError={voice.micError}
-            onToggle={voice.toggleRecording}
-          />
           {/* Escape button — sends Esc to tmux (always visible for cli_sync agents, disabled when stopped/error) */}
           {onEscape && (
             <button

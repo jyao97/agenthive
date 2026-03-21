@@ -32,7 +32,6 @@ import EffortSelector from "../components/EffortSelector";
 import ModelSelector from "../components/ModelSelector";
 import FolderIcon from "../components/FolderIcon";
 import VoiceRecorder from "../components/VoiceRecorder";
-import WaveformVisualizer from "../components/WaveformVisualizer";
 import SendLaterPicker from "../components/SendLaterPicker";
 import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
@@ -1421,17 +1420,21 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
               </svg>
             </button>
-            <div className="min-w-0">
-              {voice.recording && voice.analyserNode && (
-                <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} onTap={voice.toggleRecording} className="h-8" />
+            <div className="flex items-center gap-1.5">
+              {voice.recording && voice.remainingSeconds != null && (
+                <span className={`text-xs font-semibold tabular-nums ${voice.remainingSeconds <= 10 ? "text-red-400" : "text-red-500"}`}>
+                  {voice.remainingSeconds >= 60
+                    ? `${Math.floor(voice.remainingSeconds / 60)}:${String(voice.remainingSeconds % 60).padStart(2, "0")}`
+                    : voice.remainingSeconds}
+                </span>
               )}
+              <VoiceRecorder
+                recording={voice.recording}
+                voiceLoading={voice.voiceLoading}
+                micError={voice.micError}
+                onToggle={voice.toggleRecording}
+              />
             </div>
-            <VoiceRecorder
-              recording={voice.recording}
-              voiceLoading={voice.voiceLoading}
-              micError={voice.micError}
-              onToggle={voice.toggleRecording}
-            />
             <div className="relative">
               <button
                 type="button"

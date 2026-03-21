@@ -1,5 +1,4 @@
 import VoiceRecorder from "./VoiceRecorder";
-import WaveformVisualizer from "./WaveformVisualizer";
 import SendLaterPicker from "./SendLaterPicker";
 
 export default function PromptInputBar({
@@ -91,17 +90,21 @@ export default function PromptInputBar({
             </svg>
           </button>
         ) : <div />}
-        <div className="min-w-0">
-          {voice.recording && voice.analyserNode && (
-            <WaveformVisualizer analyserNode={voice.analyserNode} remainingSeconds={voice.remainingSeconds} onTap={voice.toggleRecording} className="h-8" />
+        <div className="flex items-center gap-1.5">
+          {voice.recording && voice.remainingSeconds != null && (
+            <span className={`text-xs font-semibold tabular-nums ${voice.remainingSeconds <= 10 ? "text-red-400" : "text-red-500"}`}>
+              {voice.remainingSeconds >= 60
+                ? `${Math.floor(voice.remainingSeconds / 60)}:${String(voice.remainingSeconds % 60).padStart(2, "0")}`
+                : voice.remainingSeconds}
+            </span>
           )}
+          <VoiceRecorder
+            recording={voice.recording}
+            voiceLoading={voice.voiceLoading}
+            micError={voice.micError}
+            onToggle={voice.toggleRecording}
+          />
         </div>
-        <VoiceRecorder
-          recording={voice.recording}
-          voiceLoading={voice.voiceLoading}
-          micError={voice.micError}
-          onToggle={voice.toggleRecording}
-        />
         {onScheduleToggle ? (
           <div className="relative">
             <button
