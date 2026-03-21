@@ -6876,13 +6876,6 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
         if not resumed_sync and agent.status not in (AgentStatus.IDLE, AgentStatus.SYNCING):
             agent.status = AgentStatus.IDLE
 
-        # Transition linked task back to EXECUTING if it was completed
-        if agent.task_id:
-            _linked_task = db.get(Task, agent.task_id)
-            if _linked_task and can_transition(_linked_task.status, TaskStatus.EXECUTING):
-                TaskStateMachine.transition(_linked_task, TaskStatus.EXECUTING)
-                logger.info("Task %s resumed to EXECUTING (agent %s resumed)", _linked_task.id, agent.id)
-
         msg = Message(
             agent_id=agent.id,
             role=MessageRole.SYSTEM,
