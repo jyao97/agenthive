@@ -366,7 +366,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                     {task.agent_summary === ":::generating:::" ? (
                       <p className="text-xs text-dim/50 italic">Generating summary...</p>
                     ) : (
-                      <p className="text-xs text-dim/80 whitespace-pre-wrap line-clamp-4">{task.agent_summary}</p>
+                      <p className="text-xs text-dim/80 whitespace-pre-wrap">{task.agent_summary}</p>
                     )}
                   </div>
                 )}
