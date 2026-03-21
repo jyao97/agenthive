@@ -1831,8 +1831,8 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className="absolute bottom-0 left-0 right-0 pb-2 safe-area-pb-tight flex justify-center px-4 z-20 pointer-events-none"
-      style={kbOffset > 0 ? { transform: `translateY(-${kbOffset}px)`, transition: "none" } : undefined}
+      className={`absolute bottom-0 left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOffset > 0 ? "" : "pb-2 safe-area-pb-tight"}`}
+      style={kbOffset > 0 ? { paddingBottom: `${kbOffset}px`, background: "var(--color-page)", transition: "none" } : undefined}
     >
       <div
         className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
