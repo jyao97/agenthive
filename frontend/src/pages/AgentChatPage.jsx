@@ -1555,6 +1555,34 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
+
+  // Track keyboard height via visualViewport so the input bar stays above
+  // the keyboard on iOS Safari.  Poll while focused to catch keyboard
+  // layout switches (Chinese ↔ English) that don't fire resize events.
+  const [kbOffset, setKbOffset] = useState(0);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    let pollId = null;
+    const update = () => {
+      const off = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setKbOffset((prev) => (off === prev ? prev : off));
+    };
+    const startPoll = () => { if (!pollId) pollId = setInterval(update, 150); };
+    const stopPoll = () => { if (pollId) { clearInterval(pollId); pollId = null; } setTimeout(update, 100); };
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    document.addEventListener("focusin", startPoll);
+    document.addEventListener("focusout", stopPoll);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+      document.removeEventListener("focusin", startPoll);
+      document.removeEventListener("focusout", stopPoll);
+      if (pollId) clearInterval(pollId);
+    };
+  }, []);
+
   const [attPreviewIndex, setAttPreviewIndex] = useState(null);
   const attachmentCacheKey = agentId ? `draft:chat:${agentId}:attachments` : null;
   const [attachments, setAttachments] = useState(() => {
@@ -1810,7 +1838,10 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const handleBlur = useCallback(() => {}, []);
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 pb-2 safe-area-pb-tight flex justify-center px-4 z-20 pointer-events-none">
+    <div
+      className={`absolute bottom-0 left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOffset > 0 ? "" : "pb-2 safe-area-pb-tight"}`}
+      style={kbOffset > 0 ? { paddingBottom: `${kbOffset}px`, background: "var(--color-page)", transition: "none" } : undefined}
+    >
       <div
         className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
         style={{ maxWidth: "24rem" }}
@@ -2394,46 +2425,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     };
   }, [id]);
 
-  // iOS Safari: shrink the chat container to visualViewport height when the
-  // virtual keyboard is open.  The flex column reflows naturally — the
-  // messages area shrinks and the absolute-positioned input bar stays at
-  // bottom-0 of the now-shorter container, right above the keyboard.
-  // visualViewport resize events are unreliable for keyboard layout changes
-  // (e.g. Chinese ↔ English), so we poll while an input is focused.
-  const chatRootRef = useRef(null);
-  useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const el = chatRootRef.current;
-    if (!el) return;
-    let lastH = "";
-    let pollId = null;
-    const update = () => {
-      const keyboardUp = window.innerHeight - vv.height > 100;
-      const h = keyboardUp ? `${Math.round(vv.height)}px` : "";
-      if (h !== lastH) { el.style.height = h; lastH = h; }
-    };
-    const startPoll = (e) => {
-      if (e.target?.tagName !== "TEXTAREA" && e.target?.tagName !== "INPUT") return;
-      if (!pollId) pollId = setInterval(update, 150);
-    };
-    const stopPoll = () => {
-      if (pollId) { clearInterval(pollId); pollId = null; }
-      setTimeout(update, 100);
-    };
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    el.addEventListener("focusin", startPoll);
-    el.addEventListener("focusout", stopPoll);
-    return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-      el.removeEventListener("focusin", startPoll);
-      el.removeEventListener("focusout", stopPoll);
-      if (pollId) clearInterval(pollId);
-      el.style.height = "";
-    };
-  }, []);
 
   // Auto-scroll to bottom on new messages or streaming content
   const scrollContainerRef = useRef(null);
@@ -2941,7 +2932,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }
 
   return (
-    <div ref={chatRootRef} className="flex flex-col h-full relative">
+    <div className="flex flex-col h-full relative">
 
       {/* Header */}
       <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10`}>
