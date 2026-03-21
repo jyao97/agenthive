@@ -93,3 +93,17 @@
 
 ## 2026-03-20 — 8adc1e40f3b8
 1. Added "Insights" filter tab to Agents page — filters agents with `has_pending_suggestions`. Three touch points: FILTER_TABS array, statusFiltered memo, filterCounts memo. Straightforward — no issues.
+
+
+## 2026-03-21 — 这里为什么insight不抓取bubble了？这是normal non-tmux agents的问题？详细调查一下
+1. Non-tmux (subprocess) task agents were storing the full internal prompt (boilerplate, insights, guidelines) in `Message.content`, causing chat bubbles to display raw markdown instead of clean user-facing text. Tmux agents stored only `task.description`. Fix: unified both paths to store only clean display content in `Message.content`, with full prompt assembly deferred to dispatch time in `_prepare_dispatch()`.
+2. Subprocess task agents had a double-wrapping bug: `_build_agent_prompt(_build_task_prompt())` was applied at message creation AND again at dispatch. Fix: `_create_task_agent()` now stores clean content; `_prepare_dispatch()` detects `agent.task_id`, calls `_build_task_prompt()` then wraps with `_build_agent_prompt()` once.
+
+
+## 2026-03-21 — Voice toggle关闭后仍启动录音，设置项缺少持久化
+1. Voice toggle in `NewTaskPage.jsx` only gated auto-start on mount — turning it OFF didn't stop an active recording or hide the mic button, creating a contradictory UI state (toggle OFF but recording running). Fix: added `useEffect` to stop recording when `autoVoice` turns OFF, and conditionally hide mic button/timer when Voice is disabled.
+
+
+## 2026-03-21 — Improve retry prompt: mark original question, emphasize user feedback
+1. `_build_task_prompt` was only injecting `retry_context` (one-line user feedback) for retries — the AI-generated `agent_summary` (what was tried, outcomes) was never included in the prompt, only shown in the frontend card. Fix: restructured retry prompt into clear sections: original task → what was tried (agent_summary) → user feedback (IMPORTANT label) → instructions.
+2. `_generate_retry_summary_background` prompt was covering user feedback, causing duplication with the separately-injected `retry_context`. Fix: refocused the summary prompt on approaches and outcomes only.

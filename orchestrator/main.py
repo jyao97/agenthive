@@ -2885,10 +2885,12 @@ def _generate_retry_summary_background(agent_id: str, task_id: str,
 
     prompt = f"""Summarize this agent conversation for a retry attempt. Be concise (3-5 bullet points max, under 500 chars total).
 
-Cover:
-1. What the agent tried (key actions/approaches)
-2. What feedback the user gave (if any)
-3. Why it ended / what went wrong
+Focus on:
+1. What approaches the agent tried and their outcomes
+2. What worked vs what didn't
+3. Core unsolved issues remaining
+
+Do NOT include user feedback — that will be provided separately to the next agent.
 
 Task: {task_title}{reason_line}
 

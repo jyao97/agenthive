@@ -3356,9 +3356,21 @@ Here are the day's conversations (with timestamps):
         model = task.model or proj.default_model or CC_MODEL
 
         # Build clean display content (what the user sees in chat)
-        display_parts = [task.title]
-        if task.description and task.description != task.title:
-            display_parts.append(task.description)
+        display_parts = []
+        title = (task.title or "").strip()
+        desc = (task.description or "").strip()
+        if title and desc:
+            # Title auto-generated from description? Show only the longer one.
+            title_core = title.rstrip(".").strip()
+            if desc == title or desc.startswith(title_core):
+                display_parts.append(desc)
+            else:
+                display_parts.append(title)
+                display_parts.append(desc)
+        elif desc:
+            display_parts.append(desc)
+        elif title:
+            display_parts.append(title)
         if task.attempt_number > 1:
             if task.retry_context:
                 display_parts.append(f"Retry attempt #{task.attempt_number}")
@@ -3424,15 +3436,26 @@ Here are the day's conversations (with timestamps):
         if task.description:
             parts.append(f"\n{task.description}")
 
-        if task.attempt_number > 1 and task.retry_context:
-            parts.append(f"\n## Previous Attempt Context (attempt #{task.attempt_number})")
-            parts.append(task.retry_context)
         if task.attempt_number > 1:
-            parts.append(f"\n## Redo Context")
+            # Include AI-generated summary of what was tried
+            if task.agent_summary and task.agent_summary != ":::generating:::":
+                parts.append(f"\n## What Was Tried (attempt #{task.attempt_number - 1})")
+                parts.append(task.agent_summary)
+
+            # Emphasize user feedback prominently
+            if task.retry_context:
+                parts.append("\n## User Feedback After Previous Attempt (IMPORTANT)")
+                parts.append(
+                    "The user reviewed the previous attempt and provided this feedback. "
+                    "Address these points — they describe what went wrong:"
+                )
+                parts.append(task.retry_context)
+
+            parts.append(f"\n## Instructions for This Attempt")
             parts.append(
-                f"This is attempt #{task.attempt_number}. Before starting, briefly summarize why the previous "
-                "attempt didn't fully satisfy the requirements and append it to PROGRESS.md "
-                "in the project root. Then proceed with the task."
+                f"This is attempt #{task.attempt_number}. The original task above is the primary goal. "
+                "Focus on addressing the user feedback from the previous attempt — do not repeat the same approaches that failed. "
+                "Before starting, briefly note what went wrong before in PROGRESS.md, then proceed."
             )
 
         # Inject relevant insights from FTS5 RAG
