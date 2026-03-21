@@ -6,6 +6,41 @@ import { restartServer, fetchHealth, fetchQueueStatus, updateProjectSettings } f
 import { isSystemHealthy } from "../lib/constants";
 import { relativeTime, durationDisplay } from "../lib/formatters";
 
+/* ── Status icon + row for queue items ── */
+function QueueItem({ status, label, sub, dim, onClick }) {
+  const s = status || "";
+  const isIdle = s === "IDLE";
+  const isSyncing = s === "SYNCING";
+  // EXECUTING/STARTING → cyan spin, SYNCING → violet sync, IDLE → gray static
+  const bgClass = isIdle ? "bg-gray-400/15 text-gray-400"
+    : isSyncing ? "bg-violet-500/15 text-violet-500"
+    : "bg-cyan-500/15 text-cyan-500";
+  return (
+    <div className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5" onClick={onClick}>
+      <span className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${bgClass}`}>
+        {isIdle ? (
+          /* static pause icon */
+          <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="5" width="4" height="14" rx="1" />
+            <rect x="14" y="5" width="4" height="14" rx="1" />
+          </svg>
+        ) : isSyncing ? (
+          <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182M21.015 4.356v4.992" />
+          </svg>
+        ) : (
+          <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        )}
+      </span>
+      <span className={`text-body truncate flex-1 min-w-0${dim ? " opacity-70" : ""}`}>{label}</span>
+      <span className="text-faint text-[10px] shrink-0">{sub}</span>
+    </div>
+  );
+}
+
 /* ── Queue Capacity Popover ── */
 function QueuePopover({ onClose, containerRef, navigate }) {
   const [data, setData] = useState(null);
@@ -174,50 +209,14 @@ function QueuePopover({ onClose, containerRef, navigate }) {
                 <span className="text-faint text-[10px] shrink-0">{(t.project_name || "").slice(0, 8)}</span>
               </div>
             ))}
-            {running.map(t => {
-              const isSyncing = t.agent_status === "SYNCING";
-              return (
-                <div key={t.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5"
-                  onClick={() => { onClose(); navigate(t.agent_id ? `/agents/${t.agent_id}` : `/tasks/${t.id}`); }}>
-                  <span className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${isSyncing ? "bg-violet-500/15 text-violet-500" : "bg-cyan-500/15 text-cyan-500"}`}>
-                    {isSyncing ? (
-                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182M21.015 4.356v4.992" />
-                      </svg>
-                    ) : (
-                      <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                    )}
-                  </span>
-                  <span className="text-body truncate flex-1 min-w-0">{t.title}</span>
-                  <span className="text-faint text-[10px] shrink-0">{(t.project_name || "").slice(0, 8)}</span>
-                </div>
-              );
-            })}
-            {standaloneAgents.map(a => {
-              const isSyncing = a.status === "SYNCING";
-              return (
-                <div key={a.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5"
-                  onClick={() => { onClose(); navigate(`/agents/${a.id}`); }}>
-                  <span className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${isSyncing ? "bg-violet-500/15 text-violet-500" : "bg-cyan-500/15 text-cyan-500"}`}>
-                    {isSyncing ? (
-                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182M21.015 4.356v4.992" />
-                      </svg>
-                    ) : (
-                      <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                    )}
-                  </span>
-                  <span className="text-body truncate flex-1 min-w-0 opacity-70">{a.name}</span>
-                  <span className="text-faint text-[10px] shrink-0">{(a.project || "").slice(0, 8)}</span>
-                </div>
-              );
-            })}
+            {running.map(t => (
+              <QueueItem key={t.id} status={t.agent_status} label={t.title} sub={(t.project_name || "").slice(0, 8)}
+                onClick={() => { onClose(); navigate(t.agent_id ? `/agents/${t.agent_id}` : `/tasks/${t.id}`); }} />
+            ))}
+            {standaloneAgents.map(a => (
+              <QueueItem key={a.id} status={a.status} label={a.name} sub={(a.project || "").slice(0, 8)} dim
+                onClick={() => { onClose(); navigate(`/agents/${a.id}`); }} />
+            ))}
           </div>
         )}
 
