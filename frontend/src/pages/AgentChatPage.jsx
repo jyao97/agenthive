@@ -3497,7 +3497,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         ))}
                       </div>
                     )}
-                    {/* Toolbar: attach + voice */}
+                    {/* Toolbar: attach files */}
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
@@ -3510,24 +3510,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         </svg>
                       </button>
                       <input ref={feedbackFileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={(e) => { const files = Array.from(e.target.files || []); e.target.value = ""; if (files.length > 0) addFeedbackFiles(files); }} />
-                      <div className="flex-1" />
-                      {voice.recording && voice.remainingSeconds != null && (
-                        <span className={`text-xs font-semibold tabular-nums ${voice.remainingSeconds <= 10 ? "text-red-400" : "text-red-500"}`}>
-                          {voice.remainingSeconds >= 60
-                            ? `${Math.floor(voice.remainingSeconds / 60)}:${String(voice.remainingSeconds % 60).padStart(2, "0")}`
-                            : voice.remainingSeconds}
-                        </span>
-                      )}
-                      <VoiceRecorder
-                        recording={voice.recording}
-                        voiceLoading={voice.voiceLoading}
-                        micError={voice.micError}
-                        onToggle={voice.toggleRecording}
-                      />
                     </div>
-                    {voice.streamingText && (
-                      <div className="px-1 text-xs text-amber-400/80 italic animate-pulse">{voice.streamingText}</div>
-                    )}
                   </div>
                 )}
                 {/* Generate summary checkbox */}
