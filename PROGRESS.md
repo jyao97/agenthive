@@ -90,3 +90,6 @@
 1. `claude -p` subprocess run inside an agent's tmux session inherits `AHIVE_AGENT_ID`, causing SessionStart hook to fire with that agent's ID — the sync loop then falsely adopts the one-shot session as a "session rotation," replacing the agent's real conversation with the subprocess output.
 2. Fix in `_generate_retry_summary_background` (main.py): strip `AHIVE_AGENT_ID` from the env dict passed to `subprocess.run` so the `claude -p` subprocess doesn't trigger session rotation. Minimal one-line change, no-op when the function runs from the orchestrator backend (which lacks that env var).
 3. `worker_manager.py` already has `_clean_env()` for subprocess calls but the orchestrator backend process normally doesn't have `AHIVE_AGENT_ID` set — the bug only manifests when an agent itself invokes `claude -p` from within its tmux session (e.g., via a Bash tool call that imports `main.py` inline).
+
+## 2026-03-20 — 8adc1e40f3b8
+1. Added "Insights" filter tab to Agents page — filters agents with `has_pending_suggestions`. Three touch points: FILTER_TABS array, statusFiltered memo, filterCounts memo. Straightforward — no issues.
