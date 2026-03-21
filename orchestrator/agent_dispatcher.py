@@ -3354,7 +3354,25 @@ Here are the day's conversations (with timestamps):
             task.branch_name = branch
 
         model = task.model or proj.default_model or CC_MODEL
-        prompt, insights_list = self._build_task_prompt(task, db)
+
+        # Build clean display content (what the user sees in chat)
+        display_parts = [task.title]
+        if task.description and task.description != task.title:
+            display_parts.append(task.description)
+        if task.attempt_number > 1:
+            if task.retry_context:
+                display_parts.append(f"Retry attempt #{task.attempt_number}")
+                display_parts.append(task.retry_context)
+        display_content = "\n\n".join(display_parts)
+
+        # Query insights for meta_json (frontend InsightsBubble)
+        insights_list: list[str] = []
+        if db and task.project_name:
+            try:
+                query_text = f"{task.title} {task.description or ''}"
+                insights_list = query_insights(db, task.project_name, query_text, limit=15, pad_recent=True)
+            except Exception:
+                logger.debug("Failed to query insights for task %s", task.id, exc_info=True)
 
         # Create agent record — IDLE so _dispatch_pending_messages picks it up
         agent = Agent(
@@ -3376,11 +3394,12 @@ Here are the day's conversations (with timestamps):
         db.flush()
 
         # Save initial message as PENDING — dispatch loop will execute it
+        # Content = clean display text; full prompt assembled at dispatch time
         meta = {"insights": insights_list} if insights_list else None
         msg = Message(
             agent_id=agent.id,
             role=MessageRole.USER,
-            content=prompt,
+            content=display_content,
             status=MessageStatus.PENDING,
             source="task",
             meta_json=json.dumps(meta) if meta else None,
@@ -3390,11 +3409,16 @@ Here are the day's conversations (with timestamps):
 
         return agent.id
 
-    def _build_task_prompt(self, task: Task, db: Session | None = None) -> tuple[str, list[str]]:
+    def _build_task_prompt(
+        self, task: Task, db: Session | None = None,
+        insights_list: list[str] | None = None,
+    ) -> tuple[str, list[str]]:
         """Build the full prompt for a task agent.
 
-        Returns ``(prompt_text, insights_list)`` so the caller can store
-        the insights in ``meta_json`` for frontend rendering.
+        When *insights_list* is provided, uses it directly instead of
+        querying the DB (avoids duplicate queries at dispatch time).
+
+        Returns ``(prompt_text, insights_list)``.
         """
         parts = [f"# Task: {task.title}"]
         if task.description:
@@ -3412,17 +3436,19 @@ Here are the day's conversations (with timestamps):
             )
 
         # Inject relevant insights from FTS5 RAG
-        project_name = task.project_name
-        insights_list: list[str] = []
+        if insights_list is None:
+            insights_list = []
+            project_name = task.project_name
+            if db and project_name:
+                try:
+                    query_text = f"{task.title} {task.description or ''}"
+                    insights_list = query_insights(db, project_name, query_text, limit=15, pad_recent=True)
+                except Exception:
+                    logger.debug("Failed to query insights for task %s", task.id, exc_info=True)
+
         insights_block = ""
-        if db and project_name:
-            try:
-                query_text = f"{task.title} {task.description or ''}"
-                insights_list = query_insights(db, project_name, query_text, limit=15, pad_recent=True)
-                if insights_list:
-                    insights_block = "\n".join(f"- {i}" for i in insights_list)
-            except Exception:
-                logger.debug("Failed to query insights for task %s", task.id, exc_info=True)
+        if insights_list:
+            insights_block = "\n".join(f"- {i}" for i in insights_list)
 
         parts.append("\n## Before You Start")
         parts.append("- **Explore first** — read relevant files, trace the full code flow, understand the architecture before writing any code")
@@ -4354,9 +4380,14 @@ Here are the day's conversations (with timestamps):
         """
         # 1. RAG insights — only for the first user message
         insights_list: list[str] = []
+        task: Task | None = db.get(Task, agent.task_id) if agent.task_id else None
         if content and self._is_first_user_message(db, agent.id):
             try:
-                if project.ai_insights:
+                if task:
+                    # Task agents: use task-specific query with higher limit
+                    query_text = f"{task.title} {task.description or ''}"
+                    insights_list = query_insights(db, project.name, query_text, limit=15, pad_recent=True)
+                elif project.ai_insights:
                     insights_list = query_insights_ai(db, project.name, content)
                 else:
                     insights_list = query_insights(db, project.name, content, limit=10)
@@ -4389,11 +4420,24 @@ Here are the day's conversations (with timestamps):
         # 4. Build prompt (optionally wrapped with project context)
         prompt = content
         if wrap_prompt:
-            prompt = self._build_agent_prompt(
-                agent, project, content,
-                include_history=include_history, db=db,
-                insights_list=insights_list,
-            )
+            if task:
+                # Task agents: build task body, then wrap with project context.
+                # insights_list=[] for _build_agent_prompt since
+                # _build_task_prompt already includes them inline.
+                task_body, _ = self._build_task_prompt(
+                    task, db=None, insights_list=insights_list,
+                )
+                prompt = self._build_agent_prompt(
+                    agent, project, task_body,
+                    include_history=include_history, db=db,
+                    insights_list=[],
+                )
+            else:
+                prompt = self._build_agent_prompt(
+                    agent, project, content,
+                    include_history=include_history, db=db,
+                    insights_list=insights_list,
+                )
 
         # 5. Update agent preview
         agent.last_message_preview = content[:200]

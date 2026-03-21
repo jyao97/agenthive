@@ -172,7 +172,6 @@ function SubAgentBubble({ message, project }) {
 function InsightsBubble({ insights }) {
   const [expanded, setExpanded] = useState(false);
   if (!insights || insights.length === 0) return null;
-
   return (
     <div className="rounded-lg bg-elevated overflow-hidden max-w-[280px] mt-1.5 ml-auto">
       <button
