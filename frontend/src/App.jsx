@@ -339,10 +339,34 @@ export default function App() {
     };
   }, []);
 
+  // Virtual keyboard: track keyboard height via visualViewport API
+  // so absolutely-positioned elements (chat input bar) stay visible.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    let rafId;
+    const update = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        const offset = Math.max(0, Math.round(window.innerHeight - vv.height));
+        document.documentElement.style.setProperty('--keyboard-offset', `${offset}px`);
+      });
+    };
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    update();
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+      document.documentElement.style.removeProperty('--keyboard-offset');
+    };
+  }, []);
+
   return (
     <ErrorBoundary>
     <ToastProvider>
-    <div className="flex flex-col h-screen bg-page text-heading min-w-[320px] overflow-x-hidden">
+    <div className="flex flex-col h-dvh bg-page text-heading min-w-[320px] overflow-x-hidden">
       {/* Main content area */}
       <main className="flex-1 min-h-0 overflow-hidden">
         <Routes>
