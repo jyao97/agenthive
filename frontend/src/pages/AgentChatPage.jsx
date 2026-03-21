@@ -2398,21 +2398,39 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // virtual keyboard is open.  The flex column reflows naturally — the
   // messages area shrinks and the absolute-positioned input bar stays at
   // bottom-0 of the now-shorter container, right above the keyboard.
+  // visualViewport resize events are unreliable for keyboard layout changes
+  // (e.g. Chinese ↔ English), so we poll while an input is focused.
   const chatRootRef = useRef(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     const el = chatRootRef.current;
     if (!el) return;
+    let lastH = "";
+    let pollId = null;
     const update = () => {
       const keyboardUp = window.innerHeight - vv.height > 100;
-      el.style.height = keyboardUp ? `${vv.height}px` : "";
+      const h = keyboardUp ? `${Math.round(vv.height)}px` : "";
+      if (h !== lastH) { el.style.height = h; lastH = h; }
+    };
+    const startPoll = (e) => {
+      if (e.target?.tagName !== "TEXTAREA" && e.target?.tagName !== "INPUT") return;
+      if (!pollId) pollId = setInterval(update, 150);
+    };
+    const stopPoll = () => {
+      if (pollId) { clearInterval(pollId); pollId = null; }
+      setTimeout(update, 100);
     };
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
+    el.addEventListener("focusin", startPoll);
+    el.addEventListener("focusout", stopPoll);
     return () => {
       vv.removeEventListener("resize", update);
       vv.removeEventListener("scroll", update);
+      el.removeEventListener("focusin", startPoll);
+      el.removeEventListener("focusout", stopPoll);
+      if (pollId) clearInterval(pollId);
       el.style.height = "";
     };
   }, []);
