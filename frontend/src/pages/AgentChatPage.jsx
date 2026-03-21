@@ -1551,7 +1551,7 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget }) {
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
@@ -1609,6 +1609,9 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   // Voice target ref — redirects transcription to feedback textarea when stop modal is open
   const voiceTargetRef = useRef(setText);
+  useEffect(() => {
+    voiceTargetRef.current = voiceTarget || setText;
+  }, [voiceTarget]);
   const voice = useVoiceRecorder({
     onTranscript: (t) => voiceTargetRef.current((prev) => (prev ? prev + " " + t : t)),
     onError: (msg) => setVoiceError(msg),
@@ -2046,15 +2049,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     if (!agent?.project || !generateSummaryInitialized.current) return;
     localStorage.setItem(`pref:generateSummary:${agent.project}`, String(generateSummary));
   }, [generateSummary, agent?.project]);
-
-  // Redirect voice transcription when stop modal is open
-  useEffect(() => {
-    if (showStopConfirm && !taskComplete) {
-      voiceTargetRef.current = setIncompleteReason;
-    } else {
-      voiceTargetRef.current = setText;
-    }
-  }, [showStopConfirm, taskComplete]);
 
   // Feedback attachment helpers
   const addFeedbackFiles = (files) => {
@@ -3425,6 +3419,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         escapeDisabled={isStopped || isError}
         escapeUrgent={isExecuting || hasPendingInteractive}
         escapeAvailable={hasTmuxPane}
+        voiceTarget={(showStopConfirm && !taskComplete) ? setIncompleteReason : null}
       />
 
       {/* Stop confirmation modal */}
