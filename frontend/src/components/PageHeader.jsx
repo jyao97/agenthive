@@ -47,6 +47,7 @@ function QueuePopover({ onClose, containerRef, navigate }) {
   const capacity = data?.capacity ?? {};
   const todayDone = data?.today_done ?? [];
   const todayCompleted = todayDone.filter(t => t.status === "COMPLETE");
+  const standaloneAgents = data?.standalone_agents ?? [];
   const pending = tasks.filter(t => t.status === "PENDING");
   const running = tasks.filter(t => t.status === "EXECUTING")
     .sort((a, b) => {
@@ -55,6 +56,7 @@ function QueuePopover({ onClose, containerRef, navigate }) {
       const bSync = b.agent_status === "SYNCING" ? 1 : 0;
       return aSync - bSync;
     });
+  const totalRunning = running.length + standaloneAgents.length;
   const activeProjects = Object.entries(capacity)
     .filter(([name, c]) => (c.alive ?? c.active) > 0 || pending.some(t => t.project_name === name))
     .sort(([, a], [, b]) => (b.alive ?? b.active) - (a.alive ?? a.active));
@@ -75,10 +77,10 @@ function QueuePopover({ onClose, containerRef, navigate }) {
           <div className="flex-1 min-w-0">
             <div className="text-heading text-sm font-semibold">Agent Queue</div>
             <div className="text-dim text-xs mt-0.5 flex items-center gap-2">
-              {running.length > 0 && <span className="text-cyan-500">{running.length} running</span>}
-              {running.length > 0 && pending.length > 0 && <span>·</span>}
+              {totalRunning > 0 && <span className="text-cyan-500">{totalRunning} running</span>}
+              {totalRunning > 0 && pending.length > 0 && <span>·</span>}
               {pending.length > 0 && <span className="text-amber-500">{pending.length} waiting</span>}
-              {running.length === 0 && pending.length === 0 && <span>idle</span>}
+              {totalRunning === 0 && pending.length === 0 && <span>idle</span>}
             </div>
           </div>
           {todayCompleted.length > 0 && (
@@ -160,7 +162,7 @@ function QueuePopover({ onClose, containerRef, navigate }) {
         )}
 
         {/* Task list */}
-        {(pending.length > 0 || running.length > 0) && (
+        {(pending.length > 0 || running.length > 0 || standaloneAgents.length > 0) && (
           <div className="border-t border-divider px-4 py-2.5 space-y-1.5 max-h-[180px] overflow-y-auto">
             {pending.map((t, i) => (
               <div key={t.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5"
@@ -191,6 +193,28 @@ function QueuePopover({ onClose, containerRef, navigate }) {
                   </span>
                   <span className="text-body truncate flex-1 min-w-0">{t.title}</span>
                   <span className="text-faint text-[10px] shrink-0">{(t.project_name || "").slice(0, 8)}</span>
+                </div>
+              );
+            })}
+            {standaloneAgents.map(a => {
+              const isSyncing = a.status === "SYNCING";
+              return (
+                <div key={a.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5"
+                  onClick={() => { onClose(); navigate(`/agents/${a.id}`); }}>
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${isSyncing ? "bg-violet-500/15 text-violet-500" : "bg-cyan-500/15 text-cyan-500"}`}>
+                    {isSyncing ? (
+                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182M21.015 4.356v4.992" />
+                      </svg>
+                    ) : (
+                      <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="text-body truncate flex-1 min-w-0 opacity-70">{a.name}</span>
+                  <span className="text-faint text-[10px] shrink-0">{(a.project || "").slice(0, 8)}</span>
                 </div>
               );
             })}

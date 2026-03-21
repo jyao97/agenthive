@@ -3439,10 +3439,35 @@ async def task_queue_status(
     )
     today_done_list = [TaskOut.model_validate(t).model_dump() for t in today_done]
 
+    # Active agents without a task (standalone / synced sessions)
+    task_agent_ids = {t.agent_id for t in queue_tasks if t.agent_id}
+    standalone_agents = (
+        db.query(Agent)
+        .filter(
+            Agent.status.in_(alive_statuses),
+            Agent.task_id.is_(None),
+            Agent.is_subagent == False,
+        )
+        .order_by(Agent.created_at.desc())
+        .all()
+    )
+    standalone_list = [
+        {
+            "id": a.id,
+            "name": a.name,
+            "project": a.project,
+            "status": a.status.value,
+            "model": a.model,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        }
+        for a in standalone_agents
+    ]
+
     return {
         "tasks": task_list,
         "capacity": capacity,
         "today_done": today_done_list,
+        "standalone_agents": standalone_list,
     }
 
 
