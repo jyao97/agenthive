@@ -1,17 +1,16 @@
 /**
- * AudioWorklet processor that captures PCM16 audio at 24kHz.
+ * AudioWorklet processor: captures audio, downsamples to 16kHz, outputs Float32.
  *
- * The browser's AudioContext usually runs at 44.1kHz or 48kHz. This processor
- * downsamples to 24kHz and converts Float32 samples to Int16 (PCM16), then
- * posts chunks to the main thread for WebSocket transmission.
- *
- * Register with: audioCtx.audioWorklet.addModule("/pcm-processor.js")
- * Create with:  new AudioWorkletNode(audioCtx, "pcm-processor")
+ * Modelled after WhisperLive's audiopreprocessor.js:
+ * - Target sample rate: 16kHz (what Whisper expects)
+ * - Output format: Float32Array (raw samples, no PCM16 conversion)
+ * - Chunk size: 0.5s of audio (8000 samples at 16kHz = 32KB per chunk)
+ * - Sent as binary WebSocket frames (no base64 overhead)
  */
 
-const TARGET_SAMPLE_RATE = 24000;
-// Send audio every ~100ms worth of samples
-const CHUNK_SIZE = Math.floor(TARGET_SAMPLE_RATE * 0.1); // 2400 samples
+const TARGET_SAMPLE_RATE = 16000;
+const CHUNK_DURATION = 0.5; // seconds
+const CHUNK_SIZE = TARGET_SAMPLE_RATE * CHUNK_DURATION; // 8000 samples
 
 class PCMProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -27,12 +26,11 @@ class PCMProcessor extends AudioWorkletProcessor {
 
     const channelData = input[0]; // mono channel 0
 
-    // Downsample: pick samples at ratio intervals
+    // Downsample to 16kHz via nearest-neighbor
     const outputLen = Math.floor(channelData.length / this._ratio);
     const resampled = new Float32Array(outputLen);
     for (let i = 0; i < outputLen; i++) {
-      const srcIdx = Math.floor(i * this._ratio);
-      resampled[i] = channelData[Math.min(srcIdx, channelData.length - 1)];
+      resampled[i] = channelData[Math.floor(i * this._ratio)];
     }
 
     // Accumulate
@@ -41,19 +39,11 @@ class PCMProcessor extends AudioWorkletProcessor {
     newBuf.set(resampled, this._buffer.length);
     this._buffer = newBuf;
 
-    // Send chunks
+    // Send 0.5s chunks as Float32 (same as WhisperLive)
     while (this._buffer.length >= CHUNK_SIZE) {
       const chunk = this._buffer.slice(0, CHUNK_SIZE);
       this._buffer = this._buffer.slice(CHUNK_SIZE);
-
-      // Convert Float32 [-1, 1] to Int16 [-32768, 32767]
-      const pcm16 = new Int16Array(chunk.length);
-      for (let i = 0; i < chunk.length; i++) {
-        const s = Math.max(-1, Math.min(1, chunk[i]));
-        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-
-      this.port.postMessage({ type: "pcm16", buffer: pcm16.buffer }, [pcm16.buffer]);
+      this.port.postMessage(chunk.buffer, [chunk.buffer]);
     }
 
     return true;
