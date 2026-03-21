@@ -309,6 +309,11 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                   </p>
                 )}
                 <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                  {task.attempt_number > 1 && (
+                    <span className="text-[10px] font-semibold px-1.5 py-px rounded-full bg-orange-500/15 text-orange-500 dark:text-orange-400">
+                      Retry #{task.attempt_number}
+                    </span>
+                  )}
                   <span className={`text-[10px] font-medium rounded-full px-1.5 py-px ${projColor}`}>
                     {task.project_name || "Project"}
                   </span>
@@ -352,6 +357,15 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
             {/* Bottom area — pinned to bottom */}
             {isExpanded ? (
               <div className="shrink-0 mt-1.5 space-y-3">
+                {/* Retry context from previous attempt */}
+                {task.attempt_number > 1 && task.retry_context && (
+                  <div className="rounded-lg bg-orange-500/10 border border-orange-500/20 px-3 py-2">
+                    <p className="text-[10px] font-semibold text-orange-500 dark:text-orange-400 mb-0.5">
+                      Retry #{task.attempt_number} — Previous feedback
+                    </p>
+                    <p className="text-xs text-dim whitespace-pre-wrap">{task.retry_context.replace(/^User feedback:\s*/i, "")}</p>
+                  </div>
+                )}
                 {/* Attachment chips */}
                 {parsed.files.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
@@ -379,6 +393,11 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
 
                 {/* Tags row: Project → WT → Auto → Priority → Model → Effort → notify(last) */}
                 <div className="flex flex-wrap items-center gap-1.5">
+                  {task.attempt_number > 1 && (
+                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-500 dark:text-orange-400">
+                      Retry #{task.attempt_number}
+                    </span>
+                  )}
                   <TagPicker options={projectPicker} value={task.project_name || ""} onSelect={(v) => update("project_name", v)}
                     className={`text-[11px] font-medium rounded-full px-2 py-0.5 cursor-pointer active:scale-90 transition-transform ${projColor}`}>
                     {task.project_name || "Project"}
