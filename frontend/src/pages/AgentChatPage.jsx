@@ -1556,6 +1556,25 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
+
+  // Track virtual keyboard height via visualViewport API so the input
+  // bar can shift above the keyboard on iOS Safari (where 100vh doesn't
+  // shrink when the keyboard opens).
+  const [kbOffset, setKbOffset] = useState(0);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      const off = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setKbOffset(off);
+    };
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
   const [attPreviewIndex, setAttPreviewIndex] = useState(null);
   const attachmentCacheKey = agentId ? `draft:chat:${agentId}:attachments` : null;
   const [attachments, setAttachments] = useState(() => {
@@ -1811,7 +1830,10 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const handleBlur = useCallback(() => {}, []);
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 pb-2 safe-area-pb-tight flex justify-center px-4 z-20 pointer-events-none">
+    <div
+      className="absolute bottom-0 left-0 right-0 pb-2 safe-area-pb-tight flex justify-center px-4 z-20 pointer-events-none"
+      style={kbOffset > 0 ? { transform: `translateY(-${kbOffset}px)`, transition: "none" } : undefined}
+    >
       <div
         className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
         style={{ maxWidth: "24rem" }}
