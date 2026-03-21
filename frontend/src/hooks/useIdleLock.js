@@ -26,6 +26,10 @@ export default function useIdleLock(navigate) {
   const timerRef = useRef(null);
 
   const lock = useCallback(() => {
+    // Don't lock from a stale timer that fired while the page was hidden
+    // (iOS resumes suspended timers before dispatching visibilitychange).
+    // The visibilitychange handler below will re-evaluate on return.
+    if (document.visibilityState === "hidden") return;
     clearAuthToken();
     localStorage.removeItem(ACTIVITY_KEY);
     navigate("/login", { replace: true });
@@ -62,11 +66,27 @@ export default function useIdleLock(navigate) {
     };
     window.addEventListener("storage", storageHandler);
 
+    // Reset timer when the page becomes visible again (returning from
+    // background / tab switch).  This pairs with the hidden-guard in
+    // lock() — together they ensure idle time only counts while the
+    // page is actually visible.
+    const visibilityHandler = () => {
+      if (document.visibilityState === "visible") {
+        if (idleMs() > IDLE_TIMEOUT_MS) {
+          lock();
+        } else {
+          resetTimer();
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", visibilityHandler);
+
     return () => {
       for (const e of events) {
         window.removeEventListener(e, handler);
       }
       window.removeEventListener("storage", storageHandler);
+      document.removeEventListener("visibilitychange", visibilityHandler);
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [resetTimer, lock]);
