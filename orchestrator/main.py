@@ -6467,7 +6467,7 @@ async def stop_agent(agent_id: str, request: Request,
     # Transition linked task based on user choice
     if agent.task_id:
         _linked_task = db.get(Task, agent.task_id)
-        if _linked_task and _linked_task.status == TaskStatus.EXECUTING:
+        if _linked_task and _linked_task.status in (TaskStatus.EXECUTING, TaskStatus.COMPLETE):
             if task_complete:
                 TaskStateMachine.transition(_linked_task, TaskStatus.COMPLETE, strict=False)
                 logger.info("Task %s marked COMPLETE (agent %s stopped by user)", _linked_task.id, agent.id)
