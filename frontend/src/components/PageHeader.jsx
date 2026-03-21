@@ -11,8 +11,7 @@ function QueueItem({ status, label, sub, dim, onClick }) {
   const s = status || "";
   const isIdle = s === "IDLE";
   const isSyncing = s === "SYNCING";
-  // EXECUTING/STARTING → cyan spin, SYNCING → violet sync, IDLE → gray static
-  const bgClass = isIdle ? "bg-gray-400/15 text-gray-400"
+  const bgClass = isIdle ? "bg-green-500/15 text-green-500"
     : isSyncing ? "bg-violet-500/15 text-violet-500"
     : "bg-cyan-500/15 text-cyan-500";
   return (
