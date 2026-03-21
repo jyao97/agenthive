@@ -156,7 +156,8 @@ export const cancelTask = (id) =>
   request(`/api/v2/tasks/${id}/cancel`, { method: "POST" });
 export const completeTask = (id) =>
   request(`/api/v2/tasks/${id}/complete`, { method: "POST" });
-export const fetchQueueStatus = () => request("/api/v2/tasks/queue");
+export const fetchQueueStatus = () =>
+  request(`/api/v2/tasks/queue?tz_offset=${new Date().getTimezoneOffset()}`);
 
 // --- Agents ---
 export const fetchAgents = (params = "") =>

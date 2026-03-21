@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Clear Claude Code nesting-detection vars from the orchestrator process
 # so spawned agents (subprocess and tmux) don't refuse to start.
@@ -3371,7 +3371,10 @@ async def task_counts(project: str | None = None, db: Session = Depends(get_db))
 
 
 @app.get("/api/v2/tasks/queue")
-async def task_queue_status(db: Session = Depends(get_db)):
+async def task_queue_status(
+    tz_offset: int = Query(default=0, description="Client timezone offset in minutes (e.g. -420 for PDT)"),
+    db: Session = Depends(get_db),
+):
     """Return queue status: pending/executing tasks + per-project capacity."""
     # Dispatcher uses these to gate capacity
     dispatcher_active = [AgentStatus.STARTING, AgentStatus.EXECUTING, AgentStatus.SYNCING]
@@ -3423,8 +3426,9 @@ async def task_queue_status(db: Session = Depends(get_db)):
             d["agent_status"] = None
         task_list.append(d)
 
-    # Today's completed tasks
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Today's completed tasks (in client's local timezone)
+    client_tz = timezone(timedelta(minutes=-tz_offset))
+    today_start = datetime.now(client_tz).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     terminal = [TaskStatus.COMPLETE, TaskStatus.FAILED, TaskStatus.TIMEOUT,
                 TaskStatus.REJECTED, TaskStatus.CANCELLED]
     today_done = (
