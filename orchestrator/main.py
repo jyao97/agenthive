@@ -7095,6 +7095,14 @@ async def send_agent_message(
             db.refresh(msg)
             if ad:
                 ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
+                # Emit metadata_update so frontend gets InsightsBubble
+                if msg.meta_json:
+                    import json as _json
+                    try:
+                        from websocket import emit_metadata_update
+                        ad._emit(emit_metadata_update(agent.id, msg.id, _json.loads(msg.meta_json)))
+                    except Exception:
+                        pass
             logger.info("Message %s sent to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
             return msg
 
@@ -7113,26 +7121,48 @@ async def send_agent_message(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid scheduled_at format")
 
-    msg = Message(
-        agent_id=agent.id,
-        role=MessageRole.USER,
-        content=body.content,
-        status=MessageStatus.PENDING,
-        source="web",
-        scheduled_at=scheduled_at,
-    )
-    db.add(msg)
-
-    # Update agent preview
-    agent.last_message_preview = body.content[:200]
-    agent.last_message_at = _utcnow()
+    # Unified preparation: RAG insights + message creation + agent preview
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad:
+        project = db.get(Project, agent.project)
+        if project:
+            msg, _, _ = ad._prepare_dispatch(
+                db, agent, project, body.content,
+                source="web",
+                wrap_prompt=False,
+            )
+        else:
+            msg = Message(
+                agent_id=agent.id,
+                role=MessageRole.USER,
+                content=body.content,
+                source="web",
+            )
+            db.add(msg)
+    else:
+        msg = Message(
+            agent_id=agent.id,
+            role=MessageRole.USER,
+            content=body.content,
+            source="web",
+        )
+        db.add(msg)
+    msg.status = MessageStatus.PENDING
+    msg.scheduled_at = scheduled_at
 
     db.commit()
     db.refresh(msg)
-    ad = getattr(request.app.state, "agent_dispatcher", None)
     if ad:
         from websocket import emit_new_message
         ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
+        # Emit metadata_update so frontend gets InsightsBubble without re-fetch
+        if msg.meta_json:
+            import json as _json
+            try:
+                from websocket import emit_metadata_update
+                ad._emit(emit_metadata_update(agent.id, msg.id, _json.loads(msg.meta_json)))
+            except Exception:
+                pass
     logger.info("Message %s sent to agent %s", msg.id, agent.id)
     return msg
 

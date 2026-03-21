@@ -4183,6 +4183,7 @@ Here are the day's conversations (with timestamps):
                 if agent.worktree:
                     agent.branch = f"worktree-{agent.worktree}"
                 pending_msg.status = MessageStatus.EXECUTING
+                pending_msg.dispatch_seq = self.next_dispatch_seq(db, agent.id)
                 _just_delivered = False
                 if not pending_msg.delivered_at:
                     pending_msg.delivered_at = _utcnow()
@@ -4205,6 +4206,16 @@ Here are the day's conversations (with timestamps):
                         agent.id, pending_msg.id,
                         pending_msg.delivered_at.isoformat(),
                     ))
+                # Emit metadata_update so frontend gets InsightsBubble
+                if pending_msg.meta_json:
+                    try:
+                        from websocket import emit_metadata_update
+                        self._emit(emit_metadata_update(
+                            agent.id, pending_msg.id,
+                            json.loads(pending_msg.meta_json),
+                        ))
+                    except Exception:
+                        pass
             except Exception:
                 logger.exception(
                     "Failed to exec claude for agent %s", agent.id
@@ -4284,6 +4295,16 @@ Here are the day's conversations (with timestamps):
                 from websocket import emit_message_update
                 _emit_status = "EXECUTING" if _is_slash else "COMPLETED"
                 self._emit(emit_message_update(agent.id, due_msg.id, _emit_status))
+                # Emit metadata_update so frontend gets InsightsBubble
+                if due_msg.meta_json:
+                    try:
+                        from websocket import emit_metadata_update
+                        self._emit(emit_metadata_update(
+                            agent.id, due_msg.id,
+                            json.loads(due_msg.meta_json),
+                        ))
+                    except Exception:
+                        pass
             else:
                 self._fail_message(due_msg, "Failed to send via tmux")
                 logger.warning(
