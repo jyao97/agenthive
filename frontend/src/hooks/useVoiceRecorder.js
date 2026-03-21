@@ -5,13 +5,13 @@ export const DEFAULT_MAX_RECORDING_MS = 300000; // 5 minutes
 
 /**
  * Streaming voice recorder — audio is sent via WebSocket to the backend
- * which proxies to OpenAI Realtime API for real-time transcription.
+ * which proxies to OpenAI Realtime API for near-real-time transcription.
  *
- * Text appears word-by-word as the user speaks (via `streamingText`).
- * When the user pauses (server VAD), a full turn is committed via `onTranscript`.
+ * The backend commits audio every ~2s, triggering transcription of each
+ * chunk. Text appears incrementally as the user speaks (every ~2 seconds).
  *
  * @param {object} opts
- * @param {function} opts.onTranscript - called with committed turn text
+ * @param {function} opts.onTranscript - called with each transcribed chunk
  * @param {function} opts.onError - called with error message string
  * @param {number}   [opts.maxDurationMs] - recording time limit in ms (default 5 min)
  *
@@ -26,6 +26,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   const [micError, setMicError] = useState(null);
   const [analyserNode, setAnalyserNode] = useState(null);
   const [remainingSeconds, setRemainingSeconds] = useState(limit / 1000);
+  // streamingText kept for API compat but not actively used (no delta events)
   const [streamingText, setStreamingText] = useState("");
 
   const streamRef = useRef(null);
@@ -36,7 +37,6 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   const countdownRef = useRef(null);
   const startTimeRef = useRef(null);
   const startingRef = useRef(false);
-  const streamingTextRef = useRef("");
 
   // Keep stable refs for callbacks
   const onTranscriptRef = useRef(onTranscript);
@@ -53,7 +53,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     }
   }, [limit, recording]);
 
-  // Helper: clean up all recording resources
+  // Helper: clean up audio recording resources (mic, worklet, audio context)
   const cleanup = useCallback(() => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
@@ -72,7 +72,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     setAnalyserNode(null);
   }, []);
 
-  // Helper: close WebSocket
+  // Helper: close WebSocket (sends stop signal first)
   const closeWs = useCallback(() => {
     if (wsRef.current) {
       try {
@@ -95,7 +95,6 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     startingRef.current = true;
     setMicError(null);
     setStreamingText("");
-    streamingTextRef.current = "";
 
     // Check browser support
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -159,18 +158,13 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
         setTimeout(() => reject(new Error("WebSocket connection timeout")), 5000);
       });
 
-      // Handle messages from server
+      // Handle transcription events from server
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
-          if (msg.type === "delta") {
-            streamingTextRef.current += msg.text;
-            setStreamingText(streamingTextRef.current);
-          } else if (msg.type === "committed") {
-            // Full turn committed — pass to caller and reset streaming text
+          if (msg.type === "transcript") {
+            // Each transcript is a ~2s chunk — append to caller's text
             onTranscriptRef.current?.(msg.text);
-            streamingTextRef.current = "";
-            setStreamingText("");
           } else if (msg.type === "error") {
             onErrorRef.current?.(msg.message || "Transcription error");
           }
@@ -178,17 +172,11 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
       };
 
       ws.onclose = () => {
-        // If WS closes unexpectedly while recording, stop
+        // If WS closes while we're still recording, clean up
         if (startTimeRef.current) {
           cleanup();
           setRecording(false);
           setRemainingSeconds(limitRef.current / 1000);
-          // Commit any pending streaming text
-          if (streamingTextRef.current) {
-            onTranscriptRef.current?.(streamingTextRef.current);
-            streamingTextRef.current = "";
-            setStreamingText("");
-          }
         }
       };
 
@@ -243,17 +231,12 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
       setVoiceLoading(true);
       try { ws.send(JSON.stringify({ type: "stop" })); } catch {}
 
-      // Keep WS open to receive final committed text, then close
+      // Keep WS open to receive final transcript, then close
       setTimeout(() => {
-        if (streamingTextRef.current) {
-          onTranscriptRef.current?.(streamingTextRef.current);
-          streamingTextRef.current = "";
-          setStreamingText("");
-        }
         try { ws.close(); } catch {}
         wsRef.current = null;
         setVoiceLoading(false);
-      }, 2500);
+      }, 3000);
     }
   }, [cleanup]);
 
