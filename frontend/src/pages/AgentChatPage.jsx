@@ -1811,7 +1811,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   const handleBlur = useCallback(() => {}, []);
 
   return (
-    <div className="absolute left-0 right-0 pb-2 safe-area-pb-tight flex justify-center px-4 z-20 pointer-events-none" style={{ bottom: 'var(--keyboard-offset, 0px)' }}>
+    <div className="absolute bottom-0 left-0 right-0 pb-2 safe-area-pb-tight flex justify-center px-4 z-20 pointer-events-none">
       <div
         className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
         style={{ maxWidth: "24rem" }}
