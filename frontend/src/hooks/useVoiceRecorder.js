@@ -5,10 +5,10 @@ export const DEFAULT_MAX_RECORDING_MS = 300000; // 5 minutes
 
 /**
  * Streaming voice recorder — audio is sent via WebSocket to the backend
- * which proxies to OpenAI Realtime API for near-real-time transcription.
+ * which uses WhisperLive-style buffer + Whisper API for transcription.
  *
- * The backend commits audio every ~2s, triggering transcription of each
- * chunk. Text appears incrementally as the user speaks (every ~2 seconds).
+ * Client sends Float32 PCM @ 16kHz as binary WS frames. Server accumulates
+ * and transcribes every ~2s. Text appears incrementally as the user speaks.
  *
  * @param {object} opts
  * @param {function} opts.onTranscript - called with each transcribed chunk
@@ -127,7 +127,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     try {
       streamRef.current = stream;
 
-      // AudioContext at default sample rate — the worklet will downsample to 24kHz
+      // AudioContext at default sample rate — the worklet will downsample to 16kHz
       const audioCtx = new AudioContext();
       audioCtxRef.current = audioCtx;
       // Ensure context is running (some browsers start suspended)
@@ -189,11 +189,10 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
         }
       };
 
-      // Forward PCM16 chunks from worklet → WebSocket
+      // Forward Float32 audio chunks from worklet → WebSocket as binary frames
       workletNode.port.onmessage = (e) => {
-        if (e.data.type === "pcm16" && ws.readyState === WebSocket.OPEN) {
-          const b64 = arrayBufferToBase64(e.data.buffer);
-          ws.send(JSON.stringify({ type: "audio", data: b64 }));
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(e.data); // raw ArrayBuffer → binary WS frame
         }
       };
 
@@ -271,12 +270,3 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   };
 }
 
-/** Convert ArrayBuffer to base64 string. */
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
