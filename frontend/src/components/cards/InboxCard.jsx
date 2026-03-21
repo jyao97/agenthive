@@ -357,11 +357,20 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
             {/* Bottom area — pinned to bottom */}
             {isExpanded ? (
               <div className="shrink-0 mt-1.5 space-y-3">
-                {/* Retry context from previous attempt */}
+                {/* Agent summary from previous attempt */}
+                {task.attempt_number > 1 && task.agent_summary && (
+                  <div className="rounded-lg bg-surface border border-edge/30 px-3 py-2">
+                    <p className="text-[10px] font-semibold text-dim mb-0.5">
+                      Previous agent summary
+                    </p>
+                    <p className="text-xs text-dim/80 whitespace-pre-wrap line-clamp-4">{task.agent_summary}</p>
+                  </div>
+                )}
+                {/* User feedback from previous attempt */}
                 {task.attempt_number > 1 && task.retry_context && (
                   <div className="rounded-lg bg-orange-500/10 border border-orange-500/20 px-3 py-2">
                     <p className="text-[10px] font-semibold text-orange-500 dark:text-orange-400 mb-0.5">
-                      Retry #{task.attempt_number} — Previous feedback
+                      Your notes
                     </p>
                     <p className="text-xs text-dim whitespace-pre-wrap">{task.retry_context.replace(/^User feedback:\s*/i, "")}</p>
                   </div>

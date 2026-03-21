@@ -75,6 +75,7 @@ class TaskOut(BaseModel):
     sync_mode: bool = False
     use_worktree: bool = True
     use_tmux: bool = False
+    retry_context: str | None = None
     sort_order: int = 0
     notify_at: datetime | None = None
     created_at: datetime
@@ -93,7 +94,6 @@ class TaskOut(BaseModel):
 
 
 class TaskDetailOut(TaskOut):
-    retry_context: str | None = None
     conversation: list["MessageOut"] = []
 
 

@@ -2829,6 +2829,14 @@ Agent: {agent_name} | Task: {task_title}
         agent = own_db.get(Agent, agent_id)
         if agent:
             agent.has_pending_suggestions = True
+            # Save combined insights as task agent_summary (replaces the
+            # quick last_message_preview saved at stop time)
+            if agent.task_id:
+                _task = own_db.get(Task, agent.task_id)
+                if _task:
+                    _task.agent_summary = "\n".join(
+                        f"{i+1}. {c.strip()}" for i, c in enumerate(insight_items)
+                    )[:2000]
         own_db.commit()
         logger.info("Stored %d insight suggestions for agent %s", len(insight_items), agent_id)
     except Exception:
@@ -6328,10 +6336,11 @@ async def stop_agent(agent_id: str, request: Request,
                 _ctx_parts = []
                 if incomplete_reason:
                     _ctx_parts.append(f"User feedback: {incomplete_reason}")
-                if getattr(agent, "agent_summary", None):
-                    _ctx_parts.append(f"Agent summary: {agent.agent_summary}")
                 if _ctx_parts:
                     _linked_task.retry_context = "\n".join(_ctx_parts)
+                # Save agent's last message as a basic summary
+                if agent.last_message_preview:
+                    _linked_task.agent_summary = agent.last_message_preview
                 _linked_task.attempt_number = (_linked_task.attempt_number or 0) + 1
                 TaskStateMachine.transition(_linked_task, TaskStatus.INBOX, strict=False)
                 logger.info("Task %s returned to INBOX attempt=%d (agent %s stopped by user)",
