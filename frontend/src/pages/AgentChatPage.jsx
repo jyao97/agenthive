@@ -2036,6 +2036,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [incompleteReason, setIncompleteReason] = useState("");
   const [feedbackAttachments, setFeedbackAttachments] = useState([]);
   const feedbackFileInputRef = useRef(null);
+  const feedbackVoice = useVoiceRecorder({
+    onTranscript: (t) => setIncompleteReason((prev) => (prev ? prev + " " + t : t)),
+    onError: (msg) => console.warn("Feedback voice error:", msg),
+  });
   const [showTaskCard, setShowTaskCard] = useState(false);
   // Sync generateSummary with per-project localStorage preference
   const generateSummaryInitialized = useRef(false);
@@ -3419,7 +3423,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         escapeDisabled={isStopped || isError}
         escapeUrgent={isExecuting || hasPendingInteractive}
         escapeAvailable={hasTmuxPane}
-        voiceTarget={(showStopConfirm && !taskComplete) ? setIncompleteReason : null}
       />
 
       {/* Stop confirmation modal */}
@@ -3497,7 +3500,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         ))}
                       </div>
                     )}
-                    {/* Toolbar: attach files */}
+                    {/* Toolbar: attach + voice */}
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
@@ -3510,7 +3513,24 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         </svg>
                       </button>
                       <input ref={feedbackFileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={(e) => { const files = Array.from(e.target.files || []); e.target.value = ""; if (files.length > 0) addFeedbackFiles(files); }} />
+                      <div className="flex-1" />
+                      {feedbackVoice.recording && feedbackVoice.remainingSeconds != null && (
+                        <span className={`text-xs font-semibold tabular-nums ${feedbackVoice.remainingSeconds <= 10 ? "text-red-400" : "text-red-500"}`}>
+                          {feedbackVoice.remainingSeconds >= 60
+                            ? `${Math.floor(feedbackVoice.remainingSeconds / 60)}:${String(feedbackVoice.remainingSeconds % 60).padStart(2, "0")}`
+                            : feedbackVoice.remainingSeconds}
+                        </span>
+                      )}
+                      <VoiceRecorder
+                        recording={feedbackVoice.recording}
+                        voiceLoading={feedbackVoice.voiceLoading}
+                        micError={feedbackVoice.micError}
+                        onToggle={feedbackVoice.toggleRecording}
+                      />
                     </div>
+                    {feedbackVoice.streamingText && (
+                      <div className="px-1 text-xs text-amber-400/80 italic animate-pulse">{feedbackVoice.streamingText}</div>
+                    )}
                   </div>
                 )}
                 {/* Generate summary checkbox */}
