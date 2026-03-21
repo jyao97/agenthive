@@ -25,6 +25,7 @@ import {
   fetchAgentSuggestions,
   applyAgentSuggestions,
   discardAgentSuggestions,
+  fetchTaskV2,
 } from "../lib/api";
 import ProjectFileModal from "../components/ProjectFileModal";
 import FloatingTaskCard from "../components/FloatingTaskCard";
@@ -1987,6 +1988,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const navigate = useNavigate();
   const visible = usePageVisible();
   const [agent, setAgent] = useState(null);
+  const [taskData, setTaskData] = useState(null);
   const [messages, setMessages] = useState([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -2094,6 +2096,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (controller.signal.aborted) return;
       if (!agentData || !agentData.id) return;
       setAgent(agentData);
+      // Fetch linked task for retry context (fire-and-forget)
+      if (agentData.task_id && !taskData) {
+        fetchTaskV2(agentData.task_id).then(t => setTaskData(t)).catch(() => {});
+      }
       const msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
       // Merge API messages with WS-applied state (e.g. delivered_at set by
       // message_delivered events that arrived before this loadData call).
@@ -3214,6 +3220,27 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
             )}
             {!hasMore && messages.length > 0 && (
               <div className="text-center py-3 text-xs opacity-40">Beginning of conversation</div>
+            )}
+
+            {/* Previous trial bubble for retry tasks */}
+            {taskData && taskData.attempt_number > 1 && (taskData.retry_context || taskData.agent_summary) && (
+              <div className="mx-auto max-w-[85%] mb-3 rounded-xl bg-orange-500/8 border border-orange-500/20 px-4 py-3">
+                <p className="text-[11px] font-semibold text-orange-500 dark:text-orange-400 mb-1.5">
+                  Previous trial (attempt #{taskData.attempt_number - 1})
+                </p>
+                {taskData.agent_summary && (
+                  <div className="mb-2">
+                    <p className="text-[10px] font-medium text-dim mb-0.5">Agent summary</p>
+                    <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.agent_summary}</p>
+                  </div>
+                )}
+                {taskData.retry_context && (
+                  <div>
+                    <p className="text-[10px] font-medium text-orange-500 dark:text-orange-400 mb-0.5">Your notes</p>
+                    <p className="text-xs text-dim whitespace-pre-wrap">{taskData.retry_context.replace(/^User feedback:\s*/i, "")}</p>
+                  </div>
+                )}
+              </div>
             )}
 
             {messages.filter((m) => !(m.role === "USER" && m.status === "PENDING")).map((msg) => {
