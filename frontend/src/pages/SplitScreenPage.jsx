@@ -133,14 +133,14 @@ function PaneShell({ theme, onToggleTheme, onPathChange }) {
             <Route path="/agents/:id" element={<AgentChatPage {...themeProps} embedded onClose={onCloseChat} onNavigateAgent={onNavigateAgent} />} />
             <Route path="/tasks" element={<TasksPage {...themeProps} />} />
             <Route path="/tasks/:id" element={<TaskDetailPage {...themeProps} />} />
-            {!bgLocation && <Route path="/new/task" element={<NewTaskPage />} />}
+            {!bgLocation && <Route path="/new/task" element={<NewTaskPage embedded />} />}
             <Route path="/new" element={<NewPage {...themeProps} />} />
             <Route path="/monitor" element={<MonitorPage {...themeProps} />} />
             <Route path="/git" element={<GitPage {...themeProps} />} />
           </Routes>
           {bgLocation && (
             <Routes>
-              <Route path="/new/task" element={<NewTaskPage />} />
+              <Route path="/new/task" element={<NewTaskPage embedded />} />
             </Routes>
           )}
         </Suspense>
