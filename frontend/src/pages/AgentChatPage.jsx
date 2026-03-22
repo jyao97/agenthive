@@ -1551,37 +1551,10 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, kbOffset = 0 }) {
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
-
-  // Track keyboard height via visualViewport so the input bar stays above
-  // the keyboard on iOS Safari.  Poll while focused to catch keyboard
-  // layout switches (Chinese ↔ English) that don't fire resize events.
-  const [kbOffset, setKbOffset] = useState(0);
-  useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    let pollId = null;
-    const update = () => {
-      const off = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-      setKbOffset((prev) => (off === prev ? prev : off));
-    };
-    const startPoll = () => { if (!pollId) pollId = setInterval(update, 150); };
-    const stopPoll = () => { if (pollId) { clearInterval(pollId); pollId = null; } setTimeout(update, 100); };
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    document.addEventListener("focusin", startPoll);
-    document.addEventListener("focusout", stopPoll);
-    return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-      document.removeEventListener("focusin", startPoll);
-      document.removeEventListener("focusout", stopPoll);
-      if (pollId) clearInterval(pollId);
-    };
-  }, []);
 
   const [attPreviewIndex, setAttPreviewIndex] = useState(null);
   const attachmentCacheKey = agentId ? `draft:chat:${agentId}:attachments` : null;
@@ -1844,8 +1817,8 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute bottom-0 left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOffset > 0 ? "" : "pb-2 safe-area-pb-tight"}`}
-      style={kbOffset > 0 ? { paddingBottom: `${kbOffset}px`, background: "var(--color-page)", transition: "none" } : undefined}
+      className={`absolute left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOffset > 0 ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
+      style={kbOffset > 0 ? { bottom: `${kbOffset}px` } : undefined}
     >
       <div
         className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
@@ -2472,6 +2445,45 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [id]);
 
 
+  // Track keyboard height via visualViewport so both input bar and messages
+  // area can adapt.  Poll while focused to catch keyboard layout switches
+  // (Chinese ↔ English) that don't fire resize events.
+  const [kbOffset, setKbOffset] = useState(0);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    let pollId = null;
+    let stopTimer = null;
+    const update = () => {
+      const off = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setKbOffset((prev) => (off === prev ? prev : off));
+    };
+    const startPoll = () => {
+      if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
+      if (!pollId) pollId = setInterval(update, 100);
+    };
+    const stopPoll = () => {
+      // Delay stop — keyboard switch may briefly lose focus
+      if (stopTimer) clearTimeout(stopTimer);
+      stopTimer = setTimeout(() => {
+        if (pollId) { clearInterval(pollId); pollId = null; }
+        update();
+      }, 400);
+    };
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    document.addEventListener("focusin", startPoll);
+    document.addEventListener("focusout", stopPoll);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+      document.removeEventListener("focusin", startPoll);
+      document.removeEventListener("focusout", stopPoll);
+      if (pollId) clearInterval(pollId);
+      if (stopTimer) clearTimeout(stopTimer);
+    };
+  }, []);
+
   // Auto-scroll to bottom on new messages or streaming content
   const scrollContainerRef = useRef(null);
   const userScrolledUp = useRef(false);
@@ -2568,6 +2580,14 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       try { sessionStorage.setItem(scrollCountKey, String(messages.length)); } catch { /* ignore */ }
     }
   }, [loading, messages.length, scrollCountKey]);
+
+  // Auto-scroll when keyboard opens/grows so latest messages stay visible
+  useEffect(() => {
+    if (kbOffset > 0 && !userScrolledUp.current) {
+      const el = scrollContainerRef.current;
+      if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    }
+  }, [kbOffset]);
 
   // WebSocket: re-fetch on new_message events, handle streaming
   const { sendWsMessage } = useWebSocket();
@@ -3291,7 +3311,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 pb-36 ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
+        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOffset > 0 ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
+        style={kbOffset > 0 ? { paddingBottom: `${kbOffset + 144}px` } : undefined}
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
@@ -3423,6 +3444,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         escapeDisabled={isStopped || isError}
         escapeUrgent={isExecuting || hasPendingInteractive}
         escapeAvailable={hasTmuxPane}
+        kbOffset={kbOffset}
       />
 
       {/* Stop confirmation modal */}
