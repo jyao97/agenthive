@@ -2472,7 +2472,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         innerH: window.innerHeight,
         clientH: document.documentElement.clientHeight,
         kbH: open ? kbH : 0,
+        scrollY: Math.round(window.scrollY),
       });
+      // iOS Safari scrolls the body when the keyboard opens to keep the
+      // focused input visible.  After we resize the container to vvHeight,
+      // this scroll offset creates a gap between the input bar and the
+      // keyboard.  Correct it every poll cycle.
+      if (open && (window.scrollY > 0 || vv.offsetTop > 0)) {
+        window.scrollTo(0, 0);
+      }
     };
     const startPoll = () => {
       if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
@@ -2605,6 +2613,14 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (el) el.scrollTop = el.scrollHeight;
     }
   }, [kbHeight]);
+
+  // After React renders the resized container, undo any iOS body scroll.
+  // This fires after DOM update but before paint — no flicker.
+  useLayoutEffect(() => {
+    if (vvHeight > 0) {
+      window.scrollTo(0, 0);
+    }
+  }, [vvHeight]);
 
   // WebSocket: re-fetch on new_message events, handle streaming
   const { sendWsMessage } = useWebSocket();
