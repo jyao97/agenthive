@@ -12,6 +12,11 @@
 - Lesson: (what future agents should know)
 -->
 
+### 2026-03-22 | Task: Fix collapsed inbox card missing description | Status: success
+- What: Collapsed inbox cards hid the description when `parsed.text === task.title`, falling back to project name (redundant with badge row)
+- Resolution: Removed the `!== task.title` guard in `InboxCard.jsx:227` so `preview` always shows `parsed.text` when available
+- Lesson: Straightforward — the `truncate` CSS on the title means the description preview is always useful even when text matches the title
+
 
 ## 2026-03-14 — Daily Insights
 
