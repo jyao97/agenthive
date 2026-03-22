@@ -3433,32 +3433,42 @@ Here are the day's conversations (with timestamps):
         Returns ``(prompt_text, insights_list)``.
         """
         is_retry = task.attempt_number and task.attempt_number > 1
-        task_label = "Original Task" if is_retry else "Task"
-        parts = [f"# {task_label}: {task.title}"]
-        if task.description:
-            parts.append(f"\n{task.description}")
 
         if is_retry:
-            # Include AI-generated summary of what was tried
-            if task.agent_summary and task.agent_summary != ":::generating:::":
-                parts.append(f"\n## What Was Tried (attempt #{task.attempt_number - 1})")
-                parts.append(task.agent_summary)
+            # For retries, lead with user feedback — that's the primary instruction
+            parts = [f"# Task: {task.title} (attempt #{task.attempt_number})"]
 
-            # Emphasize user feedback prominently
             if task.retry_context:
-                parts.append("\n## User Feedback After Previous Attempt (IMPORTANT)")
+                parts.append("\n## Your Primary Focus (IMPORTANT)")
                 parts.append(
                     "The user reviewed the previous attempt and provided this feedback. "
-                    "Address these points — they describe what went wrong:"
+                    "This is your main objective — address these points first:"
                 )
                 parts.append(task.retry_context)
 
             parts.append(f"\n## Instructions for This Attempt")
             parts.append(
-                f"This is attempt #{task.attempt_number}. The original task above is the primary goal. "
-                "Focus on addressing the user feedback from the previous attempt — do not repeat the same approaches that failed. "
+                f"This is attempt #{task.attempt_number}. "
+                "Focus on the user feedback above — that is your primary goal. "
+                "Do not repeat approaches that already failed. "
                 "Before starting, briefly note what went wrong before in PROGRESS.md, then proceed."
             )
+
+            # Include AI-generated summary of what was tried
+            if task.agent_summary and task.agent_summary != ":::generating:::":
+                parts.append(f"\n## What Was Tried (attempt #{task.attempt_number - 1})")
+                parts.append(task.agent_summary)
+
+            # Original task as background context
+            parts.append("\n## Original Task (background context)")
+            if task.description:
+                parts.append(task.description)
+            else:
+                parts.append(task.title)
+        else:
+            parts = [f"# Task: {task.title}"]
+            if task.description:
+                parts.append(f"\n{task.description}")
 
         # Inject relevant insights from FTS5 RAG
         if insights_list is None:

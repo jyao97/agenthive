@@ -6535,9 +6535,24 @@ async def stop_agent(agent_id: str, request: Request,
                 logger.info("Task %s marked COMPLETE (agent %s stopped by user)", _linked_task.id, agent.id)
             else:
                 # Build human-readable retry_context for _build_task_prompt
+                # Include web-sent messages (user's "you notes") from this attempt
                 _ctx_parts = []
+                _web_msgs = (
+                    db.query(Message)
+                    .filter(
+                        Message.agent_id == agent.id,
+                        Message.source == "web",
+                        Message.role == MessageRole.USER,
+                    )
+                    .order_by(Message.created_at)
+                    .all()
+                )
+                if _web_msgs:
+                    _ctx_parts.append("User comments sent during previous attempt:")
+                    for wm in _web_msgs:
+                        _ctx_parts.append(f"- {wm.content.strip()}")
                 if incomplete_reason:
-                    _ctx_parts.append(f"User feedback: {incomplete_reason}")
+                    _ctx_parts.append(f"User feedback when stopping: {incomplete_reason}")
                 if _ctx_parts:
                     _linked_task.retry_context = "\n".join(_ctx_parts)
                 # Mark summary as generating — background thread will replace
