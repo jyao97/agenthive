@@ -547,7 +547,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
               )}
 
               {/* Action buttons row */}
-              <div className="flex items-center gap-2 pt-2 border-t border-divider">
+              <div className="flex items-center gap-2 pt-2 border-t border-divider flex-wrap">
                 <button
                   type="button"
                   disabled={backupBusy}
@@ -565,23 +565,31 @@ export default function MonitorPage({ theme, onToggleTheme }) {
                   Import
                 </button>
                 {backupInfo.backup_count > 0 && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setBackupListOpen(!backupListOpen)}
-                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-zinc-600/20 text-zinc-300 hover:bg-zinc-600/30 transition-colors"
-                    >
-                      {backupListOpen ? "Hide list" : "Show list"}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={backupBusy}
-                      onClick={handlePurgeBackups}
-                      className="ml-auto px-2.5 py-1 rounded-lg text-xs font-medium bg-red-600/20 text-red-400 hover:bg-red-600/30 transition-colors disabled:opacity-50"
-                    >
-                      Purge all
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => setBackupListOpen(!backupListOpen)}
+                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 transition-colors"
+                  >
+                    {backupListOpen ? "Hide list" : "Show list"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={orphanBusy}
+                  onClick={handleOrphanClean}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-orange-600/20 text-orange-400 hover:bg-orange-600/30 transition-colors disabled:opacity-50"
+                >
+                  {orphanBusy ? "Scanning..." : "Clean orphans"}
+                </button>
+                {backupInfo.backup_count > 0 && (
+                  <button
+                    type="button"
+                    disabled={backupBusy}
+                    onClick={handlePurgeBackups}
+                    className="ml-auto px-2.5 py-1 rounded-lg text-xs font-medium bg-red-600/20 text-red-400 hover:bg-red-600/30 transition-colors disabled:opacity-50"
+                  >
+                    Purge all
+                  </button>
                 )}
               </div>
 
@@ -643,26 +651,16 @@ export default function MonitorPage({ theme, onToggleTheme }) {
           </section>
         )}
 
-        {/* Orphan Cleanup */}
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            disabled={orphanBusy}
-            onClick={handleOrphanClean}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600/20 text-red-400 hover:bg-red-600/30 transition-colors disabled:opacity-50"
-          >
-            {orphanBusy ? "Scanning..." : "Clean orphans"}
-          </button>
-          {orphanResult && (
-            <span className="text-xs text-dim">
-              {orphanResult.error
-                ? `Error: ${orphanResult.error}`
-                : orphanResult.message
-                  ? orphanResult.message
-                  : `Freed ${formatBytes(orphanResult.freed_bytes)} (${orphanResult.deleted_sessions} sessions, ${orphanResult.deleted_logs} logs, ${orphanResult.deleted_dirs} dirs)`}
-            </span>
-          )}
-        </div>
+        {/* Orphan result (button moved into backup card) */}
+        {orphanResult && (
+          <p className="text-xs text-dim">
+            {orphanResult.error
+              ? `Orphan cleanup error: ${orphanResult.error}`
+              : orphanResult.message
+                ? orphanResult.message
+                : `Freed ${formatBytes(orphanResult.freed_bytes)} (${orphanResult.deleted_sessions} sessions, ${orphanResult.deleted_logs} logs, ${orphanResult.deleted_dirs} dirs)`}
+          </p>
+        )}
 
         {/* Summary Stats */}
         <section className="grid grid-cols-2 gap-3">
