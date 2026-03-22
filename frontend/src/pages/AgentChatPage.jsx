@@ -1817,8 +1817,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbHeight > 0 ? "fixed" : "absolute bottom-0 pb-2 safe-area-pb-tight"}`}
-      style={kbHeight > 0 ? { bottom: `${kbHeight}px` } : undefined}
+      className={`absolute bottom-0 left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbHeight > 0 ? "" : "pb-2 safe-area-pb-tight"}`}
     >
       <div
         className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
@@ -2445,9 +2444,14 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [id]);
 
 
-  // Track keyboard height via visualViewport.
-  // kbHeight = keyboard's physical pixel height (0 when closed).
+  // Track keyboard via visualViewport.
+  // kbHeight = keyboard physical height (0 when closed).
+  // vvHeight = visual viewport height when keyboard open (0 when closed).
+  //
+  // position:fixed does NOT work on iOS Safari with keyboard (element scrolls
+  // with page). So we resize the container to vvHeight and use absolute bottom-0.
   const [kbHeight, setKbHeight] = useState(0);
+  const [vvHeight, setVvHeight] = useState(0);
   const [kbDebug, setKbDebug] = useState({});
   useEffect(() => {
     const vv = window.visualViewport;
@@ -2458,14 +2462,16 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const update = () => {
       if (vv.height > baseHeight) baseHeight = vv.height;
       const kbH = Math.round(baseHeight - vv.height);
-      setKbHeight(kbH > 100 ? kbH : 0);
+      const open = kbH > 100;
+      setKbHeight(open ? kbH : 0);
+      setVvHeight(open ? Math.round(vv.height) : 0);
       setKbDebug({
         vvH: Math.round(vv.height),
         vvOT: Math.round(vv.offsetTop),
         base: Math.round(baseHeight),
         innerH: window.innerHeight,
         clientH: document.documentElement.clientHeight,
-        kbH: kbH > 100 ? kbH : 0,
+        kbH: open ? kbH : 0,
       });
     };
     const startPoll = () => {
@@ -3016,7 +3022,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }
 
   return (
-    <div className="flex flex-col h-full relative">
+    <div className={`flex flex-col relative ${vvHeight > 0 ? "" : "h-full"}`} style={vvHeight > 0 ? { height: `${vvHeight}px` } : undefined}>
 
       {/* TODO: remove debug overlay after keyboard fix */}
       {Object.keys(kbDebug).length > 0 && (
@@ -3331,8 +3337,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
-        style={{ overflowAnchor: "auto", paddingBottom: kbHeight > 0 ? `${kbHeight + 144}px` : "9rem" }}
+        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 pb-36 ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
+        style={{ overflowAnchor: "auto" }}
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
