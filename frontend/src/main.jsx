@@ -4,6 +4,33 @@ import { BrowserRouter } from "react-router-dom";
 import "./index.css";
 import App from "./App.jsx";
 
+// Proactively unregister any stale precaching service workers from prior
+// production builds.  In dev mode only push-handler.js should be registered
+// (which has no fetch handler and doesn't cache).  VitePWA's generated SW
+// from a prior `vite build` can serve stale assets indefinitely.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.getRegistrations().then((regs) => {
+    for (const reg of regs) {
+      // Keep push-handler.js (lightweight, no fetch caching)
+      if (reg.active?.scriptURL?.endsWith("/push-handler.js")) continue;
+      reg.unregister().then(() => {
+        console.debug("[sw] unregistered stale SW:", reg.active?.scriptURL);
+      });
+    }
+  }).catch(() => {});
+  // Also clear any Workbox caches left behind
+  if ("caches" in window) {
+    caches.keys().then((keys) => {
+      for (const k of keys) {
+        if (k.startsWith("workbox-") || k.startsWith("vite-")) {
+          caches.delete(k);
+          console.debug("[sw] cleared stale cache:", k);
+        }
+      }
+    }).catch(() => {});
+  }
+}
+
 // Global error handlers — catch async/event-handler errors that React
 // error boundaries cannot intercept.  Shows a raw DOM toast so it works
 // even if React itself has crashed.

@@ -2446,19 +2446,22 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
   // Track keyboard position via visualViewport.  kbTop = the exact pixel
   // position of the keyboard's top edge (null when keyboard is closed).
-  // Derived directly from vv.offsetTop + vv.height — does NOT depend on
-  // window.innerHeight, which can differ from CSS 100vh on iOS Safari.
+  // Detection: track the largest vv.height seen (= full viewport without keyboard).
+  // When current vv.height drops >100px below that max, keyboard is open.
+  // NOTE: window.innerHeight is NOT used — some iOS versions update it when
+  // the keyboard opens, making gap-based detection fail silently.
   // Poll while focused to catch keyboard layout switches (Chinese ↔ English).
   const [kbTop, setKbTop] = useState(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
+    let baseHeight = vv.height;
     let pollId = null;
     let stopTimer = null;
     const update = () => {
-      const gap = Math.round(window.innerHeight - vv.height - vv.offsetTop);
-      if (gap > 50) {
-        // Keyboard is open — record exact visual viewport bottom
+      // Update base when height increases (keyboard closed, orientation change)
+      if (vv.height > baseHeight) baseHeight = vv.height;
+      if (baseHeight - vv.height > 100) {
         setKbTop(Math.round(vv.offsetTop + vv.height));
       } else {
         setKbTop(null);
@@ -3054,6 +3057,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                 className="text-sm font-semibold text-heading truncate min-w-0 flex-1 select-none"
               >
                 {agent.name}
+                {/* TODO: remove debug marker after keyboard fix is verified */}
+                {kbTop != null && <span className="ml-1 text-[9px] text-cyan-500 font-mono">KB:{kbTop}</span>}
               </h1>
             )}
 
