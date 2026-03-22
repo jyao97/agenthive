@@ -424,23 +424,21 @@ def _format_tool_summary(name: str, input_data: dict) -> str | None:
 
 def _parse_stream_parts(
     logs: str,
-) -> tuple[list[tuple[str, str]], dict | None, list[dict], dict | None]:
+) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
     """Parse stream-json logs into an ordered list of (kind, content) parts.
 
-    Returns ``(parts, result_event, interactive_items, active_tool)`` where
-    *parts* is a list of ``("text", text_string)`` or
-    ``("tool", summary_string)`` tuples, *interactive_items* captures any
-    ``AskUserQuestion`` / ``ExitPlanMode`` tool calls together with their
-    answers (if present), and *active_tool* is a dict with ``name`` and
-    ``summary`` keys for the most recent tool_use that has no matching
-    tool_result yet (or ``None``).
+    Returns ``(parts, result_event, interactive_items)`` where *parts* is a
+    list of ``("text", text_string)`` or ``("tool", summary_string)`` tuples,
+    and *interactive_items* captures any ``AskUserQuestion`` /
+    ``ExitPlanMode`` tool calls together with their answers (if present).
+
+    Tool activity visualization is handled entirely by PreToolUse/PostToolUse
+    hooks — no stream-based active_tool detection needed.
     """
     parts: list[tuple[str, str]] = []
     result_event = None
     interactive_items: list[dict] = []
     interactive_by_id: dict[str, dict] = {}
-    # Track tool_use order and matched tool_results for active-tool detection
-    tool_use_order: list[tuple[str, str, str | None]] = []  # (id, name, summary)
     tool_result_ids: set[str] = set()
 
     for line in logs.strip().splitlines():
@@ -495,7 +493,6 @@ def _parse_stream_parts(
                             )
                             if summary:
                                 parts.append(("tool", summary))
-                            tool_use_order.append((tool_use_id, tool_name, summary))
 
             # Check user entries for tool_result answers to interactive calls
             if event.get("type") == "user":
@@ -521,15 +518,7 @@ def _parse_stream_parts(
             logger.warning("_parse_stream_parts: unexpected error parsing line: %s", line[:200], exc_info=True)
             continue
 
-    # Determine the currently active tool: walk tool_use_order in reverse,
-    # first entry whose id is NOT in tool_result_ids is the active one.
-    active_tool: dict | None = None
-    for tu_id, tu_name, tu_summary in reversed(tool_use_order):
-        if tu_id not in tool_result_ids:
-            active_tool = {"name": tu_name, "summary": tu_summary or f"`{tu_name}`"}
-            break
-
-    return parts, result_event, interactive_items, active_tool
+    return parts, result_event, interactive_items
 
 
 def _format_parts(parts: list[tuple[str, str]]) -> str:
@@ -556,26 +545,6 @@ def _format_parts(parts: list[tuple[str, str]]) -> str:
     return text
 
 
-_TOOL_SUMMARY_RE = re.compile(r'^> `(\w+)`\s*(.*)')
-
-
-def _extract_last_tool_from_content(content: str) -> dict | None:
-    """Extract last tool summary from formatted content if it's the final block.
-
-    Used by the sync streaming path (which uses ``_parse_session_turns``
-    rather than ``_parse_stream_parts``) to detect the currently active tool
-    from the rendered markdown content.
-    """
-    lines = content.rstrip().split("\n")
-    for line in reversed(lines):
-        stripped = line.strip()
-        m = _TOOL_SUMMARY_RE.match(stripped)
-        if m:
-            return {"name": m.group(1), "summary": f"`{m.group(1)}` {m.group(2)}".strip()}
-        if stripped:
-            return None  # text after tools = no active tool
-    return None
-
 
 def _extract_result(logs: str) -> tuple[str, str | None]:
     """Extract agent response text and tool call summaries from stream-json.
@@ -584,7 +553,7 @@ def _extract_result(logs: str) -> tuple[str, str | None]:
     containing interactive tool call data (``AskUserQuestion``,
     ``ExitPlanMode``) if any were found, or ``None``.
     """
-    parts, result_event, interactive_items, _ = _parse_stream_parts(logs)
+    parts, result_event, interactive_items = _parse_stream_parts(logs)
 
     meta_json = None
     if interactive_items:
@@ -3720,6 +3689,7 @@ Here are the day's conversations (with timestamps):
             post_exec_status = AgentStatus.SYNCING if agent.cli_sync else AgentStatus.IDLE
 
             _now = _utcnow()
+            _hook_resp = None  # set below if hook message is adopted
             if is_error:
                 resp = Message(
                     agent_id=agent.id,
@@ -3734,16 +3704,34 @@ Here are the day's conversations (with timestamps):
                 db.add(resp)
                 agent.status = post_exec_status
             else:
-                resp = Message(
-                    agent_id=agent.id,
-                    role=MessageRole.AGENT,
-                    content=result_text,
-                    status=MessageStatus.COMPLETED,
-                    stream_log=_truncate(logs, 50000),
-                    meta_json=result_meta_json,
-                    delivered_at=_now,
-                )
-                db.add(resp)
+                # Hook-message dedup: the Stop hook may have already
+                # created an immediate Message(source="hook").  Adopt it
+                # instead of creating a duplicate.
+                _hook_resp = db.query(Message).filter(
+                    Message.agent_id == agent.id,
+                    Message.role == MessageRole.AGENT,
+                    Message.source == "hook",
+                    Message.jsonl_uuid.is_(None),
+                ).order_by(Message.created_at.desc()).first()
+                if _hook_resp:
+                    resp = _hook_resp
+                    resp.source = "cli"
+                    if result_text and len(result_text) > len(resp.content):
+                        resp.content = result_text
+                    resp.stream_log = _truncate(logs, 50000)
+                    if result_meta_json:
+                        resp.meta_json = result_meta_json
+                else:
+                    resp = Message(
+                        agent_id=agent.id,
+                        role=MessageRole.AGENT,
+                        content=result_text,
+                        status=MessageStatus.COMPLETED,
+                        stream_log=_truncate(logs, 50000),
+                        meta_json=result_meta_json,
+                        delivered_at=_now,
+                    )
+                    db.add(resp)
 
                 # Backfill hook-created interactive cards with answers from result
                 if result_meta_json:
@@ -3837,14 +3825,17 @@ Here are the day's conversations (with timestamps):
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to parse meta_json for plan-continue on agent %s", agent.id, exc_info=True)
 
-            # Update agent denormalized fields
-            preview = (result_text or "")[:200]
-            agent.last_message_preview = preview
-            agent.last_message_at = _utcnow()
-            is_viewed = self._is_agent_in_use(agent.id, agent.tmux_pane)
-            if not is_viewed:
-                agent.unread_count += 1
-                self._maybe_notify_message(agent)
+            # Update agent denormalized fields — skip if hook already
+            # handled preview/unread (adopted _hook_resp above).
+            _hook_adopted = _hook_resp is not None if not is_error else False
+            if not _hook_adopted:
+                preview = (result_text or "")[:200]
+                agent.last_message_preview = preview
+                agent.last_message_at = _utcnow()
+                is_viewed = self._is_agent_in_use(agent.id, agent.tmux_pane)
+                if not is_viewed:
+                    agent.unread_count += 1
+                    self._maybe_notify_message(agent)
 
             save_worker_log(f"agent-{agent.id}", logs)
 
@@ -4896,12 +4887,12 @@ Here are the day's conversations (with timestamps):
                 with open(output_file, "r", errors="replace") as f:
                     full_logs = f.read()
 
-                parts, _, _, active_tool = _parse_stream_parts(full_logs)
+                parts, _, _ = _parse_stream_parts(full_logs)
                 content = _format_parts(parts)
 
                 if content and content != last_content:
                     last_content = content
-                    self._emit(emit_agent_stream(agent_id, content, generation_id=gid, active_tool=active_tool))
+                    self._emit(emit_agent_stream(agent_id, content, generation_id=gid))
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -5345,10 +5336,9 @@ Here are the day's conversations (with timestamps):
             sync_reconcile_initial,
             sync_import_new_turns,
             sync_handle_compact,
-            _handle_stop,
         )
 
-        POLL_INTERVAL = 30  # hooks are primary sync driver; polling is fallback
+        POLL_INTERVAL = 300  # hooks are primary sync driver; polling is 5-min safety net
 
         # Register wake event so stop hook can interrupt the sleep
         wake_event = asyncio.Event()

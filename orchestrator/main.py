@@ -4296,15 +4296,48 @@ async def hook_agent_stop(request: Request):
     if ad:
         logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
         ad._stop_generating(agent_id)
-        # Run sync directly — by the time the Stop hook fires, the JSONL
-        # is fully flushed.  Deferring to the poll loop would add up to
-        # 30s latency.
+
+        # ----- Hook-first: create Message immediately from stop payload -----
+        # This gives instant visibility — the sync loop / harvest will dedup
+        # against this message later via the ``source="hook"`` marker.
+        if summary:
+            _stop_db = SessionLocal()
+            try:
+                _agent = _stop_db.get(Agent, agent_id)
+                if _agent:
+                    _now = _utcnow()
+                    _resp = Message(
+                        agent_id=agent_id,
+                        role=MessageRole.AGENT,
+                        content=summary,
+                        status=MessageStatus.COMPLETED,
+                        source="hook",
+                        completed_at=_now,
+                        delivered_at=_now,
+                    )
+                    _stop_db.add(_resp)
+                    _agent.last_message_preview = summary[:200]
+                    _agent.last_message_at = _now
+                    if not ad._is_agent_in_use(_agent.id, _agent.tmux_pane):
+                        _agent.unread_count += 1
+                    _stop_db.commit()
+                    from websocket import emit_new_message
+                    ad._emit(emit_new_message(
+                        _agent.id, _resp.id, _agent.name, _agent.project,
+                    ))
+                    ad._maybe_notify_message(_agent)
+                    logger.info(
+                        "hook_agent_stop: created hook message for %s (%d chars)",
+                        agent_id[:8], len(summary),
+                    )
+            except Exception:
+                logger.exception("hook_agent_stop: failed to create hook message for %s", agent_id[:8])
+            finally:
+                _stop_db.close()
+
         ctx = ad._sync_contexts.get(agent_id)
         if ctx:
             if ctx.compact_notified:
-                # JSONL is being rewritten by /compact — reading it now
-                # would import garbage turns.  Wake the sync loop so it
-                # picks up changes as soon as compact finishes.
                 logger.info(
                     "hook_agent_stop: compact in progress for %s, "
                     "deferring sync to loop",
@@ -4312,13 +4345,10 @@ async def hook_agent_stop(request: Request):
                 )
                 ad.wake_sync(agent_id)
             else:
-                from sync_engine import _handle_stop
-                await _handle_stop(ad, ctx)
-                # The Stop hook is BLOCKING — Claude Code waits for our
-                # response before writing JSONL.  Syncing inline here is
-                # pointless because the file can't change while we hold
-                # the hook.  Schedule a delayed wake so the sync loop
-                # picks up the new content right after we return.
+                # Schedule a delayed wake so the sync loop picks up new
+                # JSONL content for full turn import (dedup, interactive
+                # items, metadata).  _handle_stop's unread logic is now
+                # handled above, so we skip it.
                 async def _post_stop_sync(_aid):
                     from config import JSONL_FLUSH_DELAY
                     await asyncio.sleep(JSONL_FLUSH_DELAY)
@@ -4329,9 +4359,10 @@ async def hook_agent_stop(request: Request):
                 import slash_commands as _sc
                 _sc.mark_completed(agent_id)
         else:
-            logger.warning(
-                "hook_agent_stop: no sync context for %s "
-                "— sync loop may not be running",
+            # Worker agents (cli_sync=False) never have a sync context —
+            # this is expected, not an error.
+            logger.debug(
+                "hook_agent_stop: no sync context for %s (expected for worker agents)",
                 agent_id[:8],
             )
     else:

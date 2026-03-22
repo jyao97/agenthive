@@ -681,6 +681,24 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         ).first()
                         if _existing_asst:
                             continue
+                    # Hook-message dedup: the Stop hook creates an
+                    # immediate Message(source="hook") with the final
+                    # assistant text.  Adopt it instead of creating a
+                    # duplicate — fill in jsonl_uuid and full content.
+                    _hook_msg = db.query(Message).filter(
+                        Message.agent_id == ctx.agent_id,
+                        Message.role == MessageRole.AGENT,
+                        Message.source == "hook",
+                        Message.jsonl_uuid.is_(None),
+                    ).order_by(Message.created_at.desc()).first()
+                    if _hook_msg:
+                        _hook_msg.jsonl_uuid = jsonl_uuid
+                        _hook_msg.source = "cli"
+                        if len(content) > len(_hook_msg.content):
+                            _hook_msg.content = content
+                        if meta_json:
+                            _hook_msg.meta_json = meta_json
+                        continue
                     _now = _utcnow()
                     msg = Message(
                         agent_id=ctx.agent_id,
