@@ -109,17 +109,17 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Send currently-generating agents so the client can seed its streaming
     # set and defer notifications correctly even after a reconnect.
-    try:
-        ad = getattr(ws.app.state, "agent_dispatcher", None)
-        generating = list(ad._generating_agents) if ad else []
-        if generating:
+    ad = getattr(ws.app.state, "agent_dispatcher", None)
+    generating = list(ad._generating_agents) if ad else []
+    if generating:
+        try:
             await ws.send_text(json.dumps({
                 "type": "generating_agents",
                 "data": {"agent_ids": generating},
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }))
-    except Exception:
-        logger.debug("Failed to send generating_agents on connect", exc_info=True)
+        except Exception:
+            logger.debug("Failed to send generating_agents on connect", exc_info=True)
 
     try:
         while True:

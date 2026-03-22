@@ -295,8 +295,8 @@ def _write_session_owner(session_dir: str, sid: str, agent_id: str):
     try:
         with open(path, "w") as f:
             json.dump({"agent_id": agent_id}, f)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.warning("_write_session_owner: failed to write %s: %s", path, e)
 
     # Clean up old .owner files for the same agent_id
     if agent_id == "system":
@@ -313,8 +313,8 @@ def _write_session_owner(session_dir: str, sid: str, agent_id: str):
                     os.unlink(fpath)
             except (OSError, json.JSONDecodeError, ValueError):
                 continue
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("_write_session_owner: cleanup scan failed for %s: %s", session_dir, e)
 
 
 def _read_session_owner(session_dir: str, sid: str) -> dict | None:
@@ -373,8 +373,8 @@ def _write_unlinked_entry(
                 "project_name": project_name,
                 "timestamp": _time.time(),
             }, f)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.warning("_write_unlinked_entry: failed to write %s: %s", entry_path, e)
 
 
 # Image metadata injected by Claude Code's Read tool — internal only, hide from UI
@@ -922,7 +922,7 @@ def _translate_to_english(text_input: str) -> str:
             _translate_cache[cache_key] = translated
             return translated
     except Exception:
-        pass
+        logger.debug("_translate_to_english: OpenAI call failed", exc_info=True)
     return text_input
 
 
@@ -2674,8 +2674,8 @@ class AgentDispatcher:
             if os.path.isfile(progress_path):
                 with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
                     existing_progress = f.read()
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("_auto_apply_progress_summary: failed to read PROGRESS.md: %s", e)
         if len(existing_progress) > 50_000:
             existing_progress = existing_progress[-50_000:]
 
@@ -2837,12 +2837,9 @@ Here are the day's conversations (with timestamps):
             logger.warning("Failed to write PROGRESS.md for %s: %s", project_name, e)
 
         # Store parsed insights into DB + FTS5 for RAG retrieval
-        try:
-            n = store_insights(None, project_name, summary_date, new_section)
-            if n:
-                logger.info("Stored %d insights in FTS5 for %s", n, project_name)
-        except Exception:
-            logger.warning("Failed to store FTS5 insights for %s", project_name, exc_info=True)
+        n = store_insights(None, project_name, summary_date, new_section)
+        if n:
+            logger.info("Stored %d insights in FTS5 for %s", n, project_name)
 
         _progress_job_clear(project_name)
 
@@ -3024,13 +3021,10 @@ Here are the day's conversations (with timestamps):
                 pass
 
             # Clear pending permission requests for this agent
-            try:
-                from main import app as _app
-                pm = getattr(_app.state, "permission_manager", None)
-                if pm:
-                    pm.clear_agent(agent.id)
-            except Exception:
-                pass
+            from main import app as _app
+            pm = getattr(_app.state, "permission_manager", None)
+            if pm:
+                pm.clear_agent(agent.id)
 
         if emit:
             from websocket import emit_agent_update
@@ -3349,11 +3343,8 @@ Here are the day's conversations (with timestamps):
         # Query insights for meta_json (frontend InsightsBubble)
         insights_list: list[str] = []
         if db and task.project_name:
-            try:
-                query_text = f"{task.title} {task.description or ''}"
-                insights_list = query_insights(db, task.project_name, query_text, limit=15, pad_recent=True)
-            except Exception:
-                logger.debug("Failed to query insights for task %s", task.id, exc_info=True)
+            query_text = f"{task.title} {task.description or ''}"
+            insights_list = query_insights(db, task.project_name, query_text, limit=15, pad_recent=True)
 
         # Create agent record — IDLE so _dispatch_pending_messages picks it up
         agent = Agent(
@@ -3444,11 +3435,8 @@ Here are the day's conversations (with timestamps):
             insights_list = []
             project_name = task.project_name
             if db and project_name:
-                try:
-                    query_text = f"{task.title} {task.description or ''}"
-                    insights_list = query_insights(db, project_name, query_text, limit=15, pad_recent=True)
-                except Exception:
-                    logger.debug("Failed to query insights for task %s", task.id, exc_info=True)
+                query_text = f"{task.title} {task.description or ''}"
+                insights_list = query_insights(db, project_name, query_text, limit=15, pad_recent=True)
 
         insights_block = ""
         if insights_list:
@@ -4260,14 +4248,11 @@ Here are the day's conversations (with timestamps):
                     ))
                 # Emit metadata_update so frontend gets InsightsBubble
                 if pending_msg.meta_json:
-                    try:
-                        from websocket import emit_metadata_update
-                        self._emit(emit_metadata_update(
-                            agent.id, pending_msg.id,
-                            json.loads(pending_msg.meta_json),
-                        ))
-                    except Exception:
-                        pass
+                    from websocket import emit_metadata_update
+                    self._emit(emit_metadata_update(
+                        agent.id, pending_msg.id,
+                        json.loads(pending_msg.meta_json),
+                    ))
             except Exception:
                 logger.exception(
                     "Failed to exec claude for agent %s", agent.id
@@ -4349,14 +4334,11 @@ Here are the day's conversations (with timestamps):
                 self._emit(emit_message_update(agent.id, due_msg.id, _emit_status))
                 # Emit metadata_update so frontend gets InsightsBubble
                 if due_msg.meta_json:
-                    try:
-                        from websocket import emit_metadata_update
-                        self._emit(emit_metadata_update(
-                            agent.id, due_msg.id,
-                            json.loads(due_msg.meta_json),
-                        ))
-                    except Exception:
-                        pass
+                    from websocket import emit_metadata_update
+                    self._emit(emit_metadata_update(
+                        agent.id, due_msg.id,
+                        json.loads(due_msg.meta_json),
+                    ))
             else:
                 self._fail_message(due_msg, "Failed to send via tmux")
                 logger.warning(
@@ -4408,17 +4390,14 @@ Here are the day's conversations (with timestamps):
         insights_list: list[str] = []
         task: Task | None = db.get(Task, agent.task_id) if agent.task_id else None
         if content and self._is_first_user_message(db, agent.id):
-            try:
-                if task:
-                    # Task agents: use task-specific query with higher limit
-                    query_text = f"{task.title} {task.description or ''}"
-                    insights_list = query_insights(db, project.name, query_text, limit=15, pad_recent=True)
-                elif project.ai_insights:
-                    insights_list = query_insights_ai(db, project.name, content)
-                else:
-                    insights_list = query_insights(db, project.name, content, limit=10)
-            except Exception:
-                logger.debug("query_insights failed in _prepare_dispatch", exc_info=True)
+            if task:
+                # Task agents: use task-specific query with higher limit
+                query_text = f"{task.title} {task.description or ''}"
+                insights_list = query_insights(db, project.name, query_text, limit=15, pad_recent=True)
+            elif project.ai_insights:
+                insights_list = query_insights_ai(db, project.name, content)
+            else:
+                insights_list = query_insights(db, project.name, content, limit=10)
 
         # 2. Create or reuse message
         if existing_message:
@@ -4439,7 +4418,7 @@ Here are the day's conversations (with timestamps):
                 try:
                     existing_meta = json.loads(msg.meta_json)
                 except (json.JSONDecodeError, ValueError):
-                    pass
+                    logger.warning("_prepare_dispatch: corrupt meta_json for msg %s, resetting", msg.id)
             existing_meta["insights"] = insights_list
             msg.meta_json = json.dumps(existing_meta)
 
@@ -5186,8 +5165,8 @@ Here are the day's conversations (with timestamps):
         try:
             with open(signal_path, "w") as f:
                 f.write(hook_sid)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("_detect_successor: failed to re-write signal file: %s", e)
         return None
 
     def _rotate_agent_session(
@@ -5581,8 +5560,8 @@ Here are the day's conversations (with timestamps):
                     ctx.incremental_turns = list(turns)
                     try:
                         ctx.last_offset = os.path.getsize(ctx.jsonl_path)
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.warning("getsize failed for %s: %s", ctx.jsonl_path, e)
                     final_new = turns[ctx.last_turn_count:]
                     agent = db.get(Agent, agent_id)
                     if agent and final_new:

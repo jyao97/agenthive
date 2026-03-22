@@ -65,8 +65,5 @@ def notify(
 
 
 def _send(title: str, body: str, url: str) -> None:
-    """Best-effort send via all backends."""
-    try:
-        send_push_notification(title, body, url)
-    except Exception:
-        logger.warning("notify: send failed", exc_info=True)
+    """Send via all backends."""
+    send_push_notification(title, body, url)

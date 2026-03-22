@@ -168,11 +168,8 @@ def list_backups():
         progress_count = 0
         for dp, _, files in os.walk(d):
             for f in files:
-                try:
-                    total_bytes += os.path.getsize(os.path.join(dp, f))
-                    file_count += 1
-                except OSError:
-                    pass
+                total_bytes += os.path.getsize(os.path.join(dp, f))
+                file_count += 1
                 if f == "orchestrator.db":
                     has_db = True
                 elif f == "registry.yaml":
@@ -201,10 +198,7 @@ def delete_backup(name: str):
     sz = 0
     for dp, _, files in os.walk(path):
         for f in files:
-            try:
-                sz += os.path.getsize(os.path.join(dp, f))
-            except OSError:
-                pass
+            sz += os.path.getsize(os.path.join(dp, f))
     shutil.rmtree(path, ignore_errors=True)
     logger.info("Deleted backup: %s (%d bytes)", name, sz)
     return sz
