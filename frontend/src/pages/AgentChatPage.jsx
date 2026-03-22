@@ -2475,12 +2475,17 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         window.scrollTo(0, 0);
       }
     };
+    let scrollRafId = null;
     const startPoll = () => {
       // Cancel any in-progress dismiss animation
       if (closing) {
         closing = false;
         const el = kbContainerRef.current;
-        if (el) el.style.transition = '';
+        if (el) {
+          el.style.transition = '';
+          el.style.willChange = '';
+        }
+        if (scrollRafId) { cancelAnimationFrame(scrollRafId); scrollRafId = null; }
       }
       if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
       if (!pollId) pollId = setInterval(update, 100);
@@ -2489,41 +2494,77 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (stopTimer) clearTimeout(stopTimer);
       closing = true;
       if (pollId) { clearInterval(pollId); pollId = null; }
-      // Animate container from vvHeight → full height
-      // Use CSS ease (0.25, 0.1, 0.25, 1.0) at 250ms — matches real iOS
-      // keyboard duration. The heavily-overdamped iOS spring (ζ=4.56)
-      // does NOT overshoot; CSS ease approximates this well.
+      // Animate container from vvHeight → full height.
+      // CSS ease (0.25, 0.1, 0.25, 1.0) at 250ms — matches real iOS
+      // keyboard dismiss duration. The overdamped iOS spring does NOT
+      // overshoot; CSS ease approximates this well.
       const el = kbContainerRef.current;
       const wasOpen = el?.style.height;
       if (wasOpen) {
         const fullH = el.parentElement?.clientHeight || window.innerHeight;
-        // Pin scroll distance from bottom so messages don't jump
         const sc = scrollContainerRef.current;
-        const distFromBottom = sc ? sc.scrollHeight - sc.scrollTop - sc.clientHeight : 0;
+        // Capture whether user is near bottom before animation starts
+        const wasNearBottom = sc
+          ? (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < 100
+          : false;
+        const distFromBottom = sc
+          ? sc.scrollHeight - sc.scrollTop - sc.clientHeight
+          : 0;
+
+        // Hint compositor to prepare for height animation
+        el.style.willChange = 'height';
+
+        // Clean up after animation (shared by transitionend + fallback).
+        // Guard against double-invocation (both could fire in a race).
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          if (scrollRafId) { cancelAnimationFrame(scrollRafId); scrollRafId = null; }
+          el.removeEventListener('transitionend', onEnd);
+          if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
+          closing = false;
+          el.style.transition = '';
+          el.style.willChange = '';
+          // Let React take over: setVvHeight(0) removes inline style
+          // and adds h-full class in a single commit — no flash.
+          setKbHeight(0);
+          setVvHeight(0);
+        };
+        const onEnd = (e) => { if (e.propertyName === 'height') finish(); };
+        el.addEventListener('transitionend', onEnd);
+        // Fallback timeout in case transitionend doesn't fire
+        stopTimer = setTimeout(finish, 350);
+
+        // Continuously pin scroll position during height animation.
+        // Without this, each frame of height growth shifts scroll,
+        // making messages appear to jump.
+        const pinScroll = () => {
+          if (!closing || !sc) return;
+          if (wasNearBottom) {
+            sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+          } else {
+            sc.scrollTop = sc.scrollHeight - sc.clientHeight - distFromBottom;
+          }
+          scrollRafId = requestAnimationFrame(pinScroll);
+        };
+
+        // Kick off: set transition, then change height in next frame
         el.style.transition = 'height 0.25s cubic-bezier(0.25, 0.1, 0.25, 1.0)';
         requestAnimationFrame(() => {
           if (!closing) return;
           el.style.height = `${fullH}px`;
-          // Restore scroll anchor after height change
-          if (sc && distFromBottom < 100) {
-            sc.scrollTop = sc.scrollHeight - sc.clientHeight;
-          } else if (sc) {
-            sc.scrollTop = sc.scrollHeight - sc.clientHeight - distFromBottom;
-          }
+          // Start scroll pinning loop
+          scrollRafId = requestAnimationFrame(pinScroll);
         });
+      } else {
+        // Keyboard wasn't visually open — just reset state
+        stopTimer = setTimeout(() => {
+          closing = false;
+          setKbHeight(0);
+          setVvHeight(0);
+        }, 400);
       }
-      stopTimer = setTimeout(() => {
-        closing = false;
-        // Only clear transition — do NOT clear el.style.height manually.
-        // React's stale vDOM still has height:543px; clearing our imperative
-        // override would expose that stale value for one frame before React
-        // re-renders, causing a visible snap-back (overshoot).
-        // setVvHeight(0) triggers React to set className=h-full and remove
-        // the inline style atomically in one commit — no flash.
-        if (el) el.style.transition = '';
-        setKbHeight(0);
-        setVvHeight(0);
-      }, wasOpen ? 300 : 400);
     };
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
@@ -2537,6 +2578,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       document.removeEventListener("focusout", stopPoll);
       if (pollId) clearInterval(pollId);
       if (stopTimer) clearTimeout(stopTimer);
+      if (scrollRafId) cancelAnimationFrame(scrollRafId);
     };
   }, []);
 
