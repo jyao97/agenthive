@@ -2452,6 +2452,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // with page). So we resize the container to vvHeight and use absolute bottom-0.
   const [kbHeight, setKbHeight] = useState(0);
   const [vvHeight, setVvHeight] = useState(0);
+  const kbContainerRef = useRef(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -2475,21 +2476,36 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
     };
     const startPoll = () => {
-      closing = false;
+      // Cancel any in-progress dismiss animation
+      if (closing) {
+        closing = false;
+        const el = kbContainerRef.current;
+        if (el) el.style.transition = '';
+      }
       if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
       if (!pollId) pollId = setInterval(update, 100);
     };
     const stopPoll = () => {
       if (stopTimer) clearTimeout(stopTimer);
-      // Snap to full height immediately — don't follow keyboard close animation
       closing = true;
-      setKbHeight(0);
-      setVvHeight(0);
+      if (pollId) { clearInterval(pollId); pollId = null; }
+      // Animate container from vvHeight → full height (iOS spring curve)
+      const el = kbContainerRef.current;
+      const wasOpen = el?.style.height;
+      if (wasOpen) {
+        const fullH = el.parentElement?.clientHeight || window.innerHeight;
+        el.style.transition = 'height 0.3s cubic-bezier(0.38, 0.70, 0.125, 1.0)';
+        requestAnimationFrame(() => {
+          if (!closing) return;
+          el.style.height = `${fullH}px`;
+        });
+      }
       stopTimer = setTimeout(() => {
         closing = false;
-        if (pollId) { clearInterval(pollId); pollId = null; }
-        update();
-      }, 400);
+        if (el) { el.style.transition = ''; el.style.height = ''; }
+        setKbHeight(0);
+        setVvHeight(0);
+      }, wasOpen ? 350 : 400);
     };
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
@@ -3036,7 +3052,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }
 
   return (
-    <div className={`flex flex-col relative ${vvHeight > 0 ? "" : "h-full"}`} style={vvHeight > 0 ? { height: `${vvHeight}px` } : undefined}>
+    <div ref={kbContainerRef} className={`flex flex-col relative ${vvHeight > 0 ? "" : "h-full"}`} style={vvHeight > 0 ? { height: `${vvHeight}px` } : undefined}>
 
 
       {/* Header */}
