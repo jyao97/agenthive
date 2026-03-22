@@ -90,6 +90,11 @@
 - Lesson: Any `claude -p` subprocess started from within an agent's tmux session inherits `AHIVE_AGENT_ID`, which makes its SessionStart hook look like a session rotation for the parent agent. Always strip `AHIVE_AGENT_ID` from env when spawning `claude -p` subprocesses.
 
 
+### 2026-03-22 | Task: Fix keyboard layout bug — input bar flush with keyboard | Status: success
+- What: Input bar had a visible gap above the keyboard on iOS. Root cause: `kbOffset = window.innerHeight - vv.height` is unreliable because `window.innerHeight` can differ from CSS `100vh` on iOS Safari (safe area, viewport-fit:cover). Also removed `interactive-widget=resizes-content` meta tag which caused inconsistent behavior across browsers.
+- Resolution: (1) Removed `interactive-widget=resizes-content` from meta viewport. (2) Track `kbTop = vv.offsetTop + vv.height` (exact keyboard top in layout viewport coords) — no dependency on `window.innerHeight`. (3) When keyboard is open, input bar uses `position: fixed; top: kbTop; transform: translateY(-100%)` to place its bottom edge exactly at keyboard top. When closed, uses `position: absolute; bottom: 0` normally. (4) Messages area padding dynamic (`kbOffset + 144px`). (5) Polling with delayed stop (400ms) for keyboard layout switches.
+- Lesson: Never use `window.innerHeight` subtraction for keyboard positioning on iOS. Instead, read `visualViewport.offsetTop + visualViewport.height` directly — this gives the exact pixel position of the keyboard top without any viewport size discrepancy. Using `position: fixed; top: X; transform: translateY(-100%)` is the most reliable way to keep an element flush with the keyboard.
+
 ## 2026-03-21 — 709ed0f80ee2
 1. `claude -p` subprocess run inside an agent's tmux session inherits `AHIVE_AGENT_ID`, causing SessionStart hook to fire with that agent's ID — the sync loop then falsely adopts the one-shot session as a "session rotation," replacing the agent's real conversation with the subprocess output.
 2. Fix in `_generate_retry_summary_background` (main.py): strip `AHIVE_AGENT_ID` from the env dict passed to `subprocess.run` so the `claude -p` subprocess doesn't trigger session rotation. Minimal one-line change, no-op when the function runs from the orchestrator backend (which lacks that env var).
@@ -118,3 +123,6 @@
 
 ## 2026-03-21 — Fix "Cannot play this video" for remote server paths
 1. `extractFileAttachments` picked up absolute paths from agent messages even when they pointed to remote servers (e.g. `/home/eegrad/.../output.mp4`). These resolved to invalid `/api/files/` URLs → 404 → "Cannot play this video". Fix: skip absolute paths that don't match `agenthive-projects/`, `/projects/`, or the agent's project name. Straightforward — only gotcha was the `/projects/{name}/` workspace prefix used in tests, which needed to be allowed through.
+
+## 2026-03-22 — Fix start button triggering calendar on mobile
+1. InboxCard's hidden `<input type="datetime-local">` had `absolute inset-0 opacity-0 w-0 h-0` inside a `relative` container adjacent to the dispatch button. On mobile (iOS Safari), datetime inputs maintain a native touch target larger than their CSS size — `inset-0` let this invisible target bleed rightward into the dispatch button's tap area. Fix: removed `inset-0`, added `pointer-events-none` and `overflow-hidden` on parent. The input is triggered programmatically via `showPicker()` so it never needs direct touch interaction.

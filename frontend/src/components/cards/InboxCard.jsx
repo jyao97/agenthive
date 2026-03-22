@@ -518,8 +518,8 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                     )}
                   </button>
 
-                  <div className="relative">
-                    <input ref={dateRef} type="datetime-local" className="absolute inset-0 opacity-0 w-0 h-0"
+                  <div className="relative overflow-hidden">
+                    <input ref={dateRef} type="datetime-local" className="absolute opacity-0 w-0 h-0 pointer-events-none"
                       value={task.notify_at ? new Date(task.notify_at).toISOString().slice(0, 16) : ""}
                       onChange={handleDateChange} />
                     <button type="button" onClick={handleCalendar}
