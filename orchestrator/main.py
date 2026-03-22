@@ -981,28 +981,28 @@ async def system_stale_agents_clean(
 
 @app.get("/api/system/backup")
 async def get_backup_status():
-    """Return current backup config and on-disk stats."""
-    import glob as globmod
-    from config import BACKUP_ENABLED, BACKUP_INTERVAL_HOURS, MAX_BACKUPS
+    """Return current backup config, on-disk stats, and backup list."""
+    from backup import get_runtime_config, list_backups
 
-    backup_dirs = sorted(globmod.glob(os.path.join(BACKUP_DIR, "backup_*")))
-    total_bytes = 0
-    for d in backup_dirs:
-        for dp, _, files in os.walk(d):
-            for f in files:
-                try:
-                    total_bytes += os.path.getsize(os.path.join(dp, f))
-                except OSError:
-                    pass
+    cfg = get_runtime_config()
+    backups = list_backups()
+    total_bytes = sum(b["total_bytes"] for b in backups)
 
     return {
-        "enabled": BACKUP_ENABLED,
-        "interval_hours": BACKUP_INTERVAL_HOURS,
-        "max_backups": MAX_BACKUPS,
+        **cfg,
         "backup_dir": BACKUP_DIR,
-        "backup_count": len(backup_dirs),
+        "backup_count": len(backups),
         "total_bytes": total_bytes,
+        "backups": backups,
     }
+
+
+@app.post("/api/system/backup")
+async def trigger_manual_backup():
+    """Trigger a manual backup immediately."""
+    from backup import do_backup
+    name = do_backup()
+    return {"detail": "ok", "name": name}
 
 
 @app.delete("/api/system/backup")
@@ -1034,6 +1034,94 @@ async def purge_backups():
 
     logger.info("Purged %d backups, freed %d bytes", deleted, freed)
     return {"detail": "ok", "deleted": deleted, "freed_bytes": freed}
+
+
+@app.delete("/api/system/backup/{name}")
+async def delete_single_backup(name: str):
+    """Delete a single backup snapshot."""
+    from backup import delete_backup
+    freed = delete_backup(name)
+    if freed == 0:
+        raise HTTPException(status_code=404, detail="Backup not found")
+    return {"detail": "ok", "freed_bytes": freed}
+
+
+@app.post("/api/system/backup/{name}/restore")
+async def restore_from_backup(name: str):
+    """Restore database and registry from a backup snapshot."""
+    from backup import restore_backup
+    try:
+        result = restore_backup(name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Backup not found")
+    return {"detail": "ok", **result}
+
+
+@app.put("/api/system/backup/config")
+async def update_backup_config(request: Request):
+    """Update backup schedule config (persists to .env)."""
+    from backup import update_runtime_config, persist_env_config, get_runtime_config
+
+    body = await request.json()
+    enabled = body.get("enabled")
+    interval_hours = body.get("interval_hours")
+    max_backups = body.get("max_backups")
+
+    # Validate
+    if interval_hours is not None and (not isinstance(interval_hours, int) or interval_hours < 1):
+        raise HTTPException(status_code=400, detail="interval_hours must be >= 1")
+    if max_backups is not None and (not isinstance(max_backups, int) or max_backups < 1):
+        raise HTTPException(status_code=400, detail="max_backups must be >= 1")
+
+    update_runtime_config(enabled=enabled, interval_hours=interval_hours, max_backups=max_backups)
+
+    # Persist to .env
+    cfg = get_runtime_config()
+    persist_env_config(cfg["enabled"], cfg["interval_hours"], cfg["max_backups"])
+
+    return {"detail": "ok", **cfg}
+
+
+@app.post("/api/system/backup/import")
+async def import_backup_upload(request: Request):
+    """Import a backup from an uploaded zip file."""
+    import tempfile
+    from backup import import_backup
+
+    # Read multipart form data
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    # Save to temp file
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    try:
+        content = await file.read()
+        tmp.write(content)
+        tmp.close()
+        name = import_backup(tmp.name)
+        return {"detail": "ok", "name": name}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)
+
+
+@app.get("/api/system/backup/{name}/download")
+async def download_backup(name: str):
+    """Download a backup snapshot as a zip file."""
+    from backup import export_backup
+    try:
+        zip_path = export_backup(name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Backup not found")
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=f"{name}.zip",
+    )
 
 
 @app.post("/api/system/restart")
@@ -3937,7 +4025,7 @@ async def regenerate_task_summary(task_id: str, db: Session = Depends(get_db)):
     # Find the most recent stopped agent for this task
     prev_agent = (
         db.query(Agent)
-        .filter(Agent.task_id == task_id, Agent.status.in_([AgentStatus.STOPPED, AgentStatus.COMPLETE, AgentStatus.ERROR]))
+        .filter(Agent.task_id == task_id, Agent.status.in_([AgentStatus.STOPPED, AgentStatus.ERROR]))
         .order_by(Agent.created_at.desc())
         .first()
     )
