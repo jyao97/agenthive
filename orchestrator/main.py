@@ -4308,14 +4308,16 @@ async def hook_agent_stop(request: Request):
                     _stop_db.add(_resp)
                     _agent.last_message_preview = summary[:200]
                     _agent.last_message_at = _now
-                    if not ad._is_agent_in_use(_agent.id, _agent.tmux_pane):
+                    _is_sub = _agent.is_subagent or _agent.parent_id
+                    if not _is_sub and not ad._is_agent_in_use(_agent.id, _agent.tmux_pane):
                         _agent.unread_count += 1
                     _stop_db.commit()
                     from websocket import emit_new_message
                     ad._emit(emit_new_message(
                         _agent.id, _resp.id, _agent.name, _agent.project,
                     ))
-                    ad._maybe_notify_message(_agent)
+                    if not _is_sub:
+                        ad._maybe_notify_message(_agent)
                     logger.info(
                         "hook_agent_stop: created hook message for %s (%d chars)",
                         agent_id[:8], len(summary),
