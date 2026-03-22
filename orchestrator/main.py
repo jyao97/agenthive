@@ -4217,10 +4217,10 @@ async def hook_agent_post_compact(request: Request):
         logger.warning("hook_agent_post_compact: no agent_dispatcher")
         return {}
 
-    # 1. Clear compact pause and generating state.
-    #    No Stop hook fires after compact, so PostCompact must clear it.
-    logger.info("hook_agent_post_compact: clearing generating state for %s", agent_id[:8])
-    ad._stop_generating(agent_id)
+    # 1. Clear compact pause flag only — do NOT clear generating state.
+    #    After compact, Claude continues processing the same turn.
+    #    The Stop hook will clear generating state when Claude finishes.
+    logger.info("hook_agent_post_compact: compact done for %s (generating state preserved)", agent_id[:8])
 
     ctx = ad._sync_contexts.get(agent_id)
     if ctx:
