@@ -115,3 +115,6 @@
 
 ## 2026-03-21 — Show full descriptions when expanding task cards
 1. InboxCard expanded description container used `flex-1 min-h-[60px]` inside a `flex-col` with auto height. `flex: 1 1 0%` set flex-basis to 0, so the element resolved to just `min-height: 60px`. Text content overflowed this 60px box and was clipped by CardShell's `overflow-hidden` — making expanded look identical to collapsed (~2-3 lines). Fix: removed `flex-1` so the container sizes to its content height naturally.
+
+## 2026-03-21 — Fix "Cannot play this video" for remote server paths
+1. `extractFileAttachments` picked up absolute paths from agent messages even when they pointed to remote servers (e.g. `/home/eegrad/.../output.mp4`). These resolved to invalid `/api/files/` URLs → 404 → "Cannot play this video". Fix: skip absolute paths that don't match `agenthive-projects/`, `/projects/`, or the agent's project name. Straightforward — only gotcha was the `/projects/{name}/` workspace prefix used in tests, which needed to be allowed through.
