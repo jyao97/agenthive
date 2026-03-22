@@ -2444,130 +2444,159 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [id]);
 
 
-  // Track keyboard via visualViewport.
-  // kbHeight = keyboard physical height (0 when closed).
-  // vvHeight = visual viewport height when keyboard open (0 when closed).
+  // Track keyboard via visualViewport — direct DOM for smooth animation.
+  // React state (kbOpen) only toggles at open/close boundaries, never during
+  // the animation itself. Container height is set via el.style.height directly,
+  // bypassing React re-render lag (~16-33ms per frame).
   //
-  // position:fixed does NOT work on iOS Safari with keyboard (element scrolls
-  // with page). So we resize the container to vvHeight and use absolute bottom-0.
-  const [kbHeight, setKbHeight] = useState(0);
-  const [vvHeight, setVvHeight] = useState(0);
+  // OPEN:  follow visualViewport.resize events → direct DOM height update
+  // CLOSE: follow resize events (native-matched), spring fallback if needed
+  const [kbOpen, setKbOpen] = useState(false);
   const kbContainerRef = useRef(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     let baseHeight = vv.height;
     let pollId = null;
-    let stopTimer = null;
-    let closing = false;
+    let isOpen = false;
+    // Dismiss: 'none' | 'following' (resize events) | 'spring' (fallback)
+    let dismissPhase = 'none';
+    let springRafId = null;
+    let dismissEndH = 0;
+    let dismissScrollAnchor = null; // Infinity = near bottom, number = distFromBottom
+    let dismissFallbackTimer = null;
+
+    const SPRING_DURATION = 350;
+    const spring = (tSec) => Math.max(0, Math.min(1, 1 - 1.012450 * Math.exp(-12.148 * tSec)));
+
+    const pinScroll = () => {
+      const sc = scrollContainerRef.current;
+      if (!sc || dismissScrollAnchor === null) return;
+      sc.scrollTop = dismissScrollAnchor === Infinity
+        ? sc.scrollHeight - sc.clientHeight
+        : sc.scrollHeight - sc.clientHeight - dismissScrollAnchor;
+    };
+
+    const finalizeClose = () => {
+      const el = kbContainerRef.current;
+      if (el) {
+        el.style.height = '';
+        el.style.willChange = '';
+        el.classList.add('h-full');
+      }
+      isOpen = false;
+      dismissPhase = 'none';
+      dismissScrollAnchor = null;
+      if (springRafId) { cancelAnimationFrame(springRafId); springRafId = null; }
+      if (dismissFallbackTimer) { clearTimeout(dismissFallbackTimer); dismissFallbackTimer = null; }
+      setKbOpen(false);
+    };
+
     const update = () => {
-      if (closing) return; // skip resize events during close animation
       if (vv.height > baseHeight) baseHeight = vv.height;
       const kbH = Math.round(baseHeight - vv.height);
+      const h = Math.round(vv.height);
       const open = kbH > 100;
-      setKbHeight(open ? kbH : 0);
-      setVvHeight(open ? Math.round(vv.height) : 0);
-      // iOS Safari scrolls the body when the keyboard opens to keep the
-      // focused input visible.  After we resize the container to vvHeight,
-      // this scroll offset creates a gap between the input bar and the
-      // keyboard.  Correct it every poll cycle.
-      if (open && (window.scrollY > 0 || vv.offsetTop > 0)) {
-        window.scrollTo(0, 0);
-      }
-    };
-    let scrollRafId = null;
-    const startPoll = () => {
-      // Cancel any in-progress dismiss animation
-      if (closing) {
-        closing = false;
-        const el = kbContainerRef.current;
-        if (el) {
-          el.style.willChange = '';
-        }
-        if (scrollRafId) { cancelAnimationFrame(scrollRafId); scrollRafId = null; }
-      }
-      if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
-      if (!pollId) pollId = setInterval(update, 100);
-    };
-    const stopPoll = () => {
-      if (stopTimer) clearTimeout(stopTimer);
-      closing = true;
-      if (pollId) { clearInterval(pollId); pollId = null; }
-      // Animate container from vvHeight → full height using JS spring
-      // physics (iOS CASpringAnimation: damping:500, stiffness:1000, mass:3).
-      // Both height interpolation AND scroll pinning run in the same rAF
-      // callback — no desync between CSS transition and JS scroll fixes.
+
       const el = kbContainerRef.current;
-      const wasOpen = el?.style.height;
-      if (wasOpen) {
-        const startH = parseFloat(el.style.height);
-        const endH = el.parentElement?.clientHeight || window.innerHeight;
-        const delta = endH - startH;
+      if (!el) return;
 
+      // ── DISMISS: follow resize events for native-matched animation ──
+      if (dismissPhase === 'following') {
+        el.style.height = `${h}px`;
+        pinScroll();
+        if (h >= baseHeight - 5) finalizeClose();
+        return;
+      }
+      if (dismissPhase === 'spring') return;
+
+      // ── KEYBOARD OPENING / OPEN: direct DOM ──
+      if (open) {
+        el.style.height = `${h}px`;
+        el.classList.remove('h-full');
+
+        if (!isOpen) {
+          // Boundary: just opened — tell React (for class toggles)
+          isOpen = true;
+          setKbOpen(true);
+        }
+
+        // Reset iOS body scroll (creates gap between input and keyboard)
+        if (window.scrollY > 0 || vv.offsetTop > 0) {
+          window.scrollTo(0, 0);
+        }
+
+        // Keep messages at bottom
         const sc = scrollContainerRef.current;
-        // Capture scroll anchor before animation starts
-        const wasNearBottom = sc
-          ? (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < 100
-          : true;
-        const distFromBottom = sc
-          ? sc.scrollHeight - sc.scrollTop - sc.clientHeight
-          : 0;
+        if (sc && !userScrolledUp.current) {
+          sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+        }
+      }
+    };
 
-        el.style.transition = 'none';
-        el.style.willChange = 'height';
+    const startPoll = () => {
+      // Cancel dismiss if re-focusing
+      if (dismissPhase !== 'none') {
+        const el = kbContainerRef.current;
+        if (el) el.style.willChange = '';
+        dismissPhase = 'none';
+        if (springRafId) { cancelAnimationFrame(springRafId); springRafId = null; }
+        if (dismissFallbackTimer) { clearTimeout(dismissFallbackTimer); dismissFallbackTimer = null; }
+      }
+      if (!pollId) pollId = setInterval(update, 100);
+      update();
+    };
+
+    const stopPoll = () => {
+      if (pollId) { clearInterval(pollId); pollId = null; }
+
+      const el = kbContainerRef.current;
+      if (!el?.style.height || !isOpen) return;
+
+      // Capture dismiss targets
+      dismissEndH = el.parentElement?.clientHeight || window.innerHeight;
+
+      // Capture scroll anchor
+      const sc = scrollContainerRef.current;
+      if (sc) {
+        const d = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
+        dismissScrollAnchor = d < 100 ? Infinity : d;
+      } else {
+        dismissScrollAnchor = Infinity;
+      }
+
+      // Follow resize events for native-matched animation
+      dismissPhase = 'following';
+      el.style.willChange = 'height';
+
+      // Safety: if resize events don't finalize within 80ms, spring animate
+      dismissFallbackTimer = setTimeout(() => {
+        dismissFallbackTimer = null;
+        if (dismissPhase !== 'following') return;
+        const startH = parseFloat(el.style.height) || 0;
+        if (Math.abs(startH - dismissEndH) < 5) { finalizeClose(); return; }
+
+        dismissPhase = 'spring';
+        const delta = dismissEndH - startH;
         const t0 = performance.now();
-
-        // Overdamped spring compressed 6x: progress ≈ 1 - 1.0125 * e^(-12.148t)
-        // 99% settled at ~350ms. Fast initial motion, smooth deceleration.
-        const DURATION = 350;
-        const spring = (tSec) => {
-          const p = 1 - 1.012450 * Math.exp(-12.148 * tSec);
-          return Math.max(0, Math.min(1, p));
-        };
+        el.style.transition = 'none';
 
         const tick = (now) => {
-          if (!closing) { el.style.willChange = ''; return; }
+          if (dismissPhase !== 'spring') return;
           const elapsed = (now - t0) / 1000;
-          const progress = elapsed * 1000 >= DURATION ? 1 : spring(elapsed);
-
-          // Set height and pin scroll in same frame — no desync
-          // Clamp: never exceed endH (prevents any overshoot on rounding)
-          el.style.height = `${Math.min(Math.round(startH + delta * progress), endH)}px`;
-          if (sc) {
-            if (wasNearBottom) {
-              sc.scrollTop = sc.scrollHeight - sc.clientHeight;
-            } else {
-              sc.scrollTop = sc.scrollHeight - sc.clientHeight - distFromBottom;
-            }
-          }
-
+          const progress = elapsed * 1000 >= SPRING_DURATION ? 1 : spring(elapsed);
+          el.style.height = `${Math.min(Math.round(startH + delta * progress), dismissEndH)}px`;
+          pinScroll();
           if (progress < 1) {
-            scrollRafId = requestAnimationFrame(tick);
+            springRafId = requestAnimationFrame(tick);
           } else {
-            // Animation complete — clamp at endH, then hand to React.
-            // Set h-full class BEFORE clearing inline height so there's
-            // never a frame without a height source. React will reconcile
-            // on re-render and keep h-full since vvHeight will be 0.
-            el.style.height = `${endH}px`;
-            el.style.willChange = '';
-            el.classList.add('h-full');
-            el.style.height = '';
-            closing = false;
-            setKbHeight(0);
-            setVvHeight(0);
+            finalizeClose();
           }
         };
-
-        scrollRafId = requestAnimationFrame(tick);
-      } else {
-        // Keyboard wasn't visually open — just reset state
-        stopTimer = setTimeout(() => {
-          closing = false;
-          setKbHeight(0);
-          setVvHeight(0);
-        }, 400);
-      }
+        springRafId = requestAnimationFrame(tick);
+      }, 80);
     };
+
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
     document.addEventListener("focusin", startPoll);
@@ -2579,8 +2608,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       document.removeEventListener("focusin", startPoll);
       document.removeEventListener("focusout", stopPoll);
       if (pollId) clearInterval(pollId);
-      if (stopTimer) clearTimeout(stopTimer);
-      if (scrollRafId) cancelAnimationFrame(scrollRafId);
+      if (springRafId) cancelAnimationFrame(springRafId);
+      if (dismissFallbackTimer) clearTimeout(dismissFallbackTimer);
     };
   }, []);
 
@@ -2681,27 +2710,26 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
   }, [loading, messages.length, scrollCountKey]);
 
-  // When keyboard opens/closes, keep messages scroll stable.
-  // useLayoutEffect runs synchronously after DOM update, before paint.
-  const prevVvHeight = useRef(0);
+  // When React's kbOpen state changes (boundary only), handle scroll.
+  // Scroll during animation is handled by the resize handler directly.
+  const prevKbOpen = useRef(false);
   useLayoutEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    if (vvHeight > 0) {
-      // Keyboard opened or resized — undo iOS body scroll
+    if (kbOpen && !prevKbOpen.current) {
+      // Keyboard just opened — undo iOS body scroll, stick to bottom
       window.scrollTo(0, 0);
-      // Keep messages at bottom if user wasn't scrolled up
       if (!userScrolledUp.current) {
         el.scrollTop = el.scrollHeight;
       }
-    } else if (prevVvHeight.current > 0) {
-      // Keyboard just closed (React state cleared) — anchor scroll
+    } else if (!kbOpen && prevKbOpen.current) {
+      // Keyboard just closed — anchor scroll at bottom
       if (!userScrolledUp.current) {
         el.scrollTop = el.scrollHeight;
       }
     }
-    prevVvHeight.current = vvHeight;
-  }, [vvHeight]);
+    prevKbOpen.current = kbOpen;
+  }, [kbOpen]);
 
   // WebSocket: re-fetch on new_message events, handle streaming
   const { sendWsMessage } = useWebSocket();
@@ -3119,7 +3147,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }
 
   return (
-    <div ref={kbContainerRef} className={`flex flex-col relative ${vvHeight > 0 ? "" : "h-full"}`} style={vvHeight > 0 ? { height: `${vvHeight}px` } : undefined}>
+    <div ref={kbContainerRef} className={`flex flex-col relative ${kbOpen ? "" : "h-full"}`}>
 
 
       {/* Header */}
@@ -3559,7 +3587,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         escapeDisabled={isStopped || isError}
         escapeUrgent={isExecuting || hasPendingInteractive}
         escapeAvailable={hasTmuxPane}
-        kbHeight={kbHeight}
+        kbHeight={kbOpen ? 1 : 0}
       />
 
       {/* Stop confirmation modal */}
