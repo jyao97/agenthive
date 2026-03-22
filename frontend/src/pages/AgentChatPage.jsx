@@ -2447,16 +2447,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
   // Track keyboard height via visualViewport.
   // kbHeight = keyboard's physical pixel height (0 when closed).
-  //
-  // Strategy: DON'T try to compute the keyboard's absolute position or
-  // resize the container (iOS Safari height APIs are unreliable during
-  // keyboard transitions). Instead, compute how much the viewport SHRANK
-  // (= keyboard height), then use position:fixed + bottom:kbHeight on
-  // the input bar. Fixed positioning uses the layout viewport which is
-  // stable, and bottom:kbHeight places the bar at the keyboard top.
-  //
-  // Poll while focused to catch keyboard layout switches (Chinese ↔ English).
   const [kbHeight, setKbHeight] = useState(0);
+  const [kbDebug, setKbDebug] = useState({});
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -2467,6 +2459,14 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (vv.height > baseHeight) baseHeight = vv.height;
       const kbH = Math.round(baseHeight - vv.height);
       setKbHeight(kbH > 100 ? kbH : 0);
+      setKbDebug({
+        vvH: Math.round(vv.height),
+        vvOT: Math.round(vv.offsetTop),
+        base: Math.round(baseHeight),
+        innerH: window.innerHeight,
+        clientH: document.documentElement.clientHeight,
+        kbH: kbH > 100 ? kbH : 0,
+      });
     };
     const startPoll = () => {
       if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
@@ -2483,6 +2483,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     vv.addEventListener("scroll", update);
     document.addEventListener("focusin", startPoll);
     document.addEventListener("focusout", stopPoll);
+    update(); // initial read
     return () => {
       vv.removeEventListener("resize", update);
       vv.removeEventListener("scroll", update);
@@ -3016,6 +3017,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
   return (
     <div className="flex flex-col h-full relative">
+
+      {/* TODO: remove debug overlay after keyboard fix */}
+      {Object.keys(kbDebug).length > 0 && (
+        <div style={{ position: "fixed", top: 50, right: 4, zIndex: 9999, background: "rgba(0,0,0,0.85)", color: "#0ff", fontSize: 10, fontFamily: "monospace", padding: "4px 6px", borderRadius: 6, pointerEvents: "none", lineHeight: 1.5 }}>
+          {Object.entries(kbDebug).map(([k, v]) => <div key={k}>{k}: {v}</div>)}
+        </div>
+      )}
 
       {/* Header */}
       <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10`}>
