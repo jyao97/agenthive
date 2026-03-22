@@ -465,6 +465,11 @@ export function extractFileAttachments(text, project, role) {
     if (!rawPath || !AGENT_EXTS.test(rawPath)) return;
     if (IGNORE_EXTS.test(rawPath)) return;
     if (rawPath.endsWith(".thumb.jpg")) return;
+    // Skip absolute paths that can't be resolved to a project file
+    // (e.g. remote server paths like /home/eegrad/.../output.mp4)
+    if (rawPath.startsWith("/") && !rawPath.includes("agenthive-projects/")
+        && !rawPath.startsWith("/projects/")
+        && !(project && rawPath.includes("/" + project + "/"))) return;
     let path = cleanProjectPath(rawPath, project);
     if (seen.has(path) || inlineRendered.has(rawPath)) return;
     seen.add(path);
