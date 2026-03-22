@@ -2444,12 +2444,14 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [id]);
 
 
-  // Track keyboard position via visualViewport.  kbTop = the exact pixel
-  // position of the keyboard's top edge (null when keyboard is closed).
-  // Detection: track the largest vv.height seen (= full viewport without keyboard).
-  // When current vv.height drops >100px below that max, keyboard is open.
-  // NOTE: window.innerHeight is NOT used — some iOS versions update it when
-  // the keyboard opens, making gap-based detection fail silently.
+  // Track keyboard position via visualViewport.  kbTop = the container height
+  // to use when keyboard is open (null when keyboard is closed).
+  //
+  // Key insight: vv.height may NOT include the status bar safe area on iOS,
+  // but CSS 100vh (h-screen) DOES include it with viewport-fit=cover.
+  // So we compute kbHeight = baseHeight - vv.height (cancels out safe area),
+  // then kbTop = layoutHeight - kbHeight (uses CSS layout as ground truth).
+  //
   // Poll while focused to catch keyboard layout switches (Chinese ↔ English).
   const [kbTop, setKbTop] = useState(null);
   useEffect(() => {
@@ -2461,8 +2463,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const update = () => {
       // Update base when height increases (keyboard closed, orientation change)
       if (vv.height > baseHeight) baseHeight = vv.height;
-      if (baseHeight - vv.height > 100) {
-        setKbTop(Math.round(vv.offsetTop + vv.height));
+      const kbH = baseHeight - vv.height;
+      if (kbH > 100) {
+        // layoutHeight = CSS 100vh (includes safe areas with viewport-fit=cover)
+        // This is the container's actual pixel height — stable, not affected by keyboard
+        const layoutHeight = document.documentElement.clientHeight;
+        setKbTop(Math.round(layoutHeight - kbH));
       } else {
         setKbTop(null);
       }
