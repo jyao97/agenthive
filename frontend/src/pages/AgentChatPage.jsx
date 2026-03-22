@@ -2459,12 +2459,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     let baseHeight = vv.height;
     let pollId = null;
     let isOpen = false;
-    // Dismiss: 'none' | 'following' (resize events) | 'spring' (fallback)
+    // Dismiss: 'none' | 'spring' (animating)
     let dismissPhase = 'none';
     let springRafId = null;
     let dismissEndH = 0;
     let dismissScrollAnchor = null; // Infinity = near bottom, number = distFromBottom
-    let dismissFallbackTimer = null;
 
     const SPRING_DURATION = 350;
     const spring = (tSec) => Math.max(0, Math.min(1, 1 - 1.012450 * Math.exp(-12.148 * tSec)));
@@ -2488,7 +2487,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       dismissPhase = 'none';
       dismissScrollAnchor = null;
       if (springRafId) { cancelAnimationFrame(springRafId); springRafId = null; }
-      if (dismissFallbackTimer) { clearTimeout(dismissFallbackTimer); dismissFallbackTimer = null; }
       setKbOpen(false);
     };
 
@@ -2501,13 +2499,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const el = kbContainerRef.current;
       if (!el) return;
 
-      // ── DISMISS: follow resize events for native-matched animation ──
-      if (dismissPhase === 'following') {
-        el.style.height = `${h}px`;
-        pinScroll();
-        if (h >= baseHeight - 5) finalizeClose();
-        return;
-      }
+      // ── DISMISS: spring animation handles it, ignore resize events ──
       if (dismissPhase === 'spring') return;
 
       // ── KEYBOARD OPENING / OPEN: direct DOM ──
@@ -2541,8 +2533,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         if (el) el.style.willChange = '';
         dismissPhase = 'none';
         if (springRafId) { cancelAnimationFrame(springRafId); springRafId = null; }
-        if (dismissFallbackTimer) { clearTimeout(dismissFallbackTimer); dismissFallbackTimer = null; }
-      }
+        }
       if (!pollId) pollId = setInterval(update, 100);
       update();
     };
@@ -2565,36 +2556,30 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         dismissScrollAnchor = Infinity;
       }
 
-      // Follow resize events for native-matched animation
-      dismissPhase = 'following';
+      // Spring animate from current height to full height.
+      // iOS resize events jump too fast during dismiss — spring gives smooth deceleration.
+      const startH = parseFloat(el.style.height) || 0;
+      if (Math.abs(startH - dismissEndH) < 5) { finalizeClose(); return; }
+
+      dismissPhase = 'spring';
+      const delta = dismissEndH - startH;
+      const t0 = performance.now();
+      el.style.transition = 'none';
       el.style.willChange = 'height';
 
-      // Safety: if resize events don't finalize within 80ms, spring animate
-      dismissFallbackTimer = setTimeout(() => {
-        dismissFallbackTimer = null;
-        if (dismissPhase !== 'following') return;
-        const startH = parseFloat(el.style.height) || 0;
-        if (Math.abs(startH - dismissEndH) < 5) { finalizeClose(); return; }
-
-        dismissPhase = 'spring';
-        const delta = dismissEndH - startH;
-        const t0 = performance.now();
-        el.style.transition = 'none';
-
-        const tick = (now) => {
-          if (dismissPhase !== 'spring') return;
-          const elapsed = (now - t0) / 1000;
-          const progress = elapsed * 1000 >= SPRING_DURATION ? 1 : spring(elapsed);
-          el.style.height = `${Math.min(Math.round(startH + delta * progress), dismissEndH)}px`;
-          pinScroll();
-          if (progress < 1) {
-            springRafId = requestAnimationFrame(tick);
-          } else {
-            finalizeClose();
-          }
-        };
-        springRafId = requestAnimationFrame(tick);
-      }, 80);
+      const tick = (now) => {
+        if (dismissPhase !== 'spring') return;
+        const elapsed = (now - t0) / 1000;
+        const progress = elapsed * 1000 >= SPRING_DURATION ? 1 : spring(elapsed);
+        el.style.height = `${Math.min(Math.round(startH + delta * progress), dismissEndH)}px`;
+        pinScroll();
+        if (progress < 1) {
+          springRafId = requestAnimationFrame(tick);
+        } else {
+          finalizeClose();
+        }
+      };
+      springRafId = requestAnimationFrame(tick);
     };
 
     vv.addEventListener("resize", update);
@@ -2609,7 +2594,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       document.removeEventListener("focusout", stopPoll);
       if (pollId) clearInterval(pollId);
       if (springRafId) cancelAnimationFrame(springRafId);
-      if (dismissFallbackTimer) clearTimeout(dismissFallbackTimer);
     };
   }, []);
 
