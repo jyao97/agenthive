@@ -3433,32 +3433,42 @@ Here are the day's conversations (with timestamps):
         Returns ``(prompt_text, insights_list)``.
         """
         is_retry = task.attempt_number and task.attempt_number > 1
-        task_label = "Original Task" if is_retry else "Task"
-        parts = [f"# {task_label}: {task.title}"]
-        if task.description:
-            parts.append(f"\n{task.description}")
 
         if is_retry:
-            # Include AI-generated summary of what was tried
+            # For retries: lead with user feedback as the PRIMARY focus
+            parts = [f"# Task: {task.title}"]
+
+            # User feedback FIRST — this is what the agent should focus on
+            if task.retry_context:
+                parts.append(f"\n## Your Focus (attempt #{task.attempt_number})")
+                parts.append(
+                    "The user reviewed the previous attempt and provided this feedback. "
+                    "This is your PRIMARY objective — address these points:"
+                )
+                parts.append(task.retry_context)
+
+            # AI summary of what was tried
             if task.agent_summary and task.agent_summary != ":::generating:::":
                 parts.append(f"\n## What Was Tried (attempt #{task.attempt_number - 1})")
                 parts.append(task.agent_summary)
 
-            # Emphasize user feedback prominently
-            if task.retry_context:
-                parts.append("\n## User Feedback After Previous Attempt (IMPORTANT)")
-                parts.append(
-                    "The user reviewed the previous attempt and provided this feedback. "
-                    "Address these points — they describe what went wrong:"
-                )
-                parts.append(task.retry_context)
+            # Original task description as background context
+            if task.description:
+                parts.append("\n## Original Task (Background Context)")
+                parts.append(task.description)
 
             parts.append(f"\n## Instructions for This Attempt")
             parts.append(
-                f"This is attempt #{task.attempt_number}. The original task above is the primary goal. "
-                "Focus on addressing the user feedback from the previous attempt — do not repeat the same approaches that failed. "
+                f"This is attempt #{task.attempt_number}. "
+                "Your primary goal is the user feedback above — that describes what still needs to be done. "
+                "The original task description is background context only. "
+                "Do not repeat the same approaches that failed. "
                 "Before starting, briefly note what went wrong before in PROGRESS.md, then proceed."
             )
+        else:
+            parts = [f"# Task: {task.title}"]
+            if task.description:
+                parts.append(f"\n{task.description}")
 
         # Inject relevant insights from FTS5 RAG
         if insights_list is None:

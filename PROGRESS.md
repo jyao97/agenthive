@@ -172,3 +172,8 @@
 - What: Enhanced backup system with manual trigger, import/export (zip), restore, per-backup delete, and runtime-configurable schedule.
 - Changes: backup.py (runtime config, list/delete/restore/import/export), main.py (7 new endpoints), MonitorPage (redesigned backup section with settings panel, backup list, per-item actions), config.py (default 24h/30 max).
 - Lesson: Straightforward — no issues. Used asyncio.Event to wake the backup loop on config change. sqlite3.backup() works in both directions for restore.
+
+### 2026-03-22 | Task: Retry prompt restructure — focus on user feedback | Status: success
+- What: Restructured `_build_task_prompt` for retry tasks so the agent leads with user feedback (incomplete reason) instead of the original task description.
+- Changes: `agent_dispatcher.py:_build_task_prompt` — user feedback now appears first under "## Your Focus", original task description demoted to "## Original Task (Background Context)", instructions updated to say feedback is the primary goal.
+- Lesson: Previous attempt failed by trying to capture web-sent messages — the fix was purely prompt restructuring, no data plumbing needed.
