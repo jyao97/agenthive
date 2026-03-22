@@ -5,13 +5,13 @@ export const DEFAULT_MAX_RECORDING_MS = 300000; // 5 minutes
 
 /**
  * Streaming voice recorder — audio is sent via WebSocket to the backend
- * which uses WhisperLive-style buffer + Whisper API for transcription.
+ * which proxies to OpenAI Realtime API for low-latency transcription (~232ms).
  *
- * Client sends Float32 PCM @ 16kHz as binary WS frames. Server accumulates
- * and transcribes every ~2s. Text appears incrementally as the user speaks.
+ * Client sends PCM16 @ 24kHz as binary WS frames. Server forwards to OpenAI
+ * Realtime API with server-side VAD. Text streams back as delta events.
  *
  * @param {object} opts
- * @param {function} opts.onTranscript - called with each transcribed chunk
+ * @param {function} opts.onTranscript - called with each completed turn's text
  * @param {function} opts.onError - called with error message string
  * @param {number}   [opts.maxDurationMs] - recording time limit in ms (default 5 min)
  *
@@ -26,7 +26,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   const [micError, setMicError] = useState(null);
   const [analyserNode, setAnalyserNode] = useState(null);
   const [remainingSeconds, setRemainingSeconds] = useState(limit / 1000);
-  // streamingText kept for API compat but not actively used (no delta events)
+  // streamingText shows delta fragments in real-time before turn completes
   const [streamingText, setStreamingText] = useState("");
 
   const streamRef = useRef(null);
@@ -37,6 +37,8 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   const countdownRef = useRef(null);
   const startTimeRef = useRef(null);
   const startingRef = useRef(false);
+  // Track current turn's accumulated delta text
+  const currentTurnTextRef = useRef("");
 
   // Keep stable refs for callbacks
   const onTranscriptRef = useRef(onTranscript);
@@ -95,6 +97,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     startingRef.current = true;
     setMicError(null);
     setStreamingText("");
+    currentTurnTextRef.current = "";
 
     // Check browser support
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -127,7 +130,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     try {
       streamRef.current = stream;
 
-      // AudioContext at default sample rate — the worklet will downsample to 16kHz
+      // AudioContext at default sample rate — the worklet will downsample to 24kHz
       const audioCtx = new AudioContext();
       audioCtxRef.current = audioCtx;
       // Ensure context is running (some browsers start suspended)
@@ -171,12 +174,19 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
-          if (msg.type === "transcript") {
-            // Each transcript is a ~2s chunk — append to caller's text
+          if (msg.type === "delta") {
+            // Streaming delta — accumulate for display
+            currentTurnTextRef.current += msg.text;
+            setStreamingText(currentTurnTextRef.current);
+          } else if (msg.type === "transcript") {
+            // Completed turn — send full text to caller, clear streaming
+            currentTurnTextRef.current = "";
+            setStreamingText("");
             onTranscriptRef.current?.(msg.text);
           } else if (msg.type === "error") {
             onErrorRef.current?.(msg.message || "Transcription error");
           }
+          // speech_started / speech_stopped could be used for UI feedback
         } catch {}
       };
 
@@ -189,7 +199,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
         }
       };
 
-      // Forward Float32 audio chunks from worklet → WebSocket as binary frames
+      // Forward PCM16 audio chunks from worklet → WebSocket as binary frames
       workletNode.port.onmessage = (e) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(e.data); // raw ArrayBuffer → binary WS frame
@@ -227,24 +237,33 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
 
-    // Stop mic/audio immediately but keep WS open for final transcription
+    // Stop mic/audio immediately but keep WS open briefly for final transcript
     cleanup();
     setRecording(false);
     startTimeRef.current = null;
     setRemainingSeconds(limitRef.current / 1000);
 
-    // Send stop signal and wait for server to flush remaining transcription
+    // If there's accumulated streaming text that wasn't completed, flush it
+    const pendingText = currentTurnTextRef.current.trim();
+    if (pendingText) {
+      onTranscriptRef.current?.(pendingText);
+      currentTurnTextRef.current = "";
+      setStreamingText("");
+    }
+
+    // Send stop signal and close — Realtime API delivers results in real-time
+    // so no need for a long grace period like the old batch approach
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       setVoiceLoading(true);
       try { ws.send(JSON.stringify({ type: "stop" })); } catch {}
 
-      // Keep WS open to receive final transcript, then close
+      // Brief grace period for any final completed events, then close
       setTimeout(() => {
         try { ws.close(); } catch {}
         wsRef.current = null;
         setVoiceLoading(false);
-      }, 3000);
+      }, 1000);
     }
   }, [cleanup]);
 
@@ -269,4 +288,3 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     toggleRecording,
   };
 }
-

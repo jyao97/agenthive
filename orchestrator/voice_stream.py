@@ -1,22 +1,22 @@
-"""Streaming transcription via WhisperLive-style buffer + OpenAI Whisper API.
+"""Streaming transcription via OpenAI Realtime API (transcription mode).
 
-Architecture (inspired by github.com/collabora/WhisperLive):
-- Client sends raw Float32 audio @ 16kHz as binary WebSocket frames
-- Server accumulates audio in a rolling buffer
-- Every TRANSCRIBE_INTERVAL seconds, sends accumulated audio to Whisper API
-- Returns transcribed text to the client immediately
-- No OpenAI Realtime API needed — simpler, more reliable
+Architecture:
+- Browser sends PCM16 audio @ 24kHz as binary WebSocket frames (100ms chunks)
+- Server proxies to OpenAI Realtime API (wss://api.openai.com/v1/realtime)
+- OpenAI server-side VAD detects speech boundaries automatically
+- Transcription deltas stream back in real-time (~232ms average latency)
+- Each completed turn is sent as {"type": "transcript", "text": "..."}
+
+Replaces the old WhisperLive-style buffer + batch Whisper API approach,
+which had 2.5-5.5s latency due to fixed 2s polling + HTTP round-trips.
 """
 
 import asyncio
-import io
+import base64
 import json
 import logging
 import os
-import struct
-import wave
 
-import numpy as np
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
@@ -24,40 +24,14 @@ from config import OPENAI_API_KEY
 
 logger = logging.getLogger("orchestrator.voice_stream")
 
-# How often to transcribe accumulated audio (seconds)
-TRANSCRIBE_INTERVAL = 2.0
+OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 
-# Minimum audio duration to bother transcribing (seconds)
-MIN_AUDIO_DURATION = 0.3
+# Transcription model — gpt-4o-mini-transcribe supports streaming deltas
+# and costs ~$0.003/min (cheaper than batch whisper-1 at $0.006/min)
+TRANSCRIBE_MODEL = os.environ.get("VOICE_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 
-SAMPLE_RATE = 16000  # 16kHz — what Whisper expects
-
-
-def _get_whisper_client():
-    """Lazy-init async OpenAI client (same pattern as voice.py)."""
-    global _async_client
-    try:
-        return _async_client
-    except NameError:
-        pass
-    from openai import AsyncOpenAI
-    _async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _async_client
-
-
-def _float32_to_wav_bytes(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bytes:
-    """Convert Float32 audio array to WAV file bytes for Whisper API."""
-    # Clip and convert to int16
-    audio = np.clip(audio, -1.0, 1.0)
-    pcm16 = (audio * 32767).astype(np.int16)
-
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)  # 16-bit
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm16.tobytes())
-    return buf.getvalue()
+# VAD silence duration — how long silence triggers end-of-turn (ms)
+VAD_SILENCE_MS = int(os.environ.get("VOICE_VAD_SILENCE_MS", "800"))
 
 
 async def _safe_send(ws: WebSocket, data: dict) -> bool:
@@ -75,11 +49,12 @@ async def transcribe_stream_endpoint(ws: WebSocket):
     """WebSocket handler for /ws/transcribe.
 
     Browser sends:
-      Binary frames: raw Float32 PCM @ 16kHz mono (0.5s chunks)
-      Text frame:    "stop"
+      Binary frames: PCM16 @ 24kHz mono (100ms chunks, 4800 bytes each)
+      Text frame:    {"type": "stop"} or "stop"
 
     Server sends back:
-      {"type": "transcript", "text": "..."}
+      {"type": "delta", "text": "...", "item_id": "..."}    — streaming partial
+      {"type": "transcript", "text": "...", "item_id": "..."} — completed turn
       {"type": "error", "message": "..."}
     """
     # Auth check (same pattern as /ws/status)
@@ -106,110 +81,166 @@ async def transcribe_stream_endpoint(ws: WebSocket):
         return
 
     await ws.accept()
-    logger.info("Transcribe stream client connected")
+    logger.info("Transcribe stream connected (model=%s, vad_silence=%dms)", TRANSCRIBE_MODEL, VAD_SILENCE_MS)
 
-    # Audio buffer — accumulates Float32 samples from the client
-    audio_buffer = np.array([], dtype=np.float32)
-    buffer_lock = asyncio.Lock()
-    stop_event = asyncio.Event()
-    chunks_received = 0
+    # Connect to OpenAI Realtime API
+    import websockets
 
-    async def transcribe_buffer():
-        """Periodically transcribe accumulated audio and send results."""
-        nonlocal audio_buffer, chunks_received
-        client = _get_whisper_client()
+    openai_ws = None
+    try:
+        openai_ws = await websockets.connect(
+            OPENAI_REALTIME_URL,
+            additional_headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "OpenAI-Beta": "realtime=v1",
+            },
+            max_size=None,
+            open_timeout=10,
+        )
+    except Exception as e:
+        logger.warning("Failed to connect to OpenAI Realtime API: %s", e)
+        await _safe_send(ws, {"type": "error", "message": f"Failed to connect to transcription service"})
+        await ws.close()
+        return
 
-        while not stop_event.is_set():
-            await asyncio.sleep(TRANSCRIBE_INTERVAL)
+    logger.info("Connected to OpenAI Realtime API")
 
-            async with buffer_lock:
-                if len(audio_buffer) < int(SAMPLE_RATE * MIN_AUDIO_DURATION):
-                    continue  # Not enough audio yet
-                # Take all accumulated audio and clear buffer
-                audio_chunk = audio_buffer.copy()
-                audio_buffer = np.array([], dtype=np.float32)
-
-            duration = len(audio_chunk) / SAMPLE_RATE
-            logger.info("Transcribing %.1fs audio (%d samples)", duration, len(audio_chunk))
-
-            try:
-                wav_bytes = _float32_to_wav_bytes(audio_chunk)
-                transcript = await client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=("audio.wav", wav_bytes),
-                )
-                text = transcript.text.strip()
-                if text:
-                    logger.info("Transcript: %r", text[:120])
-                    await _safe_send(ws, {"type": "transcript", "text": text})
-            except Exception:
-                logger.warning("Whisper API error", exc_info=True)
-
-    transcribe_task = asyncio.create_task(transcribe_buffer())
+    # Configure transcription session
+    session_config = {
+        "type": "transcription_session.update",
+        "session": {
+            "input_audio_format": "pcm16",
+            "input_audio_transcription": {
+                "model": TRANSCRIBE_MODEL,
+            },
+            "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": VAD_SILENCE_MS,
+            },
+        },
+    }
 
     try:
-        while True:
-            msg = await ws.receive()
+        await openai_ws.send(json.dumps(session_config))
+    except Exception as e:
+        logger.warning("Failed to configure session: %s", e)
+        await _safe_send(ws, {"type": "error", "message": "Failed to configure transcription session"})
+        await openai_ws.close()
+        await ws.close()
+        return
 
-            if msg.get("type") == "websocket.receive":
-                if "bytes" in msg and msg["bytes"]:
-                    # Binary frame — raw Float32 audio
-                    raw = msg["bytes"]
-                    samples = np.frombuffer(raw, dtype=np.float32)
-                    async with buffer_lock:
-                        audio_buffer = np.concatenate([audio_buffer, samples])
-                    chunks_received += 1
+    chunks_received = 0
+    turns_completed = 0
 
-                elif "text" in msg and msg["text"]:
-                    text = msg["text"]
-                    if text == "stop":
-                        logger.info("Stop received (%d chunks)", chunks_received)
-                        break
-                    # Try JSON for backward compat
-                    try:
-                        data = json.loads(text)
-                        if data.get("type") == "stop":
-                            logger.info("Stop received (%d chunks)", chunks_received)
-                            break
-                    except (json.JSONDecodeError, AttributeError):
-                        pass
-
-            elif msg.get("type") == "websocket.disconnect":
-                break
-
-    except WebSocketDisconnect:
-        logger.info("Transcribe stream client disconnected")
-    except Exception:
-        logger.warning("Transcribe stream error", exc_info=True)
-        await _safe_send(ws, {"type": "error", "message": "Transcription stream failed"})
-    finally:
-        stop_event.set()
-        transcribe_task.cancel()
+    async def browser_to_openai():
+        """Forward PCM16 audio from browser → OpenAI Realtime API."""
+        nonlocal chunks_received
         try:
-            await transcribe_task
-        except (asyncio.CancelledError, Exception):
-            pass
+            while True:
+                msg = await ws.receive()
 
-        # Final transcription of remaining audio
-        async with buffer_lock:
-            remaining = audio_buffer.copy()
-            audio_buffer = np.array([], dtype=np.float32)
+                if msg.get("type") == "websocket.receive":
+                    if "bytes" in msg and msg["bytes"]:
+                        # PCM16 binary from browser → base64 → OpenAI
+                        raw = msg["bytes"]
+                        audio_b64 = base64.b64encode(raw).decode("ascii")
+                        await openai_ws.send(json.dumps({
+                            "type": "input_audio_buffer.append",
+                            "audio": audio_b64,
+                        }))
+                        chunks_received += 1
 
-        if len(remaining) >= int(SAMPLE_RATE * MIN_AUDIO_DURATION):
+                    elif "text" in msg and msg["text"]:
+                        text = msg["text"]
+                        if text == "stop":
+                            break
+                        try:
+                            data = json.loads(text)
+                            if data.get("type") == "stop":
+                                break
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+
+                elif msg.get("type") == "websocket.disconnect":
+                    break
+
+        except WebSocketDisconnect:
+            logger.info("Browser disconnected")
+        except Exception:
+            logger.warning("browser_to_openai error", exc_info=True)
+
+    async def openai_to_browser():
+        """Forward transcription events from OpenAI → browser."""
+        nonlocal turns_completed
+        try:
+            async for message in openai_ws:
+                event = json.loads(message)
+                t = event.get("type", "")
+
+                if t == "conversation.item.input_audio_transcription.delta":
+                    delta = event.get("delta", "")
+                    if delta:
+                        await _safe_send(ws, {
+                            "type": "delta",
+                            "text": delta,
+                            "item_id": event.get("item_id", ""),
+                        })
+
+                elif t == "conversation.item.input_audio_transcription.completed":
+                    transcript = event.get("transcript", "").strip()
+                    if transcript:
+                        turns_completed += 1
+                        logger.info("Turn %d transcript: %r", turns_completed, transcript[:120])
+                        await _safe_send(ws, {
+                            "type": "transcript",
+                            "text": transcript,
+                            "item_id": event.get("item_id", ""),
+                        })
+
+                elif t == "conversation.item.input_audio_transcription.failed":
+                    err = event.get("error", {})
+                    logger.warning("Transcription failed: %s", err.get("message", "unknown"))
+
+                elif t == "input_audio_buffer.speech_started":
+                    await _safe_send(ws, {"type": "speech_started"})
+
+                elif t == "input_audio_buffer.speech_stopped":
+                    await _safe_send(ws, {"type": "speech_stopped"})
+
+                elif t == "error":
+                    err = event.get("error", {})
+                    err_msg = err.get("message", "Unknown transcription error")
+                    logger.warning("OpenAI Realtime error: %s (code=%s)", err_msg, err.get("code"))
+                    await _safe_send(ws, {"type": "error", "message": err_msg})
+
+                elif t in ("transcription_session.created", "transcription_session.updated"):
+                    logger.info("Session %s: %s", t.split(".")[-1], event.get("session", {}).get("id", "?"))
+
+        except Exception:
+            logger.warning("openai_to_browser error", exc_info=True)
+
+    try:
+        browser_task = asyncio.create_task(browser_to_openai())
+        openai_task = asyncio.create_task(openai_to_browser())
+
+        # Wait for either direction to finish (browser stop or OpenAI disconnect)
+        done, pending = await asyncio.wait(
+            [browser_task, openai_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
             try:
-                duration = len(remaining) / SAMPLE_RATE
-                logger.info("Final transcription: %.1fs audio", duration)
-                client = _get_whisper_client()
-                wav_bytes = _float32_to_wav_bytes(remaining)
-                transcript = await client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=("audio.wav", wav_bytes),
-                )
-                text = transcript.text.strip()
-                if text:
-                    logger.info("Final transcript: %r", text[:120])
-                    await _safe_send(ws, {"type": "transcript", "text": text})
-            except Exception:
-                logger.warning("Final transcription failed", exc_info=True)
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
-        logger.info("Transcribe stream session ended")
+    finally:
+        logger.info("Session ended: %d chunks received, %d turns transcribed", chunks_received, turns_completed)
+        try:
+            await openai_ws.close()
+        except Exception:
+            pass

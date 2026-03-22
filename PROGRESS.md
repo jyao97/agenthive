@@ -106,6 +106,12 @@
 - Lesson: Any `claude -p` subprocess started from within an agent's tmux session inherits `AHIVE_AGENT_ID`, which makes its SessionStart hook look like a session rotation for the parent agent. Always strip `AHIVE_AGENT_ID` from env when spawning `claude -p` subprocesses.
 
 
+### 2026-03-22 | Task: Smooth keyboard open/close transition | Status: success
+- What: Text input bar transition was not smooth when keyboard appeared/disappeared. Previous 3 attempts tried CSS transitions, JS spring animations, scroll pinning — all still laggy.
+- Root cause: `setVvHeight()` React state updates on every `visualViewport.resize` event triggered full component re-renders, adding 1-2 frame lag (~16-33ms). For keyboard close, resize events were ignored and replaced by a synthetic spring animation that didn't match iOS native timing.
+- Resolution: Direct DOM manipulation for both open and close. (1) OPEN: `el.style.height = h` directly on resize events, no React state during animation. React state (`kbOpen` boolean) only toggles at boundaries. (2) CLOSE: follow `visualViewport.resize` events (iOS fires them at ~60fps during dismiss) for native-matched animation. Spring animation kept as 80ms fallback. Container JSX has no `style` prop — React can't overwrite direct DOM during animation.
+- Lesson: React state + re-render is too slow for tracking native animations at 60fps. Direct DOM manipulation on `visualViewport.resize` events eliminates the React render lag. Key insight: React state should only capture *boundaries* (opened/closed), not *continuous values* during animation. For dismiss, iOS Safari DOES fire resize events during keyboard close — following them gives perfect native sync without needing to reverse-engineer the spring curve.
+
 ### 2026-03-22 | Task: Fix keyboard layout bug — input bar flush with keyboard | Status: success
 - What: Input bar had a ~34px gap above the keyboard on iOS. Multiple approaches tried: (1) `paddingBottom: kbOffset` — gap from background strip, (2) `bottom: kbOffset` — gap from `window.innerHeight` vs `100vh` discrepancy, (3) `position: fixed; top: kbTop; transform: translateY(-100%)` — still gap from safe-area-inset-bottom persisting (WebKit bug #217754).
 - Resolution: Container resize approach (proven by Element/Hydrogen, ios-chat PWA): when keyboard is open, shrink the chat container to `kbTop = vv.offsetTop + vv.height` pixels. Flex layout reflows naturally — messages area shrinks, input bar at `absolute bottom-0` sits flush with keyboard. No position:fixed, no transform, no window.innerHeight dependency. Remove safe-area-pb-tight when keyboard is open. useLayoutEffect for flicker-free scroll-to-bottom. overflow-anchor for scroll stability.
@@ -148,3 +154,10 @@
 
 ## 2026-03-22 — Task edit draft persistence (crash recovery)
 1. Three task editing components (TaskExpandedContent, TaskDetailPage, FloatingTaskCard) used plain `useState` for edit fields — all content lost on crash/navigation. Fix: swapped to existing `useDraft` hook (localStorage-backed) with task-id-scoped keys (`draft:task-edit:{id}:title`, etc.). Drafts auto-save on every keystroke, cleared on successful save/dispatch/delete/cancel. TaskDetailPage auto-enters edit mode on mount if drafts exist (crash recovery). Straightforward — the `useDraft` hook was already proven stable in NewTaskPage and AgentChatPage.
+
+## 2026-03-22 — Voice input: migrate to OpenAI Realtime API for low-latency streaming
+1. Old system: WhisperLive-style buffer + batch Whisper API (voice_stream.py). Server accumulated Float32@16kHz audio, transcribed every 2s via `whisper-1` batch endpoint. Latency: 2.5–5.5s.
+2. New system: OpenAI Realtime API proxy (transcription mode). Server proxies PCM16@24kHz audio to `wss://api.openai.com/v1/realtime?intent=transcription`. Server-side VAD detects speech boundaries. Streaming delta events provide ~232ms latency.
+3. Changes: pcm-processor.js (24kHz PCM16 output, 100ms chunks), voice_stream.py (Realtime API WebSocket proxy), useVoiceRecorder.js (delta event handling + streamingText state).
+4. Model: `gpt-4o-mini-transcribe` — cheaper than batch whisper-1 ($0.003/min vs $0.006/min) AND faster.
+5. Lesson: The old approach borrowed WhisperLive's architecture but replaced the fast part (local faster-whisper model, ~100ms inference) with the slow part (batch API HTTP round-trip, 500ms-2s). The Realtime API was purpose-built for this use case. Key gotcha: `transcription_session.update` vs `session.update` event name — API is in flux, may need fallback.
