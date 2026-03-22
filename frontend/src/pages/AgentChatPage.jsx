@@ -1551,7 +1551,7 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, kbOffset = 0 }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, kbTop = null }) {
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
@@ -1817,8 +1817,8 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOffset > 0 ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
-      style={kbOffset > 0 ? { bottom: `${kbOffset}px` } : undefined}
+      className={`left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbTop != null ? "fixed" : "absolute bottom-0 pb-2 safe-area-pb-tight"}`}
+      style={kbTop != null ? { top: `${kbTop}px`, transform: "translateY(-100%)" } : undefined}
     >
       <div
         className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
@@ -2445,25 +2445,31 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [id]);
 
 
-  // Track keyboard height via visualViewport so both input bar and messages
-  // area can adapt.  Poll while focused to catch keyboard layout switches
-  // (Chinese ↔ English) that don't fire resize events.
-  const [kbOffset, setKbOffset] = useState(0);
+  // Track keyboard position via visualViewport.  kbTop = the exact pixel
+  // position of the keyboard's top edge (null when keyboard is closed).
+  // Derived directly from vv.offsetTop + vv.height — does NOT depend on
+  // window.innerHeight, which can differ from CSS 100vh on iOS Safari.
+  // Poll while focused to catch keyboard layout switches (Chinese ↔ English).
+  const [kbTop, setKbTop] = useState(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     let pollId = null;
     let stopTimer = null;
     const update = () => {
-      const off = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-      setKbOffset((prev) => (off === prev ? prev : off));
+      const gap = Math.round(window.innerHeight - vv.height - vv.offsetTop);
+      if (gap > 50) {
+        // Keyboard is open — record exact visual viewport bottom
+        setKbTop(Math.round(vv.offsetTop + vv.height));
+      } else {
+        setKbTop(null);
+      }
     };
     const startPoll = () => {
       if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
       if (!pollId) pollId = setInterval(update, 100);
     };
     const stopPoll = () => {
-      // Delay stop — keyboard switch may briefly lose focus
       if (stopTimer) clearTimeout(stopTimer);
       stopTimer = setTimeout(() => {
         if (pollId) { clearInterval(pollId); pollId = null; }
@@ -2483,6 +2489,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (stopTimer) clearTimeout(stopTimer);
     };
   }, []);
+  // Approximate kbOffset for messages area padding (doesn't need to be pixel-perfect)
+  const kbOffset = kbTop != null ? Math.max(0, Math.round(window.innerHeight - kbTop)) : 0;
 
   // Auto-scroll to bottom on new messages or streaming content
   const scrollContainerRef = useRef(null);
@@ -3444,7 +3452,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         escapeDisabled={isStopped || isError}
         escapeUrgent={isExecuting || hasPendingInteractive}
         escapeAvailable={hasTmuxPane}
-        kbOffset={kbOffset}
+        kbTop={kbTop}
       />
 
       {/* Stop confirmation modal */}
