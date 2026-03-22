@@ -161,3 +161,14 @@
 3. Changes: pcm-processor.js (24kHz PCM16 output, 100ms chunks), voice_stream.py (Realtime API WebSocket proxy), useVoiceRecorder.js (delta event handling + streamingText state).
 4. Model: `gpt-4o-mini-transcribe` — cheaper than batch whisper-1 ($0.003/min vs $0.006/min) AND faster.
 5. Lesson: The old approach borrowed WhisperLive's architecture but replaced the fast part (local faster-whisper model, ~100ms inference) with the slow part (batch API HTTP round-trip, 500ms-2s). The Realtime API was purpose-built for this use case. Key gotcha: `transcription_session.update` vs `session.update` event name — API is in flux, may need fallback.
+
+### 2026-03-22 | Task: Retry summary stuck at "Generating..." | Status: success
+- What: Added manual regenerate-summary button + fixed silent thread crash in `_generate_retry_summary_background`
+- Root cause: The background thread had no top-level try/except — unhandled exceptions killed the daemon thread silently, leaving `agent_summary = ":::generating:::"` forever. Also `_fallback_retry_summary` swallowed exceptions with no logging.
+- Fix: (1) Wrapped entire function in try/except with fallback, (2) added logging to fallback, (3) added `POST /api/v2/tasks/{task_id}/regenerate-summary` endpoint, (4) added Retry button in InboxCard UI.
+- Lesson: Background daemon threads MUST have a top-level try/except — Python silently drops unhandled exceptions in threads. Every except clause must log.
+
+### 2026-03-22 | Task: Backup feature: import, manual trigger, config UI | Status: success
+- What: Enhanced backup system with manual trigger, import/export (zip), restore, per-backup delete, and runtime-configurable schedule.
+- Changes: backup.py (runtime config, list/delete/restore/import/export), main.py (7 new endpoints), MonitorPage (redesigned backup section with settings panel, backup list, per-item actions), config.py (default 24h/30 max).
+- Lesson: Straightforward — no issues. Used asyncio.Event to wake the backup loop on config change. sqlite3.backup() works in both directions for restore.
