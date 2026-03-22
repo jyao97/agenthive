@@ -2447,27 +2447,35 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // Track keyboard position via visualViewport.  kbTop = the container height
   // to use when keyboard is open (null when keyboard is closed).
   //
-  // Key insight: vv.height may NOT include the status bar safe area on iOS,
-  // but CSS 100vh (h-screen) DOES include it with viewport-fit=cover.
-  // So we compute kbHeight = baseHeight - vv.height (cancels out safe area),
-  // then kbTop = layoutHeight - kbHeight (uses CSS layout as ground truth).
+  // iOS Safari quirk: document.documentElement.clientHeight CHANGES when
+  // the keyboard opens (becomes == vv.height), so we can't use it.
+  // Instead, measure the stable layout viewport height using a position:fixed
+  // element (fixed positioning always uses the layout viewport, which doesn't
+  // resize with the keyboard). Then kbTop = layoutHeight - kbHeight.
   //
   // Poll while focused to catch keyboard layout switches (Chinese ↔ English).
   const [kbTop, setKbTop] = useState(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
+    // Measure stable layout height via a fixed-position element.
+    // On iOS Safari, position:fixed uses the layout viewport which does NOT
+    // resize when the keyboard opens — unlike clientHeight/innerHeight.
+    const ruler = document.createElement("div");
+    ruler.style.cssText = "position:fixed;top:0;bottom:0;left:0;width:0;visibility:hidden;pointer-events:none;z-index:-9999;";
+    document.body.appendChild(ruler);
+    let layoutHeight = ruler.offsetHeight;
     let baseHeight = vv.height;
     let pollId = null;
     let stopTimer = null;
     const update = () => {
-      // Update base when height increases (keyboard closed, orientation change)
-      if (vv.height > baseHeight) baseHeight = vv.height;
+      if (vv.height > baseHeight) {
+        baseHeight = vv.height;
+        // Re-measure on orientation change
+        layoutHeight = ruler.offsetHeight;
+      }
       const kbH = baseHeight - vv.height;
       if (kbH > 100) {
-        // layoutHeight = CSS 100vh (includes safe areas with viewport-fit=cover)
-        // This is the container's actual pixel height — stable, not affected by keyboard
-        const layoutHeight = document.documentElement.clientHeight;
         setKbTop(Math.round(layoutHeight - kbH));
       } else {
         setKbTop(null);
@@ -2495,6 +2503,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       document.removeEventListener("focusout", stopPoll);
       if (pollId) clearInterval(pollId);
       if (stopTimer) clearTimeout(stopTimer);
+      ruler.remove();
     };
   }, []);
 
