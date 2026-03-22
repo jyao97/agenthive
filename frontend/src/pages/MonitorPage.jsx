@@ -547,20 +547,20 @@ export default function MonitorPage({ theme, onToggleTheme }) {
               )}
 
               {/* Action buttons row */}
-              <div className="flex items-center gap-2 pt-2 border-t border-divider flex-wrap">
+              <div className="flex items-center gap-1.5 pt-2 border-t border-divider">
                 <button
                   type="button"
                   disabled={backupBusy}
                   onClick={handleManualBackup}
-                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-600/20 text-cyan-400 hover:bg-cyan-600/30 transition-colors disabled:opacity-50"
+                  className="px-2 py-0.5 rounded text-[11px] font-medium bg-cyan-600/20 text-cyan-400 hover:bg-cyan-600/30 transition-colors disabled:opacity-50"
                 >
-                  {backupBusy ? "..." : "Backup now"}
+                  {backupBusy ? "..." : "Backup"}
                 </button>
                 <button
                   type="button"
                   disabled={backupBusy}
                   onClick={handleImportBackup}
-                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-violet-600/20 text-violet-400 hover:bg-violet-600/30 transition-colors disabled:opacity-50"
+                  className="px-2 py-0.5 rounded text-[11px] font-medium bg-violet-600/20 text-violet-400 hover:bg-violet-600/30 transition-colors disabled:opacity-50"
                 >
                   Import
                 </button>
@@ -568,27 +568,27 @@ export default function MonitorPage({ theme, onToggleTheme }) {
                   <button
                     type="button"
                     onClick={() => setBackupListOpen(!backupListOpen)}
-                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 transition-colors"
+                    className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 transition-colors"
                   >
-                    {backupListOpen ? "Hide list" : "Show list"}
+                    {backupListOpen ? "Hide" : "List"}
                   </button>
                 )}
                 <button
                   type="button"
                   disabled={orphanBusy}
                   onClick={handleOrphanClean}
-                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-orange-600/20 text-orange-400 hover:bg-orange-600/30 transition-colors disabled:opacity-50"
+                  className="px-2 py-0.5 rounded text-[11px] font-medium bg-orange-600/20 text-orange-400 hover:bg-orange-600/30 transition-colors disabled:opacity-50"
                 >
-                  {orphanBusy ? "Scanning..." : "Clean orphans"}
+                  {orphanBusy ? "..." : "Orphans"}
                 </button>
                 {backupInfo.backup_count > 0 && (
                   <button
                     type="button"
                     disabled={backupBusy}
                     onClick={handlePurgeBackups}
-                    className="ml-auto px-2.5 py-1 rounded-lg text-xs font-medium bg-red-600/20 text-red-400 hover:bg-red-600/30 transition-colors disabled:opacity-50"
+                    className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium bg-red-600/20 text-red-400 hover:bg-red-600/30 transition-colors disabled:opacity-50"
                   >
-                    Purge all
+                    Purge
                   </button>
                 )}
               </div>
