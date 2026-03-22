@@ -476,8 +476,8 @@ def repair_session_jsonl(session_id: str, project_path: str) -> bool:
         logger.warning("Failed to write repaired JSONL: %s", e)
         try:
             os.unlink(tmp_path)
-        except OSError:
-            pass
+        except OSError as _cleanup_err:
+            logger.debug("Cleanup of %s failed: %s", tmp_path, _cleanup_err)
         return False
 
     return True
@@ -504,7 +504,7 @@ async def run_session_cache_loop(
                 try:
                     if cache_session(session_id, project_path):
                         cached += 1
-                except Exception:
+                except OSError:
                     logger.exception(
                         "Failed to cache session %s", session_id
                     )

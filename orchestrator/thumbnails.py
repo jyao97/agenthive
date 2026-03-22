@@ -36,19 +36,18 @@ def generate_thumbnail(video_path: str) -> bool:
     """Generate a thumbnail for a video file using ffmpeg.
 
     Idempotent: skips if thumb exists and is newer than the video.
-    Never raises — logs errors and returns False on failure.
     """
+    if not os.path.isfile(video_path):
+        return False
+
+    output = thumb_path_for(video_path)
+
+    # Skip if thumb exists and is newer than video
+    if os.path.isfile(output):
+        if os.path.getmtime(output) >= os.path.getmtime(video_path):
+            return True
+
     try:
-        if not os.path.isfile(video_path):
-            return False
-
-        output = thumb_path_for(video_path)
-
-        # Skip if thumb exists and is newer than video
-        if os.path.isfile(output):
-            if os.path.getmtime(output) >= os.path.getmtime(video_path):
-                return True
-
         subprocess.run(
             [
                 "ffmpeg", "-y",
@@ -62,22 +61,18 @@ def generate_thumbnail(video_path: str) -> bool:
             timeout=30,
             capture_output=True,
         )
-
-        if os.path.isfile(output) and os.path.getsize(output) > 0:
-            logger.debug("Generated thumbnail: %s", output)
-            return True
-        else:
-            logger.warning("ffmpeg produced no output for %s", video_path)
-            return False
-
     except subprocess.TimeoutExpired:
         logger.warning("ffmpeg timed out for %s", video_path)
         return False
     except FileNotFoundError:
         logger.warning("ffmpeg not found — cannot generate video thumbnails")
         return False
-    except Exception:
-        logger.warning("Thumbnail generation failed for %s", video_path, exc_info=True)
+
+    if os.path.isfile(output) and os.path.getsize(output) > 0:
+        logger.debug("Generated thumbnail: %s", output)
+        return True
+    else:
+        logger.warning("ffmpeg produced no output for %s", video_path)
         return False
 
 
@@ -90,30 +85,24 @@ def generate_thumbnails_for_message(content: str, project_path: str) -> None:
     if not content or not project_path:
         return
 
-    try:
-        paths: set[str] = set()
+    paths: set[str] = set()
 
-        for m in _RE_BARE_PATH.finditer(content):
-            paths.add(m.group(1))
-        for m in _RE_BACKTICK.finditer(content):
-            paths.add(m.group(1))
+    for m in _RE_BARE_PATH.finditer(content):
+        paths.add(m.group(1))
+    for m in _RE_BACKTICK.finditer(content):
+        paths.add(m.group(1))
 
-        for raw_path in paths:
-            # Resolve relative to project_path
-            if os.path.isabs(raw_path):
-                full_path = raw_path
-            else:
-                full_path = os.path.join(project_path, raw_path)
+    for raw_path in paths:
+        # Resolve relative to project_path
+        if os.path.isabs(raw_path):
+            full_path = raw_path
+        else:
+            full_path = os.path.join(project_path, raw_path)
 
-            full_path = os.path.normpath(full_path)
+        full_path = os.path.normpath(full_path)
 
-            if os.path.isfile(full_path):
-                generate_thumbnail(full_path)
-
-    except Exception:
-        logger.warning(
-            "generate_thumbnails_for_message failed", exc_info=True,
-        )
+        if os.path.isfile(full_path):
+            generate_thumbnail(full_path)
 
 
 def backfill_thumbnails() -> None:
@@ -121,49 +110,45 @@ def backfill_thumbnails() -> None:
 
     Intended to run once at startup in a background thread.
     """
+    from database import SessionLocal
+    from models import Message, MessageRole, Project
+
+    db = SessionLocal()
     try:
-        from database import SessionLocal
-        from models import Message, MessageRole, Project
+        # Build project path lookup
+        projects = {p.name: p.path for p in db.query(Project).all()}
 
-        db = SessionLocal()
-        try:
-            # Build project path lookup
-            projects = {p.name: p.path for p in db.query(Project).all()}
+        messages = db.query(Message).filter(
+            Message.role == MessageRole.AGENT,
+            Message.content.isnot(None),
+        ).all()
 
-            messages = db.query(Message).filter(
-                Message.role == MessageRole.AGENT,
-                Message.content.isnot(None),
-            ).all()
+        count = 0
+        for msg in messages:
+            # Get project path from agent
+            from models import Agent
+            agent = db.get(Agent, msg.agent_id)
+            if not agent or agent.project not in projects:
+                continue
+            project_path = projects[agent.project]
 
-            count = 0
-            for msg in messages:
-                # Get project path from agent
-                from models import Agent
-                agent = db.get(Agent, msg.agent_id)
-                if not agent or agent.project not in projects:
-                    continue
-                project_path = projects[agent.project]
+            paths: set[str] = set()
+            for m in _RE_BARE_PATH.finditer(msg.content):
+                paths.add(m.group(1))
+            for m in _RE_BACKTICK.finditer(msg.content):
+                paths.add(m.group(1))
 
-                paths: set[str] = set()
-                for m in _RE_BARE_PATH.finditer(msg.content):
-                    paths.add(m.group(1))
-                for m in _RE_BACKTICK.finditer(msg.content):
-                    paths.add(m.group(1))
+            for raw_path in paths:
+                if os.path.isabs(raw_path):
+                    full_path = raw_path
+                else:
+                    full_path = os.path.join(project_path, raw_path)
+                full_path = os.path.normpath(full_path)
+                if os.path.isfile(full_path) and not os.path.isfile(thumb_path_for(full_path)):
+                    if generate_thumbnail(full_path):
+                        count += 1
+    finally:
+        db.close()
 
-                for raw_path in paths:
-                    if os.path.isabs(raw_path):
-                        full_path = raw_path
-                    else:
-                        full_path = os.path.join(project_path, raw_path)
-                    full_path = os.path.normpath(full_path)
-                    if os.path.isfile(full_path) and not os.path.isfile(thumb_path_for(full_path)):
-                        if generate_thumbnail(full_path):
-                            count += 1
-        finally:
-            db.close()
-
-        if count:
-            logger.info("Backfilled %d video thumbnails", count)
-
-    except Exception:
-        logger.warning("backfill_thumbnails failed", exc_info=True)
+    if count:
+        logger.info("Backfilled %d video thumbnails", count)

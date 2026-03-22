@@ -174,8 +174,8 @@ def _active_tmux_sessions() -> set[str]:
         )
         if result.returncode == 0:
             return {s.strip() for s in result.stdout.splitlines() if s.strip().startswith("ah-")}
-    except Exception:
-        pass
+    except (FileNotFoundError, subprocess.SubprocessError, OSError) as e:
+        logger.debug("Failed to list tmux sessions: %s", e)
     return set()
 
 
@@ -333,11 +333,8 @@ def delete_stale_agents(db: SASession, scan_result: dict) -> dict:
             from models import Project
             project = db.query(Project).filter(Project.name == proj_name).first()
             if project:
-                try:
-                    if cleanup_source_session(sid, project.path, worktree):
-                        cleaned_files += 1
-                except Exception:
-                    pass
+                if cleanup_source_session(sid, project.path, worktree):
+                    cleaned_files += 1
 
     # Clean up orphan subagents
     orphan_ids = scan_result.get("orphan_subagent_ids", [])

@@ -25,9 +25,6 @@ def is_notification_enabled(category: str) -> bool:
     try:
         row = db.get(SystemConfig, f"notifications_{category}_enabled")
         return row.value != "0" if row else True
-    except Exception:
-        logger.warning("Failed to check notification setting for %s", category, exc_info=True)
-        return True  # default to enabled on error
     finally:
         db.close()
 
