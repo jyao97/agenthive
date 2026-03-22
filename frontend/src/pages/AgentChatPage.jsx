@@ -2452,7 +2452,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // with page). So we resize the container to vvHeight and use absolute bottom-0.
   const [kbHeight, setKbHeight] = useState(0);
   const [vvHeight, setVvHeight] = useState(0);
-  const [kbDebug, setKbDebug] = useState({});
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -2465,15 +2464,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const open = kbH > 100;
       setKbHeight(open ? kbH : 0);
       setVvHeight(open ? Math.round(vv.height) : 0);
-      setKbDebug({
-        vvH: Math.round(vv.height),
-        vvOT: Math.round(vv.offsetTop),
-        base: Math.round(baseHeight),
-        innerH: window.innerHeight,
-        clientH: document.documentElement.clientHeight,
-        kbH: open ? kbH : 0,
-        scrollY: Math.round(window.scrollY),
-      });
       // iOS Safari scrolls the body when the keyboard opens to keep the
       // focused input visible.  After we resize the container to vvHeight,
       // this scroll offset creates a gap between the input bar and the
@@ -3040,12 +3030,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   return (
     <div className={`flex flex-col relative ${vvHeight > 0 ? "" : "h-full"}`} style={vvHeight > 0 ? { height: `${vvHeight}px` } : undefined}>
 
-      {/* TODO: remove debug overlay after keyboard fix */}
-      {Object.keys(kbDebug).length > 0 && (
-        <div style={{ position: "fixed", top: 50, right: 4, zIndex: 9999, background: "rgba(0,0,0,0.85)", color: "#0ff", fontSize: 10, fontFamily: "monospace", padding: "4px 6px", borderRadius: 6, pointerEvents: "none", lineHeight: 1.5 }}>
-          {Object.entries(kbDebug).map(([k, v]) => <div key={k}>{k}: {v}</div>)}
-        </div>
-      )}
 
       {/* Header */}
       <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10`}>
@@ -3088,8 +3072,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                 className="text-sm font-semibold text-heading truncate min-w-0 flex-1 select-none"
               >
                 {agent.name}
-                {/* TODO: remove debug marker after keyboard fix is verified */}
-                {kbHeight > 0 && <span className="ml-1 text-[9px] text-cyan-500 font-mono">KB:{kbHeight}</span>}
               </h1>
             )}
 
