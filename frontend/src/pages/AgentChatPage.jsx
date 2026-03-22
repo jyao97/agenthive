@@ -2482,7 +2482,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         closing = false;
         const el = kbContainerRef.current;
         if (el) {
-          el.style.transition = '';
           el.style.willChange = '';
         }
         if (scrollRafId) { cancelAnimationFrame(scrollRafId); scrollRafId = null; }
@@ -2494,69 +2493,65 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (stopTimer) clearTimeout(stopTimer);
       closing = true;
       if (pollId) { clearInterval(pollId); pollId = null; }
-      // Animate container from vvHeight → full height.
-      // CSS ease (0.25, 0.1, 0.25, 1.0) at 250ms — matches real iOS
-      // keyboard dismiss duration. The overdamped iOS spring does NOT
-      // overshoot; CSS ease approximates this well.
+      // Animate container from vvHeight → full height using JS spring
+      // physics (iOS CASpringAnimation: damping:500, stiffness:1000, mass:3).
+      // Both height interpolation AND scroll pinning run in the same rAF
+      // callback — no desync between CSS transition and JS scroll fixes.
       const el = kbContainerRef.current;
       const wasOpen = el?.style.height;
       if (wasOpen) {
-        const fullH = el.parentElement?.clientHeight || window.innerHeight;
+        const startH = parseFloat(el.style.height);
+        const endH = el.parentElement?.clientHeight || window.innerHeight;
+        const delta = endH - startH;
+
         const sc = scrollContainerRef.current;
-        // Capture whether user is near bottom before animation starts
+        // Capture scroll anchor before animation starts
         const wasNearBottom = sc
           ? (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < 100
-          : false;
+          : true;
         const distFromBottom = sc
           ? sc.scrollHeight - sc.scrollTop - sc.clientHeight
           : 0;
 
-        // Hint compositor to prepare for height animation
+        el.style.transition = 'none';
         el.style.willChange = 'height';
+        const t0 = performance.now();
 
-        // Clean up after animation (shared by transitionend + fallback).
-        // Guard against double-invocation (both could fire in a race).
-        let finished = false;
-        const finish = () => {
-          if (finished) return;
-          finished = true;
-          if (scrollRafId) { cancelAnimationFrame(scrollRafId); scrollRafId = null; }
-          el.removeEventListener('transitionend', onEnd);
-          if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
-          closing = false;
-          el.style.transition = '';
-          el.style.willChange = '';
-          // Let React take over: setVvHeight(0) removes inline style
-          // and adds h-full class in a single commit — no flash.
-          setKbHeight(0);
-          setVvHeight(0);
+        // Overdamped spring compressed 6x: progress ≈ 1 - 1.0125 * e^(-12.148t)
+        // 99% settled at ~350ms. Fast initial motion, smooth deceleration.
+        const DURATION = 350;
+        const spring = (tSec) => {
+          const p = 1 - 1.012450 * Math.exp(-12.148 * tSec);
+          return Math.max(0, Math.min(1, p));
         };
-        const onEnd = (e) => { if (e.propertyName === 'height') finish(); };
-        el.addEventListener('transitionend', onEnd);
-        // Fallback timeout in case transitionend doesn't fire
-        stopTimer = setTimeout(finish, 350);
 
-        // Continuously pin scroll position during height animation.
-        // Without this, each frame of height growth shifts scroll,
-        // making messages appear to jump.
-        const pinScroll = () => {
-          if (!closing || !sc) return;
-          if (wasNearBottom) {
-            sc.scrollTop = sc.scrollHeight - sc.clientHeight;
-          } else {
-            sc.scrollTop = sc.scrollHeight - sc.clientHeight - distFromBottom;
+        const tick = (now) => {
+          if (!closing) { el.style.willChange = ''; return; }
+          const elapsed = (now - t0) / 1000;
+          const progress = elapsed * 1000 >= DURATION ? 1 : spring(elapsed);
+
+          // Set height and pin scroll in same frame — no desync
+          el.style.height = `${startH + delta * progress}px`;
+          if (sc) {
+            if (wasNearBottom) {
+              sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+            } else {
+              sc.scrollTop = sc.scrollHeight - sc.clientHeight - distFromBottom;
+            }
           }
-          scrollRafId = requestAnimationFrame(pinScroll);
+
+          if (progress < 1) {
+            scrollRafId = requestAnimationFrame(tick);
+          } else {
+            // Animation complete — hand back to React
+            el.style.willChange = '';
+            closing = false;
+            setKbHeight(0);
+            setVvHeight(0);
+          }
         };
 
-        // Kick off: set transition, then change height in next frame
-        el.style.transition = 'height 0.25s cubic-bezier(0.25, 0.1, 0.25, 1.0)';
-        requestAnimationFrame(() => {
-          if (!closing) return;
-          el.style.height = `${fullH}px`;
-          // Start scroll pinning loop
-          scrollRafId = requestAnimationFrame(pinScroll);
-        });
+        scrollRafId = requestAnimationFrame(tick);
       } else {
         // Keyboard wasn't visually open — just reset state
         stopTimer = setTimeout(() => {
