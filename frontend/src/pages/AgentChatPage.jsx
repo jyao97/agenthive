@@ -2514,15 +2514,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
       stopTimer = setTimeout(() => {
         closing = false;
-        if (el) { el.style.transition = ''; el.style.height = ''; }
+        // Only clear transition — do NOT clear el.style.height manually.
+        // React's stale vDOM still has height:543px; clearing our imperative
+        // override would expose that stale value for one frame before React
+        // re-renders, causing a visible snap-back (overshoot).
+        // setVvHeight(0) triggers React to set className=h-full and remove
+        // the inline style atomically in one commit — no flash.
+        if (el) el.style.transition = '';
         setKbHeight(0);
         setVvHeight(0);
-        // Final scroll anchor after React re-render removes inline style
-        const sc = scrollContainerRef.current;
-        if (sc) {
-          const d = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
-          if (d < 100) sc.scrollTop = sc.scrollHeight - sc.clientHeight;
-        }
       }, wasOpen ? 300 : 400);
     };
     vv.addEventListener("resize", update);
