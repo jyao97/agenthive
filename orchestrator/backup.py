@@ -150,8 +150,8 @@ def list_backups():
     result = []
     for d in sorted(glob.glob(os.path.join(BACKUP_DIR, "backup_*")), reverse=True):
         name = os.path.basename(d)
-        # Parse timestamp from name: backup_YYYYMMDD_HHMMSS
-        m = re.match(r"backup_(\d{8})_(\d{6})$", name)
+        # Parse timestamp from name: backup_YYYYMMDD_HHMMSS or backup_YYYYMMDD_HHMMSS_imported
+        m = re.match(r"backup_(\d{8})_(\d{6})(_imported)?$", name)
         if not m:
             continue
         ts_str = f"{m.group(1)}_{m.group(2)}"
