@@ -358,21 +358,28 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
             {isExpanded ? (
               <div className="shrink-0 mt-1.5 space-y-3">
                 {/* Agent summary from previous attempt */}
-                {task.attempt_number > 1 && task.agent_summary && (
+                {task.attempt_number > 1 && (
                   <div className="rounded-lg bg-surface border border-edge/30 px-3 py-2">
-                    <p className="text-[10px] font-semibold text-dim mb-0.5">
-                      Previous agent summary
-                    </p>
-                    {task.agent_summary === ":::generating:::" ? (
-                      <div className="flex items-center gap-2">
-                        <p className="text-xs text-dim/50 italic">Generating summary...</p>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <p className="text-[10px] font-semibold text-dim">
+                        Previous agent summary
+                      </p>
+                      {task.agent_summary && task.agent_summary !== ":::generating:::" && (
                         <button
-                          className="text-[10px] text-accent px-1.5 py-0.5 rounded border border-accent/30 hover:bg-accent/10 active:bg-accent/20"
+                          className="text-[10px] text-dim/40 px-1 hover:text-accent"
                           onClick={(e) => { e.stopPropagation(); regenerateTaskSummary(task.id); }}
-                        >Retry</button>
-                      </div>
-                    ) : (
+                        >refresh</button>
+                      )}
+                    </div>
+                    {task.agent_summary === ":::generating:::" ? (
+                      <p className="text-xs text-dim/50 italic">Generating summary...</p>
+                    ) : task.agent_summary ? (
                       <p className="text-xs text-dim/80 whitespace-pre-wrap">{task.agent_summary}</p>
+                    ) : (
+                      <button
+                        className="text-xs text-accent/70 hover:text-accent"
+                        onClick={(e) => { e.stopPropagation(); regenerateTaskSummary(task.id); }}
+                      >Generate summary</button>
                     )}
                   </div>
                 )}
