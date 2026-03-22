@@ -2458,7 +2458,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     let baseHeight = vv.height;
     let pollId = null;
     let stopTimer = null;
+    let closing = false;
     const update = () => {
+      if (closing) return; // skip resize events during close animation
       if (vv.height > baseHeight) baseHeight = vv.height;
       const kbH = Math.round(baseHeight - vv.height);
       const open = kbH > 100;
@@ -2473,12 +2475,18 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
     };
     const startPoll = () => {
+      closing = false;
       if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
       if (!pollId) pollId = setInterval(update, 100);
     };
     const stopPoll = () => {
       if (stopTimer) clearTimeout(stopTimer);
+      // Snap to full height immediately — don't follow keyboard close animation
+      closing = true;
+      setKbHeight(0);
+      setVvHeight(0);
       stopTimer = setTimeout(() => {
+        closing = false;
         if (pollId) { clearInterval(pollId); pollId = null; }
         update();
       }, 400);
