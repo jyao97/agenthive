@@ -4455,10 +4455,13 @@ Here are the day's conversations (with timestamps):
         # 4. Build prompt (optionally wrapped with project context)
         prompt = content
         if wrap_prompt:
-            if task:
-                # Task agents: build task body, then wrap with project context.
-                # insights_list=[] for _build_agent_prompt since
-                # _build_task_prompt already includes them inline.
+            is_first = self._is_first_user_message(db, agent.id)
+            if task and is_first:
+                # Initial task dispatch: build full task body with
+                # title/description/retry context, then wrap with
+                # project context.  insights_list=[] for
+                # _build_agent_prompt since _build_task_prompt already
+                # includes them inline.
                 task_body, _ = self._build_task_prompt(
                     task, db=None, insights_list=insights_list,
                 )
@@ -4468,6 +4471,10 @@ Here are the day's conversations (with timestamps):
                     insights_list=[],
                 )
             else:
+                # Follow-up message OR non-task agent: use the actual
+                # user content.  The agent already has full task context
+                # from the resumed session — resending the original task
+                # prompt would cause it to ignore the new instruction.
                 prompt = self._build_agent_prompt(
                     agent, project, content,
                     include_history=include_history, db=db,
