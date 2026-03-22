@@ -2312,6 +2312,20 @@ Here is recent agent activity in this project (last 50 messages):
 {build_section}"""
 
     from config import CLAUDE_BIN
+    from session_cache import session_source_dir as _ssd
+    from agent_dispatcher import _write_session_owner
+
+    _session_dir = _ssd(project_path)
+    _pre_sessions: set[str] = set()
+    try:
+        _pre_sessions = {
+            f.replace(".jsonl", "")
+            for f in os.listdir(_session_dir)
+            if f.endswith(".jsonl")
+        }
+    except OSError:
+        pass
+
     try:
         result = subprocess.run(
             [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
@@ -2319,6 +2333,19 @@ Here is recent agent activity in this project (last 50 messages):
             cwd=project_path,
             env=_subprocess_clean_env(),
         )
+
+        # Mark any new sessions as system-owned
+        try:
+            for f in os.listdir(_session_dir):
+                if not f.endswith(".jsonl"):
+                    continue
+                sid = f.replace(".jsonl", "")
+                if sid not in _pre_sessions:
+                    _write_session_owner(_session_dir, sid, "system")
+                    logger.info("Marked claudemd-refresh session %s as system-owned", sid[:12])
+        except OSError:
+            pass
+
         if result.returncode != 0:
             logger.warning("claude -p failed for %s: %s", project_name, result.stderr[:500])
             _claudemd_job_set(project_name, status="error", error="Claude agent failed — try again")
@@ -2882,6 +2909,8 @@ def _generate_retry_summary_background(agent_id: str, task_id: str,
     """Generate a concise retry summary via claude -p: what the agent tried,
     user feedback, and why the task failed."""
     from config import CLAUDE_BIN
+    from session_cache import session_source_dir as _ssd
+    from agent_dispatcher import _write_session_owner
 
     own_db = SessionLocal()
     try:
@@ -2910,6 +2939,18 @@ Task: {task_title}{reason_line}
 
 {context}"""
 
+    # Snapshot existing sessions so we can mark new ones as "system"
+    _session_dir = _ssd(project_path)
+    _pre_sessions: set[str] = set()
+    try:
+        _pre_sessions = {
+            f.replace(".jsonl", "")
+            for f in os.listdir(_session_dir)
+            if f.endswith(".jsonl")
+        }
+    except OSError:
+        pass
+
     try:
         result = subprocess.run(
             [CLAUDE_BIN, "-p", "-", "--output-format", "text"],
@@ -2918,6 +2959,19 @@ Task: {task_title}{reason_line}
             cwd=project_path,
             env=_subprocess_clean_env(),
         )
+
+        # Mark any new sessions created by this subprocess as "system"
+        try:
+            for f in os.listdir(_session_dir):
+                if not f.endswith(".jsonl"):
+                    continue
+                sid = f.replace(".jsonl", "")
+                if sid not in _pre_sessions:
+                    _write_session_owner(_session_dir, sid, "system")
+                    logger.info("Marked retry-summary session %s as system-owned", sid[:12])
+        except OSError:
+            pass
+
         if result.returncode != 0:
             logger.warning("Retry summary failed for task %s: %s", task_id, result.stderr[:300])
             _fallback_retry_summary(task_id, agent_id)

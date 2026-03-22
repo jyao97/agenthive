@@ -5154,6 +5154,19 @@ Here are the day's conversations (with timestamps):
         # Claude writes the first entry)
         hook_jsonl = os.path.join(sdir, f"{hook_sid}.jsonl")
         if os.path.exists(hook_jsonl):
+            # Guard: reject system-owned sessions (e.g. claude -p
+            # subprocesses for summaries/insights).  By the time this
+            # poll runs the subprocess has finished and written the
+            # .owner sidecar.
+            owner = _read_session_owner(sdir, hook_sid)
+            if owner and owner.get("agent_id") == "system":
+                logger.info(
+                    "_detect_successor: session %s is system-owned, "
+                    "skipping rotation for agent %s",
+                    hook_sid[:12], agent_id[:8],
+                )
+                return None
+
             _write_session_owner(sdir, hook_sid, agent_id)
             logger.info(
                 "_detect_successor: hook-signal match agent=%s new_sid=%s",
