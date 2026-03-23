@@ -555,6 +555,64 @@ class TestEdgeCases:
         assert turns[0][0] == "user"
         assert turns[1][0] == "assistant"
 
+    def test_tool_result_not_boundary(self, tmp_path):
+        """tool_result user entries must NOT be treated as turn boundaries.
+        They sit between assistant entries in the same turn group.
+
+        Regression test for: boundary scanner treating tool_result as a
+        real user entry, splitting one assistant turn into two."""
+        # Simulate: user asks, assistant calls Read tool, tool_result comes back,
+        # assistant writes more text — all one turn.
+        entries = [
+            _user_entry("Read the file", "u1"),
+            _tool_entry("Read", {"file_path": "/tmp/test"}, "a1"),
+            # tool_result — user type but list content
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tool-Read",
+                 "content": "file contents here"}
+            ]}, "sessionId": "s1"},
+            _assistant_entry("Here is what I found", "a2"),
+        ]
+        ctx = _make_ctx(tmp_path, entries)
+        turns = sync_parse_incremental(ctx)
+        full = _parse_session_turns(ctx.jsonl_path)
+        assert len(turns) == len(full), (
+            f"Tool result split! incremental={len(turns)} vs full={len(full)}"
+        )
+        # Should be 1 user + 1 assistant (grouped)
+        assert turns[0][0] == "user"
+        assert turns[1][0] == "assistant"
+        assert "Read" in turns[1][1]
+        assert "Here is what I found" in turns[1][1]
+
+    def test_tool_result_mid_conversation_no_split(self, tmp_path):
+        """Multiple tool calls with tool_results between them should all
+        be grouped into a single assistant turn."""
+        entries = [
+            _user_entry("Search for X", "u1"),
+            _tool_entry("Grep", {"pattern": "X"}, "a1"),
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tool-Grep",
+                 "content": "found in file.py"}
+            ]}, "sessionId": "s1"},
+            _tool_entry("Read", {"file_path": "file.py"}, "a2"),
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tool-Read",
+                 "content": "def foo(): pass"}
+            ]}, "sessionId": "s1"},
+            _assistant_entry("Found function foo", "a3"),
+        ]
+        ctx = _make_ctx(tmp_path, entries)
+        turns = sync_parse_incremental(ctx)
+        full = _parse_session_turns(ctx.jsonl_path)
+        assert len(turns) == len(full), (
+            f"Tool result split! incremental={len(turns)} vs full={len(full)}"
+        )
+        # 1 user + 1 assistant (all tool calls + text grouped)
+        assert len(turns) == 2
+        assert turns[0][0] == "user"
+        assert turns[1][0] == "assistant"
+
     def test_no_duplication_new_user_after_init(self, tmp_path):
         """After init, a new user entry arrives. Must not duplicate
         existing turns."""
