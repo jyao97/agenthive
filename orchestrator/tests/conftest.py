@@ -133,3 +133,22 @@ def sample_message(db_session, sample_agent):
     db_session.commit()
     db_session.refresh(msg)
     return msg
+
+
+@pytest.fixture()
+def syncing_agent(db_session, sample_project):
+    """Insert and return a SYNCING cli_sync agent for sync harness tests."""
+    agent = Agent(
+        id="sync11112222",
+        project=sample_project.name,
+        name="Sync harness agent",
+        mode=AgentMode.AUTO,
+        status=AgentStatus.SYNCING,
+        cli_sync=True,
+        session_id="test-session-001",
+        model="claude-opus-4-6",
+    )
+    db_session.add(agent)
+    db_session.commit()
+    db_session.refresh(agent)
+    return agent
