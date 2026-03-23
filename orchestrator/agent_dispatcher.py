@@ -5174,9 +5174,10 @@ Here are the day's conversations (with timestamps):
             _init_tail = initial_turns[-1]
             _init_meta_sig = str(_init_tail[2]) if len(_init_tail) > 2 and _init_tail[2] else ""
             ctx.last_tail_hash = f"{_content_hash(_init_tail[1])}:{_init_meta_sig}"
-        # Set stable boundary to current state so first incremental
-        # read only parses new data from this point forward.
-        ctx.stable_turn_count = ctx.last_turn_count
+        # stable_turn_count stays 0 (default) — sync_parse_incremental
+        # will compute it properly on first call by scanning cached_lines
+        # for the last user/system boundary.  Setting it to last_turn_count
+        # here would cause duplication (stable_boundary=0 but count>0).
 
         self._sync_contexts[agent_id] = ctx
 
