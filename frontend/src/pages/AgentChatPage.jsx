@@ -1845,9 +1845,9 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
           rows={2}
           className="w-full min-h-[48px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors disabled:opacity-50"
         />
-        {voice.streamingText && (
+        {(voice.streamingText || voice.refining) && (
           <div className="px-3 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
-            {voice.streamingText}
+            {voice.refining ? "Refining..." : voice.streamingText}
           </div>
         )}
         {/* Attachment preview chips */}
@@ -1907,6 +1907,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
             <VoiceRecorder
               recording={voice.recording}
               voiceLoading={voice.voiceLoading}
+              refining={voice.refining}
               micError={voice.micError}
               onToggle={voice.toggleRecording}
             />
@@ -3621,6 +3622,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                       <VoiceRecorder
                         recording={feedbackVoice.recording}
                         voiceLoading={feedbackVoice.voiceLoading}
+                        refining={feedbackVoice.refining}
                         micError={feedbackVoice.micError}
                         onToggle={feedbackVoice.toggleRecording}
                       />

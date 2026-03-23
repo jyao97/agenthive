@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { getAuthToken } from "../lib/api";
+import { getAuthToken, refineVoiceText } from "../lib/api";
 
 export const DEFAULT_MAX_RECORDING_MS = 300000; // 5 minutes
 
@@ -23,6 +23,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   const limit = maxDurationMs || DEFAULT_MAX_RECORDING_MS;
   const [recording, setRecording] = useState(false);
   const [voiceLoading, setVoiceLoading] = useState(false);
+  const [refining, setRefining] = useState(false);
   const [micError, setMicError] = useState(null);
   const [analyserNode, setAnalyserNode] = useState(null);
   const [remainingSeconds, setRemainingSeconds] = useState(limit / 1000);
@@ -47,6 +48,22 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   useEffect(() => { onTranscriptRef.current = onTranscript; }, [onTranscript]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
   useEffect(() => { limitRef.current = limit; }, [limit]);
+
+  // Deliver transcript — optionally refine via LLM first
+  const deliverTranscript = useCallback((text) => {
+    const shouldRefine = (() => {
+      try { return localStorage.getItem("pref:voiceRefine") !== "false"; } catch { return true; }
+    })();
+    if (shouldRefine && text.length >= 2) {
+      setRefining(true);
+      refineVoiceText(text)
+        .then((res) => onTranscriptRef.current?.(res.text))
+        .catch(() => onTranscriptRef.current?.(text))
+        .finally(() => setRefining(false));
+    } else {
+      onTranscriptRef.current?.(text);
+    }
+  }, []);
 
   // When limit changes while not recording, reset the displayed countdown.
   useEffect(() => {
@@ -179,10 +196,10 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
             currentTurnTextRef.current += msg.text;
             setStreamingText(currentTurnTextRef.current);
           } else if (msg.type === "transcript") {
-            // Completed turn — send full text to caller, clear streaming
+            // Completed turn — refine then send to caller, clear streaming
             currentTurnTextRef.current = "";
             setStreamingText("");
-            onTranscriptRef.current?.(msg.text);
+            deliverTranscript(msg.text);
           } else if (msg.type === "error") {
             onErrorRef.current?.(msg.message || "Transcription error");
           }
@@ -246,7 +263,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     // If there's accumulated streaming text that wasn't completed, flush it
     const pendingText = currentTurnTextRef.current.trim();
     if (pendingText) {
-      onTranscriptRef.current?.(pendingText);
+      deliverTranscript(pendingText);
       currentTurnTextRef.current = "";
       setStreamingText("");
     }
@@ -279,6 +296,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   return {
     recording,
     voiceLoading,
+    refining,
     micError,
     analyserNode,
     remainingSeconds,

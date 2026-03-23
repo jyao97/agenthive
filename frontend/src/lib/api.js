@@ -329,6 +329,9 @@ export async function transcribeVoice(audioBlob, mimeType) {
   return formDataRequest("/api/voice", formData, "Voice API error");
 }
 
+export const refineVoiceText = (text) =>
+  request("/api/voice/refine", { method: "POST", body: JSON.stringify({ text }) });
+
 export async function uploadFile(file) {
   const formData = new FormData();
   formData.append("file", file);

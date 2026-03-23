@@ -58,6 +58,7 @@ PROJECTS_DIR = os.getenv("PROJECTS_DIR", os.getenv("HOST_PROJECTS_DIR", ""))
 
 # Voice
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+VOICE_REFINE_MODEL = os.getenv("VOICE_REFINE_MODEL", "gpt-4o-mini")
 
 # Backup
 BACKUP_ENABLED = os.getenv("BACKUP_ENABLED", "0").strip().lower() in ("1", "true", "yes")
