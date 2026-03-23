@@ -26,3 +26,10 @@
 - Attempts: Spawned 5 parallel agents for large routers (system, projects, tasks, hooks, agents), wrote 6 small routers directly. Needed post-fix pass for cross-router imports.
 - Resolution: All 116 API routes preserved. Verified via import checks, route enumeration, and server smoke test.
 - Lesson: When agents create router modules, they tend to import from the original `main` module for cross-cutting helpers — must fix these to proper cross-router imports (deferred) before the final main.py rewrite. Duplicate helper functions across routers are inevitable; move them to a shared helpers module (route_helpers.py) and alias them in each router to preserve original call-site names.
+
+### 2026-03-23 | Task: Fix duplicate message bubbles (chat ebd418428b1e) | Status: success
+- What: `_is_turn_boundary()` in sync_engine.py didn't match `_parse_session_turns_from_lines()` in agent_dispatcher.py. `queue-operation remove/dequeue` and filtered system subtypes (`turn_duration`, `stop_hook_summary`) were treated as boundaries by the incremental parser but ignored by the full parser, creating phantom duplicate assistant turns. Added UNIQUE partial index on `(agent_id, jsonl_uuid)` as defense-in-depth, with best-row dedup cleanup and per-row savepoint handling.
+- Gotcha 1: When two functions answer "is this a turn boundary?" they MUST stay in exact sync. Any entry that one treats as a boundary but the other skips will cause phantom turns during incremental parsing.
+- Gotcha 2: "Keep oldest duplicate" is wrong — the phantom (truncated) row is often older. Keep the best row (non-null metadata, longer content, later timestamps).
+- Gotcha 3: Hooks overload `jsonl_uuid` with `hook-{tool_use_id}` — unique index must exclude `hook-%` to avoid constraining hook-created rows.
+- Gotcha 4: Batch `db.commit()` with a unique index needs per-row `db.begin_nested()` (SAVEPOINT) — one duplicate conflict would otherwise roll back all valid turns.
