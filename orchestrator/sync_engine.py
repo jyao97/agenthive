@@ -10,6 +10,8 @@ import logging
 import os
 from dataclasses import dataclass, field
 
+from sqlalchemy.exc import IntegrityError
+
 from database import SessionLocal
 from models import (
     Agent,
@@ -427,16 +429,25 @@ async def sync_reconcile_initial(ad, ctx: SyncContext):
                     if is_wrapped_dup:
                         continue
                     _now = _utcnow()
-                    db.add(Message(
-                        agent_id=ctx.agent_id,
-                        role=MessageRole.USER,
-                        content=content,
-                        status=MessageStatus.COMPLETED,
-                        source="cli",
-                        jsonl_uuid=uuid,
-                        completed_at=_now,
-                        delivered_at=_now,
-                    ))
+                    try:
+                        with db.begin_nested():  # SAVEPOINT
+                            db.add(Message(
+                                agent_id=ctx.agent_id,
+                                role=MessageRole.USER,
+                                content=content,
+                                status=MessageStatus.COMPLETED,
+                                source="cli",
+                                jsonl_uuid=uuid,
+                                completed_at=_now,
+                                delivered_at=_now,
+                            ))
+                            db.flush()
+                    except IntegrityError:
+                        logger.warning(
+                            "Skipped duplicate jsonl_uuid %s for agent %s",
+                            uuid, ctx.agent_id[:8],
+                        )
+                        continue
                 elif role == "assistant":
                     updated = False
                     for existing in _existing_agent_msgs:
@@ -468,17 +479,26 @@ async def sync_reconcile_initial(ad, ctx: SyncContext):
                             break
                     if not updated:
                         _now2 = _utcnow()
-                        db.add(Message(
-                            agent_id=ctx.agent_id,
-                            role=MessageRole.AGENT,
-                            content=content,
-                            status=MessageStatus.COMPLETED,
-                            source="cli",
-                            meta_json=meta_json,
-                            jsonl_uuid=uuid,
-                            completed_at=_now2,
-                            delivered_at=_now2,
-                        ))
+                        try:
+                            with db.begin_nested():  # SAVEPOINT
+                                db.add(Message(
+                                    agent_id=ctx.agent_id,
+                                    role=MessageRole.AGENT,
+                                    content=content,
+                                    status=MessageStatus.COMPLETED,
+                                    source="cli",
+                                    meta_json=meta_json,
+                                    jsonl_uuid=uuid,
+                                    completed_at=_now2,
+                                    delivered_at=_now2,
+                                ))
+                                db.flush()
+                        except IntegrityError:
+                            logger.warning(
+                                "Skipped duplicate jsonl_uuid %s for agent %s",
+                                uuid, ctx.agent_id[:8],
+                            )
+                            continue
             agent.last_message_preview = (conv_turns[-1][1] or "")[:200]
             agent.last_message_at = _utcnow()
             db.commit()
@@ -871,7 +891,16 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     )
                 else:
                     continue
-                db.add(msg)
+                try:
+                    with db.begin_nested():  # SAVEPOINT
+                        db.add(msg)
+                        db.flush()
+                except IntegrityError:
+                    logger.warning(
+                        "Skipped duplicate jsonl_uuid %s for agent %s",
+                        jsonl_uuid, ctx.agent_id[:8],
+                    )
+                    continue
 
             agent.last_message_preview = (new_turns[-1][1] or "")[:200]
             agent.last_message_at = _utcnow()

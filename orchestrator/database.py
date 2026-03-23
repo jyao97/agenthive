@@ -496,6 +496,40 @@ def init_db():
                 ))
             conn.commit()
 
+        # --- Fix 5: Deduplicate existing rows with same (agent_id, jsonl_uuid) ---
+        # Keep the best row per group: prefer non-null metadata, longer content,
+        # later timestamps, smaller id as tie-breaker.
+        conn.execute(text("""
+            DELETE FROM messages WHERE id IN (
+                SELECT id FROM (
+                    SELECT id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY agent_id, jsonl_uuid
+                            ORDER BY
+                                CASE WHEN metadata IS NOT NULL THEN 0 ELSE 1 END,
+                                LENGTH(content) DESC,
+                                completed_at DESC NULLS LAST,
+                                delivered_at DESC NULLS LAST,
+                                id ASC
+                        ) AS rn
+                    FROM messages
+                    WHERE jsonl_uuid IS NOT NULL
+                      AND jsonl_uuid NOT LIKE 'hook-%'
+                ) ranked WHERE rn > 1
+            )
+        """))
+        conn.commit()
+
+        # --- Fix 2: Unique partial index on (agent_id, jsonl_uuid) ---
+        # Prevents duplicate message rows even if application-level dedup fails.
+        # Excludes hook-created interactive cards (jsonl_uuid LIKE 'hook-%').
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_agent_jsonl_uuid
+            ON messages(agent_id, jsonl_uuid)
+            WHERE jsonl_uuid IS NOT NULL AND jsonl_uuid NOT LIKE 'hook-%'
+        """))
+        conn.commit()
+
     # Ensure jwt_secret exists in SystemConfig
     from auth import get_jwt_secret
     db = SessionLocal()
