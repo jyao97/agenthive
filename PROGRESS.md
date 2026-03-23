@@ -33,3 +33,11 @@
 - Gotcha 2: "Keep oldest duplicate" is wrong — the phantom (truncated) row is often older. Keep the best row (non-null metadata, longer content, later timestamps).
 - Gotcha 3: Hooks overload `jsonl_uuid` with `hook-{tool_use_id}` — unique index must exclude `hook-%` to avoid constraining hook-created rows.
 - Gotcha 4: Batch `db.commit()` with a unique index needs per-row `db.begin_nested()` (SAVEPOINT) — one duplicate conflict would otherwise roll back all valid turns.
+
+### 2026-03-23 | Task: Fix remaining message sync issues (#2, #4, #5, #8) | Status: success
+- What: Fixed 4 additional issues found during the duplicate-bubble investigation: (1) tool-only messages hiding InteractiveBubbles, (2) hook+JSONL creating duplicate interactive cards, (3) windowed answer repair with unescaped LIKE, (4) system messages never purged after compact.
+- Resolution: Three parallel agent teams — Team A: canonicalize hook rows at JSONL import time (upgrade `hook-{tool_use_id}` rows in-place instead of inserting duplicates), Team B: fallback ChatBubble in frontend for tool-only messages with interactive metadata, Team C: replace limit(10/20) scans with targeted tool_use_id LIKE prefilter + Counter-based system message purge.
+- Lesson 1: Hook-created rows (`hook-{tool_use_id}`) and JSONL-synced rows represent the same assistant turn — canonicalize at import time by upgrading the hook row, not at render time or in a post-hoc reconciliation pass.
+- Lesson 2: `LIKE '%{user_input}%'` needs `%` and `_` escaped. Prefer it as a prefilter with JSON verification after, not as the sole match.
+- Lesson 3: System messages lack UUIDs — content-based purge needs Counter (multiset) not set, because identical system messages can legitimately appear multiple times.
+- Deferred: #1 lossy user-turn dedup (needs parser provenance), #3 ToolActivity identity (schema redesign), #6 non-transactional offset (reconcile covers), #7 same-size rewrite (unlikely).
