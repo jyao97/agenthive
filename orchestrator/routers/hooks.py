@@ -160,12 +160,7 @@ async def hook_agent_user_prompt(request: Request):
         finally:
             db2.close()
         asyncio.ensure_future(emit_agent_update(agent_id, "EXECUTING", project))
-        ad.wake_sync(agent_id)
-
-        # UserPromptSubmit fires BEFORE Claude writes the user turn to JSONL.
-        # The immediate wake above picks up any prior unsynced content, but
-        # the new turn isn't on disk yet.  Schedule a delayed wake so the
-        # sync loop catches the JSONL write right after Claude flushes it.
+        # Wait for JSONL flush then wake sync
         async def _post_prompt_sync(_aid):
             from config import JSONL_FLUSH_DELAY
             await asyncio.sleep(JSONL_FLUSH_DELAY)
@@ -233,9 +228,7 @@ async def hook_agent_stop(request: Request):
                 )
                 ad.wake_sync(agent_id)
             else:
-                # Schedule a delayed wake so the sync loop picks up new
-                # JSONL content for full turn import (dedup, interactive
-                # items, metadata).  Unread logic is handled inline above.
+                # Wait for JSONL flush then wake sync
                 async def _post_stop_sync(_aid):
                     from config import JSONL_FLUSH_DELAY
                     await asyncio.sleep(JSONL_FLUSH_DELAY)
@@ -394,12 +387,12 @@ async def hook_agent_tool_activity(request: Request):
         # immediately so it imports the assistant turn from JSONL. By the
         # time PreToolUse fires, the tool_use block is already in JSONL.
         if tool_name in ("AskUserQuestion", "ExitPlanMode") and ad:
-            ad.wake_sync(agent_id)
-            # Delayed wake for reliability (JSONL flush may lag slightly)
-            async def _delayed_interactive_wake():
-                await asyncio.sleep(0.3)
-                ad.wake_sync(agent_id)
-            asyncio.ensure_future(_delayed_interactive_wake())
+            # Wait for JSONL flush then wake sync
+            async def _delayed_interactive_wake(_aid):
+                from config import JSONL_FLUSH_DELAY
+                await asyncio.sleep(JSONL_FLUSH_DELAY)
+                ad.wake_sync(_aid)
+            asyncio.ensure_future(_delayed_interactive_wake(agent_id))
     elif hook_event in ("PostToolUse", "PostToolUseFailure"):
         tool_name = body.get("tool_name", "")
         phase = "end"
