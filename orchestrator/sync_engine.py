@@ -478,6 +478,26 @@ async def sync_reconcile_initial(ad, ctx: SyncContext):
                             updated = True
                             break
                     if not updated:
+                        # Check for hook-created row to upgrade
+                        if meta:
+                            _interactive_items = meta.get("interactive", []) if isinstance(meta, dict) else []
+                            for _item in _interactive_items:
+                                _tid = _item.get("tool_use_id")
+                                if _tid:
+                                    _hook = next(
+                                        (m for m in _existing_agent_msgs if m.jsonl_uuid == f"hook-{_tid}"),
+                                        None,
+                                    )
+                                    if _hook:
+                                        _hook.content = content
+                                        _hook.jsonl_uuid = uuid
+                                        _hook.meta_json = _merge_interactive_meta(
+                                            _hook.meta_json, meta,
+                                        )
+                                        _hook.completed_at = _utcnow()
+                                        updated = True
+                                        break
+                    if not updated:
                         _now2 = _utcnow()
                         try:
                             with db.begin_nested():  # SAVEPOINT
@@ -865,6 +885,33 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         ).first()
                         if _existing_asst:
                             continue
+
+                    # Upgrade hook-created row if it exists
+                    _hook_upgraded = False
+                    if meta:
+                        _interactive = meta.get("interactive", [])
+                        _tids = [item.get("tool_use_id") for item in _interactive if item.get("tool_use_id")]
+                        if _tids:
+                            for _tid in _tids:
+                                _hook_msg = db.query(Message).filter(
+                                    Message.agent_id == ctx.agent_id,
+                                    Message.jsonl_uuid == f"hook-{_tid}",
+                                ).first()
+                                if _hook_msg:
+                                    _hook_msg.content = content
+                                    _hook_msg.jsonl_uuid = jsonl_uuid
+                                    _hook_msg.meta_json = _merge_interactive_meta(
+                                        _hook_msg.meta_json, meta,
+                                    )
+                                    _hook_msg.completed_at = _utcnow()
+                                    _hook_upgraded = True
+                                    logger.info(
+                                        "Upgraded hook message %s -> jsonl_uuid %s for agent %s",
+                                        _hook_msg.id, jsonl_uuid[:12] if jsonl_uuid else "none", ctx.agent_id[:8],
+                                    )
+                                    break
+                    if _hook_upgraded:
+                        continue
                     _now = _utcnow()
                     msg = Message(
                         agent_id=ctx.agent_id,
