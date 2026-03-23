@@ -56,3 +56,15 @@
 - What: Selecting "Yes, clear context & bypass" on the plan card did not clear context. Investigation revealed Claude Code v2.1.81 hides the "clear context" option by default (restorable via `showClearContextOnPlanAccept: true`). Our frontend and backend still had 4 options with "clear context" at index 0, causing all tmux key mappings to be off by one vs the actual 3-option TUI.
 - Fix: Removed phantom "clear context & bypass" option from PLAN_OPTIONS (frontend), _PLAN_LABELS (backend), _PLAN_LABELS_LOWER (sync), and updated all index references (legacy fallback, planning agent handoff, keyword detection).
 - Lesson: When Claude Code upgrades change TUI options, our hardcoded index mappings silently break. The tmux pane capture logs showed the real 3-option TUI but nobody noticed the mismatch. Future: parse pane content to detect available options dynamically instead of hardcoding indices.
+
+### 2026-03-23 | Task: Sync architecture redesign (tool_use_id, session_seq, scan-as-audit) | Status: success
+- What: Replaced the fragile multi-layer sync architecture (5 dedup layers, 4+2 sync flows, 45+ special-case branches) with explicit identity, explicit ordering, and audit-based drift detection.
+- Resolution: 4 rounds, 7 agent teams, 9 commits:
+  - Round 1: Added `tool_use_id` and `session_seq` columns to Message/ToolActivity + SyncDrift model + migration/backfill + integration test harness with 8 scenarios
+  - Round 2: Replaced all LIKE queries on meta_json with tool_use_id column lookups; set session_seq on all message creation paths
+  - Round 3: Switched API/frontend ordering from delivered_at heuristics to session_seq
+  - Round 4: Converted scan from silent repair to audit — sync_reconcile_initial went from 280 lines to 20; removed content-sig fallback from import path; added sync_audit/sync_repair functions + admin endpoints
+- Lesson 1: Add explicit identity columns (tool_use_id) early — eliminates LIKE scans, JSON parsing, and prefix-matching heuristics in one move.
+- Lesson 2: Separate ordering from delivery tracking — session_seq (monotonic JSONL turn index) is deterministic; delivered_at serves double duty and gets corrupted by reconciliation.
+- Lesson 3: Audit vs repair must be separate code paths. Silent repair (content-sig matching, stale metadata sweep) hides bugs and adds complexity. Explicit drift records make problems visible.
+- Lesson 4: sync_reconcile_initial was the biggest complexity source — 280 lines of interleaved check+fix. Replacing it with import+audit cut complexity dramatically.
