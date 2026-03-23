@@ -491,3 +491,72 @@ class TestEdgeCases:
         sync_parse_incremental(ctx)
         # Last user entry is Q3 — stable turns before Q3 boundary = Q1+A1+Q2+A2 = 4
         assert ctx.stable_turn_count == 4
+
+    def test_no_duplication_after_init_with_preloaded_state(self, tmp_path):
+        """Simulate the real sync loop init pattern: cached_lines and
+        incremental_turns are pre-populated, then sync_parse_incremental
+        is called when new data arrives.  Must NOT duplicate turns.
+
+        Regression test for: stable_turn_count set to full count at init
+        while stable_boundary stays 0 → splice duplicates all turns."""
+        entries = [
+            _user_entry("Q1", "u1"),
+            _assistant_entry("A1", "a1"),
+        ]
+        ctx = _make_ctx(tmp_path, entries)
+        # Simulate what _sync_session_loop_inner does at init:
+        # - cached_lines populated from file
+        # - incremental_turns populated from full parse
+        # - last_turn_count = full count
+        # - stable_turn_count stays 0 (default)
+        ctx.last_offset = os.path.getsize(ctx.jsonl_path)
+        ctx.incremental_turns = list(_parse_session_turns(ctx.jsonl_path))
+        ctx.last_turn_count = len(ctx.incremental_turns)
+        with open(ctx.jsonl_path, "r") as f:
+            for raw in f:
+                s = raw.strip()
+                if s:
+                    ctx.cached_lines.append(s)
+
+        # Now new assistant data arrives (same turn grows)
+        _append_jsonl(ctx.jsonl_path, [_assistant_entry("A1-part2", "a1b")])
+        turns = sync_parse_incremental(ctx)
+        full = _parse_session_turns(ctx.jsonl_path)
+        # Must match full parse — no duplicates
+        assert len(turns) == len(full), (
+            f"Duplication! incremental={len(turns)} vs full={len(full)}"
+        )
+        assert turns[0][0] == "user"
+        assert turns[1][0] == "assistant"
+
+    def test_no_duplication_new_user_after_init(self, tmp_path):
+        """After init, a new user entry arrives. Must not duplicate
+        existing turns."""
+        entries = [
+            _user_entry("Q1", "u1"),
+            _assistant_entry("A1", "a1"),
+        ]
+        ctx = _make_ctx(tmp_path, entries)
+        ctx.last_offset = os.path.getsize(ctx.jsonl_path)
+        ctx.incremental_turns = list(_parse_session_turns(ctx.jsonl_path))
+        ctx.last_turn_count = len(ctx.incremental_turns)
+        with open(ctx.jsonl_path, "r") as f:
+            for raw in f:
+                s = raw.strip()
+                if s:
+                    ctx.cached_lines.append(s)
+
+        _append_jsonl(ctx.jsonl_path, [
+            _user_entry("Q2", "u2"),
+            _assistant_entry("A2", "a2"),
+        ])
+        turns = sync_parse_incremental(ctx)
+        full = _parse_session_turns(ctx.jsonl_path)
+        assert len(turns) == len(full), (
+            f"Duplication! incremental={len(turns)} vs full={len(full)}"
+        )
+        # Verify ordering: user bubbles separate assistant bubbles
+        assert turns[0] == ("user", "Q1", None, "u1")
+        assert turns[1][0] == "assistant"
+        assert turns[2] == ("user", "Q2", None, "u2")
+        assert turns[3][0] == "assistant"
