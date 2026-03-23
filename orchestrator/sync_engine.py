@@ -40,10 +40,21 @@ class SyncContext:
     jsonl_path: str = ""
 
     # Incremental read state
-    last_offset: int = 0          # byte position for seek-based reads
+    last_offset: int = 0          # byte position of last successful read (EOF)
     last_turn_count: int = 0
     last_tail_hash: str = ""
     incremental_turns: list = field(default_factory=list)
+
+    # Turn-boundary pointers for incremental JSONL reading.
+    # stable_boundary: byte offset just before the last user/system JSONL
+    #   entry — everything before this is finalized turns that never need
+    #   re-parsing.
+    # stable_turn_count: number of fully completed turns before the boundary.
+    # cached_lines: raw JSONL lines accumulated so far (avoids re-reading
+    #   the entire file on each wake).
+    stable_boundary: int = 0
+    stable_turn_count: int = 0
+    cached_lines: list = field(default_factory=list)
 
     # Agent state
     compact_notified: bool = False
@@ -51,6 +62,155 @@ class SyncContext:
     compact_detected_at: float = 0.0   # monotonic time when sync detected compact (for fallback)
     idle_polls: int = 0
     getsize_error_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Incremental JSONL reading
+# ---------------------------------------------------------------------------
+
+def _read_new_lines(path: str, offset: int) -> tuple[list[str], int]:
+    """Read new complete lines from *path* starting at byte *offset*.
+
+    Returns (new_lines, new_offset) where new_offset points to the byte
+    just after the last complete line.  Incomplete trailing lines (mid-write
+    by Claude Code) are excluded — the offset stays before them so they're
+    re-read on the next wake.
+    """
+    try:
+        with open(path, "r", errors="replace") as f:
+            f.seek(offset)
+            data = f.read()
+    except OSError as e:
+        logger.warning("_read_new_lines: failed to read %s at offset %d: %s", path, offset, e)
+        return [], offset
+
+    if not data:
+        return [], offset
+
+    # Split into lines, keeping the delimiter to detect completeness
+    raw_lines = data.split("\n")
+
+    # The last element after split is always "" if data ended with "\n",
+    # or a partial line if data didn't end with "\n".
+    complete_lines: list[str] = []
+    consumed = 0
+    for i, raw in enumerate(raw_lines):
+        if i == len(raw_lines) - 1:
+            # Last element — include only if it was terminated by "\n"
+            # (i.e. it's the empty string from the trailing split)
+            if raw == "":
+                break  # data ended cleanly on a newline
+            else:
+                break  # partial line — don't consume it
+        line = raw.strip()
+        # +1 for the "\n" delimiter
+        consumed += len(raw.encode("utf-8", errors="replace")) + 1
+        if line:
+            complete_lines.append(line)
+
+    return complete_lines, offset + consumed
+
+
+def _find_stable_boundary(lines: list[str]) -> tuple[int, int]:
+    """Scan *lines* and return (boundary_line_index, stable_turn_count).
+
+    The boundary is the index of the last line that starts a new turn
+    boundary (user or system JSONL entry).  Everything before this boundary
+    produces finalized turns that won't change.
+
+    Returns (0, 0) if no user/system entry is found (all assistant).
+    """
+    last_boundary_idx = 0
+    turn_count = 0
+
+    for i, raw in enumerate(lines):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        entry_type = entry.get("type")
+        if entry_type in ("user", "system", "queue-operation"):
+            # This line starts a new turn group — the PREVIOUS assistant
+            # group (if any) is now finalized.
+            last_boundary_idx = i
+            # Count turns up to (not including) this boundary.
+            # We'll compute this properly using _parse_session_turns_from_lines
+            # on the stable prefix — but for tracking purposes we just
+            # record the line index.
+
+    # To get the actual stable_turn_count, parse lines[:last_boundary_idx].
+    # This is a one-time cost when the boundary advances.
+    return last_boundary_idx, -1  # -1 = needs recount
+
+
+def sync_parse_incremental(ctx: SyncContext) -> list[tuple[str, str, dict | None, str | None]]:
+    """Incrementally read JSONL and return parsed turns.
+
+    Uses ctx.cached_lines + ctx.stable_boundary to avoid re-reading and
+    re-parsing the full file.  Only new bytes are read from disk, and only
+    lines from the last stable boundary forward are re-parsed.
+    """
+    from agent_dispatcher import _parse_session_turns_from_lines
+
+    # 1. Read new bytes from disk
+    new_lines, new_offset = _read_new_lines(ctx.jsonl_path, ctx.last_offset)
+    ctx.last_offset = new_offset
+
+    if new_lines:
+        ctx.cached_lines.extend(new_lines)
+
+    if not ctx.cached_lines:
+        return []
+
+    # 2. Find where the last turn boundary is in cached_lines
+    #    Scan backward from the end for the last user/system/queue-operation entry
+    last_boundary_idx = 0
+    for i in range(len(ctx.cached_lines) - 1, -1, -1):
+        line = ctx.cached_lines[i].strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if entry.get("type") in ("user", "system", "queue-operation"):
+            last_boundary_idx = i
+            break
+
+    # 3. If boundary advanced, parse the stable prefix to get stable_turn_count
+    if last_boundary_idx > ctx.stable_boundary:
+        stable_prefix = ctx.cached_lines[:last_boundary_idx]
+        stable_turns = _parse_session_turns_from_lines(stable_prefix)
+        ctx.stable_turn_count = len(stable_turns)
+        ctx.stable_boundary = last_boundary_idx
+        # Cache the stable turns so we don't re-parse them
+        ctx.incremental_turns = list(stable_turns)
+    elif ctx.stable_boundary == 0 and not ctx.incremental_turns:
+        # No boundary found yet — everything is open assistant tail
+        ctx.stable_turn_count = 0
+
+    # 4. Parse only the tail (from boundary to end)
+    tail_lines = ctx.cached_lines[ctx.stable_boundary:]
+    tail_turns = _parse_session_turns_from_lines(tail_lines)
+
+    # 5. Combine stable + tail
+    all_turns = list(ctx.incremental_turns[:ctx.stable_turn_count]) + tail_turns
+    return all_turns
+
+
+def sync_reset_incremental(ctx: SyncContext):
+    """Reset incremental state — used after compact or session rotation."""
+    ctx.cached_lines.clear()
+    ctx.stable_boundary = 0
+    ctx.stable_turn_count = 0
+    ctx.incremental_turns.clear()
+    ctx.last_turn_count = 0
+    ctx.last_tail_hash = ""
+    ctx.last_offset = 0
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +540,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     Returns one of: "new_turns", "turn_updated", "streaming", "no_change"
     """
     from agent_dispatcher import (
-        _parse_session_turns,
         _is_wrapped_prompt,
         _dedup_sig,
         _merge_interactive_meta,
@@ -394,27 +553,41 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     )
     from thumbnails import generate_thumbnails_for_message
 
-    # Full parse — reliable, avoids incremental merge bugs
-    # Save offset in local var first — only commit to ctx after successful
-    # processing.  Otherwise an early "exit" poisons ctx.last_offset and
-    # the sync loop thinks the file hasn't grown (30s stall).
-    try:
-        _current_offset = os.path.getsize(ctx.jsonl_path)
-    except OSError:
-        _current_offset = ctx.last_offset
-    turns = _parse_session_turns(ctx.jsonl_path)
+    # Incremental parse — reads only new bytes, re-parses only the tail
+    # (from last turn boundary forward).  sync_parse_incremental updates
+    # ctx.last_offset internally.
+    _prev_offset = ctx.last_offset
+    turns = sync_parse_incremental(ctx)
+    _current_offset = ctx.last_offset
 
     # Detect turn count decrease (compact may produce a larger
-    # file but with fewer turns if the summary is long)
+    # file but with fewer turns if the summary is long).
+    # This requires a full re-read since the incremental cache is stale.
     if len(turns) < ctx.last_turn_count:
+        from agent_dispatcher import _parse_session_turns
         logger.info(
             "Turn count decreased for agent %s (%d -> %d, "
-            "likely /compact), full re-parse already done",
+            "likely /compact), doing full re-read",
             ctx.agent_id, ctx.last_turn_count, len(turns),
         )
+        sync_reset_incremental(ctx)
+        turns = _parse_session_turns(ctx.jsonl_path)
+        try:
+            _current_offset = os.path.getsize(ctx.jsonl_path)
+        except OSError:
+            _current_offset = _prev_offset
+        ctx.last_offset = _current_offset
+        # Re-populate cached_lines from full read for future incremental use
+        try:
+            with open(ctx.jsonl_path, "r", errors="replace") as _f:
+                for _raw in _f:
+                    _stripped = _raw.strip()
+                    if _stripped:
+                        ctx.cached_lines.append(_stripped)
+        except OSError:
+            pass
         ctx.incremental_turns = list(turns)
         ctx.last_turn_count = len(turns)
-        ctx.last_offset = _current_offset
         _t = turns[-1] if turns else ("", "", None)
         _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
         ctx.last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
@@ -783,9 +956,12 @@ async def sync_handle_compact(ad, ctx: SyncContext):
 
     logger.info(
         "Session file shrank for agent %s (%d -> ? bytes, "
-        "likely /compact), resetting offset + full re-parse",
+        "likely /compact), resetting incremental state + full re-parse",
         ctx.agent_id, ctx.last_offset,
     )
+    # Reset incremental cache — file was rewritten
+    sync_reset_incremental(ctx)
+
     turns = _parse_session_turns(ctx.jsonl_path)
     ctx.incremental_turns = list(turns)
     ctx.last_turn_count = len(turns)
@@ -797,6 +973,16 @@ async def sync_handle_compact(ad, ctx: SyncContext):
     except OSError:
         ctx.last_offset = 0
     ctx.idle_polls = 0
+
+    # Re-populate cached_lines from fresh full read
+    try:
+        with open(ctx.jsonl_path, "r", errors="replace") as _f:
+            for _raw in _f:
+                _stripped = _raw.strip()
+                if _stripped:
+                    ctx.cached_lines.append(_stripped)
+    except OSError:
+        pass
 
     # Purge old cli-sourced messages whose UUIDs are no longer in the
     # compacted JSONL — prevents duplicate messages in the chat.
