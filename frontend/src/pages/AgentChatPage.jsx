@@ -3436,6 +3436,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         if (i === lastTextIdx) return <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride={seg.text} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
                         return <AgentTextSegment key={`${msg.id}-s${i}`} text={seg.text} project={agent.project} />;
                       })}
+                      {lastTextIdx === -1 && msg.metadata?.interactive?.length > 0 && (
+                        <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride="" project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
+                      )}
                     </React.Fragment>
                   );
                 }
