@@ -2406,10 +2406,12 @@ def _patch_interactive_answer(
     For multi-question AskUserQuestion, each call patches one question at a
     time via question_index, accumulating into selected_indices and answer.
     """
+    _escaped_tid = tool_use_id.replace("%", r"\%").replace("_", r"\_")
     msgs = db.query(Message).filter(
         Message.agent_id == agent_id,
         Message.meta_json.is_not(None),
-    ).order_by(Message.created_at.desc()).limit(10).all()
+        Message.meta_json.like(f'%{_escaped_tid}%'),
+    ).order_by(Message.created_at.desc()).all()
 
     for msg in msgs:
         try:

@@ -478,10 +478,12 @@ async def hook_agent_tool_activity(request: Request):
                     # hook-created + JSONL-sourced cards).
                     _answer_text = str(tool_output)[:500]
                     _patched_any = False
+                    _escaped_tid = tool_use_id.replace("%", r"\%").replace("_", r"\_")
                     _msgs = _db.query(Message).filter(
                         Message.agent_id == agent_id,
                         Message.meta_json.is_not(None),
-                    ).order_by(Message.created_at.desc()).limit(20).all()
+                        Message.meta_json.like(f'%{_escaped_tid}%'),
+                    ).order_by(Message.created_at.desc()).all()
                     for _msg in _msgs:
                         try:
                             _meta = json.loads(_msg.meta_json)
