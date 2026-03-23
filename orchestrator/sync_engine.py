@@ -283,6 +283,9 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     if _web_msg:
                         if jsonl_uuid:
                             _web_msg.jsonl_uuid = jsonl_uuid
+                        # Assign session_seq so web message sorts correctly
+                        # alongside cli-sourced messages
+                        _web_msg.session_seq = seq
                         if not _web_msg.delivered_at:
                             _web_msg.delivered_at = _utcnow()
                             from websocket import emit_message_delivered
@@ -456,17 +459,18 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
 
     db = SessionLocal()
     try:
-        # Get all cli-sourced DB messages
+        # Get all DB messages that have a jsonl_uuid (includes cli-sourced
+        # AND web-sourced messages that were linked via wrapped-prompt matching)
         db_msgs = (
             db.query(Message)
             .filter(
                 Message.agent_id == ctx.agent_id,
-                Message.source == "cli",
+                Message.jsonl_uuid.isnot(None),
             )
             .all()
         )
 
-        db_by_uuid = {m.jsonl_uuid: m for m in db_msgs if m.jsonl_uuid}
+        db_by_uuid = {m.jsonl_uuid: m for m in db_msgs}
 
         # Detect drift
         missing_in_db = [u for u in jsonl_uuids if u not in db_by_uuid]
@@ -483,14 +487,15 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
 
         _changes_made = False
 
-        # On compact: delete orphaned messages + reassign session_seq
+        # On compact: delete orphaned cli-sourced messages + reassign session_seq
         if reason == "compact":
-            if extra_in_db:
-                for m in extra_in_db:
+            _cli_orphans = [m for m in extra_in_db if m.source == "cli"]
+            if _cli_orphans:
+                for m in _cli_orphans:
                     db.delete(m)
                 logger.info(
                     "Purged %d orphaned messages for agent %s after compact",
-                    len(extra_in_db), ctx.agent_id,
+                    len(_cli_orphans), ctx.agent_id,
                 )
                 _changes_made = True
 
