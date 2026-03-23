@@ -570,29 +570,6 @@ def init_db():
             ))
             conn.commit()
 
-        # --- Create sync_drift table ---
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS sync_drift (
-                id VARCHAR(12) PRIMARY KEY,
-                agent_id VARCHAR(12) NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-                drift_type VARCHAR(30) NOT NULL,
-                severity VARCHAR(10) NOT NULL,
-                jsonl_uuid VARCHAR(50),
-                db_message_id VARCHAR(12),
-                jsonl_line INTEGER,
-                detail TEXT NOT NULL,
-                jsonl_content_len INTEGER,
-                db_content_len INTEGER,
-                detected_at DATETIME,
-                resolved_at DATETIME,
-                resolved_by VARCHAR(20)
-            )
-        """))
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_sync_drift_agent_id ON sync_drift(agent_id)"
-        ))
-        conn.commit()
-
         # --- Backfill tool_use_id from metadata JSON ---
         try:
             _unfilled_tid = conn.execute(text(
