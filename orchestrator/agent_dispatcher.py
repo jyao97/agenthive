@@ -129,7 +129,6 @@ def _derive_selected_index(item: dict) -> None:
             return
         # Exact label matching first (avoids keyword collision like "bypass manual")
         _PLAN_LABELS_LOWER = [
-            "yes, clear context & bypass",
             "yes, bypass permissions",
             "yes, manual approval",
             "give feedback",
@@ -139,14 +138,12 @@ def _derive_selected_index(item: dict) -> None:
                 item["selected_index"] = i
                 return
         # Keyword fallback for answers from Claude's tool_result (may differ in wording)
-        if "clear context" in a:
+        if "bypass" in a and "manual" not in a:
             item["selected_index"] = 0
-        elif "bypass" in a and "clear" not in a and "manual" not in a:
-            item["selected_index"] = 1
         elif "manual" in a:
-            item["selected_index"] = 2
+            item["selected_index"] = 1
         elif "feedback" in a or "type here" in a:
-            item["selected_index"] = 3
+            item["selected_index"] = 2
         # else: leave selected_index unset — don't default to 0
 
 

@@ -388,8 +388,9 @@ function QuestionBubble({ item, agentId, onAnswered }) {
 // --- Interactive: ExitPlanMode ---
 
 // Must match the exact order Claude CLI shows in the ExitPlanMode TUI
+// Note: "clear context" option was hidden by default in Claude Code v2.1.81
+// (can be restored with showClearContextOnPlanAccept setting)
 const PLAN_OPTIONS = [
-  { label: "Yes, clear context & bypass", description: "Approve, compact context, and skip permission prompts", color: "emerald" },
   { label: "Yes, bypass permissions", description: "Approve and skip permission prompts", color: "emerald" },
   { label: "Yes, manual approval", description: "Approve but require manual approval for each edit", color: "amber" },
   { label: "Give feedback", description: "Type feedback for Claude to revise the plan", color: "indigo" },
@@ -405,12 +406,11 @@ function _detectPlanIdx(answer) {
   const exactIdx = exactLabels.indexOf(a);
   if (exactIdx !== -1) return exactIdx;
   // Keyword fallback for answers from Claude's tool_result (may differ in wording)
-  if (/clear context/.test(a)) return 0;
-  if (/bypass/.test(a) && !/clear/.test(a) && !/manual/.test(a)) return 1;
-  if (/manual/.test(a)) return 2;
-  if (/feedback|type here|tell claude/.test(a)) return 3;
-  if (/^yes\b/.test(a) || a === "approve" || a === "approved") return 2; // safe default: manual approval
-  if (/^no\b/.test(a) || a === "reject") return 3; // feedback mode, not destructive
+  if (/bypass/.test(a) && !/manual/.test(a)) return 0;
+  if (/manual/.test(a)) return 1;
+  if (/feedback|type here|tell claude/.test(a)) return 2;
+  if (/^yes\b/.test(a) || a === "approve" || a === "approved") return 1; // safe default: manual approval
+  if (/^no\b/.test(a) || a === "reject") return 2; // feedback mode, not destructive
   return null; // unrecognized input — do not select any option
 }
 

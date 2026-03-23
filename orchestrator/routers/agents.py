@@ -2384,7 +2384,6 @@ class AnswerPayload(BaseModel):
 
 
 _PLAN_LABELS = [
-    "Yes, clear context & bypass",
     "Yes, bypass permissions",
     "Yes, manual approval",
     "Give feedback",
@@ -2551,30 +2550,30 @@ async def answer_agent_interactive(
 
     elif body.type == "exit_plan_mode":
         # Claude Code TUI plan approval options (arrow-navigated):
-        # 0: "Yes, clear context and bypass permissions"
-        # 1: "Yes, and bypass permissions"
-        # 2: "Yes, manually approve edits"
-        # 3: "Type here to tell Claude what to change"
+        # (v2.1.81+: "clear context" hidden by default)
+        # 0: "Yes, and bypass permissions"
+        # 1: "Yes, manually approve edits"
+        # 2: "Type here to tell Claude what to change"
 
         if body.selected_index is not None and body.selected_index >= 0:
             if body.selected_index > MAX_INDEX:
                 raise HTTPException(status_code=400, detail=f"selected_index too large (max {MAX_INDEX})")
             keys = ["Down"] * body.selected_index + ["Enter"]
         elif body.approved is True:
-            keys = ["Enter"]  # legacy: approve = first option (clear context + bypass)
+            keys = ["Enter"]  # legacy: approve = first option (bypass permissions)
         elif body.approved is False:
-            keys = ["Down", "Down", "Enter"]  # legacy: reject → manual approval (safest)
+            keys = ["Down", "Enter"]  # legacy: reject → manual approval (safest)
         else:
             raise HTTPException(status_code=400, detail="selected_index or approved required for exit_plan_mode")
         effective_index = body.selected_index
         if effective_index is None:
-            effective_index = 0 if body.approved else 2
+            effective_index = 0 if body.approved else 1
 
         # --- Check if this is a planning agent ---
         _task = db.get(Task, agent.task_id) if agent.task_id else None
         is_planning_agent = _task and _task.status == TaskStatus.PLANNING
 
-        if is_planning_agent and effective_index in (0, 1, 2):
+        if is_planning_agent and effective_index in (0, 1):
             # Planning agent: extract plan, kill tmux, dispatch new -p execution agent.
             # DON'T send tmux keys — the planning agent's job is done.
 
@@ -2607,8 +2606,8 @@ async def answer_agent_interactive(
                 _task.agent_id = None  # unlink so dispatch creates new agent
                 _task.started_at = None
 
-                # Option 2 (manual approval): disable skip_permissions
-                if effective_index == 2:
+                # Option 1 (manual approval): disable skip_permissions
+                if effective_index == 1:
                     _task.skip_permissions = False
 
                 # Stop planning agent
