@@ -1248,6 +1248,28 @@ def _infer_worktree_from_session(
 def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, str | None]]:
     """Parse a Claude Code session JSONL into conversation turns.
 
+    Convenience wrapper that reads the file then delegates to
+    _parse_session_turns_from_lines().
+    """
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            lines = f.readlines()
+    except OSError as e:
+        logger.warning("_parse_session_turns: failed to read %s: %s", jsonl_path, e)
+        return []
+
+    # Drop incomplete last line (mid-write by Claude Code)
+    if lines and not lines[-1].endswith("\n"):
+        lines.pop()
+
+    return _parse_session_turns_from_lines(lines)
+
+
+def _parse_session_turns_from_lines(
+    lines: list[str],
+) -> list[tuple[str, str, dict | None, str | None]]:
+    """Parse pre-read JSONL lines into conversation turns.
+
     Returns a list of (role, content, metadata, jsonl_uuid) tuples where:
     - role: "user", "assistant", or "system"
     - content: text content of the turn
@@ -1259,17 +1281,6 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, s
     Groups consecutive assistant entries into a single turn using _format_parts style.
     """
     turns: list[tuple[str, str, dict | None, str | None]] = []
-
-    try:
-        with open(jsonl_path, "r", errors="replace") as f:
-            lines = f.readlines()
-    except OSError as e:
-        logger.warning("_parse_session_turns: failed to read %s: %s", jsonl_path, e)
-        return turns
-
-    # Drop incomplete last line (mid-write by Claude Code)
-    if lines and not lines[-1].endswith("\n"):
-        lines.pop()
 
     # Accumulate assistant blocks between user messages
     assistant_parts: list[tuple[str, str]] = []
@@ -5138,10 +5149,18 @@ Here are the day's conversations (with timestamps):
             jsonl_path=jsonl_path,
         )
 
-        # Initialize: read current file state, set offset to end
+        # Initialize: read current file, populate cached_lines + offset
         try:
             with open(jsonl_path, "r", errors="replace") as f:
-                ctx.last_offset = f.seek(0, 2)  # seek to end — byte offset
+                raw_lines = f.readlines()
+                ctx.last_offset = f.tell()  # byte offset at EOF
+            # Drop incomplete last line (mid-write by Claude Code)
+            if raw_lines and not raw_lines[-1].endswith("\n"):
+                raw_lines.pop()
+            for _raw in raw_lines:
+                _stripped = _raw.strip()
+                if _stripped:
+                    ctx.cached_lines.append(_stripped)
         except OSError as e:
             logger.warning(
                 "Sync loop for agent %s: cannot read session JSONL %s: %s",
@@ -5155,6 +5174,9 @@ Here are the day's conversations (with timestamps):
             _init_tail = initial_turns[-1]
             _init_meta_sig = str(_init_tail[2]) if len(_init_tail) > 2 and _init_tail[2] else ""
             ctx.last_tail_hash = f"{_content_hash(_init_tail[1])}:{_init_meta_sig}"
+        # Set stable boundary to current state so first incremental
+        # read only parses new data from this point forward.
+        ctx.stable_turn_count = ctx.last_turn_count
 
         self._sync_contexts[agent_id] = ctx
 
