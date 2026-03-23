@@ -107,40 +107,35 @@ def _read_new_lines(path: str, offset: int) -> tuple[list[str], int]:
     return complete_lines, new_offset
 
 
-def _find_stable_boundary(lines: list[str]) -> tuple[int, int]:
-    """Scan *lines* and return (boundary_line_index, stable_turn_count).
+def _is_turn_boundary(entry: dict) -> bool:
+    """Return True if a JSONL entry starts a new conversation turn.
 
-    The boundary is the index of the last line that starts a new turn
-    boundary (user or system JSONL entry).  Everything before this boundary
-    produces finalized turns that won't change.
+    Real turn boundaries are: real user messages (string content),
+    system entries, and queue-operations.
 
-    Returns (0, 0) if no user/system entry is found (all assistant).
+    NOT boundaries: tool_result user entries (list content) and
+    system-injected messages (<system-reminder>, etc.) — the parser
+    skips these, so they don't separate assistant turn groups.
     """
-    last_boundary_idx = 0
-    turn_count = 0
-
-    for i, raw in enumerate(lines):
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-        entry_type = entry.get("type")
-        if entry_type in ("user", "system", "queue-operation"):
-            # This line starts a new turn group — the PREVIOUS assistant
-            # group (if any) is now finalized.
-            last_boundary_idx = i
-            # Count turns up to (not including) this boundary.
-            # We'll compute this properly using _parse_session_turns_from_lines
-            # on the stable prefix — but for tracking purposes we just
-            # record the line index.
-
-    # To get the actual stable_turn_count, parse lines[:last_boundary_idx].
-    # This is a one-time cost when the boundary advances.
-    return last_boundary_idx, -1  # -1 = needs recount
+    entry_type = entry.get("type")
+    if entry_type in ("system", "queue-operation"):
+        return True
+    if entry_type == "user":
+        content = entry.get("message", {}).get("content", "")
+        if isinstance(content, list):
+            return False  # tool_result
+        if isinstance(content, str) and content.strip():
+            stripped = content.strip()
+            if (
+                stripped.startswith("<local-command-caveat>")
+                or stripped.startswith("<command-name>")
+                or stripped.startswith("<local-command-stdout>")
+                or stripped.startswith("<system-reminder>")
+                or stripped.startswith("<task-notification>")
+            ):
+                return False  # system-injected
+        return True
+    return False
 
 
 def sync_parse_incremental(ctx: SyncContext) -> list[tuple[str, str, dict | None, str | None]]:
@@ -162,8 +157,14 @@ def sync_parse_incremental(ctx: SyncContext) -> list[tuple[str, str, dict | None
     if not ctx.cached_lines:
         return []
 
-    # 2. Find where the last turn boundary is in cached_lines
-    #    Scan backward from the end for the last user/system/queue-operation entry
+    # 2. Find where the last turn boundary is in cached_lines.
+    #    A "boundary" is a JSONL entry that starts a new conversation turn:
+    #    - Real user entries (string content, not tool_result lists)
+    #    - System entries
+    #    - Queue-operation entries
+    #    tool_result user entries (list content with type=tool_result) are NOT
+    #    boundaries — the parser skips them, and they sit between assistant
+    #    entries that belong to the SAME grouped turn.
     last_boundary_idx = 0
     for i in range(len(ctx.cached_lines) - 1, -1, -1):
         line = ctx.cached_lines[i].strip()
@@ -173,7 +174,7 @@ def sync_parse_incremental(ctx: SyncContext) -> list[tuple[str, str, dict | None
             entry = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
-        if entry.get("type") in ("user", "system", "queue-operation"):
+        if _is_turn_boundary(entry):
             last_boundary_idx = i
             break
 
