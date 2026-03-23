@@ -521,8 +521,8 @@ async def system_restart():
     import subprocess as _sp
     import sys
 
-    # Resolve project root (one level up from orchestrator/)
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Resolve project root (two levels up from orchestrator/routers/)
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     run_script = os.path.join(project_root, "run.sh")
     orchestrator_dir = os.path.join(project_root, "orchestrator")
 
