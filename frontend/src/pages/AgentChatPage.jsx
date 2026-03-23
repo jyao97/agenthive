@@ -2230,7 +2230,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         // Capture scroll height before DOM update for scroll preservation
         const el = scrollContainerRef.current;
         if (el) savedScrollHeight.current = el.scrollHeight;
-        setMessages((prev) => [...older, ...prev]);
+        setMessages((prev) => {
+          const seenIds = new Set(prev.map((m) => m.id));
+          const unique = older.filter((m) => !seenIds.has(m.id));
+          return unique.length ? [...unique, ...prev] : prev;
+        });
       }
       setHasMore(!!data?.has_more);
     } catch (err) {

@@ -1,14 +1,20 @@
-"""Sync engine — extracted sync logic for JSONL-to-DB reconciliation.
+"""Sync engine — pointer-based JSONL-to-DB synchronization.
 
-All functions are standalone async functions that take (ad, ctx) as first args,
-where `ad` is an AgentDispatcher instance and `ctx` is a SyncContext dataclass.
+Design principles:
+1. Pointer (last_turn_count) tracks sync position
+2. Hooks wake syncing (never create messages)
+3. sync_import_new_turns is the SOLE message creation path
+4. sync_full_scan is read-only audit (never creates/updates messages from JSONL)
+5. Compact/clear/new → sync_full_scan resets pointer
+
+All functions take (ad, ctx) where ad is AgentDispatcher, ctx is SyncContext.
 """
 
 import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sqlalchemy.exc import IntegrityError
 
@@ -19,7 +25,6 @@ from models import (
     Message,
     MessageRole,
     MessageStatus,
-    Project,
     ToolActivity,
 )
 from utils import utcnow as _utcnow
@@ -41,195 +46,17 @@ class SyncContext:
     agent_project: str = ""
     jsonl_path: str = ""
 
-    # Incremental read state
-    last_offset: int = 0          # byte position of last successful read (EOF)
-    last_turn_count: int = 0
-    last_tail_hash: str = ""
-    incremental_turns: list = field(default_factory=list)
+    # Sync pointer — the only 3 state fields that matter
+    last_offset: int = 0           # file byte size — change detection only
+    last_turn_count: int = 0       # THE pointer: number of turns processed
+    last_content_hash: str = ""    # hash of last turn content — streaming detection
 
-    # Turn-boundary pointers for incremental JSONL reading.
-    # stable_boundary: line index into cached_lines just before the last
-    #   user/system JSONL entry — everything before this is finalized
-    #   turns that never need re-parsing.
-    # stable_turn_count: number of fully completed turns before the boundary.
-    # cached_lines: raw JSONL lines accumulated so far (avoids re-reading
-    #   the entire file on each wake).
-    stable_boundary: int = 0
-    stable_turn_count: int = 0
-    cached_lines: list = field(default_factory=list)
-
-    # Agent state
+    # Agent operational state
     compact_notified: bool = False
-    compact_end_emitted: bool = False  # True if PostCompact already emitted "Compact end"
-    compact_detected_at: float = 0.0   # monotonic time when sync detected compact (for fallback)
+    compact_end_emitted: bool = False
+    compact_detected_at: float = 0.0
     idle_polls: int = 0
     getsize_error_count: int = 0
-
-
-# ---------------------------------------------------------------------------
-# Incremental JSONL reading
-# ---------------------------------------------------------------------------
-
-def _read_new_lines(path: str, offset: int) -> tuple[list[str], int]:
-    """Read new complete lines from *path* starting at byte *offset*.
-
-    Returns (new_lines, new_offset) where new_offset points to the byte
-    just after the last complete line.  Incomplete trailing lines (mid-write
-    by Claude Code) are excluded — the offset stays before them so they're
-    re-read on the next wake.
-
-    Uses binary mode for exact byte-offset tracking (text mode + manual
-    byte counting drifts when errors="replace" substitutes characters).
-    """
-    try:
-        with open(path, "rb") as f:
-            f.seek(offset)
-            raw_bytes = f.read()
-    except OSError as e:
-        logger.warning("_read_new_lines: failed to read %s at offset %d: %s", path, offset, e)
-        return [], offset
-
-    if not raw_bytes:
-        return [], offset
-
-    # Find the last complete newline — everything after it is a partial
-    # line that we'll re-read next time.
-    last_nl = raw_bytes.rfind(b"\n")
-    if last_nl == -1:
-        # No complete line yet — don't advance offset
-        return [], offset
-
-    complete_bytes = raw_bytes[:last_nl + 1]
-    new_offset = offset + len(complete_bytes)
-
-    # Decode and split into lines
-    text = complete_bytes.decode("utf-8", errors="replace")
-    complete_lines = [line.strip() for line in text.split("\n") if line.strip()]
-
-    return complete_lines, new_offset
-
-
-def _is_turn_boundary(entry: dict) -> bool:
-    """Return True if a JSONL entry starts a new conversation turn.
-
-    MUST exactly mirror what _parse_session_turns_from_lines() in
-    agent_dispatcher.py treats as a turn-producing entry.  Any mismatch
-    causes the incremental parser to split assistant groups at points
-    the full parser ignores, creating phantom duplicate turns.
-
-    Boundaries: real user messages (string content), system entries
-    (except filtered subtypes), and queue-operation enqueue with
-    non-empty content.
-
-    NOT boundaries: tool_result user entries (list content),
-    system-injected messages, queue-operation remove/dequeue, system
-    entries with turn_duration/stop_hook_summary subtypes, and
-    enqueue with empty content.
-    """
-    entry_type = entry.get("type")
-    if entry_type == "queue-operation":
-        # Only enqueue with non-empty content creates a turn in the
-        # parser (agent_dispatcher.py:1418-1428).  remove/dequeue are
-        # silently skipped — treating them as boundaries here would
-        # split an assistant group that the parser keeps whole.
-        if entry.get("operation") != "enqueue":
-            return False
-        content = entry.get("content", "")
-        return isinstance(content, str) and bool(content.strip())
-    if entry_type == "system":
-        # Parser skips these subtypes (agent_dispatcher.py:1434)
-        subtype = entry.get("subtype", "")
-        if subtype in ("turn_duration", "stop_hook_summary"):
-            return False
-        return True
-    if entry_type == "user":
-        content = entry.get("message", {}).get("content", "")
-        if isinstance(content, list):
-            return False  # tool_result
-        if isinstance(content, str) and content.strip():
-            stripped = content.strip()
-            if (
-                stripped.startswith("<local-command-caveat>")
-                or stripped.startswith("<command-name>")
-                or stripped.startswith("<local-command-stdout>")
-                or stripped.startswith("<system-reminder>")
-                or stripped.startswith("<task-notification>")
-            ):
-                return False  # system-injected
-        return True
-    return False
-
-
-def sync_parse_incremental(ctx: SyncContext) -> list[tuple[str, str, dict | None, str | None]]:
-    """Incrementally read JSONL and return parsed turns.
-
-    Uses ctx.cached_lines + ctx.stable_boundary to avoid re-reading and
-    re-parsing the full file.  Only new bytes are read from disk, and only
-    lines from the last stable boundary forward are re-parsed.
-    """
-    from agent_dispatcher import _parse_session_turns_from_lines
-
-    # 1. Read new bytes from disk
-    new_lines, new_offset = _read_new_lines(ctx.jsonl_path, ctx.last_offset)
-    ctx.last_offset = new_offset
-
-    if new_lines:
-        ctx.cached_lines.extend(new_lines)
-
-    if not ctx.cached_lines:
-        return []
-
-    # 2. Find where the last turn boundary is in cached_lines.
-    #    A "boundary" is a JSONL entry that starts a new conversation turn:
-    #    - Real user entries (string content, not tool_result lists)
-    #    - System entries
-    #    - Queue-operation entries
-    #    tool_result user entries (list content with type=tool_result) are NOT
-    #    boundaries — the parser skips them, and they sit between assistant
-    #    entries that belong to the SAME grouped turn.
-    last_boundary_idx = 0
-    for i in range(len(ctx.cached_lines) - 1, -1, -1):
-        line = ctx.cached_lines[i].strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if _is_turn_boundary(entry):
-            last_boundary_idx = i
-            break
-
-    # 3. If boundary advanced, parse the stable prefix to get stable_turn_count
-    if last_boundary_idx > ctx.stable_boundary:
-        stable_prefix = ctx.cached_lines[:last_boundary_idx]
-        stable_turns = _parse_session_turns_from_lines(stable_prefix)
-        ctx.stable_turn_count = len(stable_turns)
-        ctx.stable_boundary = last_boundary_idx
-        # Cache the stable turns so we don't re-parse them
-        ctx.incremental_turns = list(stable_turns)
-    elif ctx.stable_boundary == 0 and not ctx.incremental_turns:
-        # No boundary found yet — everything is open assistant tail
-        ctx.stable_turn_count = 0
-
-    # 4. Parse only the tail (from boundary to end)
-    tail_lines = ctx.cached_lines[ctx.stable_boundary:]
-    tail_turns = _parse_session_turns_from_lines(tail_lines)
-
-    # 5. Combine stable + tail
-    all_turns = list(ctx.incremental_turns[:ctx.stable_turn_count]) + tail_turns
-    return all_turns
-
-
-def sync_reset_incremental(ctx: SyncContext):
-    """Reset incremental state — used after compact or session rotation."""
-    ctx.cached_lines.clear()
-    ctx.stable_boundary = 0
-    ctx.stable_turn_count = 0
-    ctx.incremental_turns.clear()
-    ctx.last_turn_count = 0
-    ctx.last_tail_hash = ""
-    ctx.last_offset = 0
 
 
 # ---------------------------------------------------------------------------
@@ -252,85 +79,8 @@ def _content_hash(content: str) -> str:
     return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
-def _purge_stale_messages_after_compact(
-    db, agent_id: str,
-    new_jsonl_uuids: set[str],
-):
-    """Remove cli-sourced messages whose jsonl_uuid is no longer in the
-    compacted JSONL.  Web/task/system messages are preserved.
-
-    This prevents duplicate messages after compact rewrites the JSONL
-    (old turns stay in DB alongside newly imported compacted turns).
-    """
-    if not new_jsonl_uuids:
-        # No UUIDs in new JSONL — likely a parse failure or empty file.
-        # Don't purge anything to avoid data loss.
-        return 0
-    stale = (
-        db.query(Message)
-        .filter(
-            Message.agent_id == agent_id,
-            Message.source == "cli",
-            Message.jsonl_uuid.isnot(None),
-            Message.jsonl_uuid.notin_(new_jsonl_uuids),
-        )
-        .all()
-    )
-    if stale:
-        for m in stale:
-            db.delete(m)
-        logger.info(
-            "Purged %d stale cli messages for agent %s after compact",
-            len(stale), agent_id,
-        )
-    return len(stale)
-
-
-def _purge_stale_system_messages(db, agent_id: str, new_turns):
-    """Remove cli-sourced system messages not in the compacted JSONL.
-
-    Uses a Counter (multiset) to preserve multiplicity — if the new JSONL
-    has 2 "session started" messages, keep exactly 2 in DB.
-    """
-    from collections import Counter
-
-    new_system_counts = Counter(
-        c for r, c, _, _ in new_turns if r == "system"
-    )
-    existing_system = (
-        db.query(Message)
-        .filter(
-            Message.agent_id == agent_id,
-            Message.role == MessageRole.SYSTEM,
-            Message.source == "cli",
-            Message.jsonl_uuid.is_(None),
-        )
-        .order_by(Message.created_at.asc())
-        .all()
-    )
-    keep_counts = Counter()
-    purged = 0
-    for m in existing_system:
-        if keep_counts[m.content] < new_system_counts.get(m.content, 0):
-            keep_counts[m.content] += 1
-        else:
-            db.delete(m)
-            purged += 1
-    if purged:
-        logger.info(
-            "Purged %d stale system messages for agent %s after compact",
-            purged, agent_id,
-        )
-    return purged
-
-
 def _end_compact_activity(db, agent_id: str, session_id: str):
-    """Mark the most recent unfinished Compact tool activity as ended in DB.
-
-    The sync engine detects compact completion and emits WS events, but
-    the DB record was never updated — causing stale in-progress entries
-    on page reload / loadData.
-    """
+    """Mark the most recent unfinished Compact tool activity as ended."""
     existing = (
         db.query(ToolActivity)
         .filter(
@@ -347,467 +97,329 @@ def _end_compact_activity(db, agent_id: str, session_id: str):
         existing.output_summary = "context compacted"
 
 
-# ---------------------------------------------------------------------------
-# 1. sync_reconcile_initial — full-scan comparison on loop start
-# ---------------------------------------------------------------------------
+def _notify_interactive(ad, agent, new_turns):
+    """Send push notifications for unanswered interactive items."""
+    _interactive_types = []
+    for _r, _c, *_rest in new_turns:
+        if _r == "assistant" and _rest:
+            _meta = _rest[0] if _rest else None
+            if isinstance(_meta, dict):
+                for _item in _meta.get("interactive", []):
+                    if _item.get("answer") is None:
+                        _interactive_types.append(_item.get("type", ""))
 
-async def sync_reconcile_initial(ad, ctx: SyncContext):
-    """Startup reconciliation — import new content + audit for drift.
+    if not _interactive_types:
+        return
+    if ad._is_agent_in_use(agent.id, agent.tmux_pane):
+        return
 
-    Replaces the old full-scan content-sig repair approach.
-    Uses sync_import_new_turns for message creation (UUID-based dedup)
-    and sync_audit for read-only drift detection.
-    """
-    # Reset incremental state so import reads from beginning
-    sync_reset_incremental(ctx)
-
-    # Import any genuinely new turns via the normal path
-    result = await sync_import_new_turns(ad, ctx)
-
-    # Run audit to detect drift (read-only, writes SyncDrift records)
-    drift = await sync_audit(ad, ctx)
-    if drift:
-        logger.warning(
-            "Sync audit for %s found %d drift records on startup",
-            ctx.agent_id, len(drift),
+    from notify import notify as _notify
+    if "exit_plan_mode" in _interactive_types:
+        _notify(
+            "message", agent.id,
+            agent.name or f"Agent {agent.id[:8]}",
+            "Plan approval needed",
+            f"/agents/{agent.id}",
+            muted=agent.muted, in_use=False,
+        )
+    elif "ask_user_question" in _interactive_types:
+        _notify(
+            "message", agent.id,
+            agent.name or f"Agent {agent.id[:8]}",
+            "Question — waiting for your answer",
+            f"/agents/{agent.id}",
+            muted=agent.muted, in_use=False,
         )
 
-    return result
-
 
 # ---------------------------------------------------------------------------
-# 2. sync_import_new_turns — incremental sync (file grew)
+# sync_import_new_turns — SOLE message creation path
 # ---------------------------------------------------------------------------
 
 async def sync_import_new_turns(ad, ctx: SyncContext):
-    """Read JSONL incrementally, parse new turns, import to DB.
+    """Full-parse JSONL, import new turns via pointer.
 
-    Returns one of: "new_turns", "turn_updated", "streaming", "no_change"
+    This is the SOLE path that creates Message rows from JSONL.
+    Returns: "new_turns", "turn_updated", "no_change", "compact", "exit",
+             "commit_error"
     """
     from agent_dispatcher import (
+        _parse_session_turns,
         _is_wrapped_prompt,
         _merge_interactive_meta,
     )
-    from websocket import (
-        emit_agent_update,
-        emit_new_message,
-        emit_tool_activity,
-    )
+    from websocket import emit_agent_update, emit_new_message
     from thumbnails import generate_thumbnails_for_message
 
-    # Incremental parse — reads only new bytes, re-parses only the tail
-    # (from last turn boundary forward).  sync_parse_incremental updates
-    # ctx.last_offset internally.
-    _prev_offset = ctx.last_offset
-    turns = sync_parse_incremental(ctx)
-    _current_offset = ctx.last_offset
-
-    # Detect turn count decrease (compact may produce a larger
-    # file but with fewer turns if the summary is long).
-    # This requires a full re-read since the incremental cache is stale.
-    if len(turns) < ctx.last_turn_count:
-        from agent_dispatcher import _parse_session_turns
-        logger.info(
-            "Turn count decreased for agent %s (%d -> %d, "
-            "likely /compact), doing full re-read",
-            ctx.agent_id, ctx.last_turn_count, len(turns),
-        )
-        sync_reset_incremental(ctx)
-        turns = _parse_session_turns(ctx.jsonl_path)
-        try:
-            _current_offset = os.path.getsize(ctx.jsonl_path)
-        except OSError:
-            _current_offset = _prev_offset
-        ctx.last_offset = _current_offset
-        # Re-populate cached_lines from full read for future incremental use
-        try:
-            with open(ctx.jsonl_path, "r", errors="replace") as _f:
-                for _raw in _f:
-                    _stripped = _raw.strip()
-                    if _stripped:
-                        ctx.cached_lines.append(_stripped)
-        except OSError:
-            pass
-        ctx.incremental_turns = list(turns)
-        ctx.last_turn_count = len(turns)
-        _t = turns[-1] if turns else ("", "", None)
-        _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
-        ctx.last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
-
-        # Purge old cli-sourced messages whose UUIDs are no longer in the
-        # compacted JSONL — prevents duplicate messages in the chat.
-        new_uuids = {uuid for _, _, _, uuid in turns if uuid}
-        db_purge = SessionLocal()
-        try:
-            _purge_stale_messages_after_compact(db_purge, ctx.agent_id, new_uuids)
-            _purge_stale_system_messages(db_purge, ctx.agent_id, turns)
-            # Reassign session_seq after compact — match surviving DB messages
-            # by uuid and assign new session_seq from the fresh turn order.
-            for _idx, (_r, _c, _m, _uuid) in enumerate(turns):
-                if _uuid:
-                    _msg = db_purge.query(Message).filter(
-                        Message.agent_id == ctx.agent_id,
-                        Message.jsonl_uuid == _uuid,
-                    ).first()
-                    if _msg:
-                        _msg.session_seq = _idx
-            db_purge.commit()
-        finally:
-            db_purge.close()
-
-        # Do NOT emit compact-end UI signals here — PostCompact hook is
-        # the authoritative source.  Emitting here races the hook and
-        # causes premature double-tick / system-message indicators.
-        if ctx.compact_end_emitted:
-            logger.info(
-                "Compact end already emitted by PostCompact hook for agent %s, "
-                "resetting flag",
-                ctx.agent_id,
-            )
-            ctx.compact_end_emitted = False
-        else:
-            import time as _time
-            ctx.compact_detected_at = _time.monotonic()
-            logger.info(
-                "Turn-count-decrease compact for agent %s but PostCompact not "
-                "yet received, deferring UI signals",
-                ctx.agent_id,
-            )
-        ctx.compact_notified = False
-        # After compact, reconcile to import any genuinely new turns that
-        # arrived post-compact (the counter reset above marks ALL turns as
-        # "processed" including ones not yet in DB).
-        await sync_reconcile_initial(ad, ctx)
-        return "compact_turn_decrease"
-
-    # Update incremental state
-    ctx.incremental_turns = list(turns)
-
-    new_turns = turns[ctx.last_turn_count:]
-
-    # Check if the last existing turn's content grew
-    _tail_turn = turns[-1] if turns else ("", "", None)
-    _tail_meta_sig = str(_tail_turn[2]) if len(_tail_turn) > 2 and _tail_turn[2] else ""
-    tail_hash = f"{_content_hash(_tail_turn[1])}:{_tail_meta_sig}" if turns else ""
-    last_turn_updated = (
-        not new_turns
-        and len(turns) == ctx.last_turn_count
-        and tail_hash != ctx.last_tail_hash
-        and turns
-        and turns[-1][0] == "assistant"
-    )
-
-    if not new_turns and not last_turn_updated:
-        # Commit offset even on no_change — the full parse succeeded,
-        # so we know the file state is consistent up to this point.
-        ctx.last_offset = _current_offset
+    # 1. Check file size for change detection
+    try:
+        current_size = os.path.getsize(ctx.jsonl_path)
+    except OSError:
         return "no_change"
 
+    if current_size < ctx.last_offset:
+        return "compact"  # caller handles via sync_full_scan
+
+    if current_size == ctx.last_offset:
+        return "no_change"
+
+    # 2. Full parse — simple, correct, the "stable point" approach
+    turns = _parse_session_turns(ctx.jsonl_path)
+
+    # 3. Detect turn count decrease (compact with longer summary)
+    if len(turns) < ctx.last_turn_count:
+        return "compact"
+
+    # 4. Slice new turns using the pointer
+    new_turns = turns[ctx.last_turn_count:]
+
+    # 5. Streaming update — last turn content changed but no new turns
+    if not new_turns and turns:
+        last_turn = turns[-1]
+        new_hash = _content_hash(last_turn[1])
+        if new_hash != ctx.last_content_hash and last_turn[0] == "assistant":
+            db = SessionLocal()
+            try:
+                agent = db.get(Agent, ctx.agent_id)
+                if not agent or agent.status != AgentStatus.SYNCING:
+                    return "exit"
+
+                last_msg = db.query(Message).filter(
+                    Message.agent_id == ctx.agent_id,
+                    Message.role == MessageRole.AGENT,
+                ).order_by(Message.created_at.desc()).first()
+
+                if last_msg:
+                    _role, _content, *_rest = last_turn
+                    _meta = _rest[0] if _rest else None
+                    _uuid = _rest[1] if len(_rest) > 1 else None
+                    last_msg.content = _content
+                    last_msg.completed_at = _utcnow()
+                    last_msg.session_seq = last_msg.session_seq or (len(turns) - 1)
+                    if _uuid and not last_msg.jsonl_uuid:
+                        last_msg.jsonl_uuid = _uuid
+                    if _meta is not None:
+                        last_msg.meta_json = _merge_interactive_meta(
+                            last_msg.meta_json, _meta,
+                        )
+                    agent.last_message_preview = (_content or "")[:200]
+                    agent.last_message_at = _utcnow()
+                    db.commit()
+                    ad._emit(emit_new_message(
+                        agent.id, "sync", ctx.agent_name, ctx.agent_project,
+                    ))
+                    ctx.last_content_hash = new_hash
+                    ctx.last_offset = current_size
+                    logger.info(
+                        "Updated last turn content for agent %s (%d chars)",
+                        ctx.agent_id, len(_content),
+                    )
+            finally:
+                db.close()
+            return "turn_updated"
+        else:
+            ctx.last_offset = current_size
+            return "no_change"
+
+    if not new_turns:
+        ctx.last_offset = current_size
+        return "no_change"
+
+    # 6. Import new turns
     db = SessionLocal()
     try:
         agent = db.get(Agent, ctx.agent_id)
         if not agent or agent.status != AgentStatus.SYNCING:
-            logger.info(
-                "Sync loop exiting for agent %s (status changed to %s during turn import)",
-                ctx.agent_id, agent.status if agent else "DELETED",
-            )
             return "exit"
 
-        if last_turn_updated:
-            # Update the last agent message in-place
-            last_msg = db.query(Message).filter(
-                Message.agent_id == ctx.agent_id,
-                Message.role == MessageRole.AGENT,
-            ).order_by(Message.created_at.desc()).first()
-            if last_msg:
-                _last_role, _last_content, *_last_rest = turns[-1]
-                _last_meta = _last_rest[0] if _last_rest else None
-                _last_uuid = _last_rest[1] if len(_last_rest) > 1 else None
-                last_msg.content = _last_content
-                last_msg.completed_at = _utcnow()
-                last_msg.session_seq = last_msg.session_seq or (len(turns) - 1)
-                # Assign jsonl_uuid early so dedup works after restart
-                if _last_uuid and not last_msg.jsonl_uuid:
-                    last_msg.jsonl_uuid = _last_uuid
-                if _last_meta is not None:
-                    last_msg.meta_json = _merge_interactive_meta(
-                        last_msg.meta_json, _last_meta,
-                    )
-                agent.last_message_preview = (_last_content or "")[:200]
-                agent.last_message_at = _utcnow()
-                db.commit()
-                ad._emit(emit_new_message(agent.id, "sync", ctx.agent_name, ctx.agent_project))
-                # Interactive card notifications are handled by PreToolUse hook
-                ctx.last_tail_hash = tail_hash
-                ctx.last_offset = _current_offset
-                logger.info(
-                    "Updated last turn content for agent %s (%s chars)",
-                    ctx.agent_id, len(_last_content),
-                )
-            return "turn_updated"
-        else:
-            # Before importing new turns, check if the turn just
-            # before the new ones grew
-            if ctx.last_turn_count > 0 and new_turns:
-                prev_role, prev_content, *prev_rest = turns[ctx.last_turn_count - 1]
-                prev_meta = prev_rest[0] if prev_rest else None
-                prev_uuid = prev_rest[1] if len(prev_rest) > 1 else None
-                if prev_role == "assistant":
-                    last_agent_msg = db.query(Message).filter(
-                        Message.agent_id == ctx.agent_id,
-                        Message.role == MessageRole.AGENT,
-                    ).order_by(Message.created_at.desc()).first()
-                    _is_match = False
-                    if last_agent_msg:
-                        if (prev_uuid and last_agent_msg.jsonl_uuid
-                                and prev_uuid == last_agent_msg.jsonl_uuid):
-                            _is_match = True
-                        elif len(last_agent_msg.content) < len(prev_content):
-                            _is_match = True
-                    if _is_match and len(last_agent_msg.content) < len(prev_content):
-                        old_len = len(last_agent_msg.content)
-                        last_agent_msg.content = prev_content
-                        last_agent_msg.completed_at = _utcnow()
-                        last_agent_msg.session_seq = last_agent_msg.session_seq or (ctx.last_turn_count - 1)
-                        if prev_uuid and not last_agent_msg.jsonl_uuid:
-                            last_agent_msg.jsonl_uuid = prev_uuid
-                        if prev_meta is not None:
-                            last_agent_msg.meta_json = _merge_interactive_meta(
-                                last_agent_msg.meta_json, prev_meta,
-                            )
-                        logger.info(
-                            "Updated previous turn content for agent %s "
-                            "(%d -> %d chars)",
-                            ctx.agent_id, old_len, len(prev_content),
+        # Before importing, check if previous turn grew (streaming finalized)
+        if ctx.last_turn_count > 0:
+            prev_role, prev_content, *prev_rest = turns[ctx.last_turn_count - 1]
+            prev_uuid = prev_rest[1] if len(prev_rest) > 1 else None
+            prev_meta = prev_rest[0] if prev_rest else None
+            if prev_role == "assistant":
+                last_agent_msg = db.query(Message).filter(
+                    Message.agent_id == ctx.agent_id,
+                    Message.role == MessageRole.AGENT,
+                ).order_by(Message.created_at.desc()).first()
+                if (last_agent_msg
+                        and len(last_agent_msg.content or "") < len(prev_content)):
+                    last_agent_msg.content = prev_content
+                    last_agent_msg.completed_at = _utcnow()
+                    if prev_uuid and not last_agent_msg.jsonl_uuid:
+                        last_agent_msg.jsonl_uuid = prev_uuid
+                    if prev_meta is not None:
+                        last_agent_msg.meta_json = _merge_interactive_meta(
+                            last_agent_msg.meta_json, prev_meta,
                         )
 
-            # Import new turns
-            _actually_inserted = 0
-            for i, (role, content, *rest) in enumerate(new_turns):
-                seq = ctx.last_turn_count + i
-                meta = rest[0] if rest else None
-                jsonl_uuid = rest[1] if len(rest) > 1 else None
-                meta_json = json.dumps(meta) if meta else None
-                if role == "user":
-                    # Detect user interrupt — Claude Code writes this when
-                    # Escape/Ctrl+C stops generation.  Clear generating state
-                    # so the UI reflects the actual idle status.
-                    if "[Request interrupted by user" in (content or ""):
-                        if ctx.agent_id in ad._generating_agents or (
-                            agent and agent.generating_msg_id is not None
-                        ):
-                            ad._stop_generating(ctx.agent_id)
-                            logger.info(
-                                "Interrupt detected for agent %s, cleared generating state",
-                                ctx.agent_id[:8],
-                            )
+        _actually_inserted = 0
+        for i, (role, content, *rest) in enumerate(new_turns):
+            seq = ctx.last_turn_count + i
+            meta = rest[0] if rest else None
+            jsonl_uuid = rest[1] if len(rest) > 1 else None
+            meta_json = json.dumps(meta) if meta else None
 
-                    from sqlalchemy import or_ as _or
-                    if _is_wrapped_prompt(content):
-                        _web_msg = db.query(Message).filter(
-                            Message.agent_id == ctx.agent_id,
-                            Message.role == MessageRole.USER,
-                            _or(
-                                Message.source == "web",
-                                Message.source == "plan_continue",
-                            ),
-                            Message.jsonl_uuid.is_(None),
-                        ).order_by(Message.created_at.desc()).first()
-                        if _web_msg:
-                            if jsonl_uuid:
-                                _web_msg.jsonl_uuid = jsonl_uuid
-                            if not _web_msg.delivered_at:
-                                _web_msg.delivered_at = _utcnow()
-                                from websocket import emit_message_delivered
-                                asyncio.ensure_future(emit_message_delivered(
-                                    ctx.agent_id, _web_msg.id,
-                                    _web_msg.delivered_at.isoformat(),
-                                ))
-                                logger.info(
-                                    "Message %s delivered for agent %s (JSONL wrapped prompt)",
-                                    _web_msg.id, ctx.agent_id[:8],
-                                )
-                        continue
-                    # UUID-based dedup
-                    if jsonl_uuid:
-                        existing_uuid = db.query(Message.id).filter(
-                            Message.agent_id == ctx.agent_id,
-                            Message.jsonl_uuid == jsonl_uuid,
-                        ).first()
-                        if existing_uuid:
-                            continue
-                    _now = _utcnow()
-                    msg = Message(
-                        agent_id=ctx.agent_id,
-                        role=MessageRole.USER,
-                        content=content,
-                        status=MessageStatus.COMPLETED,
-                        source="cli",
-                        jsonl_uuid=jsonl_uuid,
-                        completed_at=_now,
-                        delivered_at=_now,
-                        tool_use_id=_extract_tool_use_id(meta),
-                        session_seq=seq,
-                    )
-                elif role == "assistant":
-                    # UUID-based dedup for assistant turns (prevents
-                    # duplicates after compact resets turn counters)
-                    if jsonl_uuid:
-                        _existing_asst = db.query(Message.id).filter(
-                            Message.agent_id == ctx.agent_id,
-                            Message.jsonl_uuid == jsonl_uuid,
-                        ).first()
-                        if _existing_asst:
-                            continue
+            if role == "user":
+                # Detect user interrupt
+                if "[Request interrupted by user" in (content or ""):
+                    if ctx.agent_id in ad._generating_agents or (
+                        agent and agent.generating_msg_id is not None
+                    ):
+                        ad._stop_generating(ctx.agent_id)
 
-                    # Upgrade hook-created row if it exists
-                    _hook_upgraded = False
-                    if meta:
-                        _interactive = meta.get("interactive", [])
-                        _tids = [item.get("tool_use_id") for item in _interactive if item.get("tool_use_id")]
-                        if _tids:
-                            for _tid in _tids:
-                                _hook_msg = db.query(Message).filter(
-                                    Message.agent_id == ctx.agent_id,
-                                    Message.jsonl_uuid == f"hook-{_tid}",
-                                ).first()
-                                if _hook_msg:
-                                    _hook_msg.content = content
-                                    _hook_msg.jsonl_uuid = jsonl_uuid
-                                    _hook_msg.meta_json = _merge_interactive_meta(
-                                        _hook_msg.meta_json, meta,
-                                    )
-                                    _hook_msg.completed_at = _utcnow()
-                                    _hook_msg.session_seq = seq
-                                    _hook_upgraded = True
-                                    logger.info(
-                                        "Upgraded hook message %s -> jsonl_uuid %s for agent %s",
-                                        _hook_msg.id, jsonl_uuid[:12] if jsonl_uuid else "none", ctx.agent_id[:8],
-                                    )
-                                    break
-                    if _hook_upgraded:
-                        continue
-                    _now = _utcnow()
-                    msg = Message(
-                        agent_id=ctx.agent_id,
-                        role=MessageRole.AGENT,
-                        content=content,
-                        status=MessageStatus.COMPLETED,
-                        source="cli",
-                        meta_json=meta_json,
-                        jsonl_uuid=jsonl_uuid,
-                        completed_at=_now,
-                        delivered_at=_now,
-                        tool_use_id=_extract_tool_use_id(meta),
-                        session_seq=seq,
-                    )
-                elif role == "system":
-                    _now = _utcnow()
-                    msg = Message(
-                        agent_id=ctx.agent_id,
-                        role=MessageRole.SYSTEM,
-                        content=content,
-                        status=MessageStatus.COMPLETED,
-                        source="cli",
-                        jsonl_uuid=jsonl_uuid,
-                        completed_at=_now,
-                        delivered_at=_now,
-                        session_seq=seq,
-                    )
-                else:
-                    continue
-                try:
-                    with db.begin_nested():  # SAVEPOINT
-                        db.add(msg)
-                        db.flush()
-                        _actually_inserted += 1
-                except IntegrityError:
-                    logger.warning(
-                        "Skipped duplicate jsonl_uuid %s for agent %s",
-                        jsonl_uuid, ctx.agent_id[:8],
-                    )
+                # Wrapped prompt linking (FIFO order — asc, not desc)
+                from sqlalchemy import or_ as _or
+                if _is_wrapped_prompt(content):
+                    _web_msg = db.query(Message).filter(
+                        Message.agent_id == ctx.agent_id,
+                        Message.role == MessageRole.USER,
+                        _or(
+                            Message.source == "web",
+                            Message.source == "plan_continue",
+                        ),
+                        Message.jsonl_uuid.is_(None),
+                    ).order_by(Message.created_at.asc()).first()
+                    if _web_msg:
+                        if jsonl_uuid:
+                            _web_msg.jsonl_uuid = jsonl_uuid
+                        if not _web_msg.delivered_at:
+                            _web_msg.delivered_at = _utcnow()
+                            from websocket import emit_message_delivered
+                            asyncio.ensure_future(emit_message_delivered(
+                                ctx.agent_id, _web_msg.id,
+                                _web_msg.delivered_at.isoformat(),
+                            ))
                     continue
 
-            if _actually_inserted:
-                agent.last_message_preview = (new_turns[-1][1] or "")[:200]
-                agent.last_message_at = _utcnow()
-            try:
-                db.commit()
-            except Exception as _commit_exc:
-                db.rollback()
-                logger.warning(
-                    "Commit failed for agent %s, rolling back: %s",
-                    ctx.agent_id[:8], _commit_exc,
+                # UUID-based dedup
+                if jsonl_uuid:
+                    existing = db.query(Message.id).filter(
+                        Message.agent_id == ctx.agent_id,
+                        Message.jsonl_uuid == jsonl_uuid,
+                    ).first()
+                    if existing:
+                        continue
+
+                _now = _utcnow()
+                msg = Message(
+                    agent_id=ctx.agent_id,
+                    role=MessageRole.USER,
+                    content=content,
+                    status=MessageStatus.COMPLETED,
+                    source="cli",
+                    jsonl_uuid=jsonl_uuid,
+                    completed_at=_now,
+                    delivered_at=_now,
+                    tool_use_id=_extract_tool_use_id(meta),
+                    session_seq=seq,
                 )
-                # Still update counters so we don't re-process the same turns
-                ctx.last_turn_count = len(turns)
-                ctx.last_tail_hash = tail_hash
-                ctx.last_offset = _current_offset
-                return "commit_error"
 
-            ctx.last_turn_count = len(turns)
-            ctx.last_tail_hash = tail_hash
-            ctx.last_offset = _current_offset
-            ad._emit(emit_agent_update(
-                agent.id, agent.status.value, agent.project
-            ))
-            _new_roles = [r for r, *_ in new_turns]
-            logger.info(
-                "Synced %d new turns for agent %s (roles=%s)",
-                len(new_turns), ctx.agent_id, _new_roles,
+            elif role == "assistant":
+                # UUID-based dedup
+                if jsonl_uuid:
+                    existing = db.query(Message.id).filter(
+                        Message.agent_id == ctx.agent_id,
+                        Message.jsonl_uuid == jsonl_uuid,
+                    ).first()
+                    if existing:
+                        continue
+
+                _now = _utcnow()
+                msg = Message(
+                    agent_id=ctx.agent_id,
+                    role=MessageRole.AGENT,
+                    content=content,
+                    status=MessageStatus.COMPLETED,
+                    source="cli",
+                    meta_json=meta_json,
+                    jsonl_uuid=jsonl_uuid,
+                    completed_at=_now,
+                    delivered_at=_now,
+                    tool_use_id=_extract_tool_use_id(meta),
+                    session_seq=seq,
+                )
+
+            elif role == "system":
+                # UUID-based dedup (synthetic UUIDs assigned by parser)
+                if jsonl_uuid:
+                    existing = db.query(Message.id).filter(
+                        Message.agent_id == ctx.agent_id,
+                        Message.jsonl_uuid == jsonl_uuid,
+                    ).first()
+                    if existing:
+                        continue
+
+                _now = _utcnow()
+                msg = Message(
+                    agent_id=ctx.agent_id,
+                    role=MessageRole.SYSTEM,
+                    content=content,
+                    status=MessageStatus.COMPLETED,
+                    source="cli",
+                    jsonl_uuid=jsonl_uuid,
+                    completed_at=_now,
+                    delivered_at=_now,
+                    session_seq=seq,
+                )
+            else:
+                continue
+
+            try:
+                with db.begin_nested():  # SAVEPOINT
+                    db.add(msg)
+                    db.flush()
+                    _actually_inserted += 1
+            except IntegrityError:
+                logger.warning(
+                    "Skipped duplicate jsonl_uuid %s for agent %s",
+                    jsonl_uuid, ctx.agent_id[:8],
+                )
+                continue
+
+        if _actually_inserted:
+            agent.last_message_preview = (new_turns[-1][1] or "")[:200]
+            agent.last_message_at = _utcnow()
+
+        try:
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.warning(
+                "Commit failed for agent %s, will retry next cycle: %s",
+                ctx.agent_id[:8], exc,
             )
-            if any(r != "user" for r, *_ in new_turns):
-                ad._emit(emit_new_message(agent.id, "sync", ctx.agent_name, ctx.agent_project))
+            # DO NOT advance pointer — next cycle retries, UUID dedup
+            # skips already-committed turns
+            return "commit_error"
 
-            # Notify for unanswered interactive items (AskUserQuestion, ExitPlanMode)
-            _has_unanswered_interactive = False
-            for _r, _c, *_rest in new_turns:
-                if _r == "assistant" and _rest:
-                    _meta = _rest[0] if _rest else None
-                    if isinstance(_meta, dict):
-                        for _item in _meta.get("interactive", []):
-                            if _item.get("answer") is None:
-                                _has_unanswered_interactive = True
-                                break
-                if _has_unanswered_interactive:
-                    break
-            if _has_unanswered_interactive and not ad._is_agent_in_use(
-                agent.id, agent.tmux_pane
-            ):
-                _interactive_types = []
-                for _r, _c, *_rest in new_turns:
-                    if _r == "assistant" and _rest:
-                        _meta = _rest[0] if _rest else None
-                        if isinstance(_meta, dict):
-                            for _item in _meta.get("interactive", []):
-                                if _item.get("answer") is None:
-                                    _interactive_types.append(_item.get("type", ""))
-                from notify import notify as _notify
-                if "exit_plan_mode" in _interactive_types:
-                    _notify(
-                        "message", agent.id,
-                        agent.name or f"Agent {agent.id[:8]}",
-                        "Plan approval needed",
-                        f"/agents/{agent.id}",
-                        muted=agent.muted,
-                        in_use=False,
-                    )
-                elif "ask_user_question" in _interactive_types:
-                    _notify(
-                        "message", agent.id,
-                        agent.name or f"Agent {agent.id[:8]}",
-                        "Question — waiting for your answer",
-                        f"/agents/{agent.id}",
-                        muted=agent.muted,
-                        in_use=False,
-                    )
+        # Advance pointer ONLY on successful commit
+        ctx.last_turn_count = len(turns)
+        ctx.last_offset = current_size
+        ctx.last_content_hash = _content_hash(turns[-1][1]) if turns else ""
 
-            # Generate video thumbnails for new assistant turns
-            for _r, _c, *_ in new_turns:
-                if _r == "assistant" and _c:
-                    asyncio.ensure_future(asyncio.to_thread(
-                        generate_thumbnails_for_message, _c, ctx.project_path,
-                    ))
+        ad._emit(emit_agent_update(
+            agent.id, agent.status.value, agent.project,
+        ))
+        logger.info(
+            "Synced %d new turns for agent %s (roles=%s)",
+            len(new_turns), ctx.agent_id,
+            [r for r, *_ in new_turns],
+        )
+        if any(r != "user" for r, *_ in new_turns):
+            ad._emit(emit_new_message(
+                agent.id, "sync", ctx.agent_name, ctx.agent_project,
+            ))
+
+        # Notify for unanswered interactive items
+        _notify_interactive(ad, agent, new_turns)
+
+        # Generate video thumbnails for new assistant turns
+        for _r, _c, *_ in new_turns:
+            if _r == "assistant" and _c:
+                asyncio.ensure_future(asyncio.to_thread(
+                    generate_thumbnails_for_message, _c, ctx.project_path,
+                ))
 
     finally:
         db.close()
@@ -816,365 +428,150 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
 
 
 # ---------------------------------------------------------------------------
-# 3. sync_handle_compact — file shrink detection
+# sync_full_scan — read-only audit + pointer reset
 # ---------------------------------------------------------------------------
 
-async def sync_handle_compact(ad, ctx: SyncContext):
-    """Handle JSONL rewrite (e.g. /compact shrinks the file).
+async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
+    """Read-only audit + pointer reset.
 
-    Full re-parse, drain tool_log, emit compact notification.
+    Called on: startup, compact, clear, new session, manual trigger.
+    - On compact: deletes orphaned DB messages, reassigns session_seq.
+    - On mismatch: creates a SYSTEM warning bubble (source="sync_audit").
+    - Always: resets the sync pointer to current state.
+    - NEVER creates or updates regular messages from JSONL.
     """
     from agent_dispatcher import _parse_session_turns
-    from websocket import emit_new_message, emit_tool_activity
+    from websocket import emit_new_message
 
-    logger.info(
-        "Session file shrank for agent %s (%d -> ? bytes, "
-        "likely /compact), resetting incremental state + full re-parse",
-        ctx.agent_id, ctx.last_offset,
-    )
-    # Reset incremental cache — file was rewritten
-    sync_reset_incremental(ctx)
+    logger.info("Full scan for agent %s (reason=%s)", ctx.agent_id, reason)
 
     turns = _parse_session_turns(ctx.jsonl_path)
-    ctx.incremental_turns = list(turns)
-    ctx.last_turn_count = len(turns)
-    _t = turns[-1] if turns else ("", "", None)
-    _meta_sig = str(_t[2]) if len(_t) > 2 and _t[2] else ""
-    ctx.last_tail_hash = f"{_content_hash(_t[1])}:{_meta_sig}" if turns else ""
     try:
-        ctx.last_offset = os.path.getsize(ctx.jsonl_path)
+        current_size = os.path.getsize(ctx.jsonl_path)
     except OSError:
-        ctx.last_offset = 0
-    ctx.idle_polls = 0
+        current_size = 0
 
-    # Re-populate cached_lines from fresh full read
-    try:
-        with open(ctx.jsonl_path, "r", errors="replace") as _f:
-            for _raw in _f:
-                _stripped = _raw.strip()
-                if _stripped:
-                    ctx.cached_lines.append(_stripped)
-    except OSError:
-        pass
-
-    # Purge old cli-sourced messages whose UUIDs are no longer in the
-    # compacted JSONL — prevents duplicate messages in the chat.
-    new_uuids = {uuid for _, _, _, uuid in turns if uuid}
-    db_purge = SessionLocal()
-    try:
-        _purge_stale_messages_after_compact(db_purge, ctx.agent_id, new_uuids)
-        _purge_stale_system_messages(db_purge, ctx.agent_id, turns)
-        # Reassign session_seq after compact — match surviving DB messages
-        # by uuid and assign new session_seq from the fresh turn order.
-        for _idx, (_r, _c, _m, _uuid) in enumerate(turns):
-            if _uuid:
-                _msg = db_purge.query(Message).filter(
-                    Message.agent_id == ctx.agent_id,
-                    Message.jsonl_uuid == _uuid,
-                ).first()
-                if _msg:
-                    _msg.session_seq = _idx
-        db_purge.commit()
-    finally:
-        db_purge.close()
-
-    # Do NOT emit compact-end UI signals here.  PostCompact hook is the
-    # authoritative source — emitting here races the hook and causes
-    # premature double-tick / system-message indicators.  If PostCompact
-    # already fired, compact_end_emitted is True and we just reset it.
-    # If PostCompact hasn't fired yet, we note the time so the sync loop
-    # can emit a fallback after a grace period (see _COMPACT_GRACE_SECS).
-    if ctx.compact_end_emitted:
-        logger.info(
-            "Compact end already emitted by PostCompact hook for agent %s, "
-            "resetting flag",
-            ctx.agent_id,
-        )
-        ctx.compact_end_emitted = False
-    else:
-        import time as _time
-        ctx.compact_detected_at = _time.monotonic()
-        logger.info(
-            "Compact detected for agent %s but PostCompact not yet received, "
-            "deferring UI signals",
-            ctx.agent_id,
-        )
-    ctx.compact_notified = False
-
-
-# ---------------------------------------------------------------------------
-# 4. sync_audit — read-only drift detection
-# ---------------------------------------------------------------------------
-
-async def sync_audit(ad, ctx: SyncContext) -> list:
-    """Compare JSONL turns against DB messages. Report drift, do NOT repair.
-
-    Returns list of SyncDrift records created.
-    """
-    from agent_dispatcher import _parse_session_turns
-    from models import SyncDrift, SyncDriftType
+    # Collect all UUIDs from JSONL
+    jsonl_uuids = {uuid for _, _, _, uuid in turns if uuid}
 
     db = SessionLocal()
     try:
-        # Parse all turns from JSONL
-        turns = _parse_session_turns(ctx.jsonl_path)
-        if not turns:
-            return []
+        # Get all cli-sourced DB messages
+        db_msgs = (
+            db.query(Message)
+            .filter(
+                Message.agent_id == ctx.agent_id,
+                Message.source == "cli",
+            )
+            .all()
+        )
 
-        # Get all DB messages for this agent
-        db_msgs = db.query(Message).filter(
-            Message.agent_id == ctx.agent_id,
-            Message.source == "cli",
-        ).all()
+        db_by_uuid = {m.jsonl_uuid: m for m in db_msgs if m.jsonl_uuid}
 
-        # Build lookup maps
-        db_by_uuid = {
-            m.jsonl_uuid: m for m in db_msgs
-            if m.jsonl_uuid and not m.jsonl_uuid.startswith("hook-")
-        }
-
-        drift_records = []
-
-        for line_idx, (role, content, meta, uuid) in enumerate(turns):
-            if not uuid:
-                continue
-
-            if uuid not in db_by_uuid:
-                # JSONL turn has no matching DB row
-                drift = SyncDrift(
-                    agent_id=ctx.agent_id,
-                    drift_type=SyncDriftType.MISSING_IN_DB,
-                    severity="warning",
-                    jsonl_uuid=uuid,
-                    jsonl_line=line_idx,
-                    detail=(
-                        f"JSONL turn at line {line_idx} (role={role}, "
-                        f"{len(content)} chars) has no matching DB row"
-                    ),
-                    jsonl_content_len=len(content),
-                )
-                db.add(drift)
-                drift_records.append(drift)
-            else:
-                db_msg = db_by_uuid[uuid]
-                # Check content length mismatch (significant difference)
-                if (
-                    db_msg.content and content
-                    and abs(len(db_msg.content) - len(content)) > 50
-                ):
-                    drift = SyncDrift(
-                        agent_id=ctx.agent_id,
-                        drift_type=SyncDriftType.CONTENT_MISMATCH,
-                        severity="warning",
-                        jsonl_uuid=uuid,
-                        db_message_id=db_msg.id,
-                        jsonl_line=line_idx,
-                        detail=(
-                            f"Content length mismatch: DB has "
-                            f"{len(db_msg.content)} chars, JSONL has "
-                            f"{len(content)} chars"
-                        ),
-                        jsonl_content_len=len(content),
-                        db_content_len=len(db_msg.content),
-                    )
-                    db.add(drift)
-                    drift_records.append(drift)
-
-                # Check stale interactive metadata
-                if meta and isinstance(meta, dict):
-                    for item in meta.get("interactive", []):
-                        if item.get("answer") is not None and db_msg.meta_json:
-                            import json as _json
-                            db_meta = _json.loads(db_msg.meta_json)
-                            for db_item in db_meta.get("interactive", []):
-                                if (
-                                    db_item.get("tool_use_id") == item.get("tool_use_id")
-                                    and db_item.get("answer") is None
-                                ):
-                                    drift = SyncDrift(
-                                        agent_id=ctx.agent_id,
-                                        drift_type=SyncDriftType.META_STALE,
-                                        severity="info",
-                                        jsonl_uuid=uuid,
-                                        db_message_id=db_msg.id,
-                                        jsonl_line=line_idx,
-                                        detail=(
-                                            f"Interactive answer stale: "
-                                            f"tool_use_id={item.get('tool_use_id')} "
-                                            f"has answer in JSONL but null in DB"
-                                        ),
-                                    )
-                                    db.add(drift)
-                                    drift_records.append(drift)
-
-        # Check for DB messages not in JSONL (MISSING_IN_JSONL)
-        jsonl_uuids = {uuid for _, _, _, uuid in turns if uuid}
-        for msg in db_msgs:
-            if (
-                msg.jsonl_uuid
-                and not msg.jsonl_uuid.startswith("hook-")
-                and msg.jsonl_uuid not in jsonl_uuids
-            ):
-                drift = SyncDrift(
-                    agent_id=ctx.agent_id,
-                    drift_type=SyncDriftType.MISSING_IN_JSONL,
-                    severity="info",
-                    jsonl_uuid=msg.jsonl_uuid,
-                    db_message_id=msg.id,
-                    detail=(
-                        f"DB message {msg.id} (role={msg.role.value}, "
-                        f"{len(msg.content or '')} chars) not found in JSONL"
-                    ),
-                    db_content_len=len(msg.content or ""),
-                )
-                db.add(drift)
-                drift_records.append(drift)
-
-        # Check for hook-upgrade pending
-        hook_msgs = [
+        # Detect drift
+        missing_in_db = [u for u in jsonl_uuids if u not in db_by_uuid]
+        extra_in_db = [
             m for m in db_msgs
-            if m.jsonl_uuid and m.jsonl_uuid.startswith("hook-")
+            if m.jsonl_uuid and m.jsonl_uuid not in jsonl_uuids
         ]
-        for msg in hook_msgs:
-            drift = SyncDrift(
+        content_mismatches = []
+        for _, content, _, uuid in turns:
+            if uuid and uuid in db_by_uuid:
+                db_msg = db_by_uuid[uuid]
+                if abs(len(db_msg.content or "") - len(content)) > 50:
+                    content_mismatches.append(uuid)
+
+        _changes_made = False
+
+        # On compact: delete orphaned messages + reassign session_seq
+        if reason == "compact":
+            if extra_in_db:
+                for m in extra_in_db:
+                    db.delete(m)
+                logger.info(
+                    "Purged %d orphaned messages for agent %s after compact",
+                    len(extra_in_db), ctx.agent_id,
+                )
+                _changes_made = True
+
+            # Reassign session_seq from fresh turn order
+            for idx, (_, _, _, uuid) in enumerate(turns):
+                if uuid and uuid in db_by_uuid:
+                    db_by_uuid[uuid].session_seq = idx
+            _changes_made = True
+
+            # End compact tool activity record
+            _end_compact_activity(db, ctx.agent_id, ctx.session_id)
+
+            # Handle compact UI signals
+            if ctx.compact_end_emitted:
+                ctx.compact_end_emitted = False
+            else:
+                import time as _time
+                ctx.compact_detected_at = _time.monotonic()
+            ctx.compact_notified = False
+
+        # Create warning bubble if drift found (beyond compact cleanup)
+        drift_parts = []
+        if missing_in_db:
+            drift_parts.append(f"{len(missing_in_db)} turns in JSONL not in DB")
+        if reason != "compact" and extra_in_db:
+            drift_parts.append(
+                f"{len(extra_in_db)} DB messages not in JSONL"
+            )
+        if content_mismatches:
+            drift_parts.append(
+                f"{len(content_mismatches)} content mismatches"
+            )
+
+        if drift_parts:
+            summary = f"Sync audit ({reason}): {', '.join(drift_parts)}"
+            logger.warning("Agent %s: %s", ctx.agent_id, summary)
+
+            warning_msg = Message(
                 agent_id=ctx.agent_id,
-                drift_type=SyncDriftType.HOOK_UPGRADE_PENDING,
-                severity="info",
-                db_message_id=msg.id,
-                detail=(
-                    f"Hook-created message {msg.id} still has "
-                    f"synthetic UUID {msg.jsonl_uuid}"
-                ),
+                role=MessageRole.SYSTEM,
+                content=summary,
+                status=MessageStatus.COMPLETED,
+                source="sync_audit",
+                completed_at=_utcnow(),
             )
-            db.add(drift)
-            drift_records.append(drift)
+            db.add(warning_msg)
+            _changes_made = True
 
-        if drift_records:
+        if _changes_made:
             db.commit()
-            logger.info(
-                "Sync audit for %s: %d drift records",
-                ctx.agent_id, len(drift_records),
-            )
+            if drift_parts:
+                ad._emit(emit_new_message(
+                    ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
+                ))
 
-        return drift_records
-    except Exception as e:
-        logger.error("Sync audit failed for %s: %s", ctx.agent_id, e)
-        db.rollback()
-        return []
-    finally:
-        db.close()
+        # Reset pointer to current state
+        ctx.last_turn_count = len(turns)
+        ctx.last_offset = current_size
+        ctx.last_content_hash = _content_hash(turns[-1][1]) if turns else ""
 
-
-# ---------------------------------------------------------------------------
-# 5. sync_repair — explicit admin-triggered repair
-# ---------------------------------------------------------------------------
-
-async def sync_repair(ad, ctx: SyncContext, drift_ids: list[str] | None = None):
-    """Explicit repair — admin-triggered only.
-
-    Fixes specific drift records, or all unresolved drift for this agent.
-    """
-    from agent_dispatcher import _parse_session_turns
-    from models import SyncDrift, SyncDriftType
-
-    db = SessionLocal()
-    try:
-        query = db.query(SyncDrift).filter(
-            SyncDrift.agent_id == ctx.agent_id,
-            SyncDrift.resolved_at.is_(None),
-        )
-        if drift_ids:
-            query = query.filter(SyncDrift.id.in_(drift_ids))
-
-        drifts = query.all()
-        if not drifts:
-            return []
-
-        # Parse JSONL for repair data
-        turns = _parse_session_turns(ctx.jsonl_path)
-        turns_by_uuid = {
-            uuid: (role, content, meta)
-            for role, content, meta, uuid in turns if uuid
-        }
-
-        resolved = []
-        for drift in drifts:
-            try:
-                if drift.drift_type == SyncDriftType.MISSING_IN_DB and drift.jsonl_uuid:
-                    turn_data = turns_by_uuid.get(drift.jsonl_uuid)
-                    if turn_data:
-                        role, content, meta = turn_data
-                        _role = (
-                            MessageRole.USER if role == "user"
-                            else (
-                                MessageRole.AGENT if role == "assistant"
-                                else MessageRole.SYSTEM
-                            )
-                        )
-                        msg = Message(
-                            agent_id=ctx.agent_id,
-                            role=_role,
-                            content=content,
-                            status=MessageStatus.COMPLETED,
-                            source="cli",
-                            jsonl_uuid=drift.jsonl_uuid,
-                            meta_json=json.dumps(meta) if meta else None,
-                            tool_use_id=_extract_tool_use_id(meta),
-                            completed_at=_utcnow(),
-                            delivered_at=_utcnow(),
-                        )
-                        db.add(msg)
-
-                elif (
-                    drift.drift_type == SyncDriftType.CONTENT_MISMATCH
-                    and drift.db_message_id and drift.jsonl_uuid
-                ):
-                    turn_data = turns_by_uuid.get(drift.jsonl_uuid)
-                    if turn_data:
-                        _, content, _ = turn_data
-                        msg = db.query(Message).get(drift.db_message_id)
-                        if msg:
-                            msg.content = content
-
-                elif (
-                    drift.drift_type == SyncDriftType.META_STALE
-                    and drift.db_message_id and drift.jsonl_uuid
-                ):
-                    turn_data = turns_by_uuid.get(drift.jsonl_uuid)
-                    if turn_data:
-                        _, _, meta = turn_data
-                        msg = db.query(Message).get(drift.db_message_id)
-                        if msg and meta:
-                            msg.meta_json = json.dumps(meta)
-
-                elif drift.drift_type == SyncDriftType.MISSING_IN_JSONL:
-                    pass  # Can't fix — JSONL is source of truth. Log only.
-
-                elif drift.drift_type == SyncDriftType.HOOK_UPGRADE_PENDING:
-                    pass  # Will be resolved naturally when JSONL sync catches up
-
-                drift.resolved_at = _utcnow()
-                drift.resolved_by = "auto_repair"
-                resolved.append(drift)
-            except Exception as e:
-                logger.warning("Failed to repair drift %s: %s", drift.id, e)
-
-        db.commit()
         logger.info(
-            "Sync repair for %s: resolved %d/%d drift records",
-            ctx.agent_id, len(resolved), len(drifts),
+            "Full scan complete for agent %s: %d turns, pointer at %d bytes",
+            ctx.agent_id, len(turns), current_size,
         )
-        return resolved
+
+        return {
+            "turns": len(turns),
+            "missing_in_db": len(missing_in_db),
+            "extra_in_db": len(extra_in_db),
+            "content_mismatches": len(content_mismatches),
+        }
     except Exception as e:
-        logger.error("Sync repair failed for %s: %s", ctx.agent_id, e)
+        logger.error("Full scan failed for %s: %s", ctx.agent_id, e)
         db.rollback()
-        return []
+        return {"error": str(e)}
     finally:
         db.close()
 
 
 # ---------------------------------------------------------------------------
-# 6. trigger_sync — public entry point for hooks
+# trigger_sync — public entry point for hooks
 # ---------------------------------------------------------------------------
 
 async def trigger_sync(ad, agent_id: str):
@@ -1183,5 +580,3 @@ async def trigger_sync(ad, agent_id: str):
     if not ctx:
         return
     ad.wake_sync(agent_id)
-
-

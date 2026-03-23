@@ -724,152 +724,41 @@ async def update_notification_settings(request: Request, db: Session = Depends(g
     return await get_notification_settings(db)
 
 
-# ---- Sync Audit / Drift / Repair ----
+# ---- Sync Audit / Full Scan ----
 
 @router.get("/api/sync/audit/{agent_id}")
 async def run_sync_audit(agent_id: str, request: Request):
-    """Run sync audit for a specific agent."""
+    """Run sync full scan (read-only audit + pointer reset) for a specific agent."""
     ad = request.app.state.agent_dispatcher
     ctx = ad._sync_contexts.get(agent_id)
     if not ctx:
         raise HTTPException(404, f"No sync context for agent {agent_id}")
 
-    from sync_engine import sync_audit
-    drift = await sync_audit(ad, ctx)
+    from sync_engine import sync_full_scan
+    result = await sync_full_scan(ad, ctx, reason="manual")
 
     return {
         "agent_id": agent_id,
-        "drift_count": len(drift),
-        "drift": [
-            {
-                "id": d.id,
-                "drift_type": d.drift_type.value if hasattr(d.drift_type, 'value') else str(d.drift_type),
-                "severity": d.severity,
-                "detail": d.detail,
-                "jsonl_uuid": d.jsonl_uuid,
-                "db_message_id": d.db_message_id,
-                "detected_at": d.detected_at.isoformat() if d.detected_at else None,
-            }
-            for d in drift
-        ],
-    }
-
-
-@router.get("/api/sync/drift")
-async def list_drift(
-    agent_id: str | None = None,
-    unresolved_only: bool = True,
-    limit: int = 100,
-):
-    """List sync drift records."""
-    from models import SyncDrift
-
-    db = SessionLocal()
-    try:
-        query = db.query(SyncDrift)
-        if agent_id:
-            query = query.filter(SyncDrift.agent_id == agent_id)
-        if unresolved_only:
-            query = query.filter(SyncDrift.resolved_at.is_(None))
-        query = query.order_by(SyncDrift.detected_at.desc()).limit(limit)
-
-        records = query.all()
-        return {
-            "count": len(records),
-            "drift": [
-                {
-                    "id": d.id,
-                    "agent_id": d.agent_id,
-                    "drift_type": d.drift_type.value if hasattr(d.drift_type, 'value') else str(d.drift_type),
-                    "severity": d.severity,
-                    "detail": d.detail,
-                    "jsonl_uuid": d.jsonl_uuid,
-                    "db_message_id": d.db_message_id,
-                    "jsonl_line": d.jsonl_line,
-                    "jsonl_content_len": d.jsonl_content_len,
-                    "db_content_len": d.db_content_len,
-                    "detected_at": d.detected_at.isoformat() if d.detected_at else None,
-                    "resolved_at": d.resolved_at.isoformat() if d.resolved_at else None,
-                    "resolved_by": d.resolved_by,
-                }
-                for d in records
-            ],
-        }
-    finally:
-        db.close()
-
-
-@router.post("/api/sync/repair/{agent_id}")
-async def run_sync_repair(agent_id: str, request: Request):
-    """Repair sync drift for a specific agent."""
-    ad = request.app.state.agent_dispatcher
-    ctx = ad._sync_contexts.get(agent_id)
-    if not ctx:
-        raise HTTPException(404, f"No sync context for agent {agent_id}")
-
-    # Optionally accept specific drift IDs in request body
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
-    drift_ids = body.get("drift_ids")
-
-    from sync_engine import sync_repair
-    resolved = await sync_repair(ad, ctx, drift_ids=drift_ids)
-
-    return {
-        "agent_id": agent_id,
-        "resolved_count": len(resolved),
-        "resolved": [
-            {
-                "id": d.id,
-                "drift_type": d.drift_type.value if hasattr(d.drift_type, 'value') else str(d.drift_type),
-                "detail": d.detail,
-                "resolved_by": d.resolved_by,
-            }
-            for d in resolved
-        ],
+        **result,
     }
 
 
 @router.get("/api/sync/status")
 async def sync_status(request: Request):
     """Overview of sync state for all agents."""
-    from models import SyncDrift
-
     ad = request.app.state.agent_dispatcher
 
-    db = SessionLocal()
-    try:
-        # Count unresolved drift per agent
-        drift_counts = db.query(
-            SyncDrift.agent_id,
-            func.count(SyncDrift.id),
-        ).filter(
-            SyncDrift.resolved_at.is_(None),
-        ).group_by(SyncDrift.agent_id).all()
+    agents = []
+    for agent_id, ctx in ad._sync_contexts.items():
+        agents.append({
+            "agent_id": agent_id,
+            "session_id": ctx.session_id,
+            "jsonl_path": ctx.jsonl_path,
+            "last_turn_count": ctx.last_turn_count,
+            "last_offset": ctx.last_offset,
+        })
 
-        drift_by_agent = {agent_id: count for agent_id, count in drift_counts}
-
-        # Build status for each syncing agent
-        agents = []
-        for agent_id, ctx in ad._sync_contexts.items():
-            agents.append({
-                "agent_id": agent_id,
-                "session_id": ctx.session_id,
-                "jsonl_path": ctx.jsonl_path,
-                "last_turn_count": ctx.last_turn_count,
-                "cached_lines": len(ctx.cached_lines) if ctx.cached_lines else 0,
-                "unresolved_drift": drift_by_agent.get(agent_id, 0),
-            })
-
-        total_drift = sum(drift_by_agent.values())
-
-        return {
-            "syncing_agents": len(agents),
-            "total_unresolved_drift": total_drift,
-            "agents": agents,
-        }
-    finally:
-        db.close()
+    return {
+        "syncing_agents": len(agents),
+        "agents": agents,
+    }

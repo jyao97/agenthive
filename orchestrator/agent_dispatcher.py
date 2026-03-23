@@ -1,6 +1,7 @@
 """Agent Dispatcher — scheduling loop for persistent agent processes."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -1357,7 +1358,8 @@ def _parse_session_turns_from_lines(
                     "This session is being continued from a previous conversation"
                 ):
                     flush_assistant()
-                    turns.append(("system", content, None, None))
+                    _compact_uuid = f"sys-{hashlib.md5(content.encode()).hexdigest()[:16]}"
+                    turns.append(("system", content, None, _compact_uuid))
                     continue
                 flush_assistant()
                 clean = _strip_agent_preamble(stripped)
@@ -1417,12 +1419,13 @@ def _parse_session_turns_from_lines(
                 if isinstance(queued_content, str) and queued_content.strip():
                     clean_q = _strip_agent_preamble(queued_content.strip())
                     # Sub-agent task results are system-generated, not user input
+                    _qop_uuid = f"qop-{hashlib.md5(clean_q.encode()).hexdigest()[:16]}"
                     if clean_q.lstrip().startswith("<task-notification>"):
                         flush_assistant()
-                        turns.append(("assistant", clean_q, None, None))
+                        turns.append(("assistant", clean_q, None, _qop_uuid))
                     else:
                         flush_assistant()
-                        turns.append(("user", clean_q, None, None))
+                        turns.append(("user", clean_q, None, _qop_uuid))
 
         elif entry_type == "system":
             # Use structured fields from JSONL (subtype, content)
@@ -1434,7 +1437,8 @@ def _parse_session_turns_from_lines(
             content = entry.get("content", "")
             if subtype or content:
                 label = content or subtype.replace("_", " ")
-                turns.append(("system", label, None, None))
+                _sys_uuid = f"sys-{hashlib.md5(label.encode()).hexdigest()[:16]}"
+                turns.append(("system", label, None, _sys_uuid))
 
     # Flush any remaining assistant content
     flush_assistant()
@@ -1455,7 +1459,8 @@ def _parse_session_turns_from_lines(
                         continue
                     seen_uuids.add(uuid)
                 # Content-based dedup catches queue-op + user-entry
-                # pairs for the same message (queue-ops lack UUIDs)
+                # pairs for the same message (both now have UUIDs but
+                # different ones — content match is the tiebreaker)
                 if content in seen_content:
                     continue
                 seen_content.add(content)
@@ -2816,17 +2821,28 @@ Here are the day's conversations (with timestamps):
         db.add(msg)
         return msg
 
-    def _import_turns_as_messages(self, db, agent_id, turns, *, source="cli"):
-        """Import conversation turns as Message records.
+    def _import_turns_as_messages_deduped(self, db, agent_id, turns, *, source="cli"):
+        """Import conversation turns as Message records with UUID dedup.
 
         Each turn is (role, content, meta, jsonl_uuid) where meta and
-        jsonl_uuid are optional.  Returns the number of messages imported.
+        jsonl_uuid are optional.  Uses SAVEPOINT to catch IntegrityError
+        from the UNIQUE index.  Returns the number of messages imported.
         """
         imported = 0
         for role, content, *rest in turns:
             meta = rest[0] if rest else None
             jsonl_uuid = rest[1] if len(rest) > 1 else None
             meta_json = json.dumps(meta) if meta else None
+
+            # UUID-based dedup check
+            if jsonl_uuid:
+                existing = db.query(Message.id).filter(
+                    Message.agent_id == agent_id,
+                    Message.jsonl_uuid == jsonl_uuid,
+                ).first()
+                if existing:
+                    continue
+
             now = _utcnow()
             if role == "user":
                 msg = Message(
@@ -2865,8 +2881,13 @@ Here are the day's conversations (with timestamps):
                 )
             else:
                 continue
-            db.add(msg)
-            imported += 1
+            try:
+                with db.begin_nested():  # SAVEPOINT
+                    db.add(msg)
+                    db.flush()
+                    imported += 1
+            except IntegrityError:
+                continue
         return imported
 
     def stop_agent_cleanup(
@@ -4829,7 +4850,7 @@ Here are the day's conversations (with timestamps):
 
         db = SessionLocal()
         try:
-            imported = self._import_turns_as_messages(db, agent_id, turns, source=None)
+            imported = self._import_turns_as_messages_deduped(db, agent_id, turns, source=None)
 
             if imported:
                 agent = db.get(Agent, agent_id)
@@ -5099,9 +5120,8 @@ Here are the day's conversations (with timestamps):
         from sync_engine import (
             SyncContext,
             _content_hash,
-            sync_reconcile_initial,
             sync_import_new_turns,
-            sync_handle_compact,
+            sync_full_scan,
         )
 
         POLL_INTERVAL = 300  # hooks are primary sync driver; polling is 5-min safety net
@@ -5146,40 +5166,21 @@ Here are the day's conversations (with timestamps):
             jsonl_path=jsonl_path,
         )
 
-        # Initialize: read current file, populate cached_lines + offset
-        try:
-            with open(jsonl_path, "r", errors="replace") as f:
-                raw_lines = f.readlines()
-                ctx.last_offset = f.tell()  # byte offset at EOF
-            # Drop incomplete last line (mid-write by Claude Code)
-            if raw_lines and not raw_lines[-1].endswith("\n"):
-                raw_lines.pop()
-            for _raw in raw_lines:
-                _stripped = _raw.strip()
-                if _stripped:
-                    ctx.cached_lines.append(_stripped)
-        except OSError as e:
-            logger.warning(
-                "Sync loop for agent %s: cannot read session JSONL %s: %s",
-                agent_id, jsonl_path, e,
-            )
-
+        # Initialize sync pointer
         initial_turns = _parse_session_turns(jsonl_path)
-        ctx.incremental_turns = list(initial_turns)
         ctx.last_turn_count = len(initial_turns)
-        if initial_turns:
-            _init_tail = initial_turns[-1]
-            _init_meta_sig = str(_init_tail[2]) if len(_init_tail) > 2 and _init_tail[2] else ""
-            ctx.last_tail_hash = f"{_content_hash(_init_tail[1])}:{_init_meta_sig}"
-        # stable_turn_count stays 0 (default) — sync_parse_incremental
-        # will compute it properly on first call by scanning cached_lines
-        # for the last user/system boundary.  Setting it to last_turn_count
-        # here would cause duplication (stable_boundary=0 but count>0).
+        try:
+            ctx.last_offset = os.path.getsize(jsonl_path)
+        except OSError:
+            ctx.last_offset = 0
+        ctx.last_content_hash = (
+            _content_hash(initial_turns[-1][1]) if initial_turns else ""
+        )
 
         self._sync_contexts[agent_id] = ctx
 
-        # Initial reconciliation (full scan)
-        await sync_reconcile_initial(self, ctx)
+        # Initial full scan (reconcile DB with JSONL, reset pointer)
+        await sync_full_scan(self, ctx, reason="startup")
 
         # Background loop — handles streaming preview, session rotation, tmux health
         _GETSIZE_ERROR_LIMIT = 5  # ~5min at 60s poll interval
@@ -5261,7 +5262,7 @@ Here are the day's conversations (with timestamps):
             # Compact detection — file shrink
             if current_size < ctx.last_offset:
                 async with sync_lock:
-                    await sync_handle_compact(self, ctx)
+                    await sync_full_scan(self, ctx, reason="compact")
                 continue
 
             # File hasn't grown — idle polling
@@ -5346,34 +5347,24 @@ Here are the day's conversations (with timestamps):
                 result = await sync_import_new_turns(self, ctx)
             if result == "exit":
                 break
+            if result == "compact":
+                # sync_import_new_turns detected turn count decrease
+                async with sync_lock:
+                    await sync_full_scan(self, ctx, reason="compact")
+                continue
 
             # Subagent creation/finalization is handled by SubagentStart/Stop
             # hooks in main.py.
 
             # Check if the CLI session has ended
             if self._session_has_ended(ctx.jsonl_path):
+                # Final sync — uses sync_import_new_turns (has UUID dedup)
+                async with sync_lock:
+                    await sync_import_new_turns(self, ctx)
+
                 db = SessionLocal()
                 try:
-                    turns = _parse_session_turns(ctx.jsonl_path)
-                    ctx.incremental_turns = list(turns)
-                    try:
-                        ctx.last_offset = os.path.getsize(ctx.jsonl_path)
-                    except OSError as e:
-                        logger.warning("getsize failed for %s: %s", ctx.jsonl_path, e)
-                    final_new = turns[ctx.last_turn_count:]
                     agent = db.get(Agent, agent_id)
-                    if agent and final_new:
-                        self._import_turns_as_messages(db, agent_id, final_new, source=None)
-                        agent.last_message_preview = (final_new[-1][1] or "")[:200]
-                        agent.last_message_at = _utcnow()
-                        if not self._is_agent_in_use(agent.id, agent.tmux_pane):
-                            agent.unread_count += len(final_new)
-                            self._maybe_notify_message(agent)
-                        db.commit()
-                        ctx.last_turn_count = len(turns)
-                        self._emit(emit_agent_update(
-                            agent.id, agent.status.value, agent.project
-                        ))
                     _project_path = ""
                     if agent:
                         proj = db.get(Project, agent.project)

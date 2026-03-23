@@ -390,69 +390,16 @@ async def hook_agent_tool_activity(request: Request):
         tool_input = body.get("tool_input")
         summary = _tool_input_summary(tool_name, tool_input) if tool_input else ""
         await emit_tool_activity(agent_id, tool_name, phase, tool_input=tool_input)
-        # Immediate interactive card for AskUserQuestion / ExitPlanMode
-        if tool_name in ("AskUserQuestion", "ExitPlanMode") and tool_input and ad:
-            try:
-                from database import SessionLocal as _SL
-                from websocket import emit_new_message as _enm
-                if tool_name == "AskUserQuestion":
-                    _item = {
-                        "type": "ask_user_question",
-                        "tool_use_id": body.get("tool_use_id", ""),
-                        "questions": tool_input.get("questions", []),
-                        "answer": None,
-                    }
-                else:
-                    _item = {
-                        "type": "exit_plan_mode",
-                        "tool_use_id": body.get("tool_use_id", ""),
-                        "allowedPrompts": tool_input.get("allowedPrompts", []),
-                        "plan": tool_input.get("plan", ""),
-                        "answer": None,
-                    }
-                _meta = json.dumps({"interactive": [_item]})
-                _db = _SL()
-                try:
-                    _ag = _db.get(Agent, agent_id)
-                    _ag_name = _ag.name if _ag else ""
-                    _ag_proj = _ag.project if _ag else ""
-                    # Create message with interactive metadata
-                    _msg = Message(
-                        agent_id=agent_id,
-                        role=MessageRole.AGENT,
-                        content="",
-                        status=MessageStatus.COMPLETED,
-                        source="cli",
-                        meta_json=_meta,
-                        jsonl_uuid=f"hook-{body.get('tool_use_id', '')}",
-                        tool_use_id=body.get("tool_use_id", "") or None,
-                        completed_at=_utcnow(),
-                        delivered_at=_utcnow(),
-                    )
-                    _db.add(_msg)
-                    if _ag and not ad._is_agent_in_use(_ag.id, _ag.tmux_pane):
-                        _ag.unread_count = (_ag.unread_count or 0) + 1
-                    _db.commit()
-                    ad._emit(_enm(agent_id, _msg.id, _ag_name, _ag_proj))
-                    # Notify for unanswered interactive items
-                    if _ag and not ad._is_agent_in_use(_ag.id, _ag.tmux_pane):
-                        from notify import notify as _notify_ic
-                        _ntype = "ask_user_question" if tool_name == "AskUserQuestion" else "exit_plan_mode"
-                        _ntitle = "Question — waiting for your answer" if tool_name == "AskUserQuestion" else "Plan approval needed"
-                        _notify_ic(
-                            "message", agent_id,
-                            _ag_name or f"Agent {agent_id[:8]}",
-                            _ntitle,
-                            f"/agents/{agent_id}",
-                            muted=_ag.muted, in_use=False,
-                        )
-                finally:
-                    _db.close()
-            except Exception:
-                logger.warning(
-                    "PreToolUse: failed to create interactive card for %s",
-                    agent_id[:8], exc_info=True,
-                )
+        # Interactive cards (AskUserQuestion/ExitPlanMode): wake sync loop
+        # immediately so it imports the assistant turn from JSONL. By the
+        # time PreToolUse fires, the tool_use block is already in JSONL.
+        if tool_name in ("AskUserQuestion", "ExitPlanMode") and ad:
+            ad.wake_sync(agent_id)
+            # Delayed wake for reliability (JSONL flush may lag slightly)
+            async def _delayed_interactive_wake():
+                await asyncio.sleep(0.3)
+                ad.wake_sync(agent_id)
+            asyncio.ensure_future(_delayed_interactive_wake())
     elif hook_event in ("PostToolUse", "PostToolUseFailure"):
         tool_name = body.get("tool_name", "")
         phase = "end"
@@ -475,8 +422,7 @@ async def hook_agent_tool_activity(request: Request):
                     is_auto = bool(_ag and _ag.skip_permissions) if _ag else False
 
                     # Find ALL card messages with this tool_use_id and patch any
-                    # that still have answer=None (handles duplicate messages from
-                    # hook-created + JSONL-sourced cards).
+                    # that still have answer=None.
                     _answer_text = str(tool_output)[:500]
                     _patched_any = False
                     _msgs = _db.query(Message).filter(
@@ -614,7 +560,7 @@ async def hook_agent_tool_activity(request: Request):
                                 Message.agent_id == sub_db_id,
                             ).count()
                             if len(turns) > existing_count:
-                                ad._import_turns_as_messages(
+                                ad._import_turns_as_messages_deduped(
                                     _db, sub_db_id, turns[existing_count:],
                                 )
                         sub_ag = _db.get(Agent, sub_db_id)

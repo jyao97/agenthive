@@ -517,19 +517,28 @@ def init_db():
                         ) AS rn
                     FROM messages
                     WHERE jsonl_uuid IS NOT NULL
-                      AND jsonl_uuid NOT LIKE 'hook-%'
                 ) ranked WHERE rn > 1
             )
         """))
         conn.commit()
 
+        # Clean up any remaining hook-* UUID messages (legacy from when
+        # hooks created messages directly)
+        conn.execute(text("""
+            DELETE FROM messages WHERE jsonl_uuid LIKE 'hook-%'
+        """))
+        conn.commit()
+
         # --- Fix 2: Unique partial index on (agent_id, jsonl_uuid) ---
         # Prevents duplicate message rows even if application-level dedup fails.
-        # Excludes hook-created interactive cards (jsonl_uuid LIKE 'hook-%').
+        # Drop the old index (with hook-% exclusion) and create a simpler one.
+        conn.execute(text("""
+            DROP INDEX IF EXISTS uq_messages_agent_jsonl_uuid
+        """))
         conn.execute(text("""
             CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_agent_jsonl_uuid
             ON messages(agent_id, jsonl_uuid)
-            WHERE jsonl_uuid IS NOT NULL AND jsonl_uuid NOT LIKE 'hook-%'
+            WHERE jsonl_uuid IS NOT NULL
         """))
         conn.commit()
 
