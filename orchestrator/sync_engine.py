@@ -578,6 +578,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         )
 
             # Import new turns
+            _actually_inserted = 0
             for i, (role, content, *rest) in enumerate(new_turns):
                 seq = ctx.last_turn_count + i
                 meta = rest[0] if rest else None
@@ -715,6 +716,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     with db.begin_nested():  # SAVEPOINT
                         db.add(msg)
                         db.flush()
+                        _actually_inserted += 1
                 except IntegrityError:
                     logger.warning(
                         "Skipped duplicate jsonl_uuid %s for agent %s",
@@ -722,8 +724,9 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     )
                     continue
 
-            agent.last_message_preview = (new_turns[-1][1] or "")[:200]
-            agent.last_message_at = _utcnow()
+            if _actually_inserted:
+                agent.last_message_preview = (new_turns[-1][1] or "")[:200]
+                agent.last_message_at = _utcnow()
             db.commit()
 
             ctx.last_turn_count = len(turns)
