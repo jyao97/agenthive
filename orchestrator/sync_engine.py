@@ -352,292 +352,27 @@ def _end_compact_activity(db, agent_id: str, session_id: str):
 # ---------------------------------------------------------------------------
 
 async def sync_reconcile_initial(ad, ctx: SyncContext):
-    """Reconcile JSONL turns with DB messages on sync loop start.
+    """Startup reconciliation — import new content + audit for drift.
 
-    Reads all turns, compares with DB, inserts any missing turns.
+    Replaces the old full-scan content-sig repair approach.
+    Uses sync_import_new_turns for message creation (UUID-based dedup)
+    and sync_audit for read-only drift detection.
     """
-    from agent_dispatcher import (
-        _is_wrapped_prompt,
-        _dedup_sig,
-        _merge_interactive_meta,
-        _update_stale_interactive_metadata,
-    )
-    from websocket import emit_new_message, emit_metadata_update
+    # Reset incremental state so import reads from beginning
+    sync_reset_incremental(ctx)
 
-    initial_turns = list(ctx.incremental_turns)
+    # Import any genuinely new turns via the normal path
+    result = await sync_import_new_turns(ad, ctx)
 
-    conv_turns = [
-        t for t in initial_turns
-        if t[0] in ("user", "assistant")
-        and not (t[0] == "user" and _is_wrapped_prompt(t[1]))
-    ]
+    # Run audit to detect drift (read-only, writes SyncDrift records)
+    drift = await sync_audit(ad, ctx)
+    if drift:
+        logger.warning(
+            "Sync audit for %s found %d drift records on startup",
+            ctx.agent_id, len(drift),
+        )
 
-    db = SessionLocal()
-    try:
-        if not conv_turns:
-            # Still check stale interactive metadata even with no turns
-            _stale_updates = _update_stale_interactive_metadata(db, ctx.agent_id, initial_turns)
-            if _stale_updates:
-                ad._emit(emit_new_message(
-                    ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
-                ))
-                for _upd_msg_id, _upd_meta in _stale_updates:
-                    ad._emit(emit_metadata_update(ctx.agent_id, _upd_msg_id, _upd_meta))
-                logger.debug(
-                    "Updated stale interactive metadata for agent %s "
-                    "(initial reconciliation)", ctx.agent_id,
-                )
-            return
-
-        agent = db.get(Agent, ctx.agent_id)
-
-        # Get ALL user/agent DB messages for dedup
-        all_db = db.query(Message).filter(
-            Message.agent_id == ctx.agent_id,
-            Message.role.in_([MessageRole.USER, MessageRole.AGENT]),
-        ).all()
-
-        # Primary: UUID-based dedup via jsonl_uuid
-        db_uuids: set[str] = {
-            m.jsonl_uuid for m in all_db if m.jsonl_uuid
-        }
-
-        # Secondary: content multiset for backward compat
-        # Track actual messages (not just counts) so we can update
-        # jsonl_uuid / delivered_at when a content match is found after
-        # compact — otherwise the matched message keeps its old timestamp
-        # and appears before the compact boundary in the UI.
-        db_sig_msgs: dict[tuple[str, str], list] = {}
-        for m in all_db:
-            role_char = "u" if m.role == MessageRole.USER else "a"
-            sig = (role_char, _dedup_sig(m.content))
-            db_sig_msgs.setdefault(sig, []).append(m)
-
-        # Walk through JSONL turns and collect missing ones
-        missing: list[tuple[int, str, str, dict | None, str | None]] = []
-        for turn_idx, (r, c, mt, uuid) in enumerate(conv_turns):
-            # Primary: UUID-based dedup
-            if uuid and uuid in db_uuids:
-                continue
-            # Secondary: content-based fallback (backward compat)
-            role_char = "u" if r == "user" else "a"
-            content_sig = _dedup_sig(c)
-            sig = (role_char, content_sig)
-            if db_sig_msgs.get(sig):
-                matched = db_sig_msgs[sig].pop(0)
-                # After compact the same content reappears under a new
-                # JSONL uuid.  Stamp the matched DB message so it (a) is
-                # trackable by uuid in future compacts and (b) sorts
-                # after the compact boundary in the UI.
-                if uuid and not matched.jsonl_uuid:
-                    matched.jsonl_uuid = uuid
-                    matched.delivered_at = _utcnow()
-                    logger.info(
-                        "Reconcile: linked msg %s to jsonl_uuid %s "
-                        "(content dedup after compact) for agent %s",
-                        matched.id, uuid[:12], ctx.agent_id[:8],
-                    )
-                continue
-            # Check opposite role (e.g. task-notification fixed
-            # from USER->AGENT)
-            alt = ("a" if role_char == "u" else "u", content_sig)
-            if db_sig_msgs.get(alt):
-                db_sig_msgs[alt].pop(0)
-                continue
-            missing.append((turn_idx, r, c, mt, uuid))
-
-        if missing and agent:
-            _existing_agent_msgs = [
-                m for m in all_db
-                if m.role == MessageRole.AGENT
-            ]
-            _existing_user_msgs = [
-                m for m in all_db
-                if m.role == MessageRole.USER
-            ]
-            for turn_idx, role, content, meta, uuid in missing:
-                meta_json = json.dumps(meta) if meta else None
-                if role == "user":
-                    is_wrapped_dup = False
-                    for em in _existing_user_msgs:
-                        if em.source in ("task", "web") and em.content:
-                            if em.content[:100] in (content or ""):
-                                is_wrapped_dup = True
-                                if uuid and not em.jsonl_uuid:
-                                    em.jsonl_uuid = uuid
-                                # Mark delivered when found in JSONL
-                                if not em.delivered_at:
-                                    em.delivered_at = _utcnow()
-                                    from websocket import emit_message_delivered
-                                    asyncio.ensure_future(emit_message_delivered(
-                                        ctx.agent_id, em.id,
-                                        em.delivered_at.isoformat(),
-                                    ))
-                                break
-                    if is_wrapped_dup:
-                        continue
-                    _now = _utcnow()
-                    try:
-                        with db.begin_nested():  # SAVEPOINT
-                            db.add(Message(
-                                agent_id=ctx.agent_id,
-                                role=MessageRole.USER,
-                                content=content,
-                                status=MessageStatus.COMPLETED,
-                                source="cli",
-                                jsonl_uuid=uuid,
-                                completed_at=_now,
-                                delivered_at=_now,
-                                tool_use_id=_extract_tool_use_id(meta),
-                                session_seq=turn_idx,
-                            ))
-                            db.flush()
-                    except IntegrityError:
-                        logger.warning(
-                            "Skipped duplicate jsonl_uuid %s for agent %s",
-                            uuid, ctx.agent_id[:8],
-                        )
-                        continue
-                elif role == "assistant":
-                    updated = False
-                    for existing in _existing_agent_msgs:
-                        if uuid and existing.jsonl_uuid == uuid:
-                            if len(existing.content) < len(content):
-                                existing.content = content
-                                existing.completed_at = _utcnow()
-                                if meta is not None:
-                                    existing.meta_json = _merge_interactive_meta(
-                                        existing.meta_json, meta,
-                                    )
-                            updated = True
-                            break
-                        if (
-                            len(existing.content) < len(content)
-                            and content.startswith(
-                                existing.content[:200]
-                            )
-                        ):
-                            existing.content = content
-                            existing.completed_at = _utcnow()
-                            if uuid and not existing.jsonl_uuid:
-                                existing.jsonl_uuid = uuid
-                            if meta is not None:
-                                existing.meta_json = _merge_interactive_meta(
-                                    existing.meta_json, meta,
-                                )
-                            updated = True
-                            break
-                    if not updated:
-                        # Check for hook-created row to upgrade
-                        if meta:
-                            _interactive_items = meta.get("interactive", []) if isinstance(meta, dict) else []
-                            for _item in _interactive_items:
-                                _tid = _item.get("tool_use_id")
-                                if _tid:
-                                    _hook = next(
-                                        (m for m in _existing_agent_msgs if m.jsonl_uuid == f"hook-{_tid}"),
-                                        None,
-                                    )
-                                    if _hook:
-                                        _hook.content = content
-                                        _hook.jsonl_uuid = uuid
-                                        _hook.meta_json = _merge_interactive_meta(
-                                            _hook.meta_json, meta,
-                                        )
-                                        _hook.completed_at = _utcnow()
-                                        _hook.session_seq = turn_idx
-                                        updated = True
-                                        break
-                    if not updated:
-                        _now2 = _utcnow()
-                        try:
-                            with db.begin_nested():  # SAVEPOINT
-                                db.add(Message(
-                                    agent_id=ctx.agent_id,
-                                    role=MessageRole.AGENT,
-                                    content=content,
-                                    status=MessageStatus.COMPLETED,
-                                    source="cli",
-                                    meta_json=meta_json,
-                                    jsonl_uuid=uuid,
-                                    completed_at=_now2,
-                                    delivered_at=_now2,
-                                    tool_use_id=_extract_tool_use_id(meta),
-                                    session_seq=turn_idx,
-                                ))
-                                db.flush()
-                        except IntegrityError:
-                            logger.warning(
-                                "Skipped duplicate jsonl_uuid %s for agent %s",
-                                uuid, ctx.agent_id[:8],
-                            )
-                            continue
-            agent.last_message_preview = (conv_turns[-1][1] or "")[:200]
-            agent.last_message_at = _utcnow()
-            db.commit()
-            if any(r != "user" for _, r, *_ in missing):
-                ad._emit(emit_new_message(
-                    ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
-                ))
-            logger.info(
-                "Reconciled %d missing turns for agent %s",
-                len(missing), ctx.agent_id,
-            )
-        elif agent:
-            # No missing turns — but update last agent msg if it grew
-            last_agent_msg = db.query(Message).filter(
-                Message.agent_id == ctx.agent_id,
-                Message.role == MessageRole.AGENT,
-            ).order_by(Message.created_at.desc()).first()
-            last_assistant = None
-            last_assistant_meta = None
-            last_assistant_uuid = None
-            for role, content, meta, uuid in reversed(conv_turns):
-                if role == "assistant":
-                    last_assistant = content
-                    last_assistant_meta = meta
-                    last_assistant_uuid = uuid
-                    break
-            _should_update = False
-            if last_agent_msg and last_assistant:
-                if (last_assistant_uuid and last_agent_msg.jsonl_uuid
-                        and last_assistant_uuid == last_agent_msg.jsonl_uuid):
-                    _should_update = len(last_agent_msg.content) < len(last_assistant)
-                elif (
-                    len(last_agent_msg.content) < len(last_assistant)
-                    and last_assistant.startswith(
-                        last_agent_msg.content[:200]
-                    )
-                ):
-                    _should_update = True
-            if _should_update:
-                last_agent_msg.content = last_assistant
-                last_agent_msg.completed_at = _utcnow()
-                if last_assistant_uuid and not last_agent_msg.jsonl_uuid:
-                    last_agent_msg.jsonl_uuid = last_assistant_uuid
-                if last_assistant_meta is not None:
-                    last_agent_msg.meta_json = _merge_interactive_meta(
-                        last_agent_msg.meta_json, last_assistant_meta,
-                    )
-                db.commit()
-                ad._emit(emit_new_message(
-                    ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
-                ))
-
-        # Update stale interactive metadata
-        _stale_updates = _update_stale_interactive_metadata(db, ctx.agent_id, initial_turns)
-        if _stale_updates:
-            ad._emit(emit_new_message(
-                ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
-            ))
-            for _upd_msg_id, _upd_meta in _stale_updates:
-                ad._emit(emit_metadata_update(ctx.agent_id, _upd_msg_id, _upd_meta))
-            logger.debug(
-                "Updated stale interactive metadata for agent %s "
-                "(initial reconciliation)", ctx.agent_id,
-            )
-    finally:
-        db.close()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -651,13 +386,10 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     """
     from agent_dispatcher import (
         _is_wrapped_prompt,
-        _dedup_sig,
         _merge_interactive_meta,
-        _update_stale_interactive_metadata,
     )
     from websocket import (
         emit_agent_update,
-        emit_metadata_update,
         emit_new_message,
         emit_tool_activity,
     )
@@ -891,7 +623,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                                     _web_msg.id, ctx.agent_id[:8],
                                 )
                         continue
-                    # Primary: UUID-based dedup
+                    # UUID-based dedup
                     if jsonl_uuid:
                         existing_uuid = db.query(Message.id).filter(
                             Message.agent_id == ctx.agent_id,
@@ -899,38 +631,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         ).first()
                         if existing_uuid:
                             continue
-                    # Secondary: content dedup against unlinked web/plan_continue
-                    _norm = _dedup_sig(content)
-                    _unlinked = db.query(Message).filter(
-                        Message.agent_id == ctx.agent_id,
-                        Message.role == MessageRole.USER,
-                        _or(
-                            Message.source == "web",
-                            Message.source == "plan_continue",
-                        ),
-                        Message.jsonl_uuid.is_(None),
-                    ).all()
-                    _match = next(
-                        (m for m in _unlinked
-                         if _dedup_sig(m.content) == _norm),
-                        None,
-                    )
-                    if _match:
-                        if jsonl_uuid:
-                            _match.jsonl_uuid = jsonl_uuid
-                        # JSONL contains this message — mark delivered
-                        if not _match.delivered_at:
-                            _match.delivered_at = _utcnow()
-                            from websocket import emit_message_delivered
-                            asyncio.ensure_future(emit_message_delivered(
-                                ctx.agent_id, _match.id,
-                                _match.delivered_at.isoformat(),
-                            ))
-                            logger.info(
-                                "Message %s delivered for agent %s (JSONL sync)",
-                                _match.id, ctx.agent_id[:8],
-                            )
-                        continue
                     _now = _utcnow()
                     msg = Message(
                         agent_id=ctx.agent_id,
@@ -1090,18 +790,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         generate_thumbnails_for_message, _c, ctx.project_path,
                     ))
 
-        # Update stale interactive metadata on EARLIER messages
-        _stale_updates = _update_stale_interactive_metadata(db, ctx.agent_id, turns)
-        if _stale_updates:
-            ad._emit(emit_new_message(
-                ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
-            ))
-            for _upd_msg_id, _upd_meta in _stale_updates:
-                ad._emit(emit_metadata_update(ctx.agent_id, _upd_msg_id, _upd_meta))
-            logger.debug(
-                "Updated stale interactive metadata for agent %s",
-                ctx.agent_id,
-            )
     finally:
         db.close()
 
@@ -1196,7 +884,278 @@ async def sync_handle_compact(ad, ctx: SyncContext):
 
 
 # ---------------------------------------------------------------------------
-# 4. trigger_sync — public entry point for hooks
+# 4. sync_audit — read-only drift detection
+# ---------------------------------------------------------------------------
+
+async def sync_audit(ad, ctx: SyncContext) -> list:
+    """Compare JSONL turns against DB messages. Report drift, do NOT repair.
+
+    Returns list of SyncDrift records created.
+    """
+    from agent_dispatcher import _parse_session_turns
+    from models import SyncDrift, SyncDriftType
+
+    db = SessionLocal()
+    try:
+        # Parse all turns from JSONL
+        turns = _parse_session_turns(ctx.jsonl_path)
+        if not turns:
+            return []
+
+        # Get all DB messages for this agent
+        db_msgs = db.query(Message).filter(
+            Message.agent_id == ctx.agent_id,
+            Message.source == "cli",
+        ).all()
+
+        # Build lookup maps
+        db_by_uuid = {
+            m.jsonl_uuid: m for m in db_msgs
+            if m.jsonl_uuid and not m.jsonl_uuid.startswith("hook-")
+        }
+
+        drift_records = []
+
+        for line_idx, (role, content, meta, uuid) in enumerate(turns):
+            if not uuid:
+                continue
+
+            if uuid not in db_by_uuid:
+                # JSONL turn has no matching DB row
+                drift = SyncDrift(
+                    agent_id=ctx.agent_id,
+                    drift_type=SyncDriftType.MISSING_IN_DB,
+                    severity="warning",
+                    jsonl_uuid=uuid,
+                    jsonl_line=line_idx,
+                    detail=(
+                        f"JSONL turn at line {line_idx} (role={role}, "
+                        f"{len(content)} chars) has no matching DB row"
+                    ),
+                    jsonl_content_len=len(content),
+                )
+                db.add(drift)
+                drift_records.append(drift)
+            else:
+                db_msg = db_by_uuid[uuid]
+                # Check content length mismatch (significant difference)
+                if (
+                    db_msg.content and content
+                    and abs(len(db_msg.content) - len(content)) > 50
+                ):
+                    drift = SyncDrift(
+                        agent_id=ctx.agent_id,
+                        drift_type=SyncDriftType.CONTENT_MISMATCH,
+                        severity="warning",
+                        jsonl_uuid=uuid,
+                        db_message_id=db_msg.id,
+                        jsonl_line=line_idx,
+                        detail=(
+                            f"Content length mismatch: DB has "
+                            f"{len(db_msg.content)} chars, JSONL has "
+                            f"{len(content)} chars"
+                        ),
+                        jsonl_content_len=len(content),
+                        db_content_len=len(db_msg.content),
+                    )
+                    db.add(drift)
+                    drift_records.append(drift)
+
+                # Check stale interactive metadata
+                if meta and isinstance(meta, dict):
+                    for item in meta.get("interactive", []):
+                        if item.get("answer") is not None and db_msg.meta_json:
+                            import json as _json
+                            db_meta = _json.loads(db_msg.meta_json)
+                            for db_item in db_meta.get("interactive", []):
+                                if (
+                                    db_item.get("tool_use_id") == item.get("tool_use_id")
+                                    and db_item.get("answer") is None
+                                ):
+                                    drift = SyncDrift(
+                                        agent_id=ctx.agent_id,
+                                        drift_type=SyncDriftType.META_STALE,
+                                        severity="info",
+                                        jsonl_uuid=uuid,
+                                        db_message_id=db_msg.id,
+                                        jsonl_line=line_idx,
+                                        detail=(
+                                            f"Interactive answer stale: "
+                                            f"tool_use_id={item.get('tool_use_id')} "
+                                            f"has answer in JSONL but null in DB"
+                                        ),
+                                    )
+                                    db.add(drift)
+                                    drift_records.append(drift)
+
+        # Check for DB messages not in JSONL (MISSING_IN_JSONL)
+        jsonl_uuids = {uuid for _, _, _, uuid in turns if uuid}
+        for msg in db_msgs:
+            if (
+                msg.jsonl_uuid
+                and not msg.jsonl_uuid.startswith("hook-")
+                and msg.jsonl_uuid not in jsonl_uuids
+            ):
+                drift = SyncDrift(
+                    agent_id=ctx.agent_id,
+                    drift_type=SyncDriftType.MISSING_IN_JSONL,
+                    severity="info",
+                    jsonl_uuid=msg.jsonl_uuid,
+                    db_message_id=msg.id,
+                    detail=(
+                        f"DB message {msg.id} (role={msg.role.value}, "
+                        f"{len(msg.content or '')} chars) not found in JSONL"
+                    ),
+                    db_content_len=len(msg.content or ""),
+                )
+                db.add(drift)
+                drift_records.append(drift)
+
+        # Check for hook-upgrade pending
+        hook_msgs = [
+            m for m in db_msgs
+            if m.jsonl_uuid and m.jsonl_uuid.startswith("hook-")
+        ]
+        for msg in hook_msgs:
+            drift = SyncDrift(
+                agent_id=ctx.agent_id,
+                drift_type=SyncDriftType.HOOK_UPGRADE_PENDING,
+                severity="info",
+                db_message_id=msg.id,
+                detail=(
+                    f"Hook-created message {msg.id} still has "
+                    f"synthetic UUID {msg.jsonl_uuid}"
+                ),
+            )
+            db.add(drift)
+            drift_records.append(drift)
+
+        if drift_records:
+            db.commit()
+            logger.info(
+                "Sync audit for %s: %d drift records",
+                ctx.agent_id, len(drift_records),
+            )
+
+        return drift_records
+    except Exception as e:
+        logger.error("Sync audit failed for %s: %s", ctx.agent_id, e)
+        db.rollback()
+        return []
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# 5. sync_repair — explicit admin-triggered repair
+# ---------------------------------------------------------------------------
+
+async def sync_repair(ad, ctx: SyncContext, drift_ids: list[str] | None = None):
+    """Explicit repair — admin-triggered only.
+
+    Fixes specific drift records, or all unresolved drift for this agent.
+    """
+    from agent_dispatcher import _parse_session_turns
+    from models import SyncDrift, SyncDriftType
+
+    db = SessionLocal()
+    try:
+        query = db.query(SyncDrift).filter(
+            SyncDrift.agent_id == ctx.agent_id,
+            SyncDrift.resolved_at.is_(None),
+        )
+        if drift_ids:
+            query = query.filter(SyncDrift.id.in_(drift_ids))
+
+        drifts = query.all()
+        if not drifts:
+            return []
+
+        # Parse JSONL for repair data
+        turns = _parse_session_turns(ctx.jsonl_path)
+        turns_by_uuid = {
+            uuid: (role, content, meta)
+            for role, content, meta, uuid in turns if uuid
+        }
+
+        resolved = []
+        for drift in drifts:
+            try:
+                if drift.drift_type == SyncDriftType.MISSING_IN_DB and drift.jsonl_uuid:
+                    turn_data = turns_by_uuid.get(drift.jsonl_uuid)
+                    if turn_data:
+                        role, content, meta = turn_data
+                        _role = (
+                            MessageRole.USER if role == "user"
+                            else (
+                                MessageRole.AGENT if role == "assistant"
+                                else MessageRole.SYSTEM
+                            )
+                        )
+                        msg = Message(
+                            agent_id=ctx.agent_id,
+                            role=_role,
+                            content=content,
+                            status=MessageStatus.COMPLETED,
+                            source="cli",
+                            jsonl_uuid=drift.jsonl_uuid,
+                            meta_json=json.dumps(meta) if meta else None,
+                            tool_use_id=_extract_tool_use_id(meta),
+                            completed_at=_utcnow(),
+                            delivered_at=_utcnow(),
+                        )
+                        db.add(msg)
+
+                elif (
+                    drift.drift_type == SyncDriftType.CONTENT_MISMATCH
+                    and drift.db_message_id and drift.jsonl_uuid
+                ):
+                    turn_data = turns_by_uuid.get(drift.jsonl_uuid)
+                    if turn_data:
+                        _, content, _ = turn_data
+                        msg = db.query(Message).get(drift.db_message_id)
+                        if msg:
+                            msg.content = content
+
+                elif (
+                    drift.drift_type == SyncDriftType.META_STALE
+                    and drift.db_message_id and drift.jsonl_uuid
+                ):
+                    turn_data = turns_by_uuid.get(drift.jsonl_uuid)
+                    if turn_data:
+                        _, _, meta = turn_data
+                        msg = db.query(Message).get(drift.db_message_id)
+                        if msg and meta:
+                            msg.meta_json = json.dumps(meta)
+
+                elif drift.drift_type == SyncDriftType.MISSING_IN_JSONL:
+                    pass  # Can't fix — JSONL is source of truth. Log only.
+
+                elif drift.drift_type == SyncDriftType.HOOK_UPGRADE_PENDING:
+                    pass  # Will be resolved naturally when JSONL sync catches up
+
+                drift.resolved_at = _utcnow()
+                drift.resolved_by = "auto_repair"
+                resolved.append(drift)
+            except Exception as e:
+                logger.warning("Failed to repair drift %s: %s", drift.id, e)
+
+        db.commit()
+        logger.info(
+            "Sync repair for %s: resolved %d/%d drift records",
+            ctx.agent_id, len(resolved), len(drifts),
+        )
+        return resolved
+    except Exception as e:
+        logger.error("Sync repair failed for %s: %s", ctx.agent_id, e)
+        db.rollback()
+        return []
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# 6. trigger_sync — public entry point for hooks
 # ---------------------------------------------------------------------------
 
 async def trigger_sync(ad, agent_id: str):
