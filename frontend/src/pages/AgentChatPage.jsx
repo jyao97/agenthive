@@ -3429,27 +3429,59 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               </div>
             )}
 
-            {messages.filter((m) => !(m.role === "USER" && m.status === "PENDING")).map((msg) => {
-              if (msg.role === "AGENT" && !(msg.content || "").trimStart().startsWith("<task-notification>")) {
-                const segments = splitMessageSegments(msg.content || "");
-                if (segments.length > 1 || segments[0]?.type === "tools") {
-                  const lastTextIdx = segments.findLastIndex((s) => s.type === "text");
-                  return (
-                    <React.Fragment key={msg.id}>
-                      {segments.map((seg, i) => {
-                        if (seg.type === "tools") return <ToolLogBubble key={`${msg.id}-t${i}`} entries={seg.entries} />;
-                        if (i === lastTextIdx) return <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride={seg.text} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
-                        return <AgentTextSegment key={`${msg.id}-s${i}`} text={seg.text} project={agent.project} />;
-                      })}
-                      {lastTextIdx === -1 && msg.metadata?.interactive?.length > 0 && (
-                        <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride="" project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
-                      )}
-                    </React.Fragment>
-                  );
+            {(() => {
+              const visible = messages.filter((m) => !(m.role === "USER" && m.status === "PENDING"));
+              // Build tool groups: consecutive tool_use AGENT messages get merged
+              const toolGroups = new Map(); // first msg id -> [entries]
+              let groupStart = null;
+              for (let i = 0; i < visible.length; i++) {
+                const m = visible[i];
+                if (m.role === "AGENT" && m.kind === "tool_use") {
+                  if (!groupStart) groupStart = m.id;
+                  const match = (m.content || "").match(TOOL_SUMMARY_RE);
+                  if (!toolGroups.has(groupStart)) toolGroups.set(groupStart, []);
+                  toolGroups.get(groupStart).push({
+                    name: match ? match[1] : "Tool",
+                    summary: match ? match[2] : m.content || "",
+                  });
+                } else {
+                  groupStart = null;
                 }
               }
-              return <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
-            })}
+              return visible.map((msg) => {
+                if (msg.role === "AGENT" && !(msg.content || "").trimStart().startsWith("<task-notification>")) {
+                  // Case 1: tool_use kind — rendered by grouping logic
+                  if (msg.kind === "tool_use") {
+                    if (toolGroups.has(msg.id)) {
+                      return <ToolLogBubble key={msg.id} entries={toolGroups.get(msg.id)} />;
+                    }
+                    return null; // subsequent in group, already rendered
+                  }
+                  // Case 2: text kind — render as simple ChatBubble
+                  if (msg.kind === "text") {
+                    return <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
+                  }
+                  // Case 3: null/undefined kind (legacy) — existing splitMessageSegments logic
+                  const segments = splitMessageSegments(msg.content || "");
+                  if (segments.length > 1 || segments[0]?.type === "tools") {
+                    const lastTextIdx = segments.findLastIndex((s) => s.type === "text");
+                    return (
+                      <React.Fragment key={msg.id}>
+                        {segments.map((seg, i) => {
+                          if (seg.type === "tools") return <ToolLogBubble key={`${msg.id}-t${i}`} entries={seg.entries} />;
+                          if (i === lastTextIdx) return <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride={seg.text} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
+                          return <AgentTextSegment key={`${msg.id}-s${i}`} text={seg.text} project={agent.project} />;
+                        })}
+                        {lastTextIdx === -1 && msg.metadata?.interactive?.length > 0 && (
+                          <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride="" project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
+                        )}
+                      </React.Fragment>
+                    );
+                  }
+                }
+                return <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
+              });
+            })()}
 
             {/* Streaming output or typing indicator while executing/syncing */}
             {(() => {
