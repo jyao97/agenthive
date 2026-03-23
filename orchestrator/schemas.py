@@ -170,6 +170,7 @@ class MessageOut(BaseModel):
     delivered_at: datetime | None = None
     tool_use_id: str | None = None
     session_seq: int | None = None
+    kind: str | None = None  # "text" | "tool_use" | None (legacy)
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 

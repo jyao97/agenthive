@@ -1243,7 +1243,7 @@ def _infer_worktree_from_session(
     return None
 
 
-def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, str | None]]:
+def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, str | None, str | None]]:
     """Parse a Claude Code session JSONL into conversation turns.
 
     Convenience wrapper that reads the file then delegates to
@@ -1265,43 +1265,51 @@ def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, s
 
 def _parse_session_turns_from_lines(
     lines: list[str],
-) -> list[tuple[str, str, dict | None, str | None]]:
-    """Parse pre-read JSONL lines into conversation turns.
+) -> list[tuple[str, str, dict | None, str | None, str | None]]:
+    """Parse pre-read JSONL lines into fine-grained conversation turns.
 
-    Returns a list of (role, content, metadata, jsonl_uuid) tuples where:
+    Returns a list of (role, content, metadata, jsonl_uuid, kind) tuples:
     - role: "user", "assistant", or "system"
     - content: text content of the turn
-    - metadata: dict with "interactive" key for tool calls, or None
-    - jsonl_uuid: the JSONL entry's uuid field for deterministic dedup,
-      or None for entries without uuid (queue-operations, system)
+    - metadata: dict with tool/interactive info, or None
+    - jsonl_uuid: the JSONL entry's uuid for dedup
+    - kind: "text", "tool_use", or None (interactive/user/system)
 
-    Skips tool_result entries (intermediate tool calls) and queue-operations.
-    Groups consecutive assistant entries into a single turn using _format_parts style.
+    Each text segment and tool call becomes its own turn, so the
+    conversation timeline has fine granularity matching the live view.
     """
-    turns: list[tuple[str, str, dict | None, str | None]] = []
+    turns: list[tuple[str, str, dict | None, str | None, str | None]] = []
 
-    # Accumulate assistant blocks between user messages
-    assistant_parts: list[tuple[str, str]] = []
-    # Track interactive tool calls (AskUserQuestion / ExitPlanMode) in current turn
+    # Accumulate text blocks between tool calls
+    text_parts: list[str] = []
+    # Track interactive tool calls (AskUserQuestion / ExitPlanMode)
     pending_interactive: list[dict] = []
     # Map tool_use_id → interactive entry for matching tool_result answers
     interactive_by_id: dict[str, dict] = {}
-    # Track the first JSONL uuid for the current assistant turn group
-    assistant_turn_uuid: str | None = None
+    # UUID for the current accumulated text segment
+    text_uuid: str | None = None
 
-    def flush_assistant():
-        nonlocal assistant_turn_uuid
-        if not assistant_parts and not pending_interactive:
+    def flush_text():
+        """Emit accumulated text as a kind='text' turn."""
+        nonlocal text_uuid
+        if not text_parts:
             return
-        text = _format_parts(assistant_parts) if assistant_parts else ""
-        meta = None
+        text = "\n\n".join(t.strip() for t in text_parts if t.strip())
+        # Strip legacy markers
+        text = re.sub(r"\n?EXIT_SUCCESS\s*$", "", text).strip()
+        text = re.sub(r"\n?EXIT_FAILURE:?.*$", "", text).strip()
+        if text:
+            turns.append(("assistant", text, None, text_uuid, "text"))
+        text_parts.clear()
+        text_uuid = None
+
+    def flush_all():
+        """Flush text + pending interactive items."""
+        flush_text()
         if pending_interactive:
             meta = {"interactive": list(pending_interactive)}
-        if text.strip() or meta:
-            turns.append(("assistant", text.strip() if text else "", meta, assistant_turn_uuid))
-        assistant_parts.clear()
-        pending_interactive.clear()
-        assistant_turn_uuid = None
+            turns.append(("assistant", "", meta, None, None))
+            pending_interactive.clear()
 
     for line in lines:
         line = line.strip()
@@ -1335,11 +1343,10 @@ def _parse_session_turns_from_lines(
                                     for b in result_content
                                 ).strip() or ""
                             interactive_by_id[tool_use_id]["answer"] = result_content
-                            # Derive selected_index from the answer text
                             _derive_selected_index(interactive_by_id[tool_use_id])
                             # Flush so each interactive Q&A becomes its
-                            # own message bubble instead of one giant block.
-                            flush_assistant()
+                            # own message bubble.
+                            flush_all()
                 continue
             # Real user message = string content (not tool_result list)
             if isinstance(content, str) and content.strip():
@@ -1357,38 +1364,35 @@ def _parse_session_turns_from_lines(
                 if stripped.startswith(
                     "This session is being continued from a previous conversation"
                 ):
-                    flush_assistant()
+                    flush_all()
                     _compact_uuid = f"sys-{hashlib.md5(content.encode()).hexdigest()[:16]}"
-                    turns.append(("system", content, None, _compact_uuid))
+                    turns.append(("system", content, None, _compact_uuid, None))
                     continue
-                flush_assistant()
+                flush_all()
                 clean = _strip_agent_preamble(stripped)
-                turns.append(("user", clean, None, entry_uuid))
+                turns.append(("user", clean, None, entry_uuid, None))
 
         elif entry_type == "assistant":
             msg = entry.get("message", {})
             # Skip subagent messages
             if entry.get("parent_tool_use_id"):
                 continue
-            # Track first uuid in this assistant turn group
-            if assistant_turn_uuid is None and entry_uuid:
-                assistant_turn_uuid = entry_uuid
             for block in msg.get("content", []):
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "text" and block.get("text", "").strip():
                     if not _is_image_metadata(block["text"]):
-                        assistant_parts.append(("text", block["text"]))
+                        text_parts.append(block["text"])
+                        if text_uuid is None and entry_uuid:
+                            text_uuid = entry_uuid
                 elif block.get("type") == "tool_use":
                     tool_name = block.get("name", "")
                     tool_input = block.get("input", {})
                     tool_use_id = block.get("id", "")
 
-                    # Capture interactive tool calls — flush accumulated
-                    # text/tool parts first so the card gets its own bubble.
                     if tool_name in ("AskUserQuestion", "ExitPlanMode"):
-                        # Flush preceding content into its own message
-                        flush_assistant()
+                        # Interactive: flush text, set up interactive state
+                        flush_text()
                         if tool_name == "AskUserQuestion":
                             entry_data = {
                                 "type": "ask_user_question",
@@ -1406,65 +1410,59 @@ def _parse_session_turns_from_lines(
                             }
                         pending_interactive.append(entry_data)
                         interactive_by_id[tool_use_id] = entry_data
-
-                    summary = _format_tool_summary(tool_name, tool_input)
-                    if summary:
-                        assistant_parts.append(("tool", summary))
+                    else:
+                        # Regular tool: flush text, emit tool_use turn
+                        flush_text()
+                        summary = _format_tool_summary(tool_name, tool_input)
+                        if summary:
+                            tool_uuid = f"tool-{tool_use_id}" if tool_use_id else None
+                            tool_meta = {"tool_name": tool_name, "tool_use_id": tool_use_id}
+                            turns.append(("assistant", summary, tool_meta, tool_uuid, "tool_use"))
 
         elif entry_type == "queue-operation":
-            # Queued prompts sent while assistant is working
-            # Note: queue-operations have no uuid in JSONL
             if entry.get("operation") == "enqueue":
                 queued_content = entry.get("content", "")
                 if isinstance(queued_content, str) and queued_content.strip():
                     clean_q = _strip_agent_preamble(queued_content.strip())
-                    # Sub-agent task results are system-generated, not user input
                     _qop_uuid = f"qop-{hashlib.md5(clean_q.encode()).hexdigest()[:16]}"
                     if clean_q.lstrip().startswith("<task-notification>"):
-                        flush_assistant()
-                        turns.append(("assistant", clean_q, None, _qop_uuid))
+                        flush_all()
+                        turns.append(("assistant", clean_q, None, _qop_uuid, None))
                     else:
-                        flush_assistant()
-                        turns.append(("user", clean_q, None, _qop_uuid))
+                        flush_all()
+                        turns.append(("user", clean_q, None, _qop_uuid, None))
 
         elif entry_type == "system":
-            # Use structured fields from JSONL (subtype, content)
             subtype = entry.get("subtype", "")
-            # Skip internal CLI metrics / redundant signals
             if subtype in ("turn_duration", "stop_hook_summary"):
                 continue
-            flush_assistant()
+            flush_all()
             content = entry.get("content", "")
             if subtype or content:
                 label = content or subtype.replace("_", " ")
                 _sys_uuid = f"sys-{hashlib.md5(label.encode()).hexdigest()[:16]}"
-                turns.append(("system", label, None, _sys_uuid))
+                turns.append(("system", label, None, _sys_uuid, None))
 
-    # Flush any remaining assistant content
-    flush_assistant()
+    # Flush remaining
+    flush_all()
 
-    # Deduplicate identical user turns.  Claude Code context compaction
-    # re-injects the same user prompt for every continuation session,
-    # producing many copies of "You are working in project: ..." etc.
-    # Keep only the first occurrence of each unique user message.
+    # Deduplicate identical user turns
     if turns:
         seen_uuids: set[str] = set()
         seen_content: set[str] = set()
-        deduped: list[tuple[str, str, dict | None, str | None]] = []
-        for role, content, meta, uuid in turns:
+        deduped: list[tuple[str, str, dict | None, str | None, str | None]] = []
+        for turn in turns:
+            role, content = turn[0], turn[1]
+            uuid = turn[3] if len(turn) > 3 else None
             if role == "user":
-                # Primary: UUID-based dedup
                 if uuid:
                     if uuid in seen_uuids:
                         continue
                     seen_uuids.add(uuid)
-                # Content-based dedup catches queue-op + user-entry
-                # pairs for the same message (both now have UUIDs but
-                # different ones — content match is the tiebreaker)
                 if content in seen_content:
                     continue
                 seen_content.add(content)
-            deduped.append((role, content, meta, uuid))
+            deduped.append(turn)
         turns = deduped
 
     return turns
@@ -2671,14 +2669,16 @@ Here are the day's conversations (with timestamps):
     def _import_turns_as_messages_deduped(self, db, agent_id, turns, *, source="cli"):
         """Import conversation turns as Message records with UUID dedup.
 
-        Each turn is (role, content, meta, jsonl_uuid) where meta and
-        jsonl_uuid are optional.  Uses SAVEPOINT to catch IntegrityError
-        from the UNIQUE index.  Returns the number of messages imported.
+        Each turn is (role, content, meta, jsonl_uuid[, kind]) where meta,
+        jsonl_uuid, and kind are optional.  Uses SAVEPOINT to catch
+        IntegrityError from the UNIQUE index.  Returns the number of
+        messages imported.
         """
         imported = 0
         for role, content, *rest in turns:
             meta = rest[0] if rest else None
             jsonl_uuid = rest[1] if len(rest) > 1 else None
+            kind = rest[2] if len(rest) > 2 else None
             meta_json = json.dumps(meta) if meta else None
 
             # UUID-based dedup check
@@ -2702,8 +2702,11 @@ Here are the day's conversations (with timestamps):
                     jsonl_uuid=jsonl_uuid,
                     completed_at=now,
                     delivered_at=now,
+                    kind=kind,
                 )
             elif role == "assistant":
+                _tid = (meta.get("tool_use_id") if kind == "tool_use" and meta
+                        else None)
                 msg = Message(
                     agent_id=agent_id,
                     role=MessageRole.AGENT,
@@ -2714,6 +2717,8 @@ Here are the day's conversations (with timestamps):
                     jsonl_uuid=jsonl_uuid,
                     completed_at=now,
                     delivered_at=now,
+                    tool_use_id=_tid,
+                    kind=kind,
                 )
             elif role == "system":
                 msg = Message(
@@ -2725,6 +2730,7 @@ Here are the day's conversations (with timestamps):
                     jsonl_uuid=jsonl_uuid,
                     completed_at=now,
                     delivered_at=now,
+                    kind=kind,
                 )
             else:
                 continue

@@ -560,6 +560,21 @@ def init_db():
             ))
             conn.commit()
 
+        if "kind" not in msg_cols_new:
+            conn.execute(text("ALTER TABLE messages ADD COLUMN kind VARCHAR(20)"))
+            conn.commit()
+            # One-time: clear legacy cli messages so sync reimports them
+            # with fine-grained kind values. JSONL is source of truth.
+            _legacy = conn.execute(text(
+                "SELECT COUNT(*) FROM messages WHERE source = 'cli'"
+            )).scalar()
+            if _legacy and _legacy > 0:
+                conn.execute(text(
+                    "DELETE FROM messages WHERE source = 'cli'"
+                ))
+                conn.commit()
+                logger.info("migration: cleared %d legacy cli messages for fine-grained reimport", _legacy)
+
         # --- Add tool_use_id column to tool_activities ---
         ta_cols = _table_columns(conn, "tool_activities")
         if "tool_use_id" not in ta_cols:

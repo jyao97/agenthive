@@ -174,10 +174,12 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     new_turns = turns[ctx.last_turn_count:]
 
     # 5. Streaming update — last turn content changed but no new turns
+    #    Only applies to text turns (tool_use turns don't stream)
     if not new_turns and turns:
         last_turn = turns[-1]
+        last_kind = last_turn[4] if len(last_turn) > 4 else None
         new_hash = _content_hash(last_turn[1])
-        if new_hash != ctx.last_content_hash and last_turn[0] == "assistant":
+        if new_hash != ctx.last_content_hash and last_turn[0] == "assistant" and last_kind in ("text", None):
             db = SessionLocal()
             try:
                 agent = db.get(Agent, ctx.agent_id)
@@ -258,6 +260,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             seq = ctx.last_turn_count + i
             meta = rest[0] if rest else None
             jsonl_uuid = rest[1] if len(rest) > 1 else None
+            kind = rest[2] if len(rest) > 2 else None
             meta_json = json.dumps(meta) if meta else None
 
             if role == "user":
@@ -316,6 +319,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     delivered_at=_now,
                     tool_use_id=_extract_tool_use_id(meta),
                     session_seq=seq,
+                    kind=kind,
                 )
 
             elif role == "assistant":
@@ -329,6 +333,9 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         continue
 
                 _now = _utcnow()
+                # For tool_use turns, extract tool_use_id from tool metadata
+                _tid = (meta.get("tool_use_id") if kind == "tool_use" and meta
+                        else _extract_tool_use_id(meta))
                 msg = Message(
                     agent_id=ctx.agent_id,
                     role=MessageRole.AGENT,
@@ -339,8 +346,9 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     jsonl_uuid=jsonl_uuid,
                     completed_at=_now,
                     delivered_at=_now,
-                    tool_use_id=_extract_tool_use_id(meta),
+                    tool_use_id=_tid,
                     session_seq=seq,
+                    kind=kind,
                 )
 
             elif role == "system":
@@ -364,6 +372,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     completed_at=_now,
                     delivered_at=_now,
                     session_seq=seq,
+                    kind=kind,
                 )
             else:
                 continue
