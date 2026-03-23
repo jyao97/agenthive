@@ -425,6 +425,7 @@ async def hook_agent_tool_activity(request: Request):
                         source="cli",
                         meta_json=_meta,
                         jsonl_uuid=f"hook-{body.get('tool_use_id', '')}",
+                        tool_use_id=body.get("tool_use_id", "") or None,
                         completed_at=_utcnow(),
                         delivered_at=_utcnow(),
                     )
@@ -478,11 +479,9 @@ async def hook_agent_tool_activity(request: Request):
                     # hook-created + JSONL-sourced cards).
                     _answer_text = str(tool_output)[:500]
                     _patched_any = False
-                    _escaped_tid = tool_use_id.replace("%", r"\%").replace("_", r"\_")
                     _msgs = _db.query(Message).filter(
                         Message.agent_id == agent_id,
-                        Message.meta_json.is_not(None),
-                        Message.meta_json.like(f'%{_escaped_tid}%'),
+                        Message.tool_use_id == tool_use_id,
                     ).order_by(Message.created_at.desc()).all()
                     for _msg in _msgs:
                         try:
@@ -701,23 +700,37 @@ async def hook_agent_tool_activity(request: Request):
                         tool_name=tool_name,
                         kind=kind,
                         summary=summary or "",
+                        tool_use_id=body.get("tool_use_id", "") or None,
                         started_at=_utcnow(),
                     )
                     _db2.add(_ta)
                     _db2.commit()
                 elif phase == "end":
                     # Update the most recent unfinished entry for this tool
-                    _existing = (
-                        _db2.query(_TA)
-                        .filter(
-                            _TA.agent_id == agent_id,
-                            _TA.session_id == _sid,
-                            _TA.tool_name == tool_name,
-                            _TA.ended_at.is_(None),
+                    _tool_use_id = body.get("tool_use_id", "")
+                    if _tool_use_id:
+                        _existing = (
+                            _db2.query(_TA)
+                            .filter(
+                                _TA.agent_id == agent_id,
+                                _TA.session_id == _sid,
+                                _TA.tool_use_id == _tool_use_id,
+                                _TA.ended_at.is_(None),
+                            )
+                            .first()
                         )
-                        .order_by(_TA.started_at.desc())
-                        .first()
-                    )
+                    else:
+                        _existing = (
+                            _db2.query(_TA)
+                            .filter(
+                                _TA.agent_id == agent_id,
+                                _TA.session_id == _sid,
+                                _TA.tool_name == tool_name,
+                                _TA.ended_at.is_(None),
+                            )
+                            .order_by(_TA.started_at.desc())
+                            .first()
+                        )
                     if _existing:
                         _existing.ended_at = _utcnow()
                         _existing.output_summary = output_summary or None
@@ -733,6 +746,7 @@ async def hook_agent_tool_activity(request: Request):
                             summary=summary or "",
                             output_summary=output_summary or None,
                             is_error=is_error,
+                            tool_use_id=body.get("tool_use_id", "") or None,
                             started_at=_utcnow(),
                             ended_at=_utcnow(),
                         )
