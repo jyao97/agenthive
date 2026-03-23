@@ -522,9 +522,13 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             if last_msg:
                 _last_role, _last_content, *_last_rest = turns[-1]
                 _last_meta = _last_rest[0] if _last_rest else None
+                _last_uuid = _last_rest[1] if len(_last_rest) > 1 else None
                 last_msg.content = _last_content
                 last_msg.completed_at = _utcnow()
                 last_msg.session_seq = last_msg.session_seq or (len(turns) - 1)
+                # Assign jsonl_uuid early so dedup works after restart
+                if _last_uuid and not last_msg.jsonl_uuid:
+                    last_msg.jsonl_uuid = _last_uuid
                 if _last_meta is not None:
                     last_msg.meta_json = _merge_interactive_meta(
                         last_msg.meta_json, _last_meta,
@@ -727,7 +731,19 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             if _actually_inserted:
                 agent.last_message_preview = (new_turns[-1][1] or "")[:200]
                 agent.last_message_at = _utcnow()
-            db.commit()
+            try:
+                db.commit()
+            except Exception as _commit_exc:
+                db.rollback()
+                logger.warning(
+                    "Commit failed for agent %s, rolling back: %s",
+                    ctx.agent_id[:8], _commit_exc,
+                )
+                # Still update counters so we don't re-process the same turns
+                ctx.last_turn_count = len(turns)
+                ctx.last_tail_hash = tail_hash
+                ctx.last_offset = _current_offset
+                return "commit_error"
 
             ctx.last_turn_count = len(turns)
             ctx.last_tail_hash = tail_hash
