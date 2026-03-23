@@ -3343,6 +3343,7 @@ Here are the day's conversations (with timestamps):
                 info["pid_str"], info["output_file"]
             )
             result_text, result_meta_json = _extract_result(logs)
+            harvest_parts, _harvest_result_event, harvest_interactive = _parse_stream_parts(logs)
 
             # Check process exit code
             proc_info = self.worker_mgr._processes.get(info["pid_str"])
@@ -3488,16 +3489,59 @@ Here are the day's conversations (with timestamps):
                 db.add(resp)
                 agent.status = post_exec_status
             else:
-                resp = Message(
-                    agent_id=agent.id,
-                    role=MessageRole.AGENT,
-                    content=result_text,
-                    status=MessageStatus.COMPLETED,
-                    stream_log=_truncate(logs, 50000),
-                    meta_json=result_meta_json,
-                    delivered_at=_now,
-                )
-                db.add(resp)
+                # --- Fine-grained message creation (Phase E) ---
+                # Create one Message per text segment / tool call instead of
+                # a single blob, so the frontend can render them individually.
+                _fg_seq = 0
+                _fg_msgs: list[Message] = []
+                for _fg_kind, _fg_content in harvest_parts:
+                    _fg_seq += 1
+                    _fg_content = _fg_content.strip()
+                    if not _fg_content:
+                        continue
+                    # Strip legacy markers from text parts
+                    if _fg_kind == "text":
+                        _fg_content = re.sub(r"\n?EXIT_SUCCESS\s*$", "", _fg_content).strip()
+                        _fg_content = re.sub(r"\n?EXIT_FAILURE:?.*$", "", _fg_content).strip()
+                        if not _fg_content:
+                            continue
+                    _fg_now = _utcnow()
+                    _fg_msg = Message(
+                        agent_id=agent.id,
+                        role=MessageRole.AGENT,
+                        content=_fg_content,
+                        status=MessageStatus.COMPLETED,
+                        source=None,
+                        jsonl_uuid=f"harvest-{agent.id}-{_fg_seq}",
+                        completed_at=_fg_now,
+                        delivered_at=_fg_now,
+                        session_seq=_fg_seq,
+                        kind="text" if _fg_kind == "text" else "tool_use",
+                    )
+                    db.add(_fg_msg)
+                    _fg_msgs.append(_fg_msg)
+
+                # Attach interactive metadata to last fine-grained message
+                if harvest_interactive and _fg_msgs:
+                    _fg_msgs[-1].meta_json = json.dumps({"interactive": harvest_interactive})
+
+                if _fg_msgs:
+                    # Attach stream_log to the first message
+                    _fg_msgs[0].stream_log = _truncate(logs, 50000)
+                    resp = _fg_msgs[-1]  # downstream refs use resp.id
+                else:
+                    # Empty response — fall back to single message with
+                    # _extract_result output (preserves existing behaviour).
+                    resp = Message(
+                        agent_id=agent.id,
+                        role=MessageRole.AGENT,
+                        content=result_text,
+                        status=MessageStatus.COMPLETED,
+                        stream_log=_truncate(logs, 50000),
+                        meta_json=result_meta_json,
+                        delivered_at=_now,
+                    )
+                    db.add(resp)
 
                 # Backfill hook-created interactive cards with answers from result
                 if result_meta_json:
@@ -3510,11 +3554,13 @@ Here are the day's conversations (with timestamps):
                             if ri.get("answer") is not None:
                                 answered_items[ri["tool_use_id"]] = ri
                         if answered_items:
+                            # Exclude all messages we just created (fine-grained or single)
+                            _exclude_ids = {m.id for m in _fg_msgs} if _fg_msgs else {resp.id}
                             # Find hook-created card messages with null answers
                             card_msgs = db.query(Message).filter(
                                 Message.agent_id == agent.id,
                                 Message.meta_json.is_not(None),
-                                Message.id != resp.id,  # not the message we just created
+                                Message.id.not_in(_exclude_ids),
                             ).all()
                             for cm in card_msgs:
                                 try:
@@ -3607,7 +3653,12 @@ Here are the day's conversations (with timestamps):
 
             from websocket import emit_agent_update, emit_new_message
             self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
-            self._emit(emit_new_message(agent.id, resp.id, agent.name, agent.project))
+            # Emit new-message event for each fine-grained message (or the single resp)
+            if not is_error and _fg_msgs:
+                for _fg_m in _fg_msgs:
+                    self._emit(emit_new_message(agent.id, _fg_m.id, agent.name, agent.project))
+            else:
+                self._emit(emit_new_message(agent.id, resp.id, agent.name, agent.project))
 
             # Generate video thumbnails in background thread
             if result_text:
