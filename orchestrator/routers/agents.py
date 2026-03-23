@@ -1,0 +1,2755 @@
+"""Agent routes — create, launch, list, update, messages, interactive answers."""
+
+import asyncio
+import json
+import logging
+import os
+import re
+import subprocess
+import threading
+import time
+import time as _time
+from datetime import datetime, timedelta, timezone
+
+from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import case, func, or_
+from sqlalchemy.orm import Session
+
+from config import CC_MODEL, CLAUDE_HOME, VALID_MODELS
+from database import SessionLocal, get_db
+from models import (
+    Agent, AgentInsightSuggestion, AgentMode, AgentStatus,
+    Message, MessageRole, MessageStatus, Project, Task, TaskStatus,
+)
+from agent_dispatcher import ACTIVE_STATUSES, ALIVE_STATUSES, TERMINAL_STATUSES
+from schemas import (
+    AgentBrief, AgentCreate, AgentInsightSuggestionOut, AgentOut,
+    MessageOut, MessageSearchResponse, MessageSearchResult,
+    PaginatedMessages, SendMessage, UpdateMessage,
+)
+from route_helpers import (
+    check_project_capacity, compute_successor_id,
+    create_tmux_claude_session, enrich_agent_briefs,
+    generate_worktree_name_local, graceful_kill_tmux,
+    subprocess_clean_env, tmux_launch_sem,
+    TMUX_CMD_TIMEOUT, TUI_STARTUP_TIMEOUT, TUI_SETTLE_DELAY,
+    MAX_STARTING_AGENTS, MAX_SEND_ATTEMPTS, JSONL_POLL_PER_ATTEMPT,
+    IMPORT_CHECK_TIMEOUT, SUBPROCESS_STRIP_VARS,
+)
+from utils import utcnow as _utcnow
+from task_state_machine import can_transition, InvalidTransitionError
+from task_state import TaskStateMachine
+from websocket import emit_task_update, emit_agent_update
+
+logger = logging.getLogger("orchestrator")
+
+router = APIRouter(tags=["agents"])
+
+# Aliases for route_helpers functions (original code used underscore-prefixed names)
+_check_project_capacity = check_project_capacity
+_create_tmux_claude_session = create_tmux_claude_session
+_graceful_kill_tmux = graceful_kill_tmux
+_tmux_launch_sem = tmux_launch_sem
+_TMUX_CMD_TIMEOUT = TMUX_CMD_TIMEOUT
+_TUI_STARTUP_TIMEOUT = TUI_STARTUP_TIMEOUT
+_TUI_SETTLE_DELAY = TUI_SETTLE_DELAY
+_MAX_STARTING_AGENTS = MAX_STARTING_AGENTS
+_MAX_SEND_ATTEMPTS = MAX_SEND_ATTEMPTS
+_JSONL_POLL_PER_ATTEMPT = JSONL_POLL_PER_ATTEMPT
+_IMPORT_CHECK_TIMEOUT = IMPORT_CHECK_TIMEOUT
+_generate_worktree_name_local = generate_worktree_name_local
+_enrich_agent_briefs = enrich_agent_briefs
+
+
+# ---------------------------------------------------------------------------
+# Background summary helpers (deferred import from routers.projects)
+# ---------------------------------------------------------------------------
+
+def _run_agent_summary_background(*args, **kwargs):
+    """Proxy — deferred import from routers.projects to avoid circular imports."""
+    from routers.projects import _run_agent_summary_background as _impl
+    return _impl(*args, **kwargs)
+
+
+def _generate_retry_summary_background(*args, **kwargs):
+    """Proxy — deferred import from routers.projects to avoid circular imports."""
+    from routers.projects import _generate_retry_summary_background as _impl
+    return _impl(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Hooks config helpers (called from lifespan too)
+# ---------------------------------------------------------------------------
+
+def _write_agent_hooks_config(project_path: str):
+    """Write project-level hooks (PreToolUse safety + activity, PostToolUse, Stop)
+    to settings.local.json.
+
+    SessionStart is handled globally via _write_global_session_hook().
+    """
+    port = os.getenv("PORT", "8080")
+    base_url = f"http://localhost:{port}/api/hooks"
+
+    hook_script = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "hooks", "pretooluse-safety.py",
+    )
+
+    _tool_activity_hook = {
+        "type": "http",
+        "url": f"{base_url}/agent-tool-activity",
+        "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+        "allowedEnvVars": ["AHIVE_AGENT_ID"],
+    }
+
+    # Permission gate hook — separate URL so Claude Code doesn't dedup
+    # with the activity hook.  Large timeout (24h) so it can block
+    # indefinitely until the user responds from the web UI.
+    _permission_hook = {
+        "type": "http",
+        "url": f"{base_url}/agent-permission",
+        "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+        "allowedEnvVars": ["AHIVE_AGENT_ID"],
+        "timeout": 86400,
+    }
+
+    desired_hooks = {
+        "PreToolUse": [
+            # Safety guardrails (Bash/Write/Edit only)
+            {
+                "matcher": "Bash|Write|Edit",
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_script,
+                }],
+            },
+            # Tool activity broadcast (all tools)
+            {
+                "hooks": [_tool_activity_hook],
+            },
+            # Permission gate for supervised agents (all tools)
+            {
+                "hooks": [_permission_hook],
+            },
+        ],
+        "PostToolUse": [{
+            "hooks": [_tool_activity_hook],
+        }],
+        "PostToolUseFailure": [{
+            "hooks": [_tool_activity_hook],
+        }],
+        "SubagentStart": [{
+            "hooks": [_tool_activity_hook],
+        }],
+        "SubagentStop": [{
+            "hooks": [_tool_activity_hook],
+        }],
+        "Notification": [{
+            "matcher": "permission_prompt",
+            "hooks": [_tool_activity_hook],
+        }],
+        "PreCompact": [{
+            "hooks": [_tool_activity_hook],
+        }],
+        "PostCompact": [{
+            "hooks": [{
+                "type": "http",
+                "url": f"{base_url}/agent-post-compact",
+                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+            }],
+        }],
+        "Stop": [{
+            "hooks": [{
+                "type": "http",
+                "url": f"{base_url}/agent-stop",
+                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+            }],
+        }],
+        "SessionEnd": [{
+            "hooks": [{
+                "type": "http",
+                "url": f"{base_url}/agent-session-end",
+                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+            }],
+        }],
+        "UserPromptSubmit": [{
+            "hooks": [{
+                "type": "http",
+                "url": f"{base_url}/agent-user-prompt",
+                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
+                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+            }],
+        }],
+    }
+
+    settings_local_dir = os.path.join(project_path, ".claude")
+    settings_local_path = os.path.join(settings_local_dir, "settings.local.json")
+    try:
+        os.makedirs(settings_local_dir, exist_ok=True)
+
+        existing = {}
+        if os.path.isfile(settings_local_path):
+            with open(settings_local_path, "r") as f:
+                existing = json.load(f)
+
+        current_hooks = existing.get("hooks", {})
+        # Remove stale SessionStart from project-level (now global)
+        current_hooks.pop("SessionStart", None)
+        merged_hooks = {**current_hooks, **desired_hooks}
+
+        if existing.get("hooks") != merged_hooks:
+            existing["hooks"] = merged_hooks
+            with open(settings_local_path, "w") as f:
+                json.dump(existing, f, indent=2)
+            logger.info("Preflight: wrote agent hooks to %s", settings_local_path)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Preflight: failed to write agent hooks config: %s", e)
+
+
+def _write_global_session_hook():
+    """Write SessionStart hook to ~/.claude/settings.json (global).
+
+    This ensures ALL claude processes on this machine fire the hook,
+    regardless of which project they're in or whether AgentHive started
+    them.  The hook script tries HTTP POST to the orchestrator and falls
+    back to writing a local file when the orchestrator is offline.
+    """
+    hook_script = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "hooks", "session-start.sh",
+    )
+
+    desired_hook = [{
+        "hooks": [{
+            "type": "command",
+            "command": hook_script,
+        }],
+    }]
+
+    claude_home = os.path.expanduser("~/.claude")
+    settings_path = os.path.join(claude_home, "settings.json")
+    try:
+        existing = {}
+        if os.path.isfile(settings_path):
+            with open(settings_path, "r") as f:
+                existing = json.load(f)
+
+        current_hooks = existing.get("hooks", {})
+        if current_hooks.get("SessionStart") == desired_hook:
+            return  # Already configured
+
+        current_hooks["SessionStart"] = desired_hook
+        existing["hooks"] = current_hooks
+        with open(settings_path, "w") as f:
+            json.dump(existing, f, indent=2)
+        logger.info("Wrote global SessionStart hook to %s", settings_path)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to write global session hook: %s", e)
+
+
+def _preflight_claude_project(project_path: str):
+    """Ensure all Claude Code prerequisites are met before launching.
+
+    Claude Code can show up to 8 blocking dialogs on startup.  This preflight
+    pre-accepts all of them so the TUI starts straight into the REPL.
+
+    Dialogs handled (in startup order):
+    1. Onboarding wizard (theme, login, security notes)
+    2. Custom API key approval
+    3. Workspace trust ("do you trust this folder?")
+    4. Hooks trust
+    5. CLAUDE.md external includes warning
+    6. Bypass-permissions mode warning
+    7. MCP server approval
+    8. Project onboarding
+
+    Config files:
+    - ~/.claude.json          — per-project trust + global onboarding state
+    - ~/.claude/settings.json — global settings (permissions, cleanup, MCP)
+
+    Trust cascades from parent directories: trusting PROJECTS_DIR root covers
+    all projects under it.
+    """
+    from config import CLAUDE_HOME, PROJECTS_DIR
+
+    # --- 1. ~/.claude.json (global state + per-project trust) ---
+    claude_json_path = os.path.join(os.path.expanduser("~"), ".claude.json")
+    for _ in range(3):
+        try:
+            data = {}
+            if os.path.isfile(claude_json_path):
+                with open(claude_json_path, "r") as f:
+                    data = json.load(f)
+
+            changed = False
+
+            # Global onboarding (dialog 1)
+            if data.get("hasCompletedOnboarding") is not True:
+                data["hasCompletedOnboarding"] = True
+                changed = True
+
+            projects = data.setdefault("projects", {})
+
+            # Trust the PROJECTS_DIR root — cascades to all child projects
+            # so we don't need per-project entries for trust alone.
+            projects_dir = PROJECTS_DIR or ""
+            if projects_dir:
+                root_cfg = projects.setdefault(projects_dir, {})
+                if root_cfg.get("hasTrustDialogAccepted") is not True:
+                    root_cfg["hasTrustDialogAccepted"] = True
+                    root_cfg["hasTrustDialogHooksAccepted"] = True
+                    changed = True
+
+            # Per-project flags (dialogs 3-5, 8)
+            proj_cfg = projects.setdefault(project_path, {})
+            _trust_fields = {
+                "hasTrustDialogAccepted": True,
+                "hasTrustDialogHooksAccepted": True,
+                "hasCompletedProjectOnboarding": True,
+                "hasClaudeMdExternalIncludesApproved": True,
+                "hasClaudeMdExternalIncludesWarningShown": True,
+            }
+            for field, value in _trust_fields.items():
+                if proj_cfg.get(field) is not value:
+                    proj_cfg[field] = value
+                    changed = True
+            if not proj_cfg.get("projectOnboardingSeenCount"):
+                proj_cfg["projectOnboardingSeenCount"] = 1
+                changed = True
+
+            if changed:
+                with open(claude_json_path, "w") as f:
+                    json.dump(data, f, indent=2)
+                logger.info("Preflight: updated ~/.claude.json for %s", project_path)
+            break
+        except (json.JSONDecodeError, OSError) as e:
+            # Retry after brief delay — concurrent Claude agents may be writing
+            # to the same ~/.claude.json file, causing transient read/write races
+            logger.warning("Preflight: failed to update ~/.claude.json: %s", e)
+            import time
+            time.sleep(0.1)
+
+    # --- 2. ~/.claude/settings.json (global settings) ---
+    settings_path = os.path.join(CLAUDE_HOME, "settings.json")
+    try:
+        settings = {}
+        if os.path.isfile(settings_path):
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+
+        changed = False
+        _global_flags = {
+            "skipDangerousModePermissionPrompt": True,   # dialog 6
+            "cleanupPeriodDays": 36500,                  # prevent session cleanup
+            "enableAllProjectMcpServers": True,          # dialog 7
+        }
+        for flag, value in _global_flags.items():
+            if settings.get(flag) != value:
+                settings[flag] = value
+                changed = True
+
+        if changed:
+            with open(settings_path, "w") as f:
+                json.dump(settings, f, indent=2)
+            logger.info("Preflight: updated ~/.claude/settings.json")
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Preflight: failed to update settings.json: %s", e)
+
+    # --- 3. .claude/settings.local.json (project-level agent hooks) ---
+    _write_agent_hooks_config(project_path)
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@router.post("/api/agents", response_model=AgentOut, status_code=201)
+async def create_agent(body: AgentCreate, request: Request, db: Session = Depends(get_db)):
+    """Create a new agent with an initial message."""
+    project = db.get(Project, body.project)
+    if not project:
+        raise HTTPException(status_code=400, detail=f"Project '{body.project}' not found")
+    if project.archived:
+        raise HTTPException(status_code=400, detail="Cannot create agents for archived projects — activate first")
+
+    # Enforce per-project capacity
+    _check_project_capacity(db, body.project)
+
+    # Generate agent name from first ~50 chars of prompt
+    name = body.prompt[:50].strip()
+    if len(body.prompt) > 50:
+        name += "..."
+
+    # Resolve model: explicit > project default > global default
+    agent_model = body.model or project.default_model or CC_MODEL
+    if agent_model not in VALID_MODELS:
+        logger.warning("Invalid model %r for agent, falling back to %s", agent_model, CC_MODEL)
+        agent_model = CC_MODEL
+
+    # Determine initial status: SYNCING if importing CLI session
+    is_sync = body.sync_session and body.resume_session_id
+    initial_status = AgentStatus.SYNCING if is_sync else AgentStatus.STARTING
+
+    # Pre-generate agent ID so we can use it for worktree naming
+    import uuid
+    agent_id = uuid.uuid4().hex[:12]
+
+    # Resolve worktree name: "auto" → GPT-generated branch name
+    wt = body.worktree
+    if wt == "auto":
+        wt = _generate_worktree_name_local(body.prompt)
+
+    # Infer worktree from session JSONL location when resuming/syncing
+    # without an explicit worktree (e.g. Sessions tab resume)
+    if not wt and body.resume_session_id:
+        from agent_dispatcher import _infer_worktree_from_session
+        _inferred = _infer_worktree_from_session(body.resume_session_id, project.path)
+        if _inferred:
+            wt = _inferred
+            logger.info("Inferred worktree=%s from session JSONL path", wt)
+
+    agent = Agent(
+        id=agent_id,
+        project=body.project,
+        name=name,
+        mode=body.mode,
+        status=initial_status,
+        model=agent_model,
+        effort=body.effort,
+        worktree=wt,
+        timeout_seconds=body.timeout_seconds,
+        session_id=body.resume_session_id,
+        cli_sync=bool(is_sync),
+        skip_permissions=body.skip_permissions,
+        last_message_preview=name,
+        last_message_at=_utcnow(),
+    )
+    db.add(agent)
+    db.flush()  # Get agent.id
+
+    if is_sync:
+        # Sync mode: import existing history, don't create initial user message
+        db.commit()
+        db.refresh(agent)
+
+        # Import history and start live sync in background
+        ad = getattr(request.app.state, "agent_dispatcher", None)
+        if ad:
+            imported = ad.import_session_history(
+                agent.id, body.resume_session_id, project.path
+            )
+            logger.info(
+                "Agent %s: imported %d messages from CLI session %s",
+                agent.id, imported, body.resume_session_id,
+            )
+            # Start live sync to tail ongoing CLI activity
+            ad.start_session_sync(
+                agent.id, body.resume_session_id, project.path
+            )
+    else:
+        # Normal mode: create the initial user message
+        ad = getattr(request.app.state, "agent_dispatcher", None)
+        if ad:
+            msg, _, _ = ad._prepare_dispatch(
+                db, agent, project, body.prompt,
+                source="web",
+                wrap_prompt=False,  # wrapping deferred to dispatch time
+            )
+            msg.status = MessageStatus.PENDING
+        else:
+            msg = Message(
+                agent_id=agent.id,
+                role=MessageRole.USER,
+                content=body.prompt,
+                status=MessageStatus.PENDING,
+                source="web",
+            )
+            db.add(msg)
+        db.commit()
+        db.refresh(agent)
+
+    logger.info("Agent %s created for project %s (mode %s, sync=%s)", agent.id, agent.project, agent.mode.value, is_sync)
+    return agent
+
+
+@router.post("/api/agents/launch-tmux", status_code=201)
+async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
+    """Launch an interactive claude CLI session in a new tmux pane.
+
+    Starts Claude in interactive mode (full TUI), then sends the prompt
+    as input after Claude finishes loading.  The user can attach to the
+    tmux pane to interact with Claude directly.
+
+    A background task detects the session JSONL and starts live-syncing
+    the conversation into the webapp.
+    """
+    import shlex
+    import subprocess
+    from config import CLAUDE_BIN
+
+    body = await request.json()
+    project_name = body.get("project")
+    prompt = body.get("prompt", "").strip()
+    model = body.get("model")
+    effort = body.get("effort")
+    worktree = body.get("worktree")
+    skip_permissions = body.get("skip_permissions", True)
+    task_id = body.get("task_id")
+
+    # Reject if too many agents are already queued for launch
+    starting_count = db.query(func.count(Agent.id)).filter(
+        Agent.status == AgentStatus.STARTING,
+    ).scalar() or 0
+    if starting_count >= _MAX_STARTING_AGENTS:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many agents launching — please wait for current launches to finish",
+        )
+
+    if not project_name:
+        raise HTTPException(status_code=400, detail="Project is required")
+
+    proj = db.get(Project, project_name)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
+    if not os.path.isdir(proj.path):
+        raise HTTPException(status_code=400, detail="Project directory not found on disk")
+
+    # Enforce per-project capacity
+    _check_project_capacity(db, project_name)
+
+    # Each agent gets its own tmux session: "ah-{agent_id_prefix}"
+    # Pre-generate agent ID, ensuring no DB or tmux session name collision
+    import secrets
+    import subprocess as _sp
+
+    # Get existing tmux session names for collision check
+    try:
+        _tmux_ls = _sp.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        _existing_tmux = set(_tmux_ls.stdout.strip().splitlines()) if _tmux_ls.returncode == 0 else set()
+    except (OSError, _sp.TimeoutExpired):
+        _existing_tmux = set()
+
+    for _ in range(20):
+        agent_hex = secrets.token_hex(6)
+        tmux_session = f"ah-{agent_hex[:8]}"
+        if db.get(Agent, agent_hex) is None and tmux_session not in _existing_tmux:
+            break
+    else:
+        raise HTTPException(status_code=500, detail="Failed to generate unique agent ID")
+
+    # Resolve worktree name: "auto" → GPT-generated branch name
+    if worktree == "auto" and prompt:
+        worktree = _generate_worktree_name_local(prompt)
+
+    # Pre-generate session UUID so we can pre-write the .owner sidecar
+    # BEFORE launching Claude.  This ensures the session has identity
+    # from the very first moment the JSONL file appears.
+    import uuid as _uuid
+    pre_session_id = str(_uuid.uuid4())
+
+    # Build the claude command in INTERACTIVE mode (no -p, so the user
+    # gets the full TUI and can attach via tmux).
+    cmd_parts = [CLAUDE_BIN,
+                  "--session-id", pre_session_id,
+                  "--output-format", "stream-json", "--verbose"]
+    if skip_permissions:
+        cmd_parts.append("--dangerously-skip-permissions")
+    if model:
+        cmd_parts += ["--model", model]
+    if effort:
+        cmd_parts += ["--effort", effort]
+    if worktree:
+        cmd_parts += ["--worktree", worktree]
+    claude_cmd = " ".join(shlex.quote(p) for p in cmd_parts)
+
+    # Pre-write .owner sidecar before launching Claude.
+    # Slug is unknown at this point — will be backfilled by the sync loop.
+    from agent_dispatcher import _write_session_owner
+    from session_cache import session_source_dir
+    _sdir = session_source_dir(proj.path)
+    os.makedirs(_sdir, exist_ok=True)
+    _write_session_owner(_sdir, pre_session_id, agent_hex)
+
+    # Pre-accept the project trust dialog in ~/.claude.json so Claude
+    # doesn't show the "Is this a project you trust?" prompt that blocks
+    # the TUI from starting.  This dialog appears on first launch in any
+    # directory that hasn't been explicitly trusted yet.
+    _preflight_claude_project(proj.path)
+
+    pane_id = _create_tmux_claude_session(tmux_session, proj.path, claude_cmd, agent_id=agent_hex)
+
+    # Create Agent record immediately so the frontend can navigate to it.
+    agent_name = (prompt or "CLI session")[:80]
+    resolved_model = model or proj.default_model
+    if resolved_model not in VALID_MODELS:
+        logger.warning("Invalid model %r for tmux agent, falling back to %s", resolved_model, CC_MODEL)
+        resolved_model = CC_MODEL
+    agent = Agent(
+        id=agent_hex,
+        project=project_name,
+        name=agent_name,
+        mode=AgentMode.AUTO,
+        status=AgentStatus.STARTING,
+        model=resolved_model,
+        cli_sync=True,
+        tmux_pane=pane_id,
+        effort=effort if effort else None,
+        worktree=worktree if worktree else None,
+        skip_permissions=skip_permissions,
+        task_id=task_id if task_id else None,
+        last_message_preview=agent_name,
+        last_message_at=datetime.now(timezone.utc),
+    )
+    db.add(agent)
+    db.flush()
+
+    # Link task → agent if task_id provided
+    _task_linked = False
+    if task_id:
+        _task = db.get(Task, task_id)
+        if _task and can_transition(_task.status, TaskStatus.EXECUTING):
+            _task.agent_id = agent.id
+            TaskStateMachine.transition(_task, TaskStatus.EXECUTING)
+            _task.worktree_name = worktree if worktree else None
+            if worktree:
+                _task.branch_name = _task.branch_name or f"worktree-{worktree}"
+            _task_linked = True
+
+    # Save the initial prompt and prepare wrapped version for Claude
+    launch_prompt = None
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if prompt:
+        if ad:
+            msg, launch_prompt, _ = ad._prepare_dispatch(
+                db, agent, proj, prompt,
+                source="web",
+                wrap_prompt=True,
+            )
+        else:
+            msg = Message(
+                agent_id=agent.id,
+                role=MessageRole.USER,
+                content=prompt,
+                source="web",
+            )
+            db.add(msg)
+        msg.status = MessageStatus.COMPLETED
+        msg.completed_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(agent)
+
+    # Emit task update after commit if task was linked
+    if _task_linked:
+        asyncio.ensure_future(emit_task_update(
+            _task.id, _task.status.value, _task.project_name or "",
+            title=_task.title,
+        ))
+
+    # Schedule background task: wait for Claude TUI to load, send prompt,
+    # detect session JSONL, and start sync.
+    if ad and launch_prompt:
+        launch_task = asyncio.ensure_future(
+            _launch_tmux_background(
+                ad, agent.id, pane_id, launch_prompt, proj.path,
+                pre_session_id=pre_session_id,
+            )
+        )
+        ad.track_launch_task(agent.id, launch_task)
+
+    logger.info(
+        "Launched tmux claude session in pane %s for project %s (agent %s)",
+        pane_id, project_name, agent.id,
+    )
+    return AgentOut.model_validate(agent)
+
+
+async def _launch_tmux_background(
+    ad, agent_id: str, pane_id: str, prompt: str, project_path: str,
+    pre_session_id: str | None = None,
+):
+    """Background task for tmux agent launch.
+
+    1. Wait for Claude's TUI to start (polls for a claude process in the pane)
+    2. Send the user prompt
+    3. Detect the session JSONL and start the sync loop
+
+    On any failure, transitions the agent to ERROR so it doesn't stay
+    stuck in STARTING forever.  Handles cancellation gracefully so that
+    stopping the agent while the launch is in progress doesn't leave
+    zombie error transitions.
+    """
+    import subprocess
+
+    from agent_dispatcher import (
+        _build_tmux_claude_map,
+        _detect_pid_session_jsonl,
+        capture_tmux_pane,
+        send_tmux_message,
+    )
+    from database import SessionLocal
+    from session_cache import session_source_dir
+    from websocket import emit_agent_update, emit_new_message
+
+    def _mark_error(reason: str):
+        """Transition agent to ERROR status on launch failure."""
+        db = SessionLocal()
+        try:
+            agent = db.get(Agent, agent_id)
+            if agent:
+                ad.error_agent_cleanup(
+                    db, agent, reason,
+                    add_message=False, fail_executing=False,
+                    cancel_tasks=False,
+                )
+                db.commit()
+        finally:
+            db.close()
+        logger.warning("tmux launch failed for agent %s: %s", agent_id, reason)
+
+    await _tmux_launch_sem.acquire()
+    # Register this pane so _detect_successor_session skips sessions
+    # belonging to this launching agent (prevents cross-agent theft).
+    ad._launching_panes[agent_id] = pane_id
+    try:
+        # Step 1: Wait for Claude's TUI to fully load (up to 30s).
+        # Two phases:
+        #   a) Detect the claude process in the pane
+        #   b) Wait for the TUI input prompt (❯) to appear in the pane content
+        process_detected = False
+        for _ in range(_TUI_STARTUP_TIMEOUT):
+            await asyncio.sleep(1)
+            pane_map = _build_tmux_claude_map()
+            if pane_id in pane_map and not pane_map[pane_id]["is_orchestrator"]:
+                process_detected = True
+                break
+        if not process_detected:
+            _mark_error(
+                "Claude TUI did not start in pane %s within %ds "
+                "(project_path: %s)" % (pane_id, _TUI_STARTUP_TIMEOUT, project_path)
+            )
+            return
+
+        # Wait for the REPL to be fully mounted.
+        # IMPORTANT: The ❯ prompt character appears in the welcome box BEFORE
+        # the REPL input handler is mounted.  On first launch in a new project
+        # directory, showSetupScreens() takes ~4 seconds (vs ~200ms for
+        # established projects).  We use the status bar ("⏵⏵ bypass permissions"
+        # or "shift+tab to cycle") as the definitive REPL-mounted signal,
+        # since it only renders after the full TUI component tree is ready.
+        #
+        # Also handles the project trust dialog ("Is this a project you
+        # trust?") which can appear despite pre-acceptance if ~/.claude.json
+        # was regenerated.  If detected, we press Enter to accept it.
+        tui_ready = False
+        trust_dialog_handled = False
+        for _ in range(_TUI_STARTUP_TIMEOUT):
+            await asyncio.sleep(1)
+            pane_text = capture_tmux_pane(pane_id)
+            if pane_text is None:
+                continue
+
+            # Check for the REPL status bar (definitive ready signal).
+            # With --dangerously-skip-permissions: "⏵⏵ bypass ... shift+tab"
+            # Without (supervised mode): "? for shortcuts ... /effort"
+            for ln in pane_text.split("\n"):
+                if ("\u23f5" in ln and "shift+tab" in ln) or \
+                   ("? for shortcuts" in ln):
+                    tui_ready = True
+                    break
+            if tui_ready:
+                break
+
+            # Check for the project trust dialog and auto-accept it
+            if not trust_dialog_handled and "trust this folder" in pane_text.lower():
+                subprocess.run(
+                    ["tmux", "send-keys", "-t", pane_id, "Enter"],
+                    capture_output=True, text=True, timeout=_TMUX_CMD_TIMEOUT,
+                )
+                trust_dialog_handled = True
+                logger.info(
+                    "Auto-accepted project trust dialog in pane %s for agent %s",
+                    pane_id, agent_id,
+                )
+        if not tui_ready:
+            _mark_error(
+                "Claude TUI did not fully initialize in pane %s within %ds "
+                "(project_path: %s)" % (pane_id, _TUI_STARTUP_TIMEOUT, project_path)
+            )
+            return
+
+        # Extra settle time after REPL mount.  On first-launch projects
+        # showSetupScreens() finishes ~200ms before REPL mount; add a buffer
+        # to ensure the input handler is fully wired up.
+        await asyncio.sleep(_TUI_SETTLE_DELAY)
+
+        # Step 2: Send the prompt, then wait for session JSONL as the
+        # definitive acceptance signal.  If the JSONL doesn't appear within
+        # a reasonable time, clear the input and re-send.
+        #
+        # Using session JSONL creation as the acceptance signal is far more
+        # reliable than pane-capture heuristics, which are fragile against
+        # TUI layout variations and re-render timing.
+        from session_cache import invalidate_path_cache
+        from agent_dispatcher import _get_session_pid
+
+        actual_cwd = project_path
+        try:
+            cwd_result = subprocess.run(
+                ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_current_path}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if cwd_result.returncode == 0 and cwd_result.stdout.strip():
+                actual_cwd = os.path.realpath(cwd_result.stdout.strip())
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("tmux pane CWD lookup failed for %s: %s", pane_id, e)
+
+        session_dir = session_source_dir(actual_cwd)
+        base_session_dir = session_source_dir(project_path)
+
+        def _check_status_bar_processing() -> bool:
+            """Check if the status bar shows 'esc to interrupt' — definitive
+            indicator that Claude is actively processing."""
+            pane_text = capture_tmux_pane(pane_id)
+            if pane_text:
+                for ln in pane_text.split("\n"):
+                    if "\u23f5" in ln and "esc to interrupt" in ln:
+                        return True
+            return False
+
+        def _scan_for_session_jsonl(owned_sids: set, pane_pid: int | None) -> str | None:
+            """Find the JSONL created by our launch.
+
+            If pre_session_id was provided (pre-generated UUID passed to
+            Claude via --session-id), ONLY accept that exact session.
+            Falls back to FD/mtime scan only when no pre_session_id was set
+            (legacy launches without --session-id).
+            """
+            # When we pre-generated a session ID, only accept that one.
+            # Never fall back to mtime guessing — it causes session theft
+            # when the expected JSONL hasn't been written yet.
+            if pre_session_id:
+                for sdir in dict.fromkeys([session_dir, base_session_dir]):
+                    if not os.path.isdir(sdir):
+                        continue
+                    fpath = os.path.join(sdir, f"{pre_session_id}.jsonl")
+                    if os.path.exists(fpath):
+                        return pre_session_id
+                return None  # Not ready yet — caller will retry
+
+            # Legacy fallback (no pre_session_id): scan for newest unowned JSONL
+            if pane_pid:
+                sid = _detect_pid_session_jsonl(pane_pid)
+                if sid and sid not in owned_sids:
+                    return sid
+
+            best_sid, best_mtime = None, launch_start
+            for sdir in dict.fromkeys([session_dir, base_session_dir]):
+                if not os.path.isdir(sdir):
+                    continue
+                for fname in os.listdir(sdir):
+                    if not fname.endswith(".jsonl"):
+                        continue
+                    sid = fname.replace(".jsonl", "")
+                    if sid in owned_sids:
+                        continue
+                    fpath = os.path.join(sdir, fname)
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                    except OSError:
+                        continue
+                    if mtime > best_mtime:
+                        best_sid, best_mtime = sid, mtime
+
+            return best_sid
+
+        # Collect session IDs already owned by other agents (once, reused)
+        db_check = SessionLocal()
+        try:
+            owned_sids = set()
+            for a in db_check.query(Agent).filter(
+                Agent.session_id.is_not(None),
+                Agent.id != agent_id,
+            ).all():
+                owned_sids.add(a.session_id)
+        finally:
+            db_check.close()
+
+        pane_pid = None
+        pane_map = _build_tmux_claude_map()
+        if pane_id in pane_map:
+            pane_pid = pane_map[pane_id].get("pid")
+
+        import time as _time
+        launch_start = _time.time()
+        session_id = None
+
+        for attempt in range(_MAX_SEND_ATTEMPTS):
+            # Clear any leftover text from a prior failed attempt
+            if attempt > 0:
+                subprocess.run(
+                    ["tmux", "send-keys", "-t", pane_id, "C-u"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                # Increasing back-off between retries: 3s, 5s, 7s, 9s
+                await asyncio.sleep(1 + attempt * 2)
+
+            if not send_tmux_message(pane_id, prompt):
+                _mark_error(
+                    "Failed to send prompt to tmux pane %s "
+                    "(project_path: %s)" % (pane_id, project_path)
+                )
+                return
+
+            logger.info(
+                "tmux launch agent %s: prompt sent (attempt %d/%d)",
+                agent_id, attempt + 1, _MAX_SEND_ATTEMPTS,
+            )
+
+            # Poll for evidence that Claude accepted the prompt:
+            # 1. Status bar shows "esc to interrupt" (processing), or
+            # 2. Session JSONL file appears (definitive)
+            for i in range(_JSONL_POLL_PER_ATTEMPT):
+                await asyncio.sleep(1)
+
+                # Refresh PID if not yet known
+                if not pane_pid:
+                    pane_map = _build_tmux_claude_map()
+                    if pane_id in pane_map:
+                        pane_pid = pane_map[pane_id].get("pid")
+
+                # Quick check: is Claude processing?
+                if i < 5 and _check_status_bar_processing():
+                    logger.info(
+                        "tmux launch agent %s: status bar confirms processing",
+                        agent_id,
+                    )
+
+                # Invalidate path cache periodically to pick up new dirs
+                if i in (5, 10):
+                    invalidate_path_cache(actual_cwd)
+                    invalidate_path_cache(project_path)
+                    session_dir = session_source_dir(actual_cwd)
+                    base_session_dir = session_source_dir(project_path)
+
+                try:
+                    session_id = _scan_for_session_jsonl(owned_sids, pane_pid)
+                except OSError:
+                    continue
+                if session_id:
+                    break
+
+            if session_id:
+                break
+
+            # No JSONL after polling — check if the pane still has Claude
+            pane_map = _build_tmux_claude_map()
+            if pane_id not in pane_map:
+                _mark_error(
+                    "Claude process disappeared from pane %s during launch "
+                    "(project_path: %s)" % (pane_id, project_path)
+                )
+                return
+
+            logger.info(
+                "tmux launch agent %s: no session JSONL after attempt %d/%d, "
+                "will retry",
+                agent_id, attempt + 1, _MAX_SEND_ATTEMPTS,
+            )
+
+        if not session_id:
+            _mark_error(
+                "No session JSONL appeared for agent %s after %d send attempts "
+                "(session_dir: %s, project_path: %s)"
+                % (agent_id, _MAX_SEND_ATTEMPTS, session_dir, project_path)
+            )
+            return
+
+        # Update agent with session_id and transition to SYNCING
+        db = SessionLocal()
+        try:
+            agent = db.get(Agent, agent_id)
+            if not agent or agent.status == AgentStatus.STOPPED:
+                return
+            # Final guard: verify no other agent grabbed this session
+            # in the meantime (race protection)
+            existing = db.query(Agent).filter(
+                Agent.session_id == session_id,
+                Agent.id != agent_id,
+            ).first()
+            if existing:
+                logger.warning(
+                    "Session %s already owned by agent %s — "
+                    "cannot assign to agent %s",
+                    session_id[:12], existing.id, agent_id,
+                )
+                _mark_error(
+                    "Session %s already owned by another agent" % session_id[:12]
+                )
+                return
+            agent.session_id = session_id
+            agent.status = AgentStatus.SYNCING
+            _init_msg = (
+                db.query(Message)
+                .filter(
+                    Message.agent_id == agent_id,
+                    Message.role == MessageRole.USER,
+                    Message.status == MessageStatus.PENDING,
+                    Message.delivered_at.is_(None),
+                )
+                .order_by(Message.created_at.asc())
+                .first()
+            )
+            if _init_msg:
+                _init_msg.delivered_at = _utcnow()
+                _init_msg.status = MessageStatus.COMPLETED
+                _init_msg.completed_at = _utcnow()
+            try:
+                db.commit()
+            except Exception:
+                # UNIQUE constraint on session_id — another agent raced us
+                db.rollback()
+                _mark_error(
+                    "Session %s UNIQUE constraint violation" % session_id[:12]
+                )
+                return
+
+            ad._emit(emit_agent_update(agent_id, "SYNCING", agent.project))
+        finally:
+            db.close()
+
+        # Start the session sync loop — use actual_cwd so worktree agents
+        # watch the correct session directory
+        ad.start_session_sync(agent_id, session_id, actual_cwd)
+        logger.info(
+            "Started sync for launched tmux agent %s (session %s)",
+            agent_id, session_id[:12],
+        )
+    except asyncio.CancelledError:
+        logger.info("Launch task cancelled for agent %s", agent_id)
+    finally:
+        _tmux_launch_sem.release()
+        ad._launch_tasks.pop(agent_id, None)
+        ad._launching_panes.pop(agent_id, None)
+
+
+@router.post("/api/agents/scan")
+async def scan_agents(request: Request, db: Session = Depends(get_db)):
+    """Trigger an immediate liveness scan of all agents.
+
+    Runs the same reaping logic as the periodic dispatcher tick, so dead
+    CLI agents are marked STOPPED right away instead of waiting ~30s.
+    """
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad:
+        ad._reap_dead_agents(db)
+        db.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Unlinked sessions — manual Claude Code sessions not launched by orchestrator
+# ---------------------------------------------------------------------------
+
+_PENDING_SESSIONS_DIR = "/tmp/ahive-pending-sessions"
+
+
+def _ingest_pending_sessions():
+    """Process sessions that accumulated while orchestrator was offline.
+
+    The SessionStart hook script writes to /tmp/ahive-pending-sessions/
+    when the orchestrator is unreachable.  On startup we ingest these
+    and create unlinked entries for user confirmation.
+    """
+    if not os.path.isdir(_PENDING_SESSIONS_DIR):
+        return
+    from agent_dispatcher import _write_unlinked_entry
+    from session_cache import session_source_dir
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        # Load active session IDs to avoid creating entries for owned sessions
+        active_sids: set[str] = {
+            r[0] for r in db.query(Agent.session_id).filter(
+                Agent.session_id.is_not(None),
+                Agent.status != AgentStatus.STOPPED,
+            ).all()
+        }
+        projects = db.query(Project).filter(Project.archived == False).all()
+        proj_by_path = {os.path.realpath(p.path): p for p in projects}
+    finally:
+        db.close()
+
+    ingested = 0
+    for fname in list(os.listdir(_PENDING_SESSIONS_DIR)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(_PENDING_SESSIONS_DIR, fname)
+        try:
+            with open(fpath) as f:
+                info = json.load(f)
+            os.unlink(fpath)  # Consume immediately
+        except (OSError, json.JSONDecodeError):
+            try:
+                os.unlink(fpath)
+            except OSError:
+                pass
+            continue
+
+        sid = info.get("session_id", "")
+        agent_id = info.get("agent_id", "")
+        cwd = info.get("cwd", "")
+
+        if not sid:
+            continue
+
+        # Managed agent: write signal file (successor detection handles it)
+        if agent_id:
+            try:
+                with open(f"/tmp/ahive-{agent_id}.newsession", "w") as f:
+                    f.write(sid)
+            except OSError:
+                pass
+            continue
+
+        # Unmanaged session: match CWD to project → unlinked entry
+        if sid in active_sids:
+            continue
+        cwd_real = os.path.realpath(cwd) if cwd else ""
+        matched_proj = None
+        for pp, p in proj_by_path.items():
+            if cwd_real == pp or cwd_real.startswith(pp + "/"):
+                matched_proj = p
+                break
+        if not matched_proj:
+            continue
+
+        sdir = session_source_dir(matched_proj.path)
+        transcript = os.path.join(sdir, f"{sid}.jsonl")
+
+        _write_unlinked_entry(
+            session_id=sid,
+            cwd=cwd_real,
+            transcript_path=transcript if os.path.isfile(transcript) else "",
+            tmux_pane=info.get("tmux_pane") or None,
+            project_name=matched_proj.name,
+        )
+        ingested += 1
+
+    if ingested:
+        logger.info("Ingested %d pending sessions from offline hook fallback", ingested)
+
+
+_UNLINKED_DIR: str | None = None
+
+
+def _get_unlinked_dir() -> str:
+    """Return (and lazily create) the unlinked-sessions directory."""
+    global _UNLINKED_DIR
+    if _UNLINKED_DIR is None:
+        from config import BACKUP_DIR
+        _UNLINKED_DIR = os.path.join(BACKUP_DIR, "unlinked-sessions")
+    os.makedirs(_UNLINKED_DIR, exist_ok=True)
+    return _UNLINKED_DIR
+
+
+def _clean_stale_unlinked(max_age: int = 3600):
+    """Remove unlinked session entries whose JSONL hasn't been updated in max_age seconds.
+
+    Preserves entries whose tmux pane still has a running process, even if
+    the JSONL is stale (idle sessions detected via Tier 3 / hook push).
+    """
+    udir = _get_unlinked_dir()
+    now = _time.time()
+    removed = 0
+    try:
+        for fname in os.listdir(udir):
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(udir, fname)
+            try:
+                with open(fpath) as f:
+                    info = json.load(f)
+                transcript = info.get("transcript_path", "")
+                if transcript and os.path.isfile(transcript):
+                    mtime = os.path.getmtime(transcript)
+                    if now - mtime < max_age:
+                        continue  # still active
+                # Transcript stale or gone — check if tmux pane is alive
+                # with the SAME process (guards against pane ID reuse).
+                tmux_pane = info.get("tmux_pane", "")
+                stored_pid = info.get("pane_pid")
+                if tmux_pane:
+                    try:
+                        import subprocess
+                        r = subprocess.run(
+                            ["tmux", "display-message", "-t", tmux_pane, "-p", "#{pane_pid}"],
+                            capture_output=True, text=True, timeout=3,
+                        )
+                        current_pid = r.stdout.strip() if r.returncode == 0 else ""
+                        if current_pid and (not stored_pid or str(stored_pid) == current_pid):
+                            continue  # same pane, same process — keep entry
+                    except Exception:
+                        pass
+                # Transcript gone/stale and no live pane → remove
+                os.unlink(fpath)
+                removed += 1
+            except (OSError, json.JSONDecodeError):
+                try:
+                    os.unlink(fpath)
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    if removed:
+        logger.info("Cleaned %d stale unlinked session entries", removed)
+    return removed
+
+
+@router.get("/api/unlinked-sessions")
+async def list_unlinked_sessions(db: Session = Depends(get_db)):
+    """List manually-launched Claude Code sessions not bound to any agent."""
+    _clean_stale_unlinked()
+    udir = _get_unlinked_dir()
+
+    # Pre-fetch session IDs owned by ACTIVE agents to filter out adopted sessions.
+    # Stopped/errored agents are excluded: their sessions may be re-detected
+    # (Tier 3 / hook push) and the adopt endpoint will revive them.
+    bound_sids: set[str] = {
+        r[0] for r in db.query(Agent.session_id).filter(
+            Agent.session_id.is_not(None),
+            Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
+        ).all()
+    }
+
+    sessions = []
+    try:
+        for fname in sorted(os.listdir(udir)):
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(udir, fname)
+            try:
+                with open(fpath) as f:
+                    info = json.load(f)
+                sid = info.get("session_id", "")
+                if sid in bound_sids:
+                    # Already adopted — clean up stale signal file
+                    try:
+                        os.unlink(fpath)
+                    except OSError:
+                        pass
+                    continue
+                # Use stored project name or derive from CWD
+                cwd = info.get("cwd", "")
+                if not info.get("project_name"):
+                    info["project_name"] = os.path.basename(cwd.rstrip("/")) if cwd else ""
+                info["file"] = fname
+                sessions.append(info)
+            except (OSError, json.JSONDecodeError):
+                continue
+    except OSError:
+        pass
+    return sessions
+
+
+@router.post("/api/unlinked-sessions/{session_id}/adopt")
+async def adopt_unlinked_session(
+    session_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Bind an unlinked session to a new agent and start syncing.
+
+    Body: {"project": "project-name"}
+    Optional: {"agent_id": "existing-agent-id"} to bind to existing agent.
+    """
+    import secrets
+    from config import CC_MODEL
+
+    udir = _get_unlinked_dir()
+    info_path = os.path.join(udir, f"{session_id}.json")
+    if not os.path.isfile(info_path):
+        raise HTTPException(status_code=404, detail="Unlinked session not found")
+
+    try:
+        with open(info_path) as f:
+            info = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read session info: {e}")
+
+    body = await request.json()
+    project_name = body.get("project") or os.path.basename(info.get("cwd", "").rstrip("/"))
+    existing_agent_id = body.get("agent_id")
+
+    # Check if session is already bound to an agent
+    existing = db.query(Agent).filter(Agent.session_id == session_id).first()
+    if existing:
+        if existing.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
+            # Dissociate session from stopped/errored agent so a fresh
+            # agent can take over.  Avoids reviving stale task/cost state.
+            existing.session_id = None
+            db.flush()
+        else:
+            # Active agent owns this session — can't adopt
+            try:
+                os.unlink(info_path)
+            except OSError:
+                pass
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session already bound to active agent {existing.id} ({existing.name})",
+            )
+
+    proj = db.get(Project, project_name)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
+
+    # Enforce per-project capacity (only for new agents, not rebinding existing ones)
+    if not existing_agent_id:
+        _check_project_capacity(db, project_name)
+
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if not ad:
+        raise HTTPException(status_code=503, detail="Agent dispatcher not ready")
+
+    if existing_agent_id:
+        # Bind to existing agent
+        agent = db.get(Agent, existing_agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        agent.session_id = session_id
+        if agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
+            agent.status = AgentStatus.SYNCING
+        agent.cli_sync = True
+    else:
+        # Create new agent
+        for _ in range(20):
+            agent_hex = secrets.token_hex(6)
+            if db.get(Agent, agent_hex) is None:
+                break
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate agent ID")
+
+        agent = Agent(
+            id=agent_hex,
+            project=project_name,
+            name=(f"Detected: {info['tmux_session']}" if info.get("tmux_session") else f"Manual: {os.path.basename(info.get('cwd', 'session'))}")[:80],
+            mode=AgentMode.AUTO,
+            status=AgentStatus.SYNCING,
+            model=info.get("model") or proj.default_model or CC_MODEL,
+            cli_sync=True,
+            session_id=session_id,
+            tmux_pane=info.get("tmux_pane"),
+            last_message_preview="Confirmed session",
+            last_message_at=datetime.now(timezone.utc),
+        )
+        db.add(agent)
+
+    db.commit()
+    db.refresh(agent)
+
+    # Write .owner and start sync
+    ad.start_session_sync(agent.id, session_id, proj.path)
+
+    # Remove the unlinked entry
+    try:
+        os.unlink(info_path)
+    except OSError:
+        pass
+
+    logger.info(
+        "Adopted unlinked session %s → agent %s (project %s)",
+        session_id[:12], agent.id, project_name,
+    )
+
+    from websocket import emit_agent_update
+    asyncio.ensure_future(emit_agent_update(agent.id, agent.status.value, agent.project))
+
+    return AgentOut.model_validate(agent)
+
+
+def _enrich_agent_briefs(rows, request) -> list[AgentBrief]:
+    """Convert Agent ORM rows to AgentBrief — is_generating is derived
+    from generating_msg_id via property, no runtime enrichment needed."""
+    return [AgentBrief.model_validate(row) for row in rows]
+
+
+@router.get("/api/agents", response_model=list[AgentBrief])
+async def list_agents(
+    request: Request,
+    project: str | None = None,
+    status: AgentStatus | None = None,
+    limit: int = 500,
+    db: Session = Depends(get_db),
+):
+    """List agents with optional filters."""
+    q = db.query(Agent).filter(Agent.is_subagent == False)  # noqa: E712
+    if project:
+        q = q.filter(Agent.project == project)
+    if status:
+        q = q.filter(Agent.status == status)
+    rows = (
+        q.order_by(Agent.last_message_at.desc().nulls_last(), Agent.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return _enrich_agent_briefs(rows, request)
+
+
+@router.get("/api/agents/unread")
+async def agents_unread_count(db: Session = Depends(get_db)):
+    """Total unread message count across the top 50 agents (matching list limit)."""
+    top = (
+        db.query(Agent.unread_count)
+        .filter(Agent.is_subagent == False)  # noqa: E712
+        .order_by(Agent.last_message_at.desc().nulls_last(), Agent.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    total = sum(r[0] for r in top if r[0])
+    return {"unread": int(total)}
+
+
+@router.get("/api/messages/search", response_model=MessageSearchResponse)
+async def search_messages(
+    q: str,
+    project: str | None = None,
+    role: MessageRole | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    """Full-text search across all message content."""
+    if len(q) < 2:
+        raise HTTPException(status_code=400, detail="Query must be at least 2 characters")
+    if limit > 200:
+        limit = 200
+
+    # Escape LIKE wildcards in user input
+    safe_q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    query = (
+        db.query(Message, Agent.name, Agent.project)
+        .join(Agent, Message.agent_id == Agent.id)
+        .filter(or_(
+            Message.content.ilike(f"%{safe_q}%", escape="\\"),
+            Agent.id.ilike(f"%{safe_q}%", escape="\\"),
+            Agent.name.ilike(f"%{safe_q}%", escape="\\"),
+        ))
+    )
+    if project:
+        query = query.filter(Agent.project == project)
+    if role:
+        query = query.filter(Message.role == role)
+
+    total = query.count()
+    rows = query.order_by(Message.created_at.desc()).limit(limit).all()
+
+    results = []
+    for msg, agent_name, agent_project in rows:
+        # Build snippet: ~80 chars before and after first match
+        content = msg.content or ""
+        lower = content.lower()
+        idx = lower.find(q.lower())
+        if idx >= 0:
+            start = max(0, idx - 80)
+            end = min(len(content), idx + len(q) + 80)
+            snippet = ("..." if start > 0 else "") + content[start:end] + ("..." if end < len(content) else "")
+        else:
+            snippet = content[:160] + ("..." if len(content) > 160 else "")
+
+        results.append(MessageSearchResult(
+            message_id=msg.id,
+            agent_id=msg.agent_id,
+            agent_name=agent_name,
+            project=agent_project,
+            role=msg.role,
+            content_snippet=snippet,
+            created_at=msg.created_at,
+        ))
+
+    return MessageSearchResponse(results=results, total=total)
+
+
+@router.get("/api/agents/{agent_id}", response_model=AgentOut)
+async def get_agent(agent_id: str, request: Request, db: Session = Depends(get_db)):
+    """Get full agent details."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Compute live session file size + successor link
+    result = AgentOut.model_validate(agent)
+    result.successor_id = compute_successor_id(agent.id, db)
+    if agent.session_id:
+        project = db.get(Project, agent.project)
+        if project:
+            from agent_dispatcher import _resolve_session_jsonl
+            jsonl_path = _resolve_session_jsonl(
+                agent.session_id, project.path, agent.worktree,
+            )
+            try:
+                result.session_size_bytes = os.path.getsize(jsonl_path)
+            except OSError:
+                pass
+    # Attach child subagents
+    child_rows = db.query(Agent).filter(
+        Agent.parent_id == agent.id,
+        Agent.is_subagent == True,  # noqa: E712
+    ).order_by(Agent.created_at).all()
+    if child_rows:
+        result.subagents = [AgentBrief.model_validate(r) for r in child_rows]
+
+    return result
+
+
+@router.delete("/api/agents/{agent_id}", response_model=AgentOut)
+async def stop_agent(agent_id: str, request: Request,
+                     generate_summary: bool = False,
+                     task_complete: bool = True,
+                     incomplete_reason: str | None = None,
+                     db: Session = Depends(get_db)):
+    """Stop an agent — marks STOPPED."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.status == AgentStatus.STOPPED:
+        raise HTTPException(status_code=400, detail="Agent is already stopped")
+
+    # Capture task info before stopping (needed for background summary)
+    _task_title = None
+    _project_path = None
+    _retry_task_id = None
+    _retry_project_name = ""
+    _retry_task_title = "Unknown task"
+    _should_summarize = generate_summary and agent.task_id
+    if agent.task_id:
+        _t = db.get(Task, agent.task_id)
+        if _t:
+            _task_title = _t.title or "Unknown task"
+        _p = db.get(Project, agent.project)
+        _project_path = _p.path if _p else None
+        if _should_summarize and not _project_path:
+            _should_summarize = False
+
+    # Kill the tmux pane/session if this is a CLI-synced agent
+    if agent.cli_sync and agent.tmux_pane:
+        _graceful_kill_tmux(agent.tmux_pane, f"ah-{agent.id[:8]}")
+        logger.info("Killed tmux pane %s for agent %s", agent.tmux_pane, agent.id)
+
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+
+    if ad:
+        ad.stop_agent_cleanup(db, agent, "Agent stopped",
+                              kill_tmux=False, fail_executing=True,
+                              fail_reason="Agent stopped by user",
+                              cascade_subagents=True,
+                              skip_task_transition=True)
+    else:
+        agent.status = AgentStatus.STOPPED
+        agent.tmux_pane = None
+
+        # Mark any EXECUTING messages as FAILED so they don't stay stuck
+        executing_msgs = db.query(Message).filter(
+            Message.agent_id == agent.id,
+            Message.status == MessageStatus.EXECUTING,
+        ).all()
+        for m in executing_msgs:
+            m.status = MessageStatus.FAILED
+            m.error_message = "Agent stopped by user"
+            m.completed_at = datetime.now(timezone.utc)
+
+        # Add system message
+        db.add(Message(
+            agent_id=agent.id,
+            role=MessageRole.SYSTEM,
+            content="Agent stopped",
+            status=MessageStatus.COMPLETED,
+            delivered_at=datetime.now(timezone.utc),
+        ))
+
+        # Cascade stop to child subagents
+        child_subs = db.query(Agent).filter(
+            Agent.parent_id == agent.id,
+            Agent.is_subagent == True,  # noqa: E712
+            Agent.status != AgentStatus.STOPPED,
+        ).all()
+        for sub in child_subs:
+            sub.status = AgentStatus.STOPPED
+            if sub.tmux_pane:
+                try:
+                    import subprocess as _sp2
+                    _sp2.run(["tmux", "kill-pane", "-t", sub.tmux_pane],
+                             capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
+                except Exception:
+                    logger.debug("Failed to kill tmux pane for subagent %s", sub.id)
+            asyncio.ensure_future(emit_agent_update(sub.id, "STOPPED", sub.project))
+
+        asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
+
+    db.commit()
+    db.refresh(agent)
+    logger.info("Agent %s stopped", agent.id)
+
+    # Transition linked task based on user choice
+    if agent.task_id:
+        _linked_task = db.get(Task, agent.task_id)
+        if _linked_task and _linked_task.status in (TaskStatus.EXECUTING, TaskStatus.COMPLETE):
+            if task_complete:
+                TaskStateMachine.transition(_linked_task, TaskStatus.COMPLETE, strict=False)
+                logger.info("Task %s marked COMPLETE (agent %s stopped by user)", _linked_task.id, agent.id)
+            else:
+                # Build human-readable retry_context for _build_task_prompt
+                _ctx_parts = []
+                if incomplete_reason:
+                    _ctx_parts.append(f"User feedback: {incomplete_reason}")
+                if _ctx_parts:
+                    _linked_task.retry_context = "\n".join(_ctx_parts)
+                # Mark summary as generating — background thread will replace
+                _linked_task.agent_summary = ":::generating:::"
+                _linked_task.attempt_number = (_linked_task.attempt_number or 0) + 1
+                TaskStateMachine.transition(_linked_task, TaskStatus.INBOX, strict=False)
+                logger.info("Task %s returned to INBOX attempt=%d (agent %s stopped by user)",
+                            _linked_task.id, _linked_task.attempt_number, agent.id)
+                # Always generate retry summary for incomplete tasks
+                _retry_task_id = _linked_task.id
+                _retry_project_name = _linked_task.project_name or ""
+                _retry_task_title = _linked_task.title or "Unknown task"
+            db.commit()
+            asyncio.ensure_future(emit_task_update(
+                _linked_task.id, _linked_task.status.value, _linked_task.project_name or "",
+                title=_linked_task.title, agent_id=agent.id,
+            ))
+
+    # Spawn background summary thread if requested
+    if _should_summarize:
+        thread = threading.Thread(
+            target=_run_agent_summary_background,
+            args=(agent.id, agent.name, _task_title, agent.project, _project_path),
+            daemon=True,
+        )
+        thread.start()
+        logger.info("Spawned background summary for agent %s", agent.id)
+
+    # Spawn retry summary for incomplete tasks (always, no toggle needed)
+    if not task_complete and _retry_task_id and _project_path:
+        thread = threading.Thread(
+            target=_generate_retry_summary_background,
+            args=(agent.id, _retry_task_id, _retry_task_title,
+                  _retry_project_name, _project_path, incomplete_reason),
+            daemon=True,
+        )
+        thread.start()
+        logger.info("Spawned retry summary for task %s", _retry_task_id)
+
+    return agent
+
+
+# --- Agent Insight Suggestions ---
+
+@router.get("/api/agents/{agent_id}/suggestions", response_model=list[AgentInsightSuggestionOut])
+async def get_agent_suggestions(agent_id: str, db: Session = Depends(get_db)):
+    """Return pending insight suggestions for an agent."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    rows = (
+        db.query(AgentInsightSuggestion)
+        .filter(
+            AgentInsightSuggestion.agent_id == agent_id,
+            AgentInsightSuggestion.status == "pending",
+        )
+        .order_by(AgentInsightSuggestion.id)
+        .all()
+    )
+    return rows
+
+
+class _ApplySuggestionsBody(BaseModel):
+    accepted: list[dict] = []  # [{id, edited_content?}]
+    rejected_ids: list[int] = []
+
+
+@router.post("/api/agents/{agent_id}/apply-suggestions")
+async def apply_agent_suggestions(agent_id: str, body: _ApplySuggestionsBody,
+                                  db: Session = Depends(get_db)):
+    """Accept/reject insight suggestions — write accepted ones to PROGRESS.md + FTS5."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    project = db.get(Project, agent.project)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    accepted_ids = {item["id"] for item in body.accepted}
+    edits = {item["id"]: item.get("edited_content") for item in body.accepted}
+
+    # Build PROGRESS.md section from accepted suggestions
+    accepted_contents = []
+    for item in body.accepted:
+        row = db.get(AgentInsightSuggestion, item["id"])
+        if not row or row.agent_id != agent_id:
+            continue
+        content = item.get("edited_content") or row.content
+        row.edited_content = item.get("edited_content")
+        row.status = "accepted"
+        accepted_contents.append(content)
+
+    # Mark rejected
+    for rid in body.rejected_ids:
+        row = db.get(AgentInsightSuggestion, rid)
+        if row and row.agent_id == agent_id:
+            row.status = "rejected"
+
+    # Mark remaining pending as rejected too
+    remaining = (
+        db.query(AgentInsightSuggestion)
+        .filter(
+            AgentInsightSuggestion.agent_id == agent_id,
+            AgentInsightSuggestion.status == "pending",
+            AgentInsightSuggestion.id.notin_(accepted_ids),
+        )
+        .all()
+    )
+    for r in remaining:
+        r.status = "rejected"
+
+    # Clear flag
+    agent.has_pending_suggestions = False
+    db.commit()
+
+    # Write accepted insights to PROGRESS.md
+    if accepted_contents:
+        from agent_dispatcher import store_insights
+        today = datetime.now(timezone.utc).date().isoformat()
+        progress_path = os.path.join(project.path, "PROGRESS.md")
+
+        # Build section text
+        task = db.get(Task, agent.task_id) if agent.task_id else None
+        task_label = task.title if task else agent.name
+        section_lines = [f"## {today} — {task_label}"]
+        for i, c in enumerate(accepted_contents, 1):
+            section_lines.append(f"{i}. {c}")
+        new_section = "\n".join(section_lines)
+
+        try:
+            existing = ""
+            if os.path.isfile(progress_path):
+                with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
+                    existing = f.read()
+            separator = "\n\n" if existing and not existing.endswith("\n\n") else (
+                "\n" if existing and not existing.endswith("\n") else "")
+            with open(progress_path, "w", encoding="utf-8") as f:
+                f.write(existing + separator + new_section + "\n")
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        # Store in FTS5
+        try:
+            n = store_insights(db, agent.project, today, new_section, agent_id=agent_id)
+            if n:
+                logger.info("Stored %d agent insights in FTS5 for %s", n, agent.project)
+        except Exception:
+            logger.warning("Failed to store FTS5 insights for %s", agent.project, exc_info=True)
+
+    return {"success": True, "accepted": len(accepted_contents)}
+
+
+@router.delete("/api/agents/{agent_id}/suggestions")
+async def discard_agent_suggestions(agent_id: str, db: Session = Depends(get_db)):
+    """Reject all pending suggestions for an agent."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    db.query(AgentInsightSuggestion).filter(
+        AgentInsightSuggestion.agent_id == agent_id,
+        AgentInsightSuggestion.status == "pending",
+    ).update({"status": "rejected"})
+    agent.has_pending_suggestions = False
+    db.commit()
+    return {"success": True}
+
+
+@router.delete("/api/agents/{agent_id}/permanent")
+async def permanently_delete_agent(agent_id: str, request: Request, db: Session = Depends(get_db)):
+    """Permanently delete an agent, its messages, session JSONL, and output logs."""
+    from session_cache import cleanup_source_session, evict_session
+
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
+        raise HTTPException(status_code=400, detail="Agent must be stopped before deleting")
+
+    # 0. Kill tmux session if still alive
+    if agent.tmux_pane:
+        import subprocess as _sp
+        sess_name = f"ah-{agent.id[:8]}"
+        try:
+            _sp.run(["tmux", "kill-session", "-t", sess_name],
+                    capture_output=True, timeout=5)
+            logger.info("Killed tmux session %s for permanent delete of agent %s", sess_name, agent.id)
+        except Exception:
+            logger.warning("Failed to kill tmux session %s for agent %s", sess_name, agent.id)
+
+    # Cancel dispatcher tasks
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad:
+        ad._cancel_sync_task(agent.id)
+        ad._cancel_launch_task(agent.id)
+        ad._stale_session_retries.pop(agent.id, None)
+        ad._known_subagents.pop(agent.id, None)
+
+    # 1. Collect all agents to delete (parent + subagents cascade)
+    child_agents = db.query(Agent).filter(
+        Agent.parent_id == agent_id,
+        Agent.is_subagent == True,  # noqa: E712
+    ).all()
+    agents_to_delete = [agent] + child_agents
+
+    # Collect file info before deleting DB records
+    all_agent_ids = [a.id for a in agents_to_delete]
+    session_infos = [(a.session_id, a.project, a.worktree) for a in agents_to_delete if a.session_id]
+    msg_ids = [m.id for m in db.query(Message.id).filter(Message.agent_id.in_(all_agent_ids)).all()]
+
+    # 2. Delete DB records FIRST (so if this fails, no files are orphaned)
+    deleted_msgs = db.query(Message).filter(Message.agent_id.in_(all_agent_ids)).delete(synchronize_session=False)
+    # Unlink Tasks that reference these agents (SET NULL, don't delete the tasks)
+    db.query(Task).filter(Task.agent_id.in_(all_agent_ids)).update(
+        {Task.agent_id: None}, synchronize_session=False
+    )
+    # Delete children first (FK ordering), then parent
+    for child in child_agents:
+        db.delete(child)
+    db.delete(agent)
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to delete agent %s from DB: %s", agent_id, e)
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+    # 3. Delete session source files (.jsonl + subdir) and cache (safe: DB already committed)
+    cleaned_files = []
+    for sid, proj_name, worktree in session_infos:
+        project = db.query(Project).filter(Project.name == proj_name).first()
+        if project:
+            if cleanup_source_session(sid, project.path, worktree):
+                cleaned_files.append(f"{sid}.jsonl")
+            evict_session(sid, project.path, worktree)
+
+    # 4. Delete output log files for all messages
+    for mid in msg_ids:
+        log_path = f"/tmp/claude-output-{mid}.log"
+        if os.path.isfile(log_path):
+            try:
+                os.remove(log_path)
+                cleaned_files.append(log_path)
+            except OSError as e:
+                logger.warning("Failed to delete output log %s: %s", log_path, e)
+
+    logger.info("Permanently deleted agent %s (+%d subagents, %d messages, %d files cleaned)",
+                agent_id, len(child_agents), deleted_msgs, len(cleaned_files))
+    return {
+        "detail": "ok",
+        "deleted_messages": deleted_msgs,
+        "deleted_subagents": len(child_agents),
+        "cleaned_files": len(cleaned_files),
+    }
+
+
+@router.post("/api/agents/{agent_id}/resume", response_model=AgentOut)
+async def resume_agent(agent_id: str, request: Request, db: Session = Depends(get_db)):
+    """Resume a stopped or errored agent."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
+        raise HTTPException(status_code=400, detail="Agent is already running")
+
+    # Block resume if this agent was superseded by a successor (not subagents)
+    successor = db.query(Agent).filter(
+        Agent.parent_id == agent.id,
+        Agent.is_subagent == False,
+    ).order_by(Agent.created_at.desc()).first()
+    if successor:
+        raise HTTPException(
+            status_code=409,
+            detail=json.dumps({
+                "reason": "superseded",
+                "successor_id": successor.id,
+                "successor_name": successor.name,
+                "message": "This agent was continued by a new agent. Open the successor instead.",
+            }),
+        )
+
+    project = db.get(Project, agent.project)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.archived:
+        raise HTTPException(status_code=400, detail="Cannot resume agents for archived projects — activate first")
+
+    wm = getattr(request.app.state, "worker_manager", None)
+    if not wm:
+        raise HTTPException(status_code=500, detail="Worker manager not available")
+
+    # Parse optional body for cli_sync resume mode
+    body = {}
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        pass  # Empty body or no content-type — use defaults
+    resume_mode = body.get("mode")  # "tmux" | "normal" | None
+
+    wm.ensure_project_ready(project)
+
+    # Clear stale session retry counter so resumed agents get
+    # full retry budget for session recovery
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad:
+        ad._stale_session_retries.pop(agent.id, None)
+
+    resumed_sync = False
+
+    if agent.cli_sync and resume_mode == "normal":
+        # Convert to normal (non-sync) agent
+        agent.cli_sync = False
+        if ad:
+            ad._clear_agent_pane(db, agent, kill_tmux=False)
+        else:
+            agent.tmux_pane = None
+        agent.status = AgentStatus.IDLE
+    elif agent.cli_sync and resume_mode == "tmux":
+        # Launch a new tmux session and resume the CLI session in it
+        import shlex
+        import subprocess
+        from config import CLAUDE_BIN
+
+        cmd_parts = [CLAUDE_BIN,
+                      "--output-format", "stream-json", "--verbose"]
+        if agent.skip_permissions:
+            cmd_parts.append("--dangerously-skip-permissions")
+        if agent.model:
+            cmd_parts += ["--model", agent.model]
+        if agent.session_id:
+            cmd_parts += ["--resume", agent.session_id]
+        claude_cmd = " ".join(shlex.quote(p) for p in cmd_parts)
+
+        tmux_session = f"ah-{agent.id[:8]}"
+        _preflight_claude_project(project.path)
+
+        pane_id = _create_tmux_claude_session(tmux_session, project.path, claude_cmd, agent_id=agent.id)
+
+        agent.tmux_pane = pane_id
+        agent.status = AgentStatus.SYNCING
+        if agent.session_id and ad:
+            ad.start_session_sync(agent.id, agent.session_id, project.path)
+        resumed_sync = True
+    elif agent.cli_sync and ad:
+        # Default: try to re-establish sync with existing tmux pane
+        from agent_dispatcher import _detect_tmux_pane_for_session, _resolve_session_jsonl
+        from session_cache import session_source_dir
+
+        sid = agent.session_id
+
+        # If session_id was never assigned (e.g. tmux launch failed
+        # before detecting the JSONL), discover it from the project's
+        # session directory by picking the most recently modified file.
+        # Check both project root and worktree session dirs.
+        if not sid:
+            sdirs = [session_source_dir(project.path)]
+            if agent.worktree:
+                wt_path = os.path.join(project.path, ".claude", "worktrees", agent.worktree)
+                wt_sdir = session_source_dir(wt_path)
+                if os.path.isdir(wt_sdir) and wt_sdir not in sdirs:
+                    sdirs.append(wt_sdir)
+            best, best_mtime = None, 0.0
+            for sdir in sdirs:
+                if not os.path.isdir(sdir):
+                    continue
+                try:
+                    for fname in os.listdir(sdir):
+                        if not fname.endswith(".jsonl"):
+                            continue
+                        fpath = os.path.join(sdir, fname)
+                        mt = os.path.getmtime(fpath)
+                        if mt > best_mtime:
+                            best, best_mtime = fname.replace(".jsonl", ""), mt
+                except OSError as e:
+                    logger.warning(
+                        "resume_agent: failed to scan session dir %s for agent %s: %s",
+                        sdir, agent.id, e,
+                    )
+            if best:
+                sid = best
+                agent.session_id = sid
+                logger.info(
+                    "Discovered session %s for agent %s on resume",
+                    sid, agent.id,
+                )
+
+        if sid:
+            jsonl_path = _resolve_session_jsonl(sid, project.path, agent.worktree)
+            if os.path.exists(jsonl_path) and not ad._session_has_ended(jsonl_path):
+                pane = _detect_tmux_pane_for_session(sid, project.path)
+                agent.status = AgentStatus.SYNCING
+                agent.tmux_pane = pane  # may be None; sync loop will retry
+                ad.start_session_sync(agent.id, sid, project.path)
+                resumed_sync = True
+
+    if not resumed_sync and agent.status not in (AgentStatus.IDLE, AgentStatus.SYNCING):
+        agent.status = AgentStatus.IDLE
+
+    msg = Message(
+        agent_id=agent.id,
+        role=MessageRole.SYSTEM,
+        content="Agent resumed" + (" — syncing CLI session" if resumed_sync else ""),
+        status=MessageStatus.COMPLETED,
+        delivered_at=_utcnow(),
+    )
+    db.add(msg)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Session already owned by another agent",
+        )
+    db.refresh(agent)
+    asyncio.ensure_future(emit_agent_update(agent.id, agent.status.value, agent.project))
+    logger.info("Agent %s resumed (sync=%s, mode=%s)", agent.id, resumed_sync, resume_mode)
+    return agent
+
+
+@router.put("/api/agents/read-all")
+async def mark_all_agents_read(db: Session = Depends(get_db)):
+    """Mark all agents as read (reset unread count for every agent)."""
+    count = db.query(Agent).filter(Agent.unread_count > 0).update({"unread_count": 0})
+    db.commit()
+    return {"detail": "ok", "updated": count}
+
+
+@router.put("/api/agents/{agent_id}", response_model=AgentOut)
+async def update_agent(agent_id: str, request: Request, db: Session = Depends(get_db)):
+    """Update agent properties (currently: name)."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    body = await request.json()
+    if "name" in body:
+        name = str(body["name"]).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        if len(name) > 200:
+            raise HTTPException(status_code=400, detail="Name too long (max 200)")
+        agent.name = name
+    if "muted" in body:
+        agent.muted = bool(body["muted"])
+    db.commit()
+    db.refresh(agent)
+    return agent
+
+
+@router.get("/api/agents/{agent_id}/messages", response_model=PaginatedMessages)
+async def get_agent_messages(
+    agent_id: str,
+    limit: int = 50,
+    before: str | None = None,
+    after: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Get conversation messages for an agent with cursor pagination.
+
+    Sort order: delivered_at ASC (messages without delivered_at sink to bottom).
+    - No cursor (initial load): newest `limit` messages, oldest-first.
+    - `before=<ISO datetime>`: messages with sort key < cursor (scroll-up).
+    - `after=<ISO datetime>`: messages with sort key > cursor (incremental refresh).
+    Returns { messages: [...], has_more: bool }.
+    """
+    from sqlalchemy import func, literal
+
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Sort key: delivered_at if set, otherwise far-future (undelivered → bottom)
+    _far_future = literal("9999-12-31T23:59:59")
+    sort_key = func.coalesce(Message.delivered_at, _far_future)
+
+    query = db.query(Message).filter(Message.agent_id == agent_id)
+
+    if before:
+        cursor_dt = datetime.fromisoformat(before)
+        rows = (
+            query.filter(sort_key < cursor_dt)
+            .order_by(sort_key.desc())
+            .limit(limit + 1)
+            .all()
+        )
+        has_more = len(rows) > limit
+        messages = rows[:limit][::-1]
+    elif after:
+        cursor_dt = datetime.fromisoformat(after)
+        messages = (
+            query.filter(sort_key > cursor_dt)
+            .order_by(sort_key.asc())
+            .all()
+        )
+        has_more = False  # always returns everything newer
+    else:
+        # Default: newest `limit` messages
+        rows = (
+            query.order_by(sort_key.desc())
+            .limit(limit + 1)
+            .all()
+        )
+        has_more = len(rows) > limit
+        messages = rows[:limit][::-1]
+        # Reset unread count only on initial load
+        if agent.unread_count > 0:
+            agent.unread_count = 0
+            db.commit()
+
+    return PaginatedMessages(messages=messages, has_more=has_more)
+
+
+@router.get("/api/agents/{agent_id}/tool-activities")
+async def get_agent_tool_activities(agent_id: str, db: Session = Depends(get_db)):
+    """Get tool activities for the agent's current session.
+
+    Returns the tool log so the frontend can restore state on page reload.
+    """
+    from models import ToolActivity
+    from schemas import ToolActivityOut
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.session_id:
+        return []
+    activities = (
+        db.query(ToolActivity)
+        .filter(
+            ToolActivity.agent_id == agent_id,
+            ToolActivity.session_id == agent.session_id,
+        )
+        .order_by(ToolActivity.started_at.asc())
+        .all()
+    )
+    return [ToolActivityOut.model_validate(a) for a in activities]
+
+
+@router.post("/api/agents/{agent_id}/messages", response_model=MessageOut, status_code=201)
+async def send_agent_message(
+    agent_id: str,
+    body: SendMessage,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Send a follow-up message to an agent."""
+    import slash_commands
+    if slash_commands.is_slash_command(body.content) and not slash_commands.is_allowed(body.content):
+        raise HTTPException(status_code=400, detail=slash_commands.rejection_message(body.content))
+
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.status == AgentStatus.STOPPED:
+        raise HTTPException(status_code=400, detail="Agent is stopped")
+
+    # SYNCING/STARTING agents with a tmux pane: send directly via tmux
+    is_syncing_with_tmux = (
+        agent.status in (AgentStatus.SYNCING, AgentStatus.STARTING)
+        and agent.tmux_pane
+        and not body.queue
+        and not body.scheduled_at
+    )
+    if is_syncing_with_tmux:
+        from agent_dispatcher import (
+            _detect_tmux_pane_for_session,
+            send_tmux_message,
+            verify_tmux_pane,
+        )
+        from websocket import emit_new_message
+
+        if not verify_tmux_pane(agent.tmux_pane):
+            # Transient tmux lookup failures are common during restarts/races.
+            # Try to recover pane from session_id before falling back to queue.
+            recovered_pane = None
+            if agent.session_id:
+                project = db.get(Project, agent.project)
+                if project:
+                    candidate = _detect_tmux_pane_for_session(agent.session_id, project.path)
+                    if candidate and verify_tmux_pane(candidate):
+                        recovered_pane = candidate
+
+            if recovered_pane:
+                agent.tmux_pane = recovered_pane
+                db.commit()
+            else:
+                ad_msg = getattr(request.app.state, "agent_dispatcher", None)
+                if ad_msg:
+                    ad_msg._clear_agent_pane(db, agent, kill_tmux=False)
+                else:
+                    agent.tmux_pane = None
+                db.commit()
+                is_syncing_with_tmux = False
+
+        if is_syncing_with_tmux:
+            ok = send_tmux_message(agent.tmux_pane, body.content)
+            if not ok:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to send via tmux",
+                )
+
+            # Unified preparation: RAG insights + message creation + agent preview
+            project = db.get(Project, agent.project)
+            if not project:
+                raise HTTPException(status_code=400, detail="Project not found")
+            ad = getattr(request.app.state, "agent_dispatcher", None)
+            if ad:
+                msg, _, _ = ad._prepare_dispatch(
+                    db, agent, project, body.content,
+                    source="web",
+                    wrap_prompt=False,
+                )
+            else:
+                msg = Message(
+                    agent_id=agent.id,
+                    role=MessageRole.USER,
+                    content=body.content,
+                    source="web",
+                )
+                db.add(msg)
+            if slash_commands.is_slash_command(body.content):
+                # Slash commands stay EXECUTING until the relevant hook marks
+                # completion (PostCompact for /compact, Stop hook for others).
+                msg.status = MessageStatus.EXECUTING
+            else:
+                msg.status = MessageStatus.COMPLETED
+                msg.completed_at = _utcnow()
+            # Do NOT set delivered_at here — tmux send-keys only injects text
+            # into the pane. The UserPromptSubmit hook fires when Claude actually
+            # accepts the prompt, and THAT is when we mark it delivered.
+            ad = getattr(request.app.state, "agent_dispatcher", None)
+            if ad:
+                msg.dispatch_seq = ad.next_dispatch_seq(db, agent.id)
+            db.commit()
+            db.refresh(msg)
+            if ad:
+                ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
+                # Emit metadata_update so frontend gets InsightsBubble
+                if msg.meta_json:
+                    import json as _json
+                    from websocket import emit_metadata_update
+                    ad._emit(emit_metadata_update(agent.id, msg.id, _json.loads(msg.meta_json)))
+            logger.info("Message %s sent to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
+            return msg
+
+    # SYNCING agents WITHOUT a tmux pane are dispatched via subprocess
+    # (same as IDLE), so they should accept messages directly.
+    is_syncing_no_pane = agent.status == AgentStatus.SYNCING and not agent.tmux_pane
+    is_busy = agent.status in (AgentStatus.EXECUTING, AgentStatus.SYNCING) and not is_syncing_no_pane
+    if is_busy and not body.queue:
+        raise HTTPException(status_code=400, detail="Agent is busy — use send later to queue")
+
+    scheduled_at = None
+    if body.scheduled_at:
+        from datetime import datetime, timezone
+        try:
+            scheduled_at = datetime.fromisoformat(body.scheduled_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scheduled_at format")
+
+    # Unified preparation: RAG insights + message creation + agent preview
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad:
+        project = db.get(Project, agent.project)
+        if project:
+            msg, _, _ = ad._prepare_dispatch(
+                db, agent, project, body.content,
+                source="web",
+                wrap_prompt=False,
+            )
+        else:
+            msg = Message(
+                agent_id=agent.id,
+                role=MessageRole.USER,
+                content=body.content,
+                source="web",
+            )
+            db.add(msg)
+    else:
+        msg = Message(
+            agent_id=agent.id,
+            role=MessageRole.USER,
+            content=body.content,
+            source="web",
+        )
+        db.add(msg)
+    msg.status = MessageStatus.PENDING
+    msg.scheduled_at = scheduled_at
+
+    db.commit()
+    db.refresh(msg)
+    if ad:
+        from websocket import emit_new_message
+        ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
+        # Emit metadata_update so frontend gets InsightsBubble without re-fetch
+        if msg.meta_json:
+            import json as _json
+            from websocket import emit_metadata_update
+            ad._emit(emit_metadata_update(agent.id, msg.id, _json.loads(msg.meta_json)))
+    logger.info("Message %s sent to agent %s", msg.id, agent.id)
+    return msg
+
+
+
+@router.put("/api/agents/{agent_id}/read")
+async def mark_agent_read(agent_id: str, db: Session = Depends(get_db)):
+    """Mark agent as read (reset unread count)."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    agent.unread_count = 0
+    db.commit()
+    return {"detail": "ok"}
+
+
+@router.delete("/api/agents/{agent_id}/messages/{message_id}")
+async def cancel_message(agent_id: str, message_id: str, db: Session = Depends(get_db)):
+    """Cancel a pending/scheduled message. Only allowed if status is PENDING."""
+    msg = db.get(Message, message_id)
+    if not msg or msg.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg.status != MessageStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Only PENDING messages can be cancelled")
+    db.delete(msg)
+    db.commit()
+    logger.info("Message %s cancelled for agent %s", message_id, agent_id)
+    from websocket import emit_message_update
+    await emit_message_update(agent_id, message_id, "CANCELLED")
+    return {"detail": "Message cancelled"}
+
+
+@router.put("/api/agents/{agent_id}/messages/{message_id}", response_model=MessageOut)
+async def update_message(
+    agent_id: str,
+    message_id: str,
+    body: UpdateMessage,
+    db: Session = Depends(get_db),
+):
+    """Update content and/or scheduled_at of a PENDING message."""
+    msg = db.get(Message, message_id)
+    if not msg or msg.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg.status != MessageStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Only PENDING messages can be updated")
+
+    if body.content is not None:
+        if not body.content.strip():
+            raise HTTPException(status_code=400, detail="Content cannot be empty")
+        msg.content = body.content.strip()
+
+    if body.scheduled_at is not None:
+        if body.scheduled_at == "":
+            # Clear scheduled_at (convert to immediate pending)
+            msg.scheduled_at = None
+        else:
+            try:
+                msg.scheduled_at = datetime.fromisoformat(
+                    body.scheduled_at.replace("Z", "+00:00")
+                )
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid scheduled_at format")
+
+    db.commit()
+    db.refresh(msg)
+    logger.info("Message %s updated for agent %s", message_id, agent_id)
+    return msg
+
+
+# ---- Interactive Answer (AskUserQuestion / ExitPlanMode via tmux) ----
+
+class AnswerPayload(BaseModel):
+    tool_use_id: str
+    type: str  # "ask_user_question" or "exit_plan_mode"
+    selected_index: int | None = None  # 0-based option index (AskUserQuestion)
+    question_index: int = 0  # which question in multi-Q AskUserQuestion
+    approved: bool | None = None  # (ExitPlanMode only)
+
+
+_PLAN_LABELS = [
+    "Yes, clear context & bypass",
+    "Yes, bypass permissions",
+    "Yes, manual approval",
+    "Give feedback",
+]
+
+
+def _patch_interactive_answer(
+    db: Session, agent_id: str, tool_use_id: str,
+    selected_index: int, answer_type: str,
+    question_index: int = 0,
+) -> bool:
+    """Immediately mark an interactive item as answered in the DB.
+
+    Builds an answer string from the selected option so the frontend can
+    render the selection without waiting for the sync loop to pick up the
+    tool_result from the session JSONL.
+
+    For multi-question AskUserQuestion, each call patches one question at a
+    time via question_index, accumulating into selected_indices and answer.
+    """
+    msgs = db.query(Message).filter(
+        Message.agent_id == agent_id,
+        Message.meta_json.is_not(None),
+    ).order_by(Message.created_at.desc()).limit(10).all()
+
+    for msg in msgs:
+        try:
+            meta = json.loads(msg.meta_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        items = meta.get("interactive")
+        if not items:
+            continue
+        for item in items:
+            if item.get("tool_use_id") != tool_use_id:
+                continue
+            # Don't overwrite a dismissed/rejected answer
+            existing_answer = item.get("answer") or ""
+            if isinstance(existing_answer, str) and (
+                existing_answer.startswith("The user doesn't want to proceed")
+                or existing_answer.startswith("User declined")
+                or existing_answer.startswith("Tool use rejected")
+            ):
+                return
+            if answer_type == "ask_user_question":
+                # Per-question check: skip if this specific question already answered
+                sel_indices = item.get("selected_indices", {})
+                if sel_indices.get(str(question_index)) is not None:
+                    return
+                # Store per-question index
+                sel_indices[str(question_index)] = selected_index
+                item["selected_indices"] = sel_indices
+                # Backward compat: also set selected_index for Q0
+                if question_index == 0:
+                    item["selected_index"] = selected_index
+                # Build answer string for this question
+                questions = item.get("questions", [])
+                if questions and question_index < len(questions):
+                    q = questions[question_index]
+                    options = q.get("options", [])
+                    label = options[selected_index]["label"] if selected_index < len(options) else str(selected_index)
+                    part = f'"{q.get("question", "")}"="{label}"'
+                else:
+                    part = str(selected_index)
+                # Append to existing answer (multi-question accumulation)
+                existing = item.get("answer")
+                if existing and isinstance(existing, str):
+                    item["answer"] = existing + "\n" + part
+                else:
+                    item["answer"] = part
+            elif answer_type == "exit_plan_mode":
+                if item.get("answer") is not None:
+                    return  # Already answered
+                item["selected_index"] = selected_index
+                item["answer"] = _PLAN_LABELS[selected_index] if selected_index < len(_PLAN_LABELS) else str(selected_index)
+            msg.meta_json = json.dumps(meta)
+            db.commit()
+            return {"message_id": msg.id, "metadata": meta}
+
+    logger.debug(
+        "No interactive item found for tool_use_id=%s agent=%s (type=%s)",
+        tool_use_id, agent_id, answer_type,
+    )
+    return None
+
+
+def _count_interactive_questions(db: Session, agent_id: str, tool_use_id: str) -> int:
+    """Return the total number of questions for an interactive item."""
+    msgs = db.query(Message).filter(
+        Message.agent_id == agent_id,
+        Message.meta_json.is_not(None),
+    ).order_by(Message.created_at.desc()).limit(50).all()
+    for msg in msgs:
+        try:
+            meta = json.loads(msg.meta_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for item in meta.get("interactive", []):
+            if item.get("tool_use_id") == tool_use_id:
+                return len(item.get("questions", []))
+    return 1
+
+
+@router.post("/api/agents/{agent_id}/answer")
+async def answer_agent_interactive(
+    agent_id: str,
+    body: AnswerPayload,
+    db: Session = Depends(get_db),
+):
+    """Answer an AskUserQuestion or approve/reject ExitPlanMode via tmux keys."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.status not in (AgentStatus.SYNCING, AgentStatus.EXECUTING, AgentStatus.IDLE):
+        raise HTTPException(status_code=400, detail=f"Agent is {agent.status}, not in interactive state")
+
+    # Non-tmux agents (e.g. skip_permissions agents without a pane): patch DB only.
+    # Claude auto-approves with --dangerously-skip-permissions, so the card is informational.
+    has_tmux = bool(agent.tmux_pane)
+    if has_tmux:
+        from agent_dispatcher import send_tmux_keys, verify_tmux_pane
+        if not verify_tmux_pane(agent.tmux_pane):
+            raise HTTPException(status_code=400, detail="Tmux pane no longer exists")
+
+    pane_id = agent.tmux_pane
+    MAX_INDEX = 20  # safety cap to prevent excessive keystrokes
+
+    if body.type == "ask_user_question":
+        if body.selected_index is None or body.selected_index < 0:
+            raise HTTPException(status_code=400, detail="selected_index required for ask_user_question")
+        if body.selected_index > MAX_INDEX:
+            raise HTTPException(status_code=400, detail=f"selected_index too large (max {MAX_INDEX})")
+
+        if has_tmux:
+            # Send tmux keys FIRST — only patch DB on success (Bug 6 race fix)
+            keys = ["Down"] * body.selected_index + ["Enter"]
+            if not send_tmux_keys(pane_id, keys):
+                raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
+        else:
+            keys = []
+
+        # Patch DB after successful key delivery (or immediately for non-tmux)
+        patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, body.selected_index, body.type, body.question_index)
+        if not patched:
+            logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
+        else:
+            from websocket import emit_metadata_update
+            await emit_metadata_update(agent_id, patched["message_id"], patched["metadata"])
+
+        if has_tmux:
+            # Multi-question TUI: after the last question, Claude Code shows a
+            # "Review your answers → Submit" confirmation screen.  We need to
+            # detect when all questions have been answered and send an extra
+            # Enter to confirm submission.
+            total_questions = _count_interactive_questions(db, agent_id, body.tool_use_id)
+            if total_questions > 1 and body.question_index == total_questions - 1:
+                await asyncio.sleep(0.5)  # Wait for TUI to render submit screen
+                send_tmux_keys(pane_id, ["Enter"])
+                logger.info("Multi-Q submit: sent extra Enter for agent %s (Q%d/%d)",
+                            agent_id, body.question_index, total_questions)
+                return {"detail": "ok", "keys_sent": len(keys) + 1, "submitted": True}
+
+        return {"detail": "ok", "keys_sent": len(keys), "auto_approved": not has_tmux}
+
+    elif body.type == "exit_plan_mode":
+        # Claude Code TUI plan approval options (arrow-navigated):
+        # 0: "Yes, clear context and bypass permissions"
+        # 1: "Yes, and bypass permissions"
+        # 2: "Yes, manually approve edits"
+        # 3: "Type here to tell Claude what to change"
+
+        if body.selected_index is not None and body.selected_index >= 0:
+            if body.selected_index > MAX_INDEX:
+                raise HTTPException(status_code=400, detail=f"selected_index too large (max {MAX_INDEX})")
+            keys = ["Down"] * body.selected_index + ["Enter"]
+        elif body.approved is True:
+            keys = ["Enter"]  # legacy: approve = first option (clear context + bypass)
+        elif body.approved is False:
+            keys = ["Down", "Down", "Enter"]  # legacy: reject → manual approval (safest)
+        else:
+            raise HTTPException(status_code=400, detail="selected_index or approved required for exit_plan_mode")
+        effective_index = body.selected_index
+        if effective_index is None:
+            effective_index = 0 if body.approved else 2
+
+        # --- Check if this is a planning agent ---
+        _task = db.get(Task, agent.task_id) if agent.task_id else None
+        is_planning_agent = _task and _task.status == TaskStatus.PLANNING
+
+        if is_planning_agent and effective_index in (0, 1, 2):
+            # Planning agent: extract plan, kill tmux, dispatch new -p execution agent.
+            # DON'T send tmux keys — the planning agent's job is done.
+
+            # Extract plan text from the interactive metadata
+            plan_text = ""
+            if last_msg and last_msg.meta_json:
+                try:
+                    meta = json.loads(last_msg.meta_json)
+                    for item in meta.get("interactive", []):
+                        if item.get("type") == "exit_plan_mode":
+                            plan_text = item.get("plan", "")
+                            break
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+            # Patch metadata to record the approval
+            patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+            if not patched:
+                logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
+            else:
+                from websocket import emit_metadata_update
+                await emit_metadata_update(agent_id, patched["message_id"], patched["metadata"])
+
+            try:
+                # Store approved plan on task for the execution agent
+                _task.retry_context = plan_text or None
+
+                # Transition PLANNING → PENDING (dispatch picks it up)
+                TaskStateMachine.transition(_task, TaskStatus.PENDING)
+                _task.agent_id = None  # unlink so dispatch creates new agent
+                _task.started_at = None
+
+                # Option 2 (manual approval): disable skip_permissions
+                if effective_index == 2:
+                    _task.skip_permissions = False
+
+                # Stop planning agent
+                agent.task_id = None
+                agent.status = AgentStatus.STOPPED
+                db.commit()
+
+                # Kill tmux session
+                if has_tmux:
+                    _graceful_kill_tmux(pane_id, f"ah-{agent.id[:8]}")
+
+                asyncio.ensure_future(emit_task_update(
+                    _task.id, _task.status.value, _task.project_name or "",
+                    title=_task.title,
+                ))
+                logger.info(
+                    "Planning task %s → PENDING for -p execution (option %d, killed planning agent %s)",
+                    _task.id, effective_index, agent.id,
+                )
+            except InvalidTransitionError as e:
+                logger.warning("Failed to transition planning task %s: %s", _task.id, e)
+
+            return {"detail": "ok", "keys_sent": 0, "prompt_type": "planning_handoff", "auto_approved": False}
+
+        # --- Non-planning agent: normal tmux key flow ---
+        if has_tmux:
+            # Capture pane content BEFORE sending keys for diagnostics
+            from agent_dispatcher import capture_tmux_pane, _detect_plan_prompt
+            pre_content = capture_tmux_pane(pane_id)
+            prompt_type = _detect_plan_prompt(pre_content) if pre_content else "unknown"
+            logger.info(
+                "ExitPlanMode answer for agent %s: prompt_type=%s, selected_index=%s, pre_pane:\n%s",
+                agent_id, prompt_type, body.selected_index,
+                (pre_content or "")[-2000:],  # last 2000 chars to avoid huge logs
+            )
+
+            # Send tmux keys FIRST — only patch DB on success (Bug 6 race fix)
+            if not send_tmux_keys(pane_id, keys):
+                raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
+
+            # Patch DB immediately after keys succeed — BEFORE any await.
+            patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+            if not patched:
+                logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
+            else:
+                from websocket import emit_metadata_update
+                await emit_metadata_update(agent_id, patched["message_id"], patched["metadata"])
+
+            # Capture pane content AFTER sending keys for diagnostics
+            await asyncio.sleep(0.5)
+            post_content = capture_tmux_pane(pane_id)
+            logger.info(
+                "ExitPlanMode post-keys for agent %s: post_pane:\n%s",
+                agent_id,
+                (post_content or "")[-2000:],
+            )
+        else:
+            prompt_type = "non-tmux"
+
+        # Non-tmux: patch DB immediately (no keys to send)
+        if not has_tmux:
+            patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
+            if not patched:
+                logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
+            else:
+                from websocket import emit_metadata_update
+                await emit_metadata_update(agent_id, patched["message_id"], patched["metadata"])
+
+        return {"detail": "ok", "keys_sent": len(keys) if has_tmux else 0, "prompt_type": prompt_type, "auto_approved": not has_tmux}
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown type: {body.type}")
+
+
+# ---- Escape (send Escape key to tmux) ----
+
+_last_escape: dict[str, float] = {}  # agent_id → timestamp
+
+@router.post("/api/agents/{agent_id}/escape")
+async def send_escape_to_agent(agent_id: str, request: Request, db: Session = Depends(get_db)):
+    """Send Escape key to the agent's tmux pane to dismiss interactive prompts."""
+    import time
+
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.tmux_pane:
+        raise HTTPException(status_code=400, detail="Agent has no tmux pane")
+
+    # Rate limit: max 1 Escape per 2 seconds per agent
+    now = time.time()
+    last = _last_escape.get(agent_id, 0)
+    if now - last < 2.0:
+        raise HTTPException(status_code=429, detail="Escape rate limited (max 1 per 2s)")
+    _last_escape[agent_id] = now
+
+    from agent_dispatcher import send_tmux_keys, verify_tmux_pane
+    if not verify_tmux_pane(agent.tmux_pane):
+        raise HTTPException(status_code=400, detail="Tmux pane no longer exists")
+
+    if not send_tmux_keys(agent.tmux_pane, ["Escape"]):
+        raise HTTPException(status_code=500, detail="Failed to send Escape to tmux")
+
+    # Wait briefly for Claude Code to write "[Request interrupted by user]"
+    # to JSONL, then verify the interrupt actually happened before clearing state.
+    interrupted = False
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad and agent.session_id:
+        from config import JSONL_FLUSH_DELAY
+        await asyncio.sleep(JSONL_FLUSH_DELAY)
+        # Read only new JSONL data since last sync offset
+        ctx = ad._sync_contexts.get(agent_id)
+        jsonl_path = ctx.jsonl_path if ctx else None
+        read_from = ctx.last_offset if ctx else 0
+        if not jsonl_path:
+            from agent_dispatcher import _resolve_session_jsonl
+            project_obj = db.query(Project).filter(Project.name == agent.project).first()
+            proj_path = project_obj.path if project_obj else ""
+            jsonl_path = _resolve_session_jsonl(agent.session_id, proj_path, agent.worktree)
+        if jsonl_path:
+            try:
+                with open(jsonl_path, "rb") as f:
+                    f.seek(read_from)
+                    new_data = f.read().decode("utf-8", errors="replace")
+                if "[Request interrupted by user" in new_data:
+                    interrupted = True
+            except OSError:
+                pass
+
+    if interrupted and ad:
+        ad._stop_generating(agent_id)
+        logger.info("escape: interrupt confirmed in JSONL for %s, cleared generating", agent_id[:8])
+    elif not interrupted:
+        logger.warning("escape: no interrupt entry in JSONL for %s after 150ms", agent_id[:8])
+
+    logger.info("Sent Escape to agent %s pane %s", agent_id, agent.tmux_pane)
+    return {"detail": "ok", "interrupted": interrupted}
