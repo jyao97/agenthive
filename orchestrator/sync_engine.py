@@ -276,6 +276,44 @@ def _purge_stale_messages_after_compact(
     return len(stale)
 
 
+def _purge_stale_system_messages(db, agent_id: str, new_turns):
+    """Remove cli-sourced system messages not in the compacted JSONL.
+
+    Uses a Counter (multiset) to preserve multiplicity — if the new JSONL
+    has 2 "session started" messages, keep exactly 2 in DB.
+    """
+    from collections import Counter
+
+    new_system_counts = Counter(
+        c for r, c, _, _ in new_turns if r == "system"
+    )
+    existing_system = (
+        db.query(Message)
+        .filter(
+            Message.agent_id == agent_id,
+            Message.role == MessageRole.SYSTEM,
+            Message.source == "cli",
+            Message.jsonl_uuid.is_(None),
+        )
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+    keep_counts = Counter()
+    purged = 0
+    for m in existing_system:
+        if keep_counts[m.content] < new_system_counts.get(m.content, 0):
+            keep_counts[m.content] += 1
+        else:
+            db.delete(m)
+            purged += 1
+    if purged:
+        logger.info(
+            "Purged %d stale system messages for agent %s after compact",
+            purged, agent_id,
+        )
+    return purged
+
+
 def _end_compact_activity(db, agent_id: str, session_id: str):
     """Mark the most recent unfinished Compact tool activity as ended in DB.
 
@@ -655,6 +693,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         db_purge = SessionLocal()
         try:
             _purge_stale_messages_after_compact(db_purge, ctx.agent_id, new_uuids)
+            _purge_stale_system_messages(db_purge, ctx.agent_id, turns)
             db_purge.commit()
         finally:
             db_purge.close()
@@ -1083,6 +1122,7 @@ async def sync_handle_compact(ad, ctx: SyncContext):
     db_purge = SessionLocal()
     try:
         _purge_stale_messages_after_compact(db_purge, ctx.agent_id, new_uuids)
+        _purge_stale_system_messages(db_purge, ctx.agent_id, turns)
         db_purge.commit()
     finally:
         db_purge.close()
