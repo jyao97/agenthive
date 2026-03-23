@@ -46,9 +46,9 @@ class SyncContext:
     incremental_turns: list = field(default_factory=list)
 
     # Turn-boundary pointers for incremental JSONL reading.
-    # stable_boundary: byte offset just before the last user/system JSONL
-    #   entry — everything before this is finalized turns that never need
-    #   re-parsing.
+    # stable_boundary: line index into cached_lines just before the last
+    #   user/system JSONL entry — everything before this is finalized
+    #   turns that never need re-parsing.
     # stable_turn_count: number of fully completed turns before the boundary.
     # cached_lines: raw JSONL lines accumulated so far (avoids re-reading
     #   the entire file on each wake).
@@ -110,15 +110,35 @@ def _read_new_lines(path: str, offset: int) -> tuple[list[str], int]:
 def _is_turn_boundary(entry: dict) -> bool:
     """Return True if a JSONL entry starts a new conversation turn.
 
-    Real turn boundaries are: real user messages (string content),
-    system entries, and queue-operations.
+    MUST exactly mirror what _parse_session_turns_from_lines() in
+    agent_dispatcher.py treats as a turn-producing entry.  Any mismatch
+    causes the incremental parser to split assistant groups at points
+    the full parser ignores, creating phantom duplicate turns.
 
-    NOT boundaries: tool_result user entries (list content) and
-    system-injected messages (<system-reminder>, etc.) — the parser
-    skips these, so they don't separate assistant turn groups.
+    Boundaries: real user messages (string content), system entries
+    (except filtered subtypes), and queue-operation enqueue with
+    non-empty content.
+
+    NOT boundaries: tool_result user entries (list content),
+    system-injected messages, queue-operation remove/dequeue, system
+    entries with turn_duration/stop_hook_summary subtypes, and
+    enqueue with empty content.
     """
     entry_type = entry.get("type")
-    if entry_type in ("system", "queue-operation"):
+    if entry_type == "queue-operation":
+        # Only enqueue with non-empty content creates a turn in the
+        # parser (agent_dispatcher.py:1418-1428).  remove/dequeue are
+        # silently skipped — treating them as boundaries here would
+        # split an assistant group that the parser keeps whole.
+        if entry.get("operation") != "enqueue":
+            return False
+        content = entry.get("content", "")
+        return isinstance(content, str) and bool(content.strip())
+    if entry_type == "system":
+        # Parser skips these subtypes (agent_dispatcher.py:1434)
+        subtype = entry.get("subtype", "")
+        if subtype in ("turn_duration", "stop_hook_summary"):
+            return False
         return True
     if entry_type == "user":
         content = entry.get("message", {}).get("content", "")
