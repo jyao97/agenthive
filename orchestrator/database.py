@@ -1,5 +1,6 @@
 """Database session management."""
 
+import logging
 import os
 
 from sqlalchemy import create_engine, event, text
@@ -7,6 +8,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from config import CC_MODEL, DB_PATH, VALID_MODELS
+
+logger = logging.getLogger(__name__)
 
 # Ensure directory exists
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -529,6 +532,98 @@ def init_db():
             WHERE jsonl_uuid IS NOT NULL AND jsonl_uuid NOT LIKE 'hook-%'
         """))
         conn.commit()
+
+        # --- Add tool_use_id and session_seq columns to messages ---
+        msg_cols_new = _table_columns(conn, "messages")
+        if "tool_use_id" not in msg_cols_new:
+            conn.execute(text("ALTER TABLE messages ADD COLUMN tool_use_id VARCHAR(100)"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_messages_tool_use_id "
+                "ON messages(agent_id, tool_use_id) WHERE tool_use_id IS NOT NULL"
+            ))
+            conn.commit()
+
+        if "session_seq" not in msg_cols_new:
+            conn.execute(text("ALTER TABLE messages ADD COLUMN session_seq INTEGER"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_messages_agent_session_seq "
+                "ON messages(agent_id, session_seq) WHERE session_seq IS NOT NULL"
+            ))
+            conn.commit()
+
+        # --- Add tool_use_id column to tool_activities ---
+        ta_cols = _table_columns(conn, "tool_activities")
+        if "tool_use_id" not in ta_cols:
+            conn.execute(text("ALTER TABLE tool_activities ADD COLUMN tool_use_id VARCHAR(100)"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_tool_activities_tool_use_id "
+                "ON tool_activities(agent_id, tool_use_id) WHERE tool_use_id IS NOT NULL"
+            ))
+            conn.commit()
+
+        # --- Create sync_drift table ---
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS sync_drift (
+                id VARCHAR(12) PRIMARY KEY,
+                agent_id VARCHAR(12) NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                drift_type VARCHAR(30) NOT NULL,
+                severity VARCHAR(10) NOT NULL,
+                jsonl_uuid VARCHAR(50),
+                db_message_id VARCHAR(12),
+                jsonl_line INTEGER,
+                detail TEXT NOT NULL,
+                jsonl_content_len INTEGER,
+                db_content_len INTEGER,
+                detected_at DATETIME,
+                resolved_at DATETIME,
+                resolved_by VARCHAR(20)
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_sync_drift_agent_id ON sync_drift(agent_id)"
+        ))
+        conn.commit()
+
+        # --- Backfill tool_use_id from metadata JSON ---
+        try:
+            _unfilled_tid = conn.execute(text(
+                "SELECT COUNT(*) FROM messages "
+                "WHERE tool_use_id IS NULL AND metadata IS NOT NULL "
+                "AND metadata LIKE '%tool_use_id%'"
+            )).scalar()
+            if _unfilled_tid:
+                conn.execute(text("""
+                    UPDATE messages
+                    SET tool_use_id = json_extract(metadata, '$.interactive[0].tool_use_id')
+                    WHERE tool_use_id IS NULL
+                      AND metadata IS NOT NULL
+                      AND json_extract(metadata, '$.interactive[0].tool_use_id') IS NOT NULL
+                """))
+                conn.commit()
+                logger.info("Backfilled tool_use_id for %d messages", _unfilled_tid)
+        except Exception as e:
+            logger.warning("Could not backfill tool_use_id (JSON1 unavailable?): %s", e)
+
+        # --- Backfill session_seq from existing ordering ---
+        _unfilled_seq = conn.execute(text(
+            "SELECT COUNT(*) FROM messages WHERE session_seq IS NULL"
+        )).scalar()
+        if _unfilled_seq:
+            conn.execute(text("""
+                UPDATE messages SET session_seq = (
+                    SELECT rn - 1 FROM (
+                        SELECT id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY agent_id
+                                ORDER BY COALESCE(delivered_at, '9999-12-31'), created_at
+                            ) AS rn
+                        FROM messages
+                    ) ranked
+                    WHERE ranked.id = messages.id
+                )
+            """))
+            conn.commit()
+            logger.info("Backfilled session_seq for %d messages", _unfilled_seq)
 
     # Ensure jwt_secret exists in SystemConfig
     from auth import get_jwt_secret

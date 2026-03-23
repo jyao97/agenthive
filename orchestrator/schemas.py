@@ -168,6 +168,8 @@ class MessageOut(BaseModel):
     completed_at: datetime | None = None
     scheduled_at: datetime | None = None
     delivered_at: datetime | None = None
+    tool_use_id: str | None = None
+    session_seq: int | None = None
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
@@ -203,6 +205,7 @@ class ToolActivityOut(BaseModel):
     is_error: bool = False
     started_at: datetime
     ended_at: datetime | None = None
+    tool_use_id: str | None = None
 
     model_config = {"from_attributes": True}
 

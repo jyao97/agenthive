@@ -193,6 +193,8 @@ class Message(Base):
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     dispatch_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)  # dispatch order per agent
+    tool_use_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    session_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ToolActivity(Base):
@@ -211,6 +213,34 @@ class ToolActivity(Base):
     is_error: Mapped[bool] = mapped_column(Boolean, default=False)
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tool_use_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class SyncDriftType(str, enum.Enum):
+    MISSING_IN_DB = "MISSING_IN_DB"
+    MISSING_IN_JSONL = "MISSING_IN_JSONL"
+    CONTENT_MISMATCH = "CONTENT_MISMATCH"
+    META_STALE = "META_STALE"
+    UUID_UNLINKED = "UUID_UNLINKED"
+    HOOK_UPGRADE_PENDING = "HOOK_UPGRADE_PENDING"
+
+
+class SyncDrift(Base):
+    __tablename__ = "sync_drift"
+
+    id: Mapped[str] = mapped_column(String(12), primary_key=True, default=_new_uuid)
+    agent_id: Mapped[str] = mapped_column(String(12), ForeignKey("agents.id", ondelete="CASCADE"), index=True)
+    drift_type: Mapped[SyncDriftType] = mapped_column(Enum(SyncDriftType), nullable=False)
+    severity: Mapped[str] = mapped_column(String(10), nullable=False)  # "info", "warning", "error"
+    jsonl_uuid: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    db_message_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    jsonl_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    jsonl_content_len: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    db_content_len: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
 
 class Project(Base):
