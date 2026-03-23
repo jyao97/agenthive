@@ -2065,46 +2065,45 @@ async def get_agent_messages(
 ):
     """Get conversation messages for an agent with cursor pagination.
 
-    Sort order: delivered_at ASC (messages without delivered_at sink to bottom).
+    Sort order: session_seq ASC (messages without session_seq sink to bottom).
     - No cursor (initial load): newest `limit` messages, oldest-first.
-    - `before=<ISO datetime>`: messages with sort key < cursor (scroll-up).
-    - `after=<ISO datetime>`: messages with sort key > cursor (incremental refresh).
+    - `before=<int>`: messages with session_seq < cursor (scroll-up).
+    - `after=<int>`: messages with session_seq > cursor (incremental refresh).
     Returns { messages: [...], has_more: bool }.
     """
-    from sqlalchemy import func, literal
+    from sqlalchemy import func
 
     agent = db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Sort key: delivered_at if set, otherwise far-future (undelivered → bottom)
-    _far_future = literal("9999-12-31T23:59:59")
-    sort_key = func.coalesce(Message.delivered_at, _far_future)
+    # Sort key: session_seq if set, otherwise 999999 (unsequenced → bottom)
+    sort_key = func.coalesce(Message.session_seq, 999999)
 
     query = db.query(Message).filter(Message.agent_id == agent_id)
 
     if before:
-        cursor_dt = datetime.fromisoformat(before)
+        before_seq = int(before)
         rows = (
-            query.filter(sort_key < cursor_dt)
-            .order_by(sort_key.desc())
+            query.filter(sort_key < before_seq)
+            .order_by(sort_key.desc(), Message.created_at.desc())
             .limit(limit + 1)
             .all()
         )
         has_more = len(rows) > limit
         messages = rows[:limit][::-1]
     elif after:
-        cursor_dt = datetime.fromisoformat(after)
+        after_seq = int(after)
         messages = (
-            query.filter(sort_key > cursor_dt)
-            .order_by(sort_key.asc())
+            query.filter(sort_key > after_seq)
+            .order_by(sort_key.asc(), Message.created_at.asc())
             .all()
         )
         has_more = False  # always returns everything newer
     else:
         # Default: newest `limit` messages
         rows = (
-            query.order_by(sort_key.desc())
+            query.order_by(sort_key.desc(), Message.created_at.desc())
             .limit(limit + 1)
             .all()
         )

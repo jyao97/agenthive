@@ -156,9 +156,9 @@ async def test_send_message_with_scheduled_at(client, db_engine):
 # ===========================================================================
 
 def _seed_messages(db, agent_id, count=10):
-    """Insert `count` messages with incrementing timestamps, return list of delivered_at datetimes."""
+    """Insert `count` messages with incrementing timestamps and session_seq, return list of session_seq values."""
     now = _utcnow()
-    created_ats = []
+    seqs = []
     for i in range(count):
         ts = now + timedelta(seconds=i)
         db.add(Message(
@@ -168,10 +168,11 @@ def _seed_messages(db, agent_id, count=10):
             status=MessageStatus.COMPLETED,
             created_at=ts,
             delivered_at=ts,
+            session_seq=i,
         ))
-        created_ats.append(ts)
+        seqs.append(i)
     db.commit()
-    return created_ats
+    return seqs
 
 
 @pytest.mark.anyio
@@ -179,11 +180,11 @@ async def test_get_messages_pagination_before_cursor(client, db_engine):
     """Using before= param returns older messages."""
     db = _make_session(db_engine)
     _seed_agent(db, agent_id="bfre11112222", project_name="pag-before")
-    timestamps = _seed_messages(db, "bfre11112222", count=10)
+    seqs = _seed_messages(db, "bfre11112222", count=10)
     db.close()
 
-    # Use the 6th message timestamp as cursor (index 5) -- should return msgs 0..4
-    cursor = _encode_cursor(timestamps[5])
+    # Use the 6th message session_seq as cursor (index 5) -- should return msgs 0..4
+    cursor = seqs[5]
     resp = await client.get(f"/api/agents/bfre11112222/messages?before={cursor}&limit=50")
     assert resp.status_code == 200
     data = resp.json()
@@ -198,11 +199,11 @@ async def test_get_messages_pagination_after_cursor(client, db_engine):
     """Using after= param returns newer messages."""
     db = _make_session(db_engine)
     _seed_agent(db, agent_id="aftr11112222", project_name="pag-after")
-    timestamps = _seed_messages(db, "aftr11112222", count=10)
+    seqs = _seed_messages(db, "aftr11112222", count=10)
     db.close()
 
-    # Use the 4th message timestamp as cursor (index 3) -- should return msgs 4..9
-    cursor = _encode_cursor(timestamps[3])
+    # Use the 4th message session_seq as cursor (index 3) -- should return msgs 4..9
+    cursor = seqs[3]
     resp = await client.get(f"/api/agents/aftr11112222/messages?after={cursor}")
     assert resp.status_code == 200
     data = resp.json()
@@ -240,13 +241,13 @@ async def test_get_messages_with_after_does_not_reset_unread(client, db_engine):
     """Using after= cursor should NOT reset unread_count."""
     db = _make_session(db_engine)
     _seed_agent(db, agent_id="nourst112222", project_name="nounread-proj")
-    timestamps = _seed_messages(db, "nourst112222", count=5)
+    seqs = _seed_messages(db, "nourst112222", count=5)
     agent = db.get(Agent, "nourst112222")
     agent.unread_count = 3
     db.commit()
     db.close()
 
-    cursor = _encode_cursor(timestamps[2])
+    cursor = seqs[2]
     resp = await client.get(f"/api/agents/nourst112222/messages?after={cursor}")
     assert resp.status_code == 200
 

@@ -2120,9 +2120,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           if (pending.has(m.id) && m.delivered_at) pending.delete(m.id);
         }
         setMessages(updated.slice().sort((a, b) => {
-          const aKey = a.delivered_at || "\uffff";
-          const bKey = b.delivered_at || "\uffff";
-          if (aKey !== bKey) return aKey < bKey ? -1 : 1;
+          const aSeq = a.session_seq ?? Infinity;
+          const bSeq = b.session_seq ?? Infinity;
+          if (aSeq !== bSeq) return aSeq - bSeq;
           return (a.created_at || "") < (b.created_at || "") ? -1 : 1;
         }));
       }
@@ -2223,7 +2223,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     setLoadingMore(true);
     try {
       const oldest = current[0];
-      const data = await fetchMessages(id, { before: oldest.delivered_at || oldest.created_at });
+      const data = await fetchMessages(id, { before: oldest.session_seq });
       const older = Array.isArray(data?.messages) ? data.messages : [];
       if (older.length) {
         // Capture scroll height before DOM update for scroll preservation
@@ -2255,10 +2255,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         if (msgs.length) setMessages(msgs);
         return;
       }
-      // Use delivered_at of the last delivered message as cursor (undelivered
-      // messages have no delivered_at and sit at the bottom — skip them).
-      const lastDelivered = [...current].reverse().find((m) => m.delivered_at);
-      const afterCursor = lastDelivered?.delivered_at || current[current.length - 1].created_at;
+      // Use the highest session_seq as cursor (messages without session_seq
+      // are unsequenced provisional messages — skip them for cursor).
+      const maxSeq = Math.max(...current.map(m => m.session_seq ?? -1));
+      const afterCursor = maxSeq >= 0 ? maxSeq : 0;
       const hasPending = current.some((m) => m.role === "USER" && m.status === "PENDING");
       const needTail = syncHint || agentData.status === "SYNCING" || hasPending || hasPendingInteractiveRef.current;
       const fetches = [fetchMessages(id, { after: afterCursor })];
