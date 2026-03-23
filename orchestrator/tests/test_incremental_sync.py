@@ -644,3 +644,115 @@ class TestEdgeCases:
         assert turns[1][0] == "assistant"
         assert turns[2] == ("user", "Q2", None, "u2")
         assert turns[3][0] == "assistant"
+
+    def test_queue_operation_remove_not_boundary(self, tmp_path):
+        """queue-operation remove mid-assistant-group must NOT split the turn.
+
+        Regression test for: _is_turn_boundary treated ALL queue-operation
+        types as boundaries, but the parser only creates turns for enqueue
+        with content.  A remove entry mid-assistant-group caused the
+        incremental parser to invent a phantom assistant turn."""
+        ctx = _make_ctx(tmp_path, [
+            _user_entry("Q1", "u1"),
+            _assistant_entry("Working part 1", "a1"),
+        ])
+        sync_parse_incremental(ctx)  # seed state
+
+        _append_jsonl(ctx.jsonl_path, [
+            {"type": "queue-operation", "operation": "remove",
+             "sessionId": "s1"},
+            _assistant_entry("Working part 2", "a2"),
+        ])
+        incremental_turns = sync_parse_incremental(ctx)
+        full_turns = _parse_session_turns(ctx.jsonl_path)
+        assert len(incremental_turns) == len(full_turns), (
+            f"remove split! incremental={len(incremental_turns)} "
+            f"vs full={len(full_turns)}"
+        )
+
+    def test_queue_operation_dequeue_not_boundary(self, tmp_path):
+        """queue-operation dequeue mid-assistant-group must NOT split the turn.
+
+        Same bug as remove — dequeue is another non-enqueue operation that
+        the parser ignores but the old boundary scanner treated as a split."""
+        ctx = _make_ctx(tmp_path, [
+            _user_entry("Q1", "u1"),
+            _assistant_entry("Working part 1", "a1"),
+        ])
+        sync_parse_incremental(ctx)  # seed state
+
+        _append_jsonl(ctx.jsonl_path, [
+            {"type": "queue-operation", "operation": "dequeue",
+             "sessionId": "s1"},
+            _assistant_entry("Working part 2", "a2"),
+        ])
+        incremental_turns = sync_parse_incremental(ctx)
+        full_turns = _parse_session_turns(ctx.jsonl_path)
+        assert len(incremental_turns) == len(full_turns), (
+            f"dequeue split! incremental={len(incremental_turns)} "
+            f"vs full={len(full_turns)}"
+        )
+
+    def test_filtered_system_subtype_not_boundary(self, tmp_path):
+        """system entries with turn_duration / stop_hook_summary subtypes
+        mid-assistant-group must NOT split the turn.
+
+        Regression test for: _is_turn_boundary treated ALL system entries as
+        boundaries, but the parser skips turn_duration and stop_hook_summary.
+        These appear mid-assistant-group and caused phantom turns."""
+        ctx = _make_ctx(tmp_path, [
+            _user_entry("Q1", "u1"),
+            _assistant_entry("Working part 1", "a1"),
+        ])
+        sync_parse_incremental(ctx)  # seed state
+
+        # Test turn_duration
+        _append_jsonl(ctx.jsonl_path, [
+            {"type": "system", "subtype": "turn_duration",
+             "durationMs": 5000, "sessionId": "s1"},
+            _assistant_entry("Working part 2", "a2"),
+        ])
+        incremental_turns = sync_parse_incremental(ctx)
+        full_turns = _parse_session_turns(ctx.jsonl_path)
+        assert len(incremental_turns) == len(full_turns), (
+            f"turn_duration split! incremental={len(incremental_turns)} "
+            f"vs full={len(full_turns)}"
+        )
+
+        # Append stop_hook_summary and more assistant text
+        _append_jsonl(ctx.jsonl_path, [
+            {"type": "system", "subtype": "stop_hook_summary",
+             "summary": "hook ran", "sessionId": "s1"},
+            _assistant_entry("Working part 3", "a3"),
+        ])
+        incremental_turns = sync_parse_incremental(ctx)
+        full_turns = _parse_session_turns(ctx.jsonl_path)
+        assert len(incremental_turns) == len(full_turns), (
+            f"stop_hook_summary split! incremental={len(incremental_turns)} "
+            f"vs full={len(full_turns)}"
+        )
+
+    def test_queue_operation_enqueue_empty_not_boundary(self, tmp_path):
+        """queue-operation enqueue with empty content mid-assistant-group
+        must NOT split the turn.
+
+        Regression test for: enqueue entries with empty content are skipped
+        by the parser (no turn created), but the old boundary scanner
+        treated them as boundaries, splitting the assistant group."""
+        ctx = _make_ctx(tmp_path, [
+            _user_entry("Q1", "u1"),
+            _assistant_entry("Working part 1", "a1"),
+        ])
+        sync_parse_incremental(ctx)  # seed state
+
+        _append_jsonl(ctx.jsonl_path, [
+            {"type": "queue-operation", "operation": "enqueue",
+             "content": "", "sessionId": "s1"},
+            _assistant_entry("Working part 2", "a2"),
+        ])
+        incremental_turns = sync_parse_incremental(ctx)
+        full_turns = _parse_session_turns(ctx.jsonl_path)
+        assert len(incremental_turns) == len(full_turns), (
+            f"empty enqueue split! incremental={len(incremental_turns)} "
+            f"vs full={len(full_turns)}"
+        )
