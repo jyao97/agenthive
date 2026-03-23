@@ -2929,13 +2929,8 @@ Here are the day's conversations (with timestamps):
             self._syncing_no_pane_retries.pop(agent.id, None)
             self._known_subagents.pop(agent.id, None)
             # Clean up hook signal files
-            for suffix in (".newsession", ".stopsummary"):
-                try:
-                    os.unlink(f"/tmp/ahive-{agent.id}{suffix}")
-                except FileNotFoundError:
-                    pass
             try:
-                os.unlink(f"/tmp/ahive-hooks/{agent.id}.stopsummary")
+                os.unlink(f"/tmp/ahive-{agent.id}.newsession")
             except FileNotFoundError:
                 pass
 
@@ -3611,34 +3606,16 @@ Here are the day's conversations (with timestamps):
                 db.add(resp)
                 agent.status = post_exec_status
             else:
-                # Hook-message dedup: the Stop hook may have already
-                # created an immediate Message(source="hook").  Adopt it
-                # instead of creating a duplicate.
-                _hook_resp = db.query(Message).filter(
-                    Message.agent_id == agent.id,
-                    Message.role == MessageRole.AGENT,
-                    Message.source == "hook",
-                    Message.jsonl_uuid.is_(None),
-                ).order_by(Message.created_at.desc()).first()
-                if _hook_resp:
-                    resp = _hook_resp
-                    resp.source = "cli"
-                    if result_text and len(result_text) > len(resp.content):
-                        resp.content = result_text
-                    resp.stream_log = _truncate(logs, 50000)
-                    if result_meta_json:
-                        resp.meta_json = result_meta_json
-                else:
-                    resp = Message(
-                        agent_id=agent.id,
-                        role=MessageRole.AGENT,
-                        content=result_text,
-                        status=MessageStatus.COMPLETED,
-                        stream_log=_truncate(logs, 50000),
-                        meta_json=result_meta_json,
-                        delivered_at=_now,
-                    )
-                    db.add(resp)
+                resp = Message(
+                    agent_id=agent.id,
+                    role=MessageRole.AGENT,
+                    content=result_text,
+                    status=MessageStatus.COMPLETED,
+                    stream_log=_truncate(logs, 50000),
+                    meta_json=result_meta_json,
+                    delivered_at=_now,
+                )
+                db.add(resp)
 
                 # Backfill hook-created interactive cards with answers from result
                 if result_meta_json:

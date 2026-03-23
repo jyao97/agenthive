@@ -4102,27 +4102,6 @@ async def generate_worktree_name(request: Request):
 _HOOK_SIGNAL_DIR = "/tmp/ahive-hooks"
 
 
-def write_stop_summary(agent_id: str, summary: str) -> None:
-    """Persist Stop hook summary to signal file (survives restart)."""
-    os.makedirs(_HOOK_SIGNAL_DIR, exist_ok=True)
-    path = os.path.join(_HOOK_SIGNAL_DIR, f"{agent_id}.stopsummary")
-    try:
-        with open(path, "w") as f:
-            f.write(summary)
-    except OSError:
-        pass
-
-
-def read_stop_summary(agent_id: str) -> str | None:
-    """Read and consume Stop hook summary signal file."""
-    path = os.path.join(_HOOK_SIGNAL_DIR, f"{agent_id}.stopsummary")
-    try:
-        with open(path, "r") as f:
-            summary = f.read().strip()
-        os.unlink(path)
-        return summary or None
-    except (FileNotFoundError, OSError):
-        return None
 
 
 @app.post("/api/hooks/agent-session-end")
@@ -4273,59 +4252,28 @@ async def hook_agent_stop(request: Request):
             logger.warning("hook_agent_stop: no X-Agent-Id and no session match")
             return {}
 
-    last_message = body.get("last_assistant_message") or ""
-    if isinstance(last_message, dict):
-        last_message = last_message.get("content", "") or str(last_message)
-    summary = str(last_message)[:2000].strip() if last_message else ""
-
-    if summary:
-        write_stop_summary(agent_id, summary)
-
     # Unconditionally clear generating — latest signal wins.
     ad = getattr(app.state, "agent_dispatcher", None)
     if ad:
         logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
         ad._stop_generating(agent_id)
 
-        # ----- Hook-first: create Message immediately from stop payload -----
-        # This gives instant visibility — the sync loop / harvest will dedup
-        # against this message later via the ``source="hook"`` marker.
-        if summary:
-            _stop_db = SessionLocal()
-            try:
-                _agent = _stop_db.get(Agent, agent_id)
-                if _agent:
-                    _now = _utcnow()
-                    _resp = Message(
-                        agent_id=agent_id,
-                        role=MessageRole.AGENT,
-                        content=summary,
-                        status=MessageStatus.COMPLETED,
-                        source="hook",
-                        completed_at=_now,
-                        delivered_at=_now,
-                    )
-                    _stop_db.add(_resp)
-                    _agent.last_message_preview = summary[:200]
-                    _agent.last_message_at = _now
-                    _is_sub = _agent.is_subagent or _agent.parent_id
-                    if not _is_sub and not ad._is_agent_in_use(_agent.id, _agent.tmux_pane):
-                        _agent.unread_count += 1
-                    _stop_db.commit()
-                    from websocket import emit_new_message
-                    ad._emit(emit_new_message(
-                        _agent.id, _resp.id, _agent.name, _agent.project,
-                    ))
-                    if not _is_sub:
-                        ad._maybe_notify_message(_agent)
-                    logger.info(
-                        "hook_agent_stop: created hook message for %s (%d chars)",
-                        agent_id[:8], len(summary),
-                    )
-            except Exception:
-                logger.exception("hook_agent_stop: failed to create hook message for %s", agent_id[:8])
-            finally:
-                _stop_db.close()
+        # Increment unread + push notification (without creating a Message —
+        # the sync loop imports the full content from JSONL after wake).
+        _stop_db = SessionLocal()
+        try:
+            _agent = _stop_db.get(Agent, agent_id)
+            if _agent:
+                _is_sub = _agent.is_subagent or _agent.parent_id
+                if not _is_sub and not ad._is_agent_in_use(_agent.id, _agent.tmux_pane):
+                    _agent.unread_count += 1
+                _stop_db.commit()
+                if not _is_sub:
+                    ad._maybe_notify_message(_agent)
+        except Exception:
+            logger.exception("hook_agent_stop: failed to update unread for %s", agent_id[:8])
+        finally:
+            _stop_db.close()
 
         ctx = ad._sync_contexts.get(agent_id)
         if ctx:
