@@ -1597,6 +1597,10 @@ class AgentDispatcher:
         # CLI session sync tasks: agent_id -> asyncio.Task
         self._sync_tasks: dict[str, asyncio.Task] = {}
 
+        # Exec sync tasks for non-tmux agents: agent_id -> asyncio.Task
+        # Separate from _sync_tasks to avoid interfering with tmux sync.
+        self._exec_sync_tasks: dict[str, asyncio.Task] = {}
+
         # Generation tracking: monotonic ID per agent + set of currently generating agents
         self._generation_ids: dict[str, int] = {}
         self._generating_agents: set[str] = set()
@@ -2966,67 +2970,112 @@ Here are the day's conversations (with timestamps):
                 db.add(resp)
                 agent.status = post_exec_status
             else:
-                # --- Fine-grained message creation (Phase E) ---
-                # Create one Message per text segment / tool call instead of
-                # a single blob, so the frontend can render them individually.
-                _fg_seq = 0
-                _fg_msgs: list[Message] = []
-                # Use triggering message ID in harvest UUID to avoid collision
-                # across multiple prompts to the same agent.
-                _fg_origin = info["message_id"]
-                for _fg_kind, _fg_content in harvest_parts:
-                    _fg_seq += 1
-                    _fg_content = _fg_content.strip()
-                    if not _fg_content:
-                        continue
-                    # Strip legacy markers from text parts
-                    if _fg_kind == "text":
-                        _fg_content = re.sub(r"\n?EXIT_SUCCESS\s*$", "", _fg_content).strip()
-                        _fg_content = re.sub(r"\n?EXIT_FAILURE:?.*$", "", _fg_content).strip()
+                # --- Check if exec sync already imported turns from JSONL ---
+                # If so, skip harvest message creation to avoid duplicates.
+                # The sync pipeline is the authoritative source for non-tmux
+                # agents when it ran successfully.
+                _exec_sync_ran = (
+                    agent_id in self._sync_contexts
+                    or db.query(Message).filter(
+                        Message.agent_id == agent.id,
+                        Message.source == "cli",
+                        Message.jsonl_uuid.is_not(None),
+                        ~Message.jsonl_uuid.like("harvest-%"),
+                    ).limit(1).count() > 0
+                )
+
+                if _exec_sync_ran:
+                    logger.info(
+                        "Agent %s: exec sync handled message import, "
+                        "skipping harvest message creation",
+                        agent.id[:8],
+                    )
+                    # Use latest agent message for downstream refs (preview, etc.)
+                    resp = (
+                        db.query(Message)
+                        .filter(
+                            Message.agent_id == agent.id,
+                            Message.role == MessageRole.AGENT,
+                        )
+                        .order_by(Message.created_at.desc())
+                        .first()
+                    )
+                    _fg_msgs = []
+                    if not resp:
+                        # Edge case: sync ran but no agent messages — create
+                        # fallback single message so downstream code has a resp.
+                        resp = Message(
+                            agent_id=agent.id,
+                            role=MessageRole.AGENT,
+                            content=result_text or "",
+                            status=MessageStatus.COMPLETED,
+                            stream_log=_truncate(logs, 50000),
+                            meta_json=result_meta_json,
+                            delivered_at=_now,
+                        )
+                        db.add(resp)
+                else:
+                    # --- Fine-grained message creation (Phase E) ---
+                    # Create one Message per text segment / tool call instead of
+                    # a single blob, so the frontend can render them individually.
+                    _fg_seq = 0
+                    _fg_msgs = []
+                    # Use triggering message ID in harvest UUID to avoid collision
+                    # across multiple prompts to the same agent.
+                    _fg_origin = info["message_id"]
+                    for _fg_kind, _fg_content in harvest_parts:
+                        _fg_seq += 1
+                        _fg_content = _fg_content.strip()
                         if not _fg_content:
                             continue
-                    _fg_now = _utcnow()
-                    _fg_uuid = f"harvest-{_fg_origin}-{_fg_seq}"
-                    _fg_actual_kind = "text" if _fg_kind == "text" else "tool_use"
-                    logger.debug("Agent %s: harvest creating msg kind=%s uuid=%s seq=%d content_len=%d",
-                                 agent.id[:8], _fg_actual_kind, _fg_uuid, _fg_seq, len(_fg_content))
-                    _fg_msg = Message(
-                        agent_id=agent.id,
-                        role=MessageRole.AGENT,
-                        content=_fg_content,
-                        status=MessageStatus.COMPLETED,
-                        source=None,
-                        jsonl_uuid=_fg_uuid,
-                        completed_at=_fg_now,
-                        delivered_at=_fg_now,
-                        session_seq=_fg_seq,
-                        kind=_fg_actual_kind,
-                    )
-                    db.add(_fg_msg)
-                    _fg_msgs.append(_fg_msg)
+                        # Strip legacy markers from text parts
+                        if _fg_kind == "text":
+                            _fg_content = re.sub(r"\n?EXIT_SUCCESS\s*$", "", _fg_content).strip()
+                            _fg_content = re.sub(r"\n?EXIT_FAILURE:?.*$", "", _fg_content).strip()
+                            if not _fg_content:
+                                continue
+                        _fg_now = _utcnow()
+                        _fg_uuid = f"harvest-{_fg_origin}-{_fg_seq}"
+                        _fg_actual_kind = "text" if _fg_kind == "text" else "tool_use"
+                        logger.debug("Agent %s: harvest creating msg kind=%s uuid=%s seq=%d content_len=%d",
+                                     agent.id[:8], _fg_actual_kind, _fg_uuid, _fg_seq, len(_fg_content))
+                        _fg_msg = Message(
+                            agent_id=agent.id,
+                            role=MessageRole.AGENT,
+                            content=_fg_content,
+                            status=MessageStatus.COMPLETED,
+                            source=None,
+                            jsonl_uuid=_fg_uuid,
+                            completed_at=_fg_now,
+                            delivered_at=_fg_now,
+                            session_seq=_fg_seq,
+                            kind=_fg_actual_kind,
+                        )
+                        db.add(_fg_msg)
+                        _fg_msgs.append(_fg_msg)
 
-                # Attach interactive metadata to last fine-grained message
-                if harvest_interactive and _fg_msgs:
-                    _fg_msgs[-1].meta_json = json.dumps({"interactive": harvest_interactive})
+                    # Attach interactive metadata to last fine-grained message
+                    if harvest_interactive and _fg_msgs:
+                        _fg_msgs[-1].meta_json = json.dumps({"interactive": harvest_interactive})
 
-                if _fg_msgs:
-                    # Attach stream_log to the first message
-                    _fg_msgs[0].stream_log = _truncate(logs, 50000)
-                    resp = _fg_msgs[-1]  # downstream refs use resp.id
-                else:
-                    # Empty response — fall back to single message with
-                    # _extract_result output (preserves existing behaviour).
-                    logger.debug("Agent %s: harvest fallback to single message", agent.id[:8])
-                    resp = Message(
-                        agent_id=agent.id,
-                        role=MessageRole.AGENT,
-                        content=result_text,
-                        status=MessageStatus.COMPLETED,
-                        stream_log=_truncate(logs, 50000),
-                        meta_json=result_meta_json,
-                        delivered_at=_now,
-                    )
-                    db.add(resp)
+                    if _fg_msgs:
+                        # Attach stream_log to the first message
+                        _fg_msgs[0].stream_log = _truncate(logs, 50000)
+                        resp = _fg_msgs[-1]  # downstream refs use resp.id
+                    else:
+                        # Empty response — fall back to single message with
+                        # _extract_result output (preserves existing behaviour).
+                        logger.debug("Agent %s: harvest fallback to single message", agent.id[:8])
+                        resp = Message(
+                            agent_id=agent.id,
+                            role=MessageRole.AGENT,
+                            content=result_text,
+                            status=MessageStatus.COMPLETED,
+                            stream_log=_truncate(logs, 50000),
+                            meta_json=result_meta_json,
+                            delivered_at=_now,
+                        )
+                        db.add(resp)
 
                 # Backfill hook-created interactive cards with answers from result
                 if result_meta_json:
@@ -3136,6 +3185,13 @@ Here are the day's conversations (with timestamps):
 
             save_worker_log(f"agent-{agent.id}", logs)
 
+            # Flush all undisplayed messages to display file.
+            # Safety net: ensures harvest messages reach the display file
+            # even when exec sync didn't run (hook failure, first-time agent,
+            # etc.). Idempotent — already-displayed messages are skipped.
+            from display_writer import flush_agent as _harvest_flush
+            _harvest_flush(agent.id)
+
             from websocket import emit_agent_update, emit_new_message
             self._emit(emit_agent_update(agent.id, agent.status.value, agent.project))
             # Emit new-message event for each fine-grained message (or the single resp)
@@ -3159,6 +3215,8 @@ Here are the day's conversations (with timestamps):
             info = self._active_execs.pop(agent_id, None)
             self._recently_harvested.add(agent_id)
             self._cancel_stream_task(agent_id)
+            # Cancel exec sync for non-tmux agents (sync only lives during exec)
+            self._cancel_exec_sync_task(agent_id)
             # Clean up output file to prevent /tmp accumulation
             if info:
                 output_file = info.get("output_file", "")
@@ -3521,6 +3579,12 @@ Here are the day's conversations (with timestamps):
 
             # Start streaming output to frontend
             self._start_stream_task(agent.id, output_file)
+
+            # Start JSONL sync for non-tmux agents (parallel to stream loop).
+            # For --resume we know session_id upfront; for first exec,
+            # SessionStart hook will start sync when session_id arrives.
+            if not agent.tmux_pane and resume_session_id:
+                self.start_exec_sync(agent.id, resume_session_id, project_path)
 
             logger.info(
                 "Dispatched message %s to agent %s (resume=%s)",
@@ -4258,6 +4322,219 @@ Here are the day's conversations (with timestamps):
         task = self._sync_tasks.pop(agent_id, None)
         if task and not task.done():
             task.cancel()
+
+    # ---- Exec Sync (non-tmux agents) ----
+
+    def start_exec_sync(self, agent_id: str, session_id: str, project_path: str):
+        """Start a background sync task for a non-tmux agent during exec.
+
+        Similar to start_session_sync() but for subprocess agents:
+        - Runs only during execution (not long-lived)
+        - No tmux pane checks or session rotation
+        - Stopped at harvest
+        """
+        # Don't start if there's already an exec sync or tmux sync running
+        if agent_id in self._sync_contexts:
+            logger.debug(
+                "start_exec_sync: agent %s already has sync context, skipping",
+                agent_id,
+            )
+            return
+        self._cancel_exec_sync_task(agent_id)
+
+        db = SessionLocal()
+        try:
+            _ag = db.get(Agent, agent_id)
+            _worktree = _ag.worktree if _ag else None
+        finally:
+            db.close()
+
+        jsonl_path = _resolve_session_jsonl(session_id, project_path, _worktree)
+        _write_session_owner(
+            session_source_dir(project_path), session_id, agent_id,
+        )
+        task = asyncio.ensure_future(
+            self._exec_sync_loop(agent_id, session_id, project_path, jsonl_path)
+        )
+        self._exec_sync_tasks[agent_id] = task
+        logger.info(
+            "Started exec sync for non-tmux agent %s (session %s)",
+            agent_id, session_id[:12],
+        )
+
+    def _cancel_exec_sync_task(self, agent_id: str):
+        """Cancel and clean up an exec sync task."""
+        task = self._exec_sync_tasks.pop(agent_id, None)
+        if task and not task.done():
+            task.cancel()
+        # Clean up shared state (sync context / wake event) if owned by exec sync
+        # Only pop if there's no tmux sync task also using these
+        if agent_id not in self._sync_tasks:
+            self._sync_contexts.pop(agent_id, None)
+            self._sync_wake.pop(agent_id, None)
+            self._sync_locks.pop(agent_id, None)
+
+    async def _exec_sync_loop(
+        self, agent_id: str, session_id: str,
+        project_path: str, jsonl_path: str,
+    ):
+        """Sync loop for non-tmux agents — runs during exec only.
+
+        Stripped-down version of _sync_session_loop_inner():
+        - Reuses sync_import_new_turns / sync_full_scan from sync_engine
+        - No tmux pane detection, session rotation, or pane health checks
+        - Tolerates EXECUTING status (not just SYNCING)
+        - Exits when agent leaves EXECUTING
+        """
+        from sync_engine import (
+            SyncContext,
+            _content_hash,
+            sync_import_new_turns,
+            sync_full_scan,
+        )
+
+        POLL_INTERVAL = 60  # hooks are primary trigger; 60s safety net
+
+        # Register wake event (hooks use wake_sync which reads _sync_wake)
+        wake_event = asyncio.Event()
+        self._sync_wake[agent_id] = wake_event
+
+        # Register sync lock
+        sync_lock = asyncio.Lock()
+        self._sync_locks[agent_id] = sync_lock
+
+        # Cache agent metadata
+        _worktree = None
+        db = SessionLocal()
+        try:
+            _ag = db.get(Agent, agent_id)
+            _agent_name = _ag.name if _ag else ""
+            _agent_project = _ag.project if _ag else ""
+            if _ag:
+                _worktree = _ag.worktree
+        finally:
+            db.close()
+
+        # Create and register sync context
+        ctx = SyncContext(
+            agent_id=agent_id,
+            session_id=session_id,
+            project_path=project_path,
+            worktree=_worktree,
+            agent_name=_agent_name,
+            agent_project=_agent_project,
+            jsonl_path=jsonl_path,
+        )
+
+        # Initialize sync pointer from current JSONL state
+        try:
+            initial_turns = _parse_session_turns(jsonl_path)
+        except Exception:
+            initial_turns = []
+        ctx.last_turn_count = len(initial_turns)
+        try:
+            ctx.last_offset = os.path.getsize(jsonl_path)
+        except OSError:
+            ctx.last_offset = 0
+        ctx.last_content_hash = (
+            _content_hash(initial_turns[-1][1]) if initial_turns else ""
+        )
+
+        self._sync_contexts[agent_id] = ctx
+
+        # Initial full scan (reconcile DB with JSONL)
+        try:
+            await sync_full_scan(self, ctx, reason="exec_start")
+        except Exception:
+            logger.warning(
+                "Exec sync initial scan failed for agent %s",
+                agent_id, exc_info=True,
+            )
+
+        logger.info(
+            "Exec sync loop started for agent %s (session %s, turns=%d)",
+            agent_id, session_id[:12], ctx.last_turn_count,
+        )
+
+        try:
+            while True:
+                # Wait for hook wake or poll timeout
+                hook_wake = False
+                try:
+                    await asyncio.wait_for(
+                        wake_event.wait(), timeout=POLL_INTERVAL,
+                    )
+                    wake_event.clear()
+                    hook_wake = True
+                except asyncio.TimeoutError:
+                    pass
+
+                # Exit check: agent no longer executing
+                db = SessionLocal()
+                try:
+                    agent = db.get(Agent, agent_id)
+                    if not agent or agent.status not in (
+                        AgentStatus.EXECUTING, AgentStatus.SYNCING,
+                    ):
+                        logger.info(
+                            "Exec sync loop exiting for agent %s (status=%s)",
+                            agent_id,
+                            agent.status.value if agent else "deleted",
+                        )
+                        break
+                finally:
+                    db.close()
+
+                # File size check
+                try:
+                    current_size = os.path.getsize(ctx.jsonl_path)
+                    ctx.getsize_error_count = 0
+                except OSError:
+                    ctx.getsize_error_count += 1
+                    if ctx.getsize_error_count % 10 == 1:
+                        logger.debug(
+                            "Exec sync: JSONL not found for agent %s (%s)",
+                            agent_id, ctx.jsonl_path,
+                        )
+                    continue
+
+                # Compact detection — file shrink
+                if current_size < ctx.last_offset:
+                    async with sync_lock:
+                        await sync_full_scan(self, ctx, reason="compact")
+                    wake_event.set()
+                    continue
+
+                # No change
+                if current_size <= ctx.last_offset:
+                    continue
+
+                # Poll-only: no action (same discipline as tmux loop)
+                if not hook_wake:
+                    continue
+
+                # Hook-triggered: incremental sync
+                async with sync_lock:
+                    result = await sync_import_new_turns(self, ctx)
+                if result == "compact":
+                    async with sync_lock:
+                        await sync_full_scan(self, ctx, reason="compact")
+                    wake_event.set()
+
+        except asyncio.CancelledError:
+            logger.info("Exec sync loop cancelled for agent %s", agent_id)
+        except Exception:
+            logger.error(
+                "Exec sync loop error for agent %s",
+                agent_id, exc_info=True,
+            )
+        finally:
+            # Cleanup shared state
+            self._sync_contexts.pop(agent_id, None)
+            self._sync_wake.pop(agent_id, None)
+            self._sync_locks.pop(agent_id, None)
+            self._exec_sync_tasks.pop(agent_id, None)
+            logger.info("Exec sync loop ended for agent %s", agent_id)
 
     def track_launch_task(self, agent_id: str, task: asyncio.Task):
         """Track a tmux launch background task so it can be cancelled."""

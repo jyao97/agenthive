@@ -994,6 +994,24 @@ async def hook_agent_session_start(request: Request):
         if ad:
             ad.wake_sync(agent_id)
 
+            # Start exec sync for non-tmux agents on first execution.
+            # session_id wasn't known at dispatch time; now it is.
+            if agent_id not in ad._sync_contexts:
+                from database import SessionLocal as _SL_es
+                _db_es = _SL_es()
+                try:
+                    _ag_es = _db_es.get(Agent, agent_id)
+                    if (
+                        _ag_es
+                        and not _ag_es.tmux_pane
+                        and _ag_es.status == AgentStatus.EXECUTING
+                    ):
+                        _proj_es = _db_es.get(Project, _ag_es.project)
+                        if _proj_es:
+                            ad.start_exec_sync(agent_id, session_id, _proj_es.path)
+                finally:
+                    _db_es.close()
+
         return {}
 
     # --- Unmanaged session: push-based detection ---
