@@ -155,19 +155,18 @@ def _notify_interactive(ad, agent, new_turns):
 # User message promotion — single path (Phase 3a)
 # ---------------------------------------------------------------------------
 
-def _promote_or_create_user_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, meta, kind):
+def _promote_or_create_user_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, meta, kind, jsonl_ts=None):
     """Match a JSONL user turn to a queued web message, or create a CLI message.
 
     Strategy:
     1. UUID dedup — skip if already imported
-    2. Promote oldest unlinked web message
-       - For wrapped prompts: strip preamble + content match, then FIFO
-       - For raw prompts: content match only (no FIFO — mismatch = different msg)
-    3. No web message to promote → create new CLI-sourced message
+    2. Content-match via ContentMatcher (exact → task-stripped →
+       normalised → contained → FIFO fallback)
+    3. No match → create new CLI-sourced message
 
     Returns Message to insert, or None if already handled (dedup/promotion).
     """
-    from jsonl_parser import is_wrapped_prompt as _is_wrapped_prompt
+    from content_matcher import ContentMatcher
 
     # 1. UUID dedup (fastest — covers restarts/re-reads)
     if jsonl_uuid:
@@ -181,47 +180,24 @@ def _promote_or_create_user_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, 
             logger.debug("Agent %s: dedup skip uuid=%s", ctx.agent_id[:8], jsonl_uuid)
             return None
 
-    # 2. Promote queued web/task message
-    _link_base = [
-        Message.agent_id == ctx.agent_id,
-        Message.role == MessageRole.USER,
-        _or(
-            Message.source == "web",
-            Message.source == "plan_continue",
-            Message.source == "task",
-        ),
-        Message.jsonl_uuid.is_(None),
-    ]
+    # 2. Fetch promotion candidates (unlinked web/task messages)
+    candidates = (
+        db.query(Message)
+        .filter(
+            Message.agent_id == ctx.agent_id,
+            Message.role == MessageRole.USER,
+            _or(
+                Message.source == "web",
+                Message.source == "plan_continue",
+                Message.source == "task",
+            ),
+            Message.jsonl_uuid.is_(None),
+        )
+        .order_by(Message.created_at.asc())
+        .all()
+    )
 
-    web_msg = None
-    method = None
-
-    if _is_wrapped_prompt(content):
-        # Preamble strip failed at parse time — try again and content-match
-        from jsonl_parser import strip_agent_preamble as _strip
-        _stripped = _strip(content)
-        if _stripped != content:
-            web_msg = db.query(Message).filter(
-                *_link_base,
-                Message.content == _stripped,
-            ).order_by(Message.created_at.asc()).first()
-            method = "wrapped-content"
-        if not web_msg:
-            web_msg = db.query(Message).filter(
-                *_link_base
-            ).order_by(Message.created_at.asc()).first()
-            method = "wrapped-fifo"
-    else:
-        # Raw prompt (follow-up) — exact content match first
-        web_msg = db.query(Message).filter(
-            *_link_base,
-            Message.content == content,
-        ).order_by(Message.created_at.asc()).first()
-        method = "content"
-
-        # No FIFO fallback for raw prompts — content mismatch means it's
-        # a different message. Unlinked web messages stay queued until their
-        # own JSONL turn arrives and content-matches.
+    web_msg, method = ContentMatcher.match(content, candidates)
 
     if web_msg:
         try:
@@ -230,7 +206,7 @@ def _promote_or_create_user_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, 
                     web_msg.jsonl_uuid = jsonl_uuid
                 web_msg.session_seq = seq
                 if not web_msg.delivered_at:
-                    web_msg.delivered_at = _utcnow()
+                    web_msg.delivered_at = _parse_jsonl_ts(jsonl_ts) or _utcnow()
                 db.flush()
         except IntegrityError:
             # UUID collision — skip promotion, fall through to CLI creation
@@ -257,7 +233,7 @@ def _promote_or_create_user_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, 
             return None  # promoted — no insert needed
 
     # 3. No promotable web message — genuine CLI-typed input
-    _now = _utcnow()
+    _ts = _parse_jsonl_ts(jsonl_ts) or _utcnow()
     return Message(
         agent_id=ctx.agent_id,
         role=MessageRole.USER,
@@ -265,8 +241,9 @@ def _promote_or_create_user_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, 
         status=MessageStatus.COMPLETED,
         source="cli",
         jsonl_uuid=jsonl_uuid,
-        completed_at=_now,
-        delivered_at=_now,
+        created_at=_ts,
+        completed_at=_ts,
+        delivered_at=_ts,
         tool_use_id=_extract_tool_use_id(meta),
         session_seq=seq,
         kind=kind,
@@ -323,7 +300,10 @@ def _create_system_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, kind, jso
 
     # Content dedup for "Conversation compacted" — PostCompact hook may have
     # already written this with a different UUID (compact-sys-...).
-    # Always adopt the JSONL UUID so sync_full_scan stops seeing it as missing.
+    # Adopt the JSONL UUID *and* timestamp so the bubble sorts correctly
+    # relative to the post-compact summary turn.  The hook fires after Claude
+    # writes the JSONL, so the hook timestamp is always later; the JSONL
+    # compact_boundary timestamp is authoritative.
     if content == "Conversation compacted":
         existing = db.query(Message).filter(
             Message.agent_id == ctx.agent_id,
@@ -333,8 +313,14 @@ def _create_system_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, kind, jso
         if existing:
             if jsonl_uuid:
                 existing.jsonl_uuid = jsonl_uuid
-            logger.debug("Agent %s: compact system msg already exists, adopting uuid=%s",
-                         ctx.agent_id[:8], jsonl_uuid)
+            # Adopt JSONL timestamp — ensures correct ordering
+            _ts = _parse_jsonl_ts(jsonl_ts)
+            if _ts:
+                existing.created_at = _ts
+                existing.completed_at = _ts
+                existing.delivered_at = _ts
+            logger.debug("Agent %s: compact system msg already exists, adopting uuid=%s ts=%s",
+                         ctx.agent_id[:8], jsonl_uuid, jsonl_ts)
             return None
 
     logger.debug("Agent %s: creating message role=system kind=%s uuid=%s seq=%d",
@@ -533,7 +519,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         ad._stop_generating(ctx.agent_id)
 
                 msg = _promote_or_create_user_msg(
-                    db, ctx, content, jsonl_uuid, seq, meta, kind,
+                    db, ctx, content, jsonl_uuid, seq, meta, kind, jsonl_ts,
                 )
                 if msg is None:
                     continue
@@ -738,6 +724,11 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
 
         if _changes_made:
             db.commit()
+
+        # Rebuild display file after compact — purge stale pre-compact entries
+        if reason == "compact":
+            from display_writer import rebuild_agent as _rebuild_display
+            _rebuild_display(ctx.agent_id)
 
         # If turns are missing from DB, reset pointer so sync loop reimports them.
         # Otherwise, set pointer to current state.
