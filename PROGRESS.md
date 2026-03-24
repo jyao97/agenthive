@@ -94,3 +94,15 @@
 - Resolution: Created `start_exec_sync()` + `_exec_sync_loop()` as separate methods from tmux's `start_session_sync()` + `_sync_session_loop_inner()` — zero changes to tmux code paths. Exec sync starts at dispatch (for --resume) or from SessionStart hook (first exec). Harvest skips message creation when sync already imported turns, falls back to existing harvest if sync didn't run. Added unconditional `flush_agent()` at end of harvest as safety net.
 - Lesson 1: `claude -p` writes session JSONL to `~/.claude/projects/` just like interactive sessions, and hooks fire with AHIVE_AGENT_ID — so the full JSONL sync pipeline works for subprocess agents too.
 - Lesson 2: Keep new pipelines parallel (separate methods, separate task dicts) rather than modifying existing stable ones — merge later when confident.
+
+### 2026-03-24 | Task: Allow sending messages to busy tmux agents | Status: success
+- What: Removed the ban on sending messages to executing tmux agents. Messages are now injected via tmux send-keys immediately and tracked as QUEUED until JSONL confirms delivery.
+- Attempts: Straightforward — no issues. Tested tmux buffer behavior: multiple messages sent while Claude is generating are processed sequentially (C-u + text + Enter per message).
+- Resolution: Added MessageStatus.QUEUED, renamed _dispatch_tmux_pending → _dispatch_tmux_scheduled (scheduled-only), moved delivered_at from UserPromptSubmit hook to sync engine (uses JSONL timestamp), removed ContentMatcher strategies 5+6 (contained/fifo), removed queue param from API.
+- Lesson 1: tmux send-keys works fine even during active generation — keystrokes buffer in the terminal and Claude processes them one at a time after each turn completes.
+- Lesson 2: Consolidating delivered_at into the sync engine (from JSONL timestamp) is more accurate than server utcnow() from the hook — single source of truth.
+
+### 2026-03-24 — Disable text input when agent status is STARTING
+- What: Added `isStarting` check to disable the chat input bar when an agent's status is "STARTING", with placeholder text "Agent is starting…"
+- Attempts: Straightforward — no issues. Three-line change in AgentChatPage.jsx.
+- Lesson: The disabled logic chain (`isStarting || isStopped || isError || hasPendingInteractive`) should be checked whenever new blocking statuses are introduced.

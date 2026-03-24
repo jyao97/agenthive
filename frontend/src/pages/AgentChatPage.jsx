@@ -3080,10 +3080,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const hasTmuxPane = !!agent.tmux_pane;
   const isStopped = agent.status === "STOPPED";
   const isError = agent.status === "ERROR";
+  const isStarting = agent.status === "STARTING";
   const compactHeader = embedded && !headerExpanded;
 
   let disabledReason = "";
-  if (isStopped) disabledReason = "Agent is stopped — click Resume to restart";
+  if (isStarting) disabledReason = "Agent is starting…";
+  else if (isStopped) disabledReason = "Agent is stopped — click Resume to restart";
   else if (isError) disabledReason = "Agent errored — click Resume to restart";
   else if (hasPendingInteractive) {
     // Determine if the pending card is a plan or question
@@ -3578,7 +3580,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         agentId={id}
         onSend={handleSend}
         onSendLater={handleSendLater}
-        disabled={isStopped || isError || hasPendingInteractive}
+        disabled={isStarting || isStopped || isError || hasPendingInteractive}
         disabledReason={disabledReason}
         isBusy={!hasTmux && isExecuting}
         tmuxMode={hasTmux}
