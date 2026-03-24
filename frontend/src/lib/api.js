@@ -204,6 +204,12 @@ export const fetchMessages = (agentId, { limit = 50, before, after } = {}) => {
   if (after) params.set("after", after);
   return request(`/api/agents/${agentId}/messages?${params}`);
 };
+export const fetchDisplay = (agentId, { offset = 0, tailBytes = 0 } = {}) => {
+  const params = new URLSearchParams();
+  if (offset) params.set("offset", String(offset));
+  if (tailBytes) params.set("tail_bytes", String(tailBytes));
+  return request(`/api/agents/${agentId}/display?${params}`);
+};
 export const sendMessage = (agentId, content, { queue = false, scheduled_at = null } = {}) =>
   request(`/api/agents/${agentId}/messages`, {
     method: "POST",

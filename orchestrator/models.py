@@ -196,6 +196,7 @@ class Message(Base):
     tool_use_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     session_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
     kind: Mapped[str | None] = mapped_column(String(20), nullable=True)  # "text" | "tool_use" | None (legacy)
+    display_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)  # display file sequence number
 
 
 class ToolActivity(Base):

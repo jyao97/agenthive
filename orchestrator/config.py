@@ -75,6 +75,9 @@ DB_PATH = _resolve(os.getenv("DB_PATH", "data/orchestrator.db"))
 LOG_DIR = _resolve(os.getenv("LOG_DIR", "logs"))
 BACKUP_DIR = _resolve(os.getenv("BACKUP_DIR", "backups"))  # also configurable via .env BACKUP_DIR=/your/path
 
+# Display files (per-agent JSONL for Phase 2 message sync)
+DISPLAY_DIR = _resolve(os.getenv("DISPLAY_DIR", "data/display"))
+
 # Delay (seconds) before waking sync after a hook returns, giving Claude
 # time to flush the JSONL entry to disk.
 JSONL_FLUSH_DELAY = float(os.getenv("JSONL_FLUSH_DELAY", "0.15"))

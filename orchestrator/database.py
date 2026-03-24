@@ -4,6 +4,7 @@ import logging
 import os
 
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -602,7 +603,7 @@ def init_db():
                 """))
                 conn.commit()
                 logger.info("Backfilled tool_use_id for %d messages", _unfilled_tid)
-        except Exception as e:
+        except OperationalError as e:
             logger.warning("Could not backfill tool_use_id (JSON1 unavailable?): %s", e)
 
         # --- Backfill session_seq from existing ordering ---
@@ -625,6 +626,31 @@ def init_db():
             """))
             conn.commit()
             logger.info("Backfilled session_seq for %d messages", _unfilled_seq)
+
+        # --- Add display_seq column to messages if missing ---
+        msg_cols_disp = _table_columns(conn, "messages")
+        if "display_seq" not in msg_cols_disp:
+            conn.execute(text(
+                "ALTER TABLE messages ADD COLUMN display_seq INTEGER"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_messages_display_seq "
+                "ON messages(agent_id, display_seq)"
+            ))
+            # Backfill: assign display_seq from row number ordered by created_at
+            conn.execute(text("""
+                UPDATE messages SET display_seq = sub.rn
+                FROM (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY agent_id
+                               ORDER BY created_at ASC
+                           ) AS rn
+                    FROM messages
+                ) sub
+                WHERE messages.id = sub.id
+            """))
+            conn.commit()
 
     # Ensure jwt_secret exists in SystemConfig
     from auth import get_jwt_secret

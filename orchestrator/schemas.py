@@ -195,6 +195,36 @@ class MessageOut(BaseModel):
         return v
 
 
+class DisplayEntry(BaseModel):
+    id: str
+    seq: int
+    role: MessageRole
+    kind: str | None = None
+    content: str
+    source: str | None = None
+    status: MessageStatus
+    metadata: dict | None = None
+    tool_use_id: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+    delivered_at: datetime | None = None
+    session_seq: int | None = None
+
+    @field_validator("created_at", "completed_at", "delivered_at", mode="before")
+    @classmethod
+    def ensure_utc_display(cls, v):
+        if v is not None and isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
+
+
+class DisplayResponse(BaseModel):
+    messages: list[DisplayEntry]
+    next_offset: int
+    queued: list[MessageOut]
+    has_earlier: bool
+
+
 class ToolActivityOut(BaseModel):
     id: str
     agent_id: str

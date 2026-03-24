@@ -214,6 +214,11 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     agent.last_message_preview = (_content or "")[:200]
                     agent.last_message_at = _utcnow()
                     db.commit()
+
+                    # Update display file with replaced content
+                    from display_writer import update_last as _update_display
+                    _update_display(ctx.agent_id, last_msg.id)
+
                     ad._emit(emit_new_message(
                         agent.id, "sync", ctx.agent_name, ctx.agent_project,
                     ))
@@ -533,6 +538,10 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         ctx.last_turn_count = len(turns)
         ctx.last_offset = current_size
         ctx.last_content_hash = _content_hash(turns[-1][1]) if turns else ""
+
+        # Flush new messages to display file
+        from display_writer import flush_agent as _flush_display
+        _flush_display(ctx.agent_id)
 
         logger.debug("Agent %s: sync_import result=%s, inserted=%d, pointer now=%d",
                      ctx.agent_id[:8], "new_turns", _actually_inserted, ctx.last_turn_count)

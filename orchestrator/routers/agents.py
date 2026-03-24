@@ -14,9 +14,10 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import case, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from config import CC_MODEL, CLAUDE_HOME, VALID_MODELS
+from config import CC_MODEL, CLAUDE_HOME, DISPLAY_DIR, VALID_MODELS
 from database import SessionLocal, get_db
 from models import (
     Agent, AgentInsightSuggestion, AgentMode, AgentStatus,
@@ -25,6 +26,7 @@ from models import (
 from agent_dispatcher import ACTIVE_STATUSES, ALIVE_STATUSES, TERMINAL_STATUSES
 from schemas import (
     AgentBrief, AgentCreate, AgentInsightSuggestionOut, AgentOut,
+    DisplayEntry, DisplayResponse,
     MessageOut, MessageSearchResponse, MessageSearchResult,
     PaginatedMessages, SendMessage, UpdateMessage,
 )
@@ -1014,7 +1016,7 @@ async def _launch_tmux_background(
                 _init_msg.completed_at = _utcnow()
             try:
                 db.commit()
-            except Exception:
+            except IntegrityError:
                 # UNIQUE constraint on session_id — another agent raced us
                 db.rollback()
                 _mark_error(
@@ -1197,8 +1199,8 @@ def _clean_stale_unlinked(max_age: int = 3600):
                         current_pid = r.stdout.strip() if r.returncode == 0 else ""
                         if current_pid and (not stored_pid or str(stored_pid) == current_pid):
                             continue  # same pane, same process — keep entry
-                    except Exception:
-                        pass
+                    except (subprocess.TimeoutExpired, OSError) as e:
+                        logger.debug("Pane liveness check failed: %s", e)
                 # Transcript gone/stale and no live pane → remove
                 os.unlink(fpath)
                 removed += 1
@@ -1583,7 +1585,7 @@ async def stop_agent(agent_id: str, request: Request,
                     import subprocess as _sp2
                     _sp2.run(["tmux", "kill-pane", "-t", sub.tmux_pane],
                              capture_output=True, timeout=_TMUX_CMD_TIMEOUT)
-                except Exception:
+                except (OSError, subprocess.TimeoutExpired):
                     logger.debug("Failed to kill tmux pane for subagent %s", sub.id)
             asyncio.ensure_future(emit_agent_update(sub.id, "STOPPED", sub.project))
 
@@ -1748,12 +1750,9 @@ async def apply_agent_suggestions(agent_id: str, body: _ApplySuggestionsBody,
             raise HTTPException(status_code=500, detail=str(e))
 
         # Store in FTS5
-        try:
-            n = store_insights(db, agent.project, today, new_section, agent_id=agent_id)
-            if n:
-                logger.info("Stored %d agent insights in FTS5 for %s", n, agent.project)
-        except Exception:
-            logger.warning("Failed to store FTS5 insights for %s", agent.project, exc_info=True)
+        n = store_insights(db, agent.project, today, new_section, agent_id=agent_id)
+        if n:
+            logger.info("Stored %d agent insights in FTS5 for %s", n, agent.project)
 
     return {"success": True, "accepted": len(accepted_contents)}
 
@@ -1793,7 +1792,7 @@ async def permanently_delete_agent(agent_id: str, request: Request, db: Session 
             _sp.run(["tmux", "kill-session", "-t", sess_name],
                     capture_output=True, timeout=5)
             logger.info("Killed tmux session %s for permanent delete of agent %s", sess_name, agent.id)
-        except Exception:
+        except (OSError, _sp.TimeoutExpired):
             logger.warning("Failed to kill tmux session %s for agent %s", sess_name, agent.id)
 
     # Cancel dispatcher tasks
@@ -1826,12 +1825,7 @@ async def permanently_delete_agent(agent_id: str, request: Request, db: Session 
     for child in child_agents:
         db.delete(child)
     db.delete(agent)
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        logger.error("Failed to delete agent %s from DB: %s", agent_id, e)
-        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+    db.commit()
 
     # 3. Delete session source files (.jsonl + subdir) and cache (safe: DB already committed)
     cleaned_files = []
@@ -2014,7 +2008,7 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
     db.add(msg)
     try:
         db.commit()
-    except Exception:
+    except IntegrityError:
         db.rollback()
         raise HTTPException(
             status_code=409,
@@ -2115,6 +2109,102 @@ async def get_agent_messages(
             db.commit()
 
     return PaginatedMessages(messages=messages, has_more=has_more)
+
+
+@router.get("/api/agents/{agent_id}/display", response_model=DisplayResponse)
+async def get_agent_display(
+    agent_id: str,
+    offset: int = Query(0, ge=0),
+    tail_bytes: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Read display entries from the per-agent JSONL file.
+
+    Returns parsed messages (deduplicated by id), the byte offset to resume
+    from, any queued web/plan messages not yet written, and whether earlier
+    content exists before the returned window.
+    """
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    display_path = os.path.join(DISPLAY_DIR, f"{agent_id}.jsonl")
+    empty = DisplayResponse(messages=[], next_offset=0, queued=[], has_earlier=False)
+
+    if not os.path.isfile(display_path):
+        # Still return queued messages even if no display file yet
+        queued = (
+            db.query(Message)
+            .filter(
+                Message.agent_id == agent_id,
+                Message.source.in_(("web", "plan_continue", "task")),
+                Message.jsonl_uuid.is_(None),
+            )
+            .order_by(Message.created_at.asc())
+            .all()
+        )
+        empty.queued = [MessageOut.model_validate(m) for m in queued]
+        return empty
+
+    has_earlier = False
+    try:
+        with open(display_path, "r", encoding="utf-8") as f:
+            file_size = f.seek(0, 2)  # seek to end to get size
+
+            if tail_bytes > 0 and offset == 0:
+                start = max(0, file_size - tail_bytes)
+                f.seek(start)
+                if start > 0:
+                    # Align to next complete line boundary
+                    f.readline()  # discard partial line
+                has_earlier = f.tell() > 0 and start > 0
+            elif offset > 0:
+                f.seek(min(offset, file_size))
+                has_earlier = True
+            else:
+                f.seek(0)
+
+            raw = f.read()
+            next_offset = f.tell()
+    except OSError:
+        return empty
+
+    # Parse lines, dedup by id (last occurrence wins for _replace entries)
+    seen: dict[str, DisplayEntry] = {}
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        try:
+            entry = DisplayEntry.model_validate(obj)
+        except Exception:
+            continue
+        seen[entry.id] = entry
+
+    messages = list(seen.values())
+
+    # Queued messages: sent from web/plan but not yet in the display file
+    queued = (
+        db.query(Message)
+        .filter(
+            Message.agent_id == agent_id,
+            Message.source.in_(("web", "plan_continue", "task")),
+            Message.jsonl_uuid.is_(None),
+        )
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+
+    return DisplayResponse(
+        messages=messages,
+        next_offset=next_offset,
+        queued=[MessageOut.model_validate(m) for m in queued],
+        has_earlier=has_earlier,
+    )
 
 
 @router.get("/api/agents/{agent_id}/tool-activities")

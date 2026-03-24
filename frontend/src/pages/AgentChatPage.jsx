@@ -4,6 +4,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import {
   fetchAgent,
   fetchMessages,
+  fetchDisplay,
   sendMessage,
   stopAgent,
   resumeAgent,
@@ -2118,6 +2119,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const abortRef = useRef(null);
   const messagesRef = useRef([]);
   const hasPendingInteractiveRef = useRef(false);
+  // Display API cursor tracking
+  const nextOffsetRef = useRef(0);
+  const hasEarlierRef = useRef(false);
   // Buffer for message_delivered events that arrive before the message
   // exists in state (race condition: WS event beats HTTP POST response).
   const pendingDeliveriesRef = useRef(new Map());
@@ -2156,9 +2160,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const [agentData, msgData, pendingPerms, toolActs] = await Promise.all([
+      // Reset display cursor for fresh initial load
+      nextOffsetRef.current = 0;
+      const [agentData, pendingPerms, toolActs] = await Promise.all([
         fetchAgent(id),
-        fetchMessages(id),
         fetchPendingPermissions(id).catch(() => []),
         fetchToolActivities(id).catch(() => []),
       ]);
@@ -2169,8 +2174,30 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (agentData.task_id && !taskData) {
         fetchTaskV2(agentData.task_id).then(t => setTaskData(t)).catch(() => {});
       }
-      const msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
-      console.log('[messages] fetched', msgs.length, 'messages:', msgs.map(m => ({id: m.id, role: m.role, kind: m.kind, seq: m.session_seq})));
+
+      // Try display API first, fall back to legacy messages API
+      let msgs = [];
+      let hasMoreFlag = false;
+      try {
+        const displayData = await fetchDisplay(id, { tailBytes: 50000 });
+        if (controller.signal.aborted) return;
+        msgs = Array.isArray(displayData?.messages) ? displayData.messages : [];
+        if (displayData.next_offset) {
+          nextOffsetRef.current = displayData.next_offset;
+        }
+        hasEarlierRef.current = !!displayData.has_earlier;
+        hasMoreFlag = !!displayData.has_earlier;
+        // Append queued messages from display API
+        const queued = Array.isArray(displayData?.queued) ? displayData.queued : [];
+        if (queued.length) msgs = [...msgs, ...queued];
+      } catch (displayErr) {
+        console.warn("[display] API unavailable, falling back to legacy:", displayErr.message);
+        const msgData = await fetchMessages(id);
+        if (controller.signal.aborted) return;
+        msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
+        hasMoreFlag = !!msgData?.has_more;
+      }
+
       // Merge API messages with WS-applied state (e.g. delivered_at set by
       // message_delivered events that arrived before this loadData call).
       // Prefer the later delivered_at so we never regress delivery status.
@@ -2187,7 +2214,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           return keepDelivered !== m.delivered_at ? { ...m, delivered_at: keepDelivered } : m;
         });
       });
-      setHasMore(!!msgData?.has_more);
+      setHasMore(hasMoreFlag);
       if (Array.isArray(pendingPerms) && pendingPerms.length > 0) {
         setPendingPermissions(pendingPerms);
       }
@@ -2244,21 +2271,40 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     if (!current.length || loadingMore) return;
     setLoadingMore(true);
     try {
-      const oldest = current[0];
-      const data = await fetchMessages(id, { before: oldest.session_seq });
-      const older = Array.isArray(data?.messages) ? data.messages : [];
-      console.log('[messages] loadOlderMessages fetched', older.length, 'older messages');
+      let older = [];
+      let moreFlag = false;
+      // Try display API with offset=0 to load from the beginning
+      if (hasEarlierRef.current) {
+        try {
+          const data = await fetchDisplay(id, { offset: 0, tailBytes: nextOffsetRef.current });
+          older = Array.isArray(data?.messages) ? data.messages : [];
+          moreFlag = !!data?.has_earlier;
+          hasEarlierRef.current = moreFlag;
+        } catch {
+          // Fall back to legacy pagination
+          const oldest = current[0];
+          const data = await fetchMessages(id, { before: oldest.delivered_at || oldest.created_at });
+          older = Array.isArray(data?.messages) ? data.messages : [];
+          moreFlag = !!data?.has_more;
+        }
+      } else {
+        const oldest = current[0];
+        const data = await fetchMessages(id, { before: oldest.delivered_at || oldest.created_at });
+        older = Array.isArray(data?.messages) ? data.messages : [];
+        moreFlag = !!data?.has_more;
+      }
       if (older.length) {
         // Capture scroll height before DOM update for scroll preservation
         const el = scrollContainerRef.current;
         if (el) savedScrollHeight.current = el.scrollHeight;
+        // Deduplicate: only prepend messages not already in the list
         setMessages((prev) => {
           const seenIds = new Set(prev.map((m) => m.id));
           const unique = older.filter((m) => !seenIds.has(m.id));
           return unique.length ? [...unique, ...prev] : prev;
         });
       }
-      setHasMore(!!data?.has_more);
+      setHasMore(moreFlag);
     } catch (err) {
       console.warn("Failed to load older messages:", err);
     } finally {
@@ -2266,60 +2312,71 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
   }, [id, loadingMore]);
 
-  // Incremental refresh: fetch messages newer than the latest, and optionally
-  // merge the tail to catch in-place content updates from sync agents (sync loop
-  // grows the last message without changing created_at, so after= misses it).
-  const refreshMessages = useCallback(async ({ syncHint = false } = {}) => {
+  // Incremental refresh via display API (falls back to legacy messages API).
+  // On each poll, fetches only bytes after the last known offset, merging new
+  // and replacement messages into state. Also refreshes agent metadata.
+  const refreshMessages = useCallback(async () => {
     try {
       const agentData = await fetchAgent(id);
       if (!agentData || !agentData.id) return;
       setAgent(agentData);
-      const current = messagesRef.current;
-      if (!current.length) {
-        // No messages yet — do a full fetch so the first message appears
-        const data = await fetchMessages(id, { limit: 50 });
-        const msgs = Array.isArray(data?.messages) ? data.messages : [];
-        if (msgs.length) setMessages(msgs);
+
+      const isInitial = nextOffsetRef.current === 0;
+      const params = isInitial
+        ? { tailBytes: 50000 }
+        : { offset: nextOffsetRef.current };
+
+      let data;
+      try {
+        data = await fetchDisplay(id, params);
+      } catch {
+        // Display API unavailable — fall back to legacy refresh
+        const current = messagesRef.current;
+        if (!current.length) {
+          const msgData = await fetchMessages(id, { limit: 50 });
+          const msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
+          if (msgs.length) setMessages(msgs);
+          return;
+        }
+        const lastDelivered = [...current].reverse().find((m) => m.delivered_at);
+        const afterCursor = lastDelivered?.delivered_at || current[current.length - 1].created_at;
+        const afterData = await fetchMessages(id, { after: afterCursor });
+        const newer = Array.isArray(afterData?.messages) ? afterData.messages : [];
+        if (newer.length) {
+          const seenIds = new Set(current.map((m) => m.id));
+          const unique = newer.filter((m) => !seenIds.has(m.id));
+          if (unique.length) setMessages((prev) => [...prev, ...unique]);
+        }
         return;
       }
-      // Use the highest session_seq as cursor (messages without session_seq
-      // are unsequenced provisional messages — skip them for cursor).
-      const maxSeq = Math.max(...current.map(m => m.session_seq ?? -1));
-      const afterCursor = maxSeq >= 0 ? maxSeq : 0;
-      const hasPending = current.some((m) => m.role === "USER" && m.status === "PENDING");
-      const needTail = syncHint || agentData.status === "SYNCING" || hasPending || hasPendingInteractiveRef.current;
-      const fetches = [fetchMessages(id, { after: afterCursor })];
-      if (needTail) fetches.push(fetchMessages(id, { limit: 5 }));
-      const [afterData, tailData] = await Promise.all(fetches);
-      const newer = Array.isArray(afterData?.messages) ? afterData.messages : [];
-      const tail = tailData ? (Array.isArray(tailData?.messages) ? tailData.messages : []) : [];
-      console.log('[messages] refreshMessages: newer=', newer.length, 'tail=', tail.length, 'afterCursor=', afterCursor);
+
+      if (data.next_offset) {
+        nextOffsetRef.current = data.next_offset;
+      }
+      if (data.has_earlier != null) {
+        hasEarlierRef.current = data.has_earlier;
+      }
 
       setMessages((prev) => {
-        let result = prev;
-        // Merge tail: replace existing messages whose content grew in-place
-        if (tail.length) {
-          const tailById = new Map(tail.map((m) => [m.id, m]));
-          let anyChanged = false;
-          const merged = result.map((m) => {
-            const fresh = tailById.get(m.id);
-            if (fresh && (fresh.content !== m.content || fresh.completed_at !== m.completed_at || fresh.status !== m.status || fresh.delivered_at !== m.delivered_at || JSON.stringify(fresh.metadata) !== JSON.stringify(m.metadata))) {
-              anyChanged = true;
-              return fresh;
-            }
-            return m;
-          });
-          if (anyChanged) result = merged;
+        // Build map of existing messages by id
+        const byId = new Map(prev.map((m) => [m.id, m]));
+
+        // Apply new/replacement messages from display file
+        for (const msg of (data.messages || [])) {
+          byId.set(msg.id, msg);
         }
-        // Append truly new messages from either source (dedup across newer+tail)
-        const seenIds = new Set(result.map((m) => m.id));
-        const unique = [...newer, ...tail].filter((m) => {
-          if (seenIds.has(m.id)) return false;
-          seenIds.add(m.id);
-          return true;
-        });
-        if (unique.length) return [...result, ...unique];
-        return result !== prev ? result : prev;
+
+        // Convert back to sorted array (display file order = seq order)
+        const delivered = [...byId.values()]
+          .filter((m) => m.seq != null || m.session_seq != null || m.delivered_at)
+          .sort((a, b) => (a.seq ?? a.session_seq ?? 0) - (b.seq ?? b.session_seq ?? 0));
+
+        // Append queued messages at the bottom
+        const queuedIds = new Set((data.queued || []).map((q) => q.id));
+        const existingQueued = prev.filter((m) => m.source === "web" && !m.delivered_at && !queuedIds.has(m.id));
+        const queued = [...(data.queued || []), ...existingQueued];
+
+        return [...delivered, ...queued];
       });
     } catch {
       // Transient errors during polling — silently ignore

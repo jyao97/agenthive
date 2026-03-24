@@ -26,6 +26,14 @@ from auth import get_jwt_secret, get_password_hash, verify_token
 setup_logging()
 logger = logging.getLogger("orchestrator")
 
+# Frontend debug logger — writes to a dedicated file for easy tailing
+_fe_handler = logging.FileHandler(
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "frontend-debug.log")
+)
+_fe_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+logging.getLogger("frontend.debug").addHandler(_fe_handler)
+logging.getLogger("frontend.debug").setLevel(logging.DEBUG)
+
 
 # ---- Registry loader ----
 
@@ -112,6 +120,13 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialized")
 
+    # Rebuild display files for active agents
+    try:
+        from display_writer import startup_rebuild_all
+        startup_rebuild_all()
+    except Exception:
+        logger.exception("Failed to rebuild display files on startup")
+
     db = SessionLocal()
     try:
         load_registry(db)
@@ -119,131 +134,98 @@ async def lifespan(app: FastAPI):
         db.close()
 
     # Disable Claude Code session auto-cleanup
-    try:
-        from session_cache import ensure_cleanup_disabled
-        ensure_cleanup_disabled()
-    except Exception:
-        logger.exception("Failed to disable session cleanup")
+    from session_cache import ensure_cleanup_disabled
+    ensure_cleanup_disabled()
 
     # Start dispatchers and git manager
     agent_dispatch_task = None
     backup_task = None
     session_cache_task = None
-    try:
-        from agent_dispatcher import AgentDispatcher
-        from git_manager import GitManager
-        from worker_manager import WorkerManager
-        wm = WorkerManager()
-        agent_dispatcher = AgentDispatcher(wm)
-        gm = GitManager()
-        from permissions import PermissionManager
-        app.state.permission_manager = PermissionManager()
-        app.state.agent_dispatcher = agent_dispatcher
-        app.state.worker_manager = wm
-        app.state.git_manager = gm
-        agent_dispatch_task = asyncio.create_task(agent_dispatcher.run())
-        logger.info("Dispatcher started")
+    from agent_dispatcher import AgentDispatcher
+    from git_manager import GitManager
+    from worker_manager import WorkerManager
+    wm = WorkerManager()
+    agent_dispatcher = AgentDispatcher(wm)
+    gm = GitManager()
+    from permissions import PermissionManager
+    app.state.permission_manager = PermissionManager()
+    app.state.agent_dispatcher = agent_dispatcher
+    app.state.worker_manager = wm
+    app.state.git_manager = gm
+    agent_dispatch_task = asyncio.create_task(agent_dispatcher.run())
+    logger.info("Dispatcher started")
 
-        # Start session cache loop
-        try:
-            from session_cache import run_session_cache_loop
-            session_cache_task = asyncio.create_task(
-                run_session_cache_loop(agent_dispatcher.get_active_sessions)
-            )
-        except Exception:
-            logger.exception("Failed to start session cache loop")
-    except Exception:
-        logger.exception("Failed to start dispatchers — running without scheduling")
+    # Start session cache loop
+    from session_cache import run_session_cache_loop
+    session_cache_task = asyncio.create_task(
+        run_session_cache_loop(agent_dispatcher.get_active_sessions)
+    )
 
     # Install global SessionStart hook so ALL claude processes are detected
-    try:
-        from routers.agents import _write_global_session_hook
-        _write_global_session_hook()
-    except Exception:
-        logger.warning("Failed to write global session hook", exc_info=True)
+    from routers.agents import _write_global_session_hook
+    _write_global_session_hook()
 
     # Refresh project-level hook configs (ensures new hook types are registered)
-    try:
-        from routers.agents import _write_agent_hooks_config
-        _db_hooks = SessionLocal()
-        _project_paths = [
-            p.path for p in _db_hooks.query(Project.path).distinct().all()
-            if p.path and os.path.isdir(p.path)
-        ]
-        _db_hooks.close()
-        for _pp in _project_paths:
-            try:
-                _write_agent_hooks_config(_pp)
-            except Exception:
-                logger.debug("Failed to refresh hooks for %s", _pp, exc_info=True)
-        if _project_paths:
-            logger.info("Refreshed hook configs for %d projects", len(_project_paths))
-    except Exception:
-        logger.warning("Failed to refresh project hook configs", exc_info=True)
+    from routers.agents import _write_agent_hooks_config
+    _db_hooks = SessionLocal()
+    _project_paths = [
+        p.path for p in _db_hooks.query(Project.path).distinct().all()
+        if p.path and os.path.isdir(p.path)
+    ]
+    _db_hooks.close()
+    for _pp in _project_paths:
+        _write_agent_hooks_config(_pp)
+    if _project_paths:
+        logger.info("Refreshed hook configs for %d projects", len(_project_paths))
 
     # Process sessions that accumulated while orchestrator was offline
-    try:
-        from routers.agents import _ingest_pending_sessions
-        _ingest_pending_sessions()
-    except Exception:
-        logger.debug("Failed to ingest pending sessions", exc_info=True)
+    from routers.agents import _ingest_pending_sessions
+    _ingest_pending_sessions()
 
     # Clean stale unlinked session entries from previous runs
-    try:
-        from routers.agents import _clean_stale_unlinked
-        _clean_stale_unlinked()
-    except Exception:
-        logger.debug("Failed to clean stale unlinked sessions", exc_info=True)
+    from routers.agents import _clean_stale_unlinked
+    _clean_stale_unlinked()
 
     # Recover tasks stuck in EXECUTING whose agent already stopped/errored
+    from task_state import TaskStateMachine as _TSM
+    _rdb = SessionLocal()
     try:
-        from task_state import TaskStateMachine as _TSM
-        _rdb = SessionLocal()
-        try:
-            _stuck_tasks = (
-                _rdb.query(Task)
-                .join(Agent, Task.agent_id == Agent.id)
-                .filter(
-                    Task.status == TaskStatus.EXECUTING,
-                    Agent.status.in_([AgentStatus.STOPPED, AgentStatus.ERROR]),
-                )
-                .all()
+        _stuck_tasks = (
+            _rdb.query(Task)
+            .join(Agent, Task.agent_id == Agent.id)
+            .filter(
+                Task.status == TaskStatus.EXECUTING,
+                Agent.status.in_([AgentStatus.STOPPED, AgentStatus.ERROR]),
             )
-            for _st in _stuck_tasks:
-                _agent = _rdb.get(Agent, _st.agent_id)
-                if _agent and _agent.status == AgentStatus.ERROR:
-                    _TSM.transition(_st, TaskStatus.FAILED, strict=False)
-                else:
-                    _TSM.transition(_st, TaskStatus.COMPLETE, strict=False)
-            if _stuck_tasks:
-                _rdb.commit()
-                logger.info("Recovered %d stuck EXECUTING tasks at startup", len(_stuck_tasks))
-        finally:
-            _rdb.close()
-    except Exception:
-        logger.debug("Failed to recover stuck tasks", exc_info=True)
+            .all()
+        )
+        for _st in _stuck_tasks:
+            _agent = _rdb.get(Agent, _st.agent_id)
+            if _agent and _agent.status == AgentStatus.ERROR:
+                _TSM.transition(_st, TaskStatus.FAILED, strict=False)
+            else:
+                _TSM.transition(_st, TaskStatus.COMPLETE, strict=False)
+        if _stuck_tasks:
+            _rdb.commit()
+            logger.info("Recovered %d stuck EXECUTING tasks at startup", len(_stuck_tasks))
+    finally:
+        _rdb.close()
 
     # Start backup loop
-    try:
-        from backup import run_backup_loop
-        backup_task = asyncio.create_task(run_backup_loop())
-        logger.info("Backup loop started")
-    except Exception:
-        logger.exception("Failed to start backup loop")
+    from backup import run_backup_loop
+    backup_task = asyncio.create_task(run_backup_loop())
+    logger.info("Backup loop started")
 
     # Start WebSocket stale-connection pruning loop
     ws_prune_task = None
-    try:
-        from websocket import ws_manager
+    from websocket import ws_manager
 
-        async def _ws_prune_loop():
-            while True:
-                await asyncio.sleep(30)
-                await ws_manager.prune_stale()
+    async def _ws_prune_loop():
+        while True:
+            await asyncio.sleep(30)
+            await ws_manager.prune_stale()
 
-        ws_prune_task = asyncio.create_task(_ws_prune_loop())
-    except Exception:
-        logger.exception("Failed to start WS prune loop")
+    ws_prune_task = asyncio.create_task(_ws_prune_loop())
 
     yield
 
@@ -295,7 +277,7 @@ async def hook_request_logger(request: Request, call_next):
     return await call_next(request)
 
 
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/api/files/", "/api/uploads/", "/api/thumbs/", "/docs", "/openapi.json")
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/api/debug/", "/api/files/", "/api/uploads/", "/api/thumbs/", "/docs", "/openapi.json")
 
 
 @app.middleware("http")
