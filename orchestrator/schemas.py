@@ -225,29 +225,6 @@ class DisplayResponse(BaseModel):
     has_earlier: bool
 
 
-class ToolActivityOut(BaseModel):
-    id: str
-    agent_id: str
-    session_id: str
-    tool_name: str
-    kind: str
-    summary: str
-    output_summary: str | None = None
-    is_error: bool = False
-    started_at: datetime
-    ended_at: datetime | None = None
-    tool_use_id: str | None = None
-
-    model_config = {"from_attributes": True}
-
-    @field_validator("started_at", "ended_at", mode="before")
-    @classmethod
-    def ensure_utc_ta(cls, v):
-        if v is not None and isinstance(v, datetime) and v.tzinfo is None:
-            return v.replace(tzinfo=timezone.utc)
-        return v
-
-
 class PaginatedMessages(BaseModel):
     messages: list[MessageOut]
     has_more: bool

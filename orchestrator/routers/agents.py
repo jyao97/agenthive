@@ -1024,6 +1024,11 @@ async def _launch_tmux_background(
                 )
                 return
 
+            # Update display file with delivery status
+            if _init_msg:
+                from display_writer import update_last
+                update_last(agent_id, _init_msg.id)
+
             ad._emit(emit_agent_update(agent_id, "SYNCING", agent.project))
         finally:
             db.close()
@@ -2120,9 +2125,12 @@ async def get_agent_display(
 ):
     """Read display entries from the per-agent JSONL file.
 
-    Returns parsed messages (deduplicated by id), the byte offset to resume
-    from, any queued web/plan messages not yet written, and whether earlier
-    content exists before the returned window.
+    Returns parsed messages, the byte offset to resume from, any queued
+    web/plan messages not yet written, and whether earlier content exists
+    before the returned window.
+
+    Note: last-occurrence-wins by id handles _replace entries appended by
+    update_last() for streaming and delivery-status updates.
     """
     agent = db.get(Agent, agent_id)
     if not agent:
@@ -2205,31 +2213,6 @@ async def get_agent_display(
         queued=[MessageOut.model_validate(m) for m in queued],
         has_earlier=has_earlier,
     )
-
-
-@router.get("/api/agents/{agent_id}/tool-activities")
-async def get_agent_tool_activities(agent_id: str, db: Session = Depends(get_db)):
-    """Get tool activities for the agent's current session.
-
-    Returns the tool log so the frontend can restore state on page reload.
-    """
-    from models import ToolActivity
-    from schemas import ToolActivityOut
-    agent = db.get(Agent, agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    if not agent.session_id:
-        return []
-    activities = (
-        db.query(ToolActivity)
-        .filter(
-            ToolActivity.agent_id == agent_id,
-            ToolActivity.session_id == agent.session_id,
-        )
-        .order_by(ToolActivity.started_at.asc())
-        .all()
-    )
-    return [ToolActivityOut.model_validate(a) for a in activities]
 
 
 @router.post("/api/agents/{agent_id}/messages", response_model=MessageOut, status_code=201)
