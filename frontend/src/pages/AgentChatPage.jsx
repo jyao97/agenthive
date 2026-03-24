@@ -21,7 +21,6 @@ import {
   fetchProjectFile,
   respondPermission,
   fetchPendingPermissions,
-  fetchToolActivities,
   fetchAgentSuggestions,
   applyAgentSuggestions,
   discardAgentSuggestions,
@@ -779,6 +778,9 @@ function AgentTextSegment({ text, project }) {
 }
 
 function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, agentId, onRefresh, queuePosition, queueTotal, contentOverride }) {
+  if (message.kind === "tool_activity") {
+    return <ToolActivityBubble message={message} />;
+  }
   if (message.role === "SYSTEM") {
     return <SystemBubble message={message} />;
   }
@@ -1252,63 +1254,38 @@ function ActiveToolEntry({ entry, nameColor }) {
   );
 }
 
-function ToolActivityLog({ toolLog }) {
-  const [expanded, setExpanded] = useState(true);
+function ToolActivityBubble({ message }) {
+  const meta = message.metadata || {};
+  const toolName = meta.tool_name || "";
+  const toolKind = meta.tool_kind || "tool";
+  const phase = meta.phase || "";
+  const outputSummary = meta.output_summary || "";
+  const isError = meta.is_error || false;
+  const isDone = phase === "end" || message.status === "COMPLETED";
+  const summary = message.content || "";
 
-  if (!toolLog.length) return null;
-
-  const completed = toolLog.filter((e) => e.done);
-  const active = toolLog.filter((e) => !e.done);
-  const collapsible = completed.length > 3;
-  const visibleCompleted = collapsible && !expanded ? completed.slice(-2) : completed;
-  const hiddenCount = completed.length - visibleCompleted.length;
-
-  const entryIcon = (entry) => {
-    if (entry.kind === "permission") return "\u23F3";
-    if (entry.isError) return "\u2717";
-    if (entry.kind === "subagent") return "\u25C6";
+  const icon = () => {
+    if (!isDone) return <span className="animate-pulse">&#9679;</span>;
+    if (isError) return "\u2717";
+    if (toolKind === "subagent") return "\u25C6";
     return "\u2713";
   };
-  const nameColor = (entry) => {
-    if (entry.kind === "permission") return "text-amber-400";
-    if (entry.kind === "subagent") return "text-violet-400";
+  const nameColor = () => {
+    if (toolKind === "permission") return "text-amber-400";
+    if (toolKind === "subagent") return "text-violet-400";
+    if (toolKind === "compact") return "text-orange-400";
     return "text-cyan-300";
   };
 
   return (
-    <div className="flex justify-start my-2">
-      <div className="max-w-[85%] rounded-2xl px-4 py-2.5 bg-surface shadow-card rounded-bl-md">
-        <div className="space-y-0.5 text-xs font-mono">
-          {collapsible && hiddenCount > 0 && (
-            <button
-              type="button"
-              onClick={() => setExpanded(true)}
-              className="text-faint hover:text-dim text-[11px] mb-0.5"
-            >
-              + {hiddenCount} more...
-            </button>
-          )}
-          {visibleCompleted.map((entry, i) => (
-            <div key={i} className={`flex items-center gap-1.5 ${entry.isError ? "text-red-400" : "text-dim"}`}>
-              <span className="shrink-0">{entryIcon(entry)}</span>
-              <span className={nameColor(entry)}>{entry.name}</span>
-              {entry.summary && <span className="text-faint truncate max-w-[160px]">{entry.summary}</span>}
-              {entry.outputSummary && (
-                <span className={entry.isError ? "text-red-400/70" : "text-faint"}>&rarr; {entry.outputSummary}</span>
-              )}
-            </div>
-          ))}
-          {active.map((entry, i) => (
-            <ActiveToolEntry key={`active-${i}`} entry={entry} nameColor={nameColor} />
-          ))}
-          {collapsible && expanded && (
-            <button
-              type="button"
-              onClick={() => setExpanded(false)}
-              className="text-faint hover:text-dim text-[11px] mt-0.5"
-            >
-              collapse
-            </button>
+    <div className="flex justify-start my-1">
+      <div className="max-w-[85%] rounded-2xl px-3 py-1.5 bg-surface shadow-card rounded-bl-md">
+        <div className={`flex items-center gap-1.5 text-xs font-mono ${isError ? "text-red-400" : "text-dim"}`}>
+          <span className="shrink-0">{icon()}</span>
+          <span className={nameColor()}>{toolName}</span>
+          {summary && <span className="text-faint truncate max-w-[160px]">{summary}</span>}
+          {outputSummary && (
+            <span className={isError ? "text-red-400/70" : "text-faint"}>&rarr; {outputSummary}</span>
           )}
         </div>
       </div>
@@ -2082,7 +2059,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [streamingContent, setStreamingContent] = useState(null);
   const [activeTool, setActiveTool] = useState(null);
   const [toolStartTime, setToolStartTime] = useState(null);
-  const [toolLog, setToolLog] = useState([]);   // [{name, summary, outputSummary, isError, startTime, done}]
   const [pendingPermissions, setPendingPermissions] = useState([]); // [{request_id, tool_name, tool_input, summary, created_at}]
   const [hookActive, setHookActive] = useState(false); // true when hook events indicate agent is working
   const lastHookTimeRef = useRef(0);   // timestamp of last hook event (for compact grace period)
@@ -2143,15 +2119,52 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         for (const m of updated) {
           if (pending.has(m.id) && m.delivered_at) pending.delete(m.id);
         }
-        setMessages(updated.slice().sort((a, b) => {
-          const aSeq = a.session_seq ?? Infinity;
-          const bSeq = b.session_seq ?? Infinity;
-          if (aSeq !== bSeq) return aSeq - bSeq;
-          return (a.created_at || "") < (b.created_at || "") ? -1 : 1;
-        }));
+        setMessages(updated);
       }
     }
   }, [messages]);
+
+  // Shared: apply display API response to message state.
+  // initial=true replaces all messages (preserving WS-delivered_at);
+  // initial=false merges incrementally (handles _replace entries from update_last).
+  const applyDisplayData = useCallback((data, { initial = false } = {}) => {
+    if (data.next_offset) {
+      nextOffsetRef.current = data.next_offset;
+    }
+    if (data.has_earlier != null) {
+      hasEarlierRef.current = !!data.has_earlier;
+    }
+
+    setMessages((prev) => {
+      // Initial: start fresh; incremental: merge into existing
+      const byId = new Map(initial ? [] : prev.map((m) => [m.id, m]));
+
+      // For initial loads, preserve delivered_at set by WS events
+      const prevById = (initial && prev.length)
+        ? new Map(prev.map((m) => [m.id, m]))
+        : null;
+
+      for (const msg of data.messages || []) {
+        if (prevById) {
+          const p = prevById.get(msg.id);
+          if (p?.delivered_at && (!msg.delivered_at || p.delivered_at > msg.delivered_at)) {
+            byId.set(msg.id, { ...msg, delivered_at: p.delivered_at });
+            continue;
+          }
+        }
+        byId.set(msg.id, msg);
+      }
+
+      // Sequenced (displayed) messages — Map preserves insertion order
+      const displayed = [...byId.values()].filter((m) => m.seq != null);
+
+      // Queued messages not yet in display file
+      const displayedIds = new Set(displayed.map((m) => m.id));
+      const queued = (data.queued || []).filter((q) => !displayedIds.has(q.id));
+
+      return [...displayed, ...queued];
+    });
+  }, []);
 
   // Initial load: fetch agent + latest 50 messages
   const loadData = useCallback(async () => {
@@ -2161,10 +2174,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     try {
       // Reset display cursor for fresh initial load
       nextOffsetRef.current = 0;
-      const [agentData, pendingPerms, toolActs] = await Promise.all([
+      const [agentData, pendingPerms] = await Promise.all([
         fetchAgent(id),
         fetchPendingPermissions(id).catch(() => []),
-        fetchToolActivities(id).catch(() => []),
       ]);
       if (controller.signal.aborted) return;
       if (!agentData || !agentData.id) return;
@@ -2177,63 +2189,19 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       // Display API is the sole authority for message ordering
       const displayData = await fetchDisplay(id, { tailBytes: 50000 });
       if (controller.signal.aborted) return;
-      let msgs = Array.isArray(displayData?.messages) ? displayData.messages : [];
-      if (displayData.next_offset) {
-        nextOffsetRef.current = displayData.next_offset;
-      }
-      hasEarlierRef.current = !!displayData.has_earlier;
-      const hasMoreFlag = !!displayData.has_earlier;
-      // Append queued messages from display API
-      const queued = Array.isArray(displayData?.queued) ? displayData.queued : [];
-      if (queued.length) msgs = [...msgs, ...queued];
-
-      // Merge API messages with WS-applied state (e.g. delivered_at set by
-      // message_delivered events that arrived before this loadData call).
-      // Prefer the later delivered_at so we never regress delivery status.
-      setMessages((prev) => {
-        if (!prev.length) return msgs;
-        const prevMap = new Map(prev.map((m) => [m.id, m]));
-        return msgs.map((m) => {
-          const p = prevMap.get(m.id);
-          if (!p) return m;
-          const keepDelivered =
-            p.delivered_at && (!m.delivered_at || p.delivered_at > m.delivered_at)
-              ? p.delivered_at
-              : m.delivered_at;
-          return keepDelivered !== m.delivered_at ? { ...m, delivered_at: keepDelivered } : m;
-        });
-      });
-      setHasMore(hasMoreFlag);
+      applyDisplayData(displayData, { initial: true });
+      setHasMore(!!displayData.has_earlier);
       if (Array.isArray(pendingPerms) && pendingPerms.length > 0) {
         setPendingPermissions(pendingPerms);
       }
-      // Restore tool activity state from DB — only current (in-progress) turn.
-      // Completed-turn tools are already embedded in agent message content
-      // and rendered inline via splitMessageSegments → ToolLogBubble.
-      if (Array.isArray(toolActs) && toolActs.length > 0) {
-        const lastAgentOrSystem = [...msgs].reverse().find(
-          (m) => m.role === "AGENT" || m.role === "SYSTEM"
-        );
-        const cutoff = lastAgentOrSystem
-          ? new Date(lastAgentOrSystem.completed_at || lastAgentOrSystem.created_at).getTime()
-          : 0;
-        const log = toolActs
-          .filter((ta) => new Date(ta.started_at).getTime() > cutoff)
-          .map((ta) => ({
-            name: ta.tool_name,
-            summary: ta.summary || "",
-            outputSummary: ta.output_summary || null,
-            isError: ta.is_error || false,
-            startTime: new Date(ta.started_at).getTime(),
-            done: !!ta.ended_at,
-            kind: ta.kind || "tool",
-          }));
-        setToolLog(log);
-        // If last entry is still running, restore activeTool + toolStartTime
-        const lastActive = log.filter((e) => !e.done).pop();
-        if (lastActive) {
-          setActiveTool({ name: lastActive.name, summary: lastActive.summary });
-          setToolStartTime(lastActive.startTime);
+      // Restore active tool state from display file — check if last tool_activity is still running.
+      {
+        const allMsgs = [...(displayData.messages || []), ...(displayData.queued || [])];
+        const lastToolMsg = [...allMsgs].reverse().find((m) => m.kind === "tool_activity");
+        if (lastToolMsg && lastToolMsg.status !== "COMPLETED") {
+          const meta = lastToolMsg.metadata || {};
+          setActiveTool({ name: meta.tool_name || "", summary: lastToolMsg.content || "" });
+          setToolStartTime(new Date(lastToolMsg.created_at).getTime());
           setHookActive(true);
           lastHookTimeRef.current = Date.now();
         }
@@ -2288,9 +2256,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
   }, [id, loadingMore]);
 
-  // Incremental refresh via display API (falls back to legacy messages API).
-  // On each poll, fetches only bytes after the last known offset, merging new
-  // and replacement messages into state. Also refreshes agent metadata.
+  // Incremental refresh via display API.
+  // Fetches only bytes after the last known offset and merges into state.
   const refreshMessages = useCallback(async () => {
     try {
       const agentData = await fetchAgent(id);
@@ -2303,36 +2270,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         : { offset: nextOffsetRef.current };
 
       const data = await fetchDisplay(id, params);
-
-      if (data.next_offset) {
-        nextOffsetRef.current = data.next_offset;
-      }
-      if (data.has_earlier != null) {
-        hasEarlierRef.current = data.has_earlier;
-      }
-
-      setMessages((prev) => {
-        const byId = new Map(prev.map((m) => [m.id, m]));
-
-        // Apply new/replacement messages from display file
-        for (const msg of (data.messages || [])) {
-          byId.set(msg.id, msg);
-        }
-
-        // Display file messages in seq order (NO sorting fallbacks — seq IS the order)
-        const displayed = [...byId.values()].filter((m) => m.seq != null);
-        displayed.sort((a, b) => a.seq - b.seq);
-
-        // Queued messages at the bottom (from API, not from display file)
-        const displayedIds = new Set(displayed.map((m) => m.id));
-        const queued = (data.queued || []).filter((q) => !displayedIds.has(q.id));
-
-        return [...displayed, ...queued];
-      });
+      applyDisplayData(data, { initial: isInitial });
     } catch {
       // Transient errors during polling — silently ignore
     }
-  }, [id]);
+  }, [id, applyDisplayData]);
 
   // Initial load + clear notification flag for this agent
   useEffect(() => {
@@ -2739,48 +2681,21 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     if (event.type === "tool_activity") {
       console.log('[ws] tool_activity', event.data.tool_name, event.data.phase);
       pushWsEvent('tool_activity', { tool: event.data.tool_name, phase: event.data.phase });
-      const { tool_name, phase, summary, output_summary, is_error } = event.data;
+      const { tool_name, phase, summary } = event.data;
       setHookActive(true);
       lastHookTimeRef.current = Date.now();
       clearTimeout(hookGraceRef.current);
       if (phase === "start") {
         setActiveTool({ name: tool_name, summary: summary || "" });
         setToolStartTime(Date.now());
-        setToolLog((prev) => {
-          const resolved = prev.map((e) =>
-            e.kind === "permission" && e.name === tool_name && !e.done
-              ? { ...e, done: true, outputSummary: "granted" }
-              : e
-          );
-          return [...resolved, {
-            name: tool_name, summary: summary || "",
-            outputSummary: null, isError: false,
-            startTime: Date.now(), done: false,
-            kind: tool_name === "Compact" ? "compact" : tool_name.startsWith("Agent:") ? "subagent" : "tool",
-          }];
-        });
       } else if (phase === "end") {
         setActiveTool(null);
         setToolStartTime(null);
-        setToolLog((prev) => {
-          const idx = prev.findLastIndex((e) => e.name === tool_name && !e.done);
-          if (idx === -1) return prev;
-          const updated = [...prev];
-          updated[idx] = { ...updated[idx], done: true, outputSummary: output_summary || "", isError: !!is_error };
-          return updated;
-        });
         clearTimeout(hookGraceRef.current);
         hookGraceRef.current = setTimeout(() => {
           if (Date.now() - lastHookTimeRef.current < 29_000) return;
           setHookActive(false);
         }, 30_000);
-      } else if (phase === "permission") {
-        setToolLog((prev) => [...prev, {
-          name: tool_name, summary: summary || "",
-          outputSummary: null, isError: false,
-          startTime: Date.now(), done: false,
-          kind: "permission",
-        }]);
       }
       return;
     }
@@ -2802,8 +2717,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     if (event.type === "new_message") {
       console.log('[ws] new_message', event.data);
       pushWsEvent('new_message', event.data);
-      const hasActiveCompact = activeTool?.name === "Compact" ||
-        toolLog.some((e) => e.name === "Compact" && !e.done);
+      const hasActiveCompact = activeTool?.name === "Compact";
       if (hasActiveCompact) {
         refreshMessagesRef.current({ syncHint: true });
         return;
@@ -2813,7 +2727,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       setStreamingContent(null);
       setActiveTool(null);
       setToolStartTime(null);
-      setToolLog([]);
       setHookActive(false);
       lastHookTimeRef.current = 0;
       refreshMessagesRef.current({ syncHint: event.data?.message_id === "sync" });
@@ -2869,8 +2782,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         setStreamingContent(null);
         setActiveTool(null);
         setToolStartTime(null);
-        setToolLog([]);
-        setHookActive(false);
+          setHookActive(false);
         lastHookTimeRef.current = 0;
         generationIdRef.current = null;
       }
@@ -2965,7 +2877,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     try {
       const busy = agent.status === "EXECUTING" || (agent.status === "SYNCING" && !agent.tmux_pane);
       // New turn — clear previous tool activity state
-      setToolLog([]);
       setActiveTool(null);
       setToolStartTime(null);
       await sendMessage(id, content, busy ? { queue: true } : {});
@@ -3587,7 +3498,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                 if (!isDuplicate) return <div data-msg-id="streaming" data-msg-type="streaming_bubble"><StreamingBubble content={streamingContent} project={agent.project} activeTool={activeTool} /></div>;
               }
               // Tool activity log — shows completed + in-progress tool calls
-              if (toolLog.length > 0) return <div data-msg-id="tool_activity" data-msg-type={`tool_activity_log_${toolLog.length}`}><ToolActivityLog toolLog={toolLog} /></div>;
               return (isExecuting || hookActive) ? <div data-msg-id="typing" data-msg-type="typing_indicator"><TypingIndicator activeTool={activeTool} toolStartTime={toolStartTime} /></div> : null;
             })()}
 
