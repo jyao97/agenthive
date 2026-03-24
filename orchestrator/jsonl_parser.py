@@ -264,12 +264,20 @@ def parse_agenthive_marker(text: str) -> dict | None:
 
 
 def is_wrapped_prompt(content: str) -> bool:
-    """Check if content is a system-wrapped prompt from _build_agent_prompt.
+    """Check if content is a system-wrapped prompt from _build_agent_prompt
+    or _build_task_prompt.
 
-    Detects both new-style (preamble prefix) and old-style (marker tag).
+    Detects:
+    - Agent preamble: ``You are working in project:``
+    - Legacy marker: ``<!-- agenthive-prompt``
+    - Task prompt header: ``# Task:`` (remains after strip_agent_preamble)
     """
     head = content[:80]
-    return PREAMBLE_PREFIX in head or AGENTHIVE_PROMPT_MARKER in head
+    return (
+        PREAMBLE_PREFIX in head
+        or AGENTHIVE_PROMPT_MARKER in head
+        or head.startswith("# Task:")
+    )
 
 
 def strip_agent_preamble(content: str) -> str:
