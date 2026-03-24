@@ -2138,7 +2138,7 @@ async def get_agent_display(
             .filter(
                 Message.agent_id == agent_id,
                 Message.source.in_(("web", "plan_continue", "task")),
-                Message.jsonl_uuid.is_(None),
+                Message.display_seq.is_(None),
             )
             .order_by(Message.created_at.asc())
             .all()
@@ -2193,7 +2193,7 @@ async def get_agent_display(
         .filter(
             Message.agent_id == agent_id,
             Message.source.in_(("web", "plan_continue", "task")),
-            Message.jsonl_uuid.is_(None),
+            Message.display_seq.is_(None),
         )
         .order_by(Message.created_at.asc())
         .all()

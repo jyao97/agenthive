@@ -3,7 +3,6 @@ import { Bell, BellOff } from "lucide-react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   fetchAgent,
-  fetchMessages,
   fetchDisplay,
   sendMessage,
   stopAgent,
@@ -2175,28 +2174,18 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         fetchTaskV2(agentData.task_id).then(t => setTaskData(t)).catch(() => {});
       }
 
-      // Try display API first, fall back to legacy messages API
-      let msgs = [];
-      let hasMoreFlag = false;
-      try {
-        const displayData = await fetchDisplay(id, { tailBytes: 50000 });
-        if (controller.signal.aborted) return;
-        msgs = Array.isArray(displayData?.messages) ? displayData.messages : [];
-        if (displayData.next_offset) {
-          nextOffsetRef.current = displayData.next_offset;
-        }
-        hasEarlierRef.current = !!displayData.has_earlier;
-        hasMoreFlag = !!displayData.has_earlier;
-        // Append queued messages from display API
-        const queued = Array.isArray(displayData?.queued) ? displayData.queued : [];
-        if (queued.length) msgs = [...msgs, ...queued];
-      } catch (displayErr) {
-        console.warn("[display] API unavailable, falling back to legacy:", displayErr.message);
-        const msgData = await fetchMessages(id);
-        if (controller.signal.aborted) return;
-        msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
-        hasMoreFlag = !!msgData?.has_more;
+      // Display API is the sole authority for message ordering
+      const displayData = await fetchDisplay(id, { tailBytes: 50000 });
+      if (controller.signal.aborted) return;
+      let msgs = Array.isArray(displayData?.messages) ? displayData.messages : [];
+      if (displayData.next_offset) {
+        nextOffsetRef.current = displayData.next_offset;
       }
+      hasEarlierRef.current = !!displayData.has_earlier;
+      const hasMoreFlag = !!displayData.has_earlier;
+      // Append queued messages from display API
+      const queued = Array.isArray(displayData?.queued) ? displayData.queued : [];
+      if (queued.length) msgs = [...msgs, ...queued];
 
       // Merge API messages with WS-applied state (e.g. delivered_at set by
       // message_delivered events that arrived before this loadData call).
@@ -2273,25 +2262,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     try {
       let older = [];
       let moreFlag = false;
-      // Try display API with offset=0 to load from the beginning
+      // Load earlier messages via display API only
       if (hasEarlierRef.current) {
-        try {
-          const data = await fetchDisplay(id, { offset: 0, tailBytes: nextOffsetRef.current });
-          older = Array.isArray(data?.messages) ? data.messages : [];
-          moreFlag = !!data?.has_earlier;
-          hasEarlierRef.current = moreFlag;
-        } catch {
-          // Fall back to legacy pagination
-          const oldest = current[0];
-          const data = await fetchMessages(id, { before: oldest.delivered_at || oldest.created_at });
-          older = Array.isArray(data?.messages) ? data.messages : [];
-          moreFlag = !!data?.has_more;
-        }
-      } else {
-        const oldest = current[0];
-        const data = await fetchMessages(id, { before: oldest.delivered_at || oldest.created_at });
+        const data = await fetchDisplay(id, { offset: 0, tailBytes: nextOffsetRef.current });
         older = Array.isArray(data?.messages) ? data.messages : [];
-        moreFlag = !!data?.has_more;
+        moreFlag = !!data?.has_earlier;
+        hasEarlierRef.current = moreFlag;
       }
       if (older.length) {
         // Capture scroll height before DOM update for scroll preservation
@@ -2326,29 +2302,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         ? { tailBytes: 50000 }
         : { offset: nextOffsetRef.current };
 
-      let data;
-      try {
-        data = await fetchDisplay(id, params);
-      } catch {
-        // Display API unavailable — fall back to legacy refresh
-        const current = messagesRef.current;
-        if (!current.length) {
-          const msgData = await fetchMessages(id, { limit: 50 });
-          const msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
-          if (msgs.length) setMessages(msgs);
-          return;
-        }
-        const lastDelivered = [...current].reverse().find((m) => m.delivered_at);
-        const afterCursor = lastDelivered?.delivered_at || current[current.length - 1].created_at;
-        const afterData = await fetchMessages(id, { after: afterCursor });
-        const newer = Array.isArray(afterData?.messages) ? afterData.messages : [];
-        if (newer.length) {
-          const seenIds = new Set(current.map((m) => m.id));
-          const unique = newer.filter((m) => !seenIds.has(m.id));
-          if (unique.length) setMessages((prev) => [...prev, ...unique]);
-        }
-        return;
-      }
+      const data = await fetchDisplay(id, params);
 
       if (data.next_offset) {
         nextOffsetRef.current = data.next_offset;
@@ -2358,7 +2312,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
 
       setMessages((prev) => {
-        // Build map of existing messages by id
         const byId = new Map(prev.map((m) => [m.id, m]));
 
         // Apply new/replacement messages from display file
@@ -2366,17 +2319,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           byId.set(msg.id, msg);
         }
 
-        // Convert back to sorted array (display file order = seq order)
-        const delivered = [...byId.values()]
-          .filter((m) => m.seq != null || m.session_seq != null || m.delivered_at)
-          .sort((a, b) => (a.seq ?? a.session_seq ?? 0) - (b.seq ?? b.session_seq ?? 0));
+        // Display file messages in seq order (NO sorting fallbacks — seq IS the order)
+        const displayed = [...byId.values()].filter((m) => m.seq != null);
+        displayed.sort((a, b) => a.seq - b.seq);
 
-        // Append queued messages at the bottom
-        const queuedIds = new Set((data.queued || []).map((q) => q.id));
-        const existingQueued = prev.filter((m) => m.source === "web" && !m.delivered_at && !queuedIds.has(m.id));
-        const queued = [...(data.queued || []), ...existingQueued];
+        // Queued messages at the bottom (from API, not from display file)
+        const displayedIds = new Set(displayed.map((m) => m.id));
+        const queued = (data.queued || []).filter((q) => !displayedIds.has(q.id));
 
-        return [...delivered, ...queued];
+        return [...displayed, ...queued];
       });
     } catch {
       // Transient errors during polling — silently ignore
