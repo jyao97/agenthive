@@ -73,3 +73,13 @@
 - What: Added GPT-4o-mini post-processing to refine voice transcription — corrects speech errors, grammar, and punctuation before text is injected into input field. Inspired by Type4Me's approach.
 - Attempts: Straightforward — no issues. Integrated refinement inside useVoiceRecorder hook so all 7+ call sites get it automatically without individual changes.
 - Lesson: Hook-level integration > call-site-level for cross-cutting concerns — adding the refine step inside the hook avoided touching every caller.
+
+### 2026-03-24 | Task: Keep display files for stopped agents | Status: success
+- What: Stopped/errored agents showed empty chat because `stop_agent_cleanup` and `error_agent_cleanup` deleted the display JSONL file. Removed those deletions so chat history persists. Moved display file cleanup to `permanently_delete_agent` (which was also missing it).
+- Resolution: Straightforward — removed 2 `delete_agent()` calls, added cleanup to permanent delete endpoint.
+- Lesson: Display files are the frontend's sole source of truth for chat history — deleting them on stop is premature. Only delete on permanent removal.
+
+### 2026-03-24 | Task: Stack insight/attachment bubbles below chat bubbles | Status: success
+- What: User message wrapper had `flex items-center gap-2` causing attachments and insights to render horizontally beside the bubble. Changed to `flex flex-col items-end` with an inner `flex items-center gap-2` row for just the warning icon + bubble.
+- Resolution: Straightforward — two edits in ChatBubble's return JSX in AgentChatPage.jsx.
+- Lesson: When a flex container holds both primary content (bubble) and secondary content (attachments, insights), use flex-col for the outer wrapper and an inner flex-row only for elements that truly belong side-by-side.

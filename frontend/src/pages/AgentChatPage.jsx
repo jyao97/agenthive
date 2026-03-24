@@ -25,6 +25,7 @@ import {
   applyAgentSuggestions,
   discardAgentSuggestions,
   fetchTaskV2,
+  wakeSync,
 } from "../lib/api";
 import ProjectFileModal from "../components/ProjectFileModal";
 import FloatingTaskCard from "../components/FloatingTaskCard";
@@ -995,7 +996,8 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-2`}>
-      <div className={`max-w-[85%] relative ${isUser ? "flex items-center gap-2" : ""}`}>
+      <div className={`max-w-[85%] relative ${isUser ? "flex flex-col items-end" : ""}`}>
+        <div className={isUser ? "flex items-center gap-2" : undefined}>
         {isUndeliveredTimedOut && (
           <div className="flex-shrink-0 text-red-400" title="Message not delivered — Claude may not have received this">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -1099,6 +1101,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
               </span>
             ))}
           </div>
+        </div>
         </div>
         {message.status === "FAILED" && message.error_message && (
           <p className="text-xs text-red-400/70 mt-1 px-1">{message.error_message}</p>
@@ -1505,6 +1508,34 @@ function InitializingIndicator() {
         <span className="typing-dot" style={{ animationDelay: "400ms" }} />
       </div>
       <span className="text-sm text-dim">Starting agent...</span>
+    </div>
+  );
+}
+
+// --- Sync Prompt (shown when a CLI session is detected but not yet synced) ---
+
+function SyncPrompt({ agentId, onSync }) {
+  const [syncing, setSyncing] = useState(false);
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      await wakeSync(agentId);
+      // Give the sync loop a moment to import, then refresh
+      setTimeout(() => onSync(), 800);
+    } catch {
+      setSyncing(false);
+    }
+  };
+  return (
+    <div className="flex flex-col items-center justify-center py-16 gap-4">
+      <span className="text-sm text-dim">CLI session detected</span>
+      <button
+        onClick={handleSync}
+        disabled={syncing}
+        className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 disabled:opacity-50 transition-colors"
+      >
+        {syncing ? "Syncing..." : "Sync Now"}
+      </button>
     </div>
   );
 }
@@ -2128,7 +2159,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // initial=true replaces all messages (preserving WS-delivered_at);
   // initial=false merges incrementally (handles _replace entries from update_last).
   const applyDisplayData = useCallback((data, { initial = false } = {}) => {
-    if (data.next_offset) {
+    if (data.next_offset != null) {
       nextOffsetRef.current = data.next_offset;
     }
     if (data.has_earlier != null) {
@@ -3391,6 +3422,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
           <InitializingIndicator />
+        ) : messages.length === 0 && agent.status === "SYNCING" ? (
+          <SyncPrompt agentId={id} onSync={refreshMessages} />
         ) : (
           <>
             {/* Lazy-load indicator at top */}
