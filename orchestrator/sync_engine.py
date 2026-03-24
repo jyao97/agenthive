@@ -15,7 +15,9 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
+from sqlalchemy import or_ as _or
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
 from database import SessionLocal
@@ -25,11 +27,23 @@ from models import (
     Message,
     MessageRole,
     MessageStatus,
-    ToolActivity,
 )
 from utils import utcnow as _utcnow
 
+
+def _parse_jsonl_ts(ts: str | None) -> datetime | None:
+    """Parse an ISO 8601 timestamp from JSONL into a datetime, or None."""
+    if not ts:
+        return None
+    try:
+        # Handle "2026-03-24T17:02:44.544Z" format
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
 logger = logging.getLogger("orchestrator.sync_engine")
+
+MAX_AUDIT_FILE_SIZE = 50 * 1024 * 1024  # 50MB — protect sync_full_scan
 
 
 # ---------------------------------------------------------------------------
@@ -80,21 +94,26 @@ def _content_hash(content: str) -> str:
 
 
 def _end_compact_activity(db, agent_id: str, session_id: str):
-    """Mark the most recent unfinished Compact tool activity as ended."""
+    """Mark the most recent unfinished Compact tool_activity Message as ended."""
     existing = (
-        db.query(ToolActivity)
+        db.query(Message)
         .filter(
-            ToolActivity.agent_id == agent_id,
-            ToolActivity.session_id == session_id,
-            ToolActivity.tool_name == "Compact",
-            ToolActivity.ended_at.is_(None),
+            Message.agent_id == agent_id,
+            Message.kind == "tool_activity",
+            Message.status == MessageStatus.EXECUTING,
+            Message.meta_json.contains('"tool_kind":"compact"'),
         )
-        .order_by(ToolActivity.started_at.desc())
+        .order_by(Message.created_at.desc())
         .first()
     )
     if existing:
-        existing.ended_at = _utcnow()
-        existing.output_summary = "context compacted"
+        import json as _json
+        existing.completed_at = _utcnow()
+        existing.status = MessageStatus.COMPLETED
+        _meta = _json.loads(existing.meta_json or "{}")
+        _meta["phase"] = "end"
+        _meta["output_summary"] = "context compacted"
+        existing.meta_json = _json.dumps(_meta)
 
 
 def _notify_interactive(ad, agent, new_turns):
@@ -133,6 +152,286 @@ def _notify_interactive(ad, agent, new_turns):
 
 
 # ---------------------------------------------------------------------------
+# User message promotion — single path (Phase 3a)
+# ---------------------------------------------------------------------------
+
+def _promote_or_create_user_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, meta, kind):
+    """Match a JSONL user turn to a queued web message, or create a CLI message.
+
+    Strategy:
+    1. UUID dedup — skip if already imported
+    2. Promote oldest unlinked web message
+       - For wrapped prompts: strip preamble + content match, then FIFO
+       - For raw prompts: content match only (no FIFO — mismatch = different msg)
+    3. No web message to promote → create new CLI-sourced message
+
+    Returns Message to insert, or None if already handled (dedup/promotion).
+    """
+    from jsonl_parser import is_wrapped_prompt as _is_wrapped_prompt
+
+    # 1. UUID dedup (fastest — covers restarts/re-reads)
+    if jsonl_uuid:
+        existing = db.query(Message).filter(
+            Message.agent_id == ctx.agent_id,
+            Message.jsonl_uuid == jsonl_uuid,
+        ).first()
+        if existing:
+            if existing.session_seq != seq:
+                existing.session_seq = seq
+            logger.debug("Agent %s: dedup skip uuid=%s", ctx.agent_id[:8], jsonl_uuid)
+            return None
+
+    # 2. Promote queued web/task message
+    _link_base = [
+        Message.agent_id == ctx.agent_id,
+        Message.role == MessageRole.USER,
+        _or(
+            Message.source == "web",
+            Message.source == "plan_continue",
+            Message.source == "task",
+        ),
+        Message.jsonl_uuid.is_(None),
+    ]
+
+    web_msg = None
+    method = None
+
+    if _is_wrapped_prompt(content):
+        # Preamble strip failed at parse time — try again and content-match
+        from jsonl_parser import strip_agent_preamble as _strip
+        _stripped = _strip(content)
+        if _stripped != content:
+            web_msg = db.query(Message).filter(
+                *_link_base,
+                Message.content == _stripped,
+            ).order_by(Message.created_at.asc()).first()
+            method = "wrapped-content"
+        if not web_msg:
+            web_msg = db.query(Message).filter(
+                *_link_base
+            ).order_by(Message.created_at.asc()).first()
+            method = "wrapped-fifo"
+    else:
+        # Raw prompt (follow-up) — exact content match first
+        web_msg = db.query(Message).filter(
+            *_link_base,
+            Message.content == content,
+        ).order_by(Message.created_at.asc()).first()
+        method = "content"
+
+        # No FIFO fallback for raw prompts — content mismatch means it's
+        # a different message. Unlinked web messages stay queued until their
+        # own JSONL turn arrives and content-matches.
+
+    if web_msg:
+        try:
+            with db.begin_nested():  # SAVEPOINT — protect against UUID collision
+                if jsonl_uuid:
+                    web_msg.jsonl_uuid = jsonl_uuid
+                web_msg.session_seq = seq
+                if not web_msg.delivered_at:
+                    web_msg.delivered_at = _utcnow()
+                db.flush()
+        except IntegrityError:
+            # UUID collision — skip promotion, fall through to CLI creation
+            logger.warning(
+                "Agent %s: UUID collision promoting web msg %s (uuid=%s), "
+                "creating CLI message instead",
+                ctx.agent_id[:8], web_msg.id, jsonl_uuid,
+            )
+        else:
+            logger.info("Agent %s: promoted web msg %s → uuid=%s (method=%s)",
+                        ctx.agent_id[:8], web_msg.id, jsonl_uuid, method)
+
+            # Update display file with delivery status (fixes stale delivered_at)
+            from display_writer import update_last as _update_display
+            _update_display(ctx.agent_id, web_msg.id)
+
+            # Emit WS delivery event
+            if web_msg.delivered_at:
+                from websocket import emit_message_delivered
+                asyncio.ensure_future(emit_message_delivered(
+                    ctx.agent_id, web_msg.id,
+                    web_msg.delivered_at.isoformat(),
+                ))
+            return None  # promoted — no insert needed
+
+    # 3. No promotable web message — genuine CLI-typed input
+    _now = _utcnow()
+    return Message(
+        agent_id=ctx.agent_id,
+        role=MessageRole.USER,
+        content=content,
+        status=MessageStatus.COMPLETED,
+        source="cli",
+        jsonl_uuid=jsonl_uuid,
+        completed_at=_now,
+        delivered_at=_now,
+        tool_use_id=_extract_tool_use_id(meta),
+        session_seq=seq,
+        kind=kind,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Assistant/system message creation (Phase 3b)
+# ---------------------------------------------------------------------------
+
+def _create_agent_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, meta, meta_json, kind, jsonl_ts=None):
+    """UUID dedup, then create AGENT message. Returns Message or None."""
+    if jsonl_uuid:
+        existing = db.query(Message.id).filter(
+            Message.agent_id == ctx.agent_id,
+            Message.jsonl_uuid == jsonl_uuid,
+        ).first()
+        if existing:
+            logger.debug("Agent %s: dedup skip uuid=%s", ctx.agent_id[:8], jsonl_uuid)
+            return None
+
+    logger.debug("Agent %s: creating message role=assistant kind=%s uuid=%s seq=%d",
+                 ctx.agent_id[:8], kind, jsonl_uuid, seq)
+    _now = _parse_jsonl_ts(jsonl_ts) or _utcnow()
+    _tid = (meta.get("tool_use_id") if kind == "tool_use" and meta
+            else _extract_tool_use_id(meta))
+    return Message(
+        agent_id=ctx.agent_id,
+        role=MessageRole.AGENT,
+        content=content,
+        status=MessageStatus.COMPLETED,
+        source="cli",
+        meta_json=meta_json,
+        jsonl_uuid=jsonl_uuid,
+        created_at=_now,
+        completed_at=_now,
+        delivered_at=_now,
+        tool_use_id=_tid,
+        session_seq=seq,
+        kind=kind,
+    )
+
+
+def _create_system_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, kind, jsonl_ts=None):
+    """UUID dedup, then create SYSTEM message. Returns Message or None."""
+    if jsonl_uuid:
+        existing = db.query(Message.id).filter(
+            Message.agent_id == ctx.agent_id,
+            Message.jsonl_uuid == jsonl_uuid,
+        ).first()
+        if existing:
+            logger.debug("Agent %s: dedup skip uuid=%s", ctx.agent_id[:8], jsonl_uuid)
+            return None
+
+    # Content dedup for "Conversation compacted" — PostCompact hook may have
+    # already written this with a different UUID (compact-sys-...).
+    # Always adopt the JSONL UUID so sync_full_scan stops seeing it as missing.
+    if content == "Conversation compacted":
+        existing = db.query(Message).filter(
+            Message.agent_id == ctx.agent_id,
+            Message.role == MessageRole.SYSTEM,
+            Message.content == "Conversation compacted",
+        ).order_by(Message.created_at.desc()).first()
+        if existing:
+            if jsonl_uuid:
+                existing.jsonl_uuid = jsonl_uuid
+            logger.debug("Agent %s: compact system msg already exists, adopting uuid=%s",
+                         ctx.agent_id[:8], jsonl_uuid)
+            return None
+
+    logger.debug("Agent %s: creating message role=system kind=%s uuid=%s seq=%d",
+                 ctx.agent_id[:8], kind, jsonl_uuid, seq)
+    _now = _parse_jsonl_ts(jsonl_ts) or _utcnow()
+    return Message(
+        agent_id=ctx.agent_id,
+        role=MessageRole.SYSTEM,
+        content=content,
+        status=MessageStatus.COMPLETED,
+        source="cli",
+        jsonl_uuid=jsonl_uuid,
+        created_at=_now,
+        completed_at=_now,
+        delivered_at=_now,
+        session_seq=seq,
+        kind=kind,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Streaming update helper (Phase 3c)
+# ---------------------------------------------------------------------------
+
+def _handle_streaming_update(ad, ctx: SyncContext, turns, current_size) -> str:
+    """Update last assistant message content if it grew (streaming).
+
+    Only applies to text turns (tool_use turns don't stream).
+    Returns "turn_updated", "exit", or "no_change".
+    """
+    from jsonl_parser import merge_interactive_meta as _merge_interactive_meta
+    from websocket import emit_new_message
+
+    last_turn = turns[-1]
+    last_kind = last_turn[4] if len(last_turn) > 4 else None
+    new_hash = _content_hash(last_turn[1])
+
+    if (new_hash == ctx.last_content_hash
+            or last_turn[0] != "assistant"
+            or last_kind not in ("text", None)):
+        ctx.last_offset = current_size
+        return "no_change"
+
+    db = SessionLocal()
+    try:
+        agent = db.get(Agent, ctx.agent_id)
+        if not agent or agent.status != AgentStatus.SYNCING:
+            return "exit"
+
+        last_msg = db.query(Message).filter(
+            Message.agent_id == ctx.agent_id,
+            Message.role == MessageRole.AGENT,
+        ).order_by(Message.created_at.desc()).first()
+
+        if not last_msg:
+            ctx.last_offset = current_size
+            return "no_change"
+
+        _role, _content, *_rest = last_turn
+        _meta = _rest[0] if _rest else None
+        _uuid = _rest[1] if len(_rest) > 1 else None
+
+        logger.debug("Agent %s: streaming update msg=%s new_len=%d",
+                     ctx.agent_id[:8], last_msg.id, len(_content))
+
+        last_msg.content = _content
+        last_msg.completed_at = _utcnow()
+        last_msg.session_seq = last_msg.session_seq or (len(turns) - 1)
+        if _uuid and not last_msg.jsonl_uuid:
+            last_msg.jsonl_uuid = _uuid
+        if _meta is not None:
+            last_msg.meta_json = _merge_interactive_meta(
+                last_msg.meta_json, _meta,
+            )
+        agent.last_message_preview = (_content or "")[:200]
+        agent.last_message_at = _utcnow()
+        db.commit()
+
+        # Update display file with replaced content
+        from display_writer import update_last as _update_display
+        _update_display(ctx.agent_id, last_msg.id)
+
+        ad._emit(emit_new_message(
+            agent.id, "sync", ctx.agent_name, ctx.agent_project,
+        ))
+        ctx.last_content_hash = new_hash
+        ctx.last_offset = current_size
+        logger.info(
+            "Updated last turn content for agent %s (%d chars)",
+            ctx.agent_id, len(_content),
+        )
+    finally:
+        db.close()
+    return "turn_updated"
+
+
+# ---------------------------------------------------------------------------
 # sync_import_new_turns — SOLE message creation path
 # ---------------------------------------------------------------------------
 
@@ -143,10 +442,9 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     Returns: "new_turns", "turn_updated", "no_change", "compact", "exit",
              "commit_error"
     """
-    from agent_dispatcher import (
-        _parse_session_turns,
-        _is_wrapped_prompt,
-        _merge_interactive_meta,
+    from jsonl_parser import (
+        parse_session_turns as _parse_session_turns,
+        merge_interactive_meta as _merge_interactive_meta,
     )
     from websocket import emit_agent_update, emit_new_message
     from thumbnails import generate_thumbnails_for_message
@@ -179,61 +477,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     new_turns = turns[ctx.last_turn_count:]
 
     # 5. Streaming update — last turn content changed but no new turns
-    #    Only applies to text turns (tool_use turns don't stream)
     if not new_turns and turns:
-        last_turn = turns[-1]
-        last_kind = last_turn[4] if len(last_turn) > 4 else None
-        new_hash = _content_hash(last_turn[1])
-        if new_hash != ctx.last_content_hash and last_turn[0] == "assistant" and last_kind in ("text", None):
-            db = SessionLocal()
-            try:
-                agent = db.get(Agent, ctx.agent_id)
-                if not agent or agent.status != AgentStatus.SYNCING:
-                    return "exit"
-
-                last_msg = db.query(Message).filter(
-                    Message.agent_id == ctx.agent_id,
-                    Message.role == MessageRole.AGENT,
-                ).order_by(Message.created_at.desc()).first()
-
-                if last_msg:
-                    _role, _content, *_rest = last_turn
-                    _meta = _rest[0] if _rest else None
-                    _uuid = _rest[1] if len(_rest) > 1 else None
-                    logger.debug("Agent %s: streaming update msg=%s new_len=%d",
-                                 ctx.agent_id[:8], last_msg.id, len(_content))
-                    last_msg.content = _content
-                    last_msg.completed_at = _utcnow()
-                    last_msg.session_seq = last_msg.session_seq or (len(turns) - 1)
-                    if _uuid and not last_msg.jsonl_uuid:
-                        last_msg.jsonl_uuid = _uuid
-                    if _meta is not None:
-                        last_msg.meta_json = _merge_interactive_meta(
-                            last_msg.meta_json, _meta,
-                        )
-                    agent.last_message_preview = (_content or "")[:200]
-                    agent.last_message_at = _utcnow()
-                    db.commit()
-
-                    # Update display file with replaced content
-                    from display_writer import update_last as _update_display
-                    _update_display(ctx.agent_id, last_msg.id)
-
-                    ad._emit(emit_new_message(
-                        agent.id, "sync", ctx.agent_name, ctx.agent_project,
-                    ))
-                    ctx.last_content_hash = new_hash
-                    ctx.last_offset = current_size
-                    logger.info(
-                        "Updated last turn content for agent %s (%d chars)",
-                        ctx.agent_id, len(_content),
-                    )
-            finally:
-                db.close()
-            return "turn_updated"
-        else:
-            ctx.last_offset = current_size
-            return "no_change"
+        return _handle_streaming_update(ad, ctx, turns, current_size)
 
     if not new_turns:
         ctx.last_offset = current_size
@@ -246,7 +491,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         if not agent or agent.status != AgentStatus.SYNCING:
             return "exit"
 
-        # Before importing, check if previous turn grew (streaming finalized)
+        # Finalize previous turn if it grew (streaming → new turn arrived)
         if ctx.last_turn_count > 0:
             prev_role, prev_content, *prev_rest = turns[ctx.last_turn_count - 1]
             prev_uuid = prev_rest[1] if len(prev_rest) > 1 else None
@@ -273,6 +518,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             meta = rest[0] if rest else None
             jsonl_uuid = rest[1] if len(rest) > 1 else None
             kind = rest[2] if len(rest) > 2 else None
+            jsonl_ts = rest[3] if len(rest) > 3 else None
             meta_json = json.dumps(meta) if meta else None
 
             logger.debug("Agent %s: processing turn %d: role=%s kind=%s uuid=%s content_len=%d",
@@ -286,228 +532,32 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     ):
                         ad._stop_generating(ctx.agent_id)
 
-                # ----------------------------------------------------------
-                # Optimistic queue promotion: JSONL is the source of truth.
-                # Web messages are "queued intents" until confirmed here.
-                #
-                # Priority order:
-                #   1. UUID dedup — already imported, skip
-                #   2. Promote pending web message — match by content
-                #      (or FIFO for wrapped prompts)
-                #   3. Fallback — create new CLI-sourced message
-                # ----------------------------------------------------------
-
-                # 1. UUID dedup (fastest — covers restarts/re-reads)
-                if jsonl_uuid:
-                    _existing_by_uuid = db.query(Message).filter(
-                        Message.agent_id == ctx.agent_id,
-                        Message.jsonl_uuid == jsonl_uuid,
-                    ).first()
-                    if _existing_by_uuid:
-                        # Already imported — just update session_seq if missing
-                        if _existing_by_uuid.session_seq != seq:
-                            _existing_by_uuid.session_seq = seq
-                        logger.debug("Agent %s: dedup skip uuid=%s (already exists)",
-                                     ctx.agent_id[:8], jsonl_uuid)
-                        continue
-
-                # 2. Promote a queued web/task message
-                from sqlalchemy import or_ as _or
-                _link_base = [
-                    Message.agent_id == ctx.agent_id,
-                    Message.role == MessageRole.USER,
-                    _or(
-                        Message.source == "web",
-                        Message.source == "plan_continue",
-                        Message.source == "task",
-                    ),
-                    Message.jsonl_uuid.is_(None),
-                ]
-                if _is_wrapped_prompt(content):
-                    # Wrapped prompt (initial dispatch) — FIFO match
-                    _web_msg = db.query(Message).filter(
-                        *_link_base
-                    ).order_by(Message.created_at.asc()).first()
-                    _method = "wrapped-fifo"
-                else:
-                    # Raw prompt (follow-up) — exact content match
-                    _web_msg = db.query(Message).filter(
-                        *_link_base,
-                        Message.content == content,
-                    ).order_by(Message.created_at.asc()).first()
-                    _method = "content"
-
-                if _web_msg:
-                    try:
-                        with db.begin_nested():  # SAVEPOINT — protect against UUID collision
-                            if jsonl_uuid:
-                                _web_msg.jsonl_uuid = jsonl_uuid
-                            _web_msg.session_seq = seq
-                            if not _web_msg.delivered_at:
-                                _web_msg.delivered_at = _utcnow()
-                            db.flush()
-                        logger.info("Agent %s: promoted web msg %s → uuid=%s (method=%s)",
-                                    ctx.agent_id[:8], _web_msg.id, jsonl_uuid, _method)
-                        if _web_msg.delivered_at:
-                            from websocket import emit_message_delivered
-                            asyncio.ensure_future(emit_message_delivered(
-                                ctx.agent_id, _web_msg.id,
-                                _web_msg.delivered_at.isoformat(),
-                            ))
-                        continue
-                    except IntegrityError:
-                        # UUID collision: a CLI duplicate already owns this
-                        # jsonl_uuid.  Delete the duplicate and retry.
-                        _dup = db.query(Message).filter(
-                            Message.agent_id == ctx.agent_id,
-                            Message.jsonl_uuid == jsonl_uuid,
-                            Message.source == "cli",
-                        ).first()
-                        if _dup:
-                            logger.warning(
-                                "Agent %s: removing CLI duplicate %s (uuid=%s) in favor of web msg %s",
-                                ctx.agent_id[:8], _dup.id, jsonl_uuid, _web_msg.id,
-                            )
-                            db.delete(_dup)
-                            _web_msg.jsonl_uuid = jsonl_uuid
-                            _web_msg.session_seq = seq
-                            if not _web_msg.delivered_at:
-                                _web_msg.delivered_at = _utcnow()
-                        continue
-
-                # 3. Content match failed — but is there a recent unlinked
-                #    web message we missed?  FIFO-promote it rather than
-                #    creating a CLI duplicate.  This closes the second-writer
-                #    gap: only true CLI-typed messages (zero queued web msgs)
-                #    get a new row.
-                _fifo_msg = db.query(Message).filter(
-                    *_link_base,  # same agent, USER, web/task, jsonl_uuid IS NULL
-                ).order_by(Message.created_at.asc()).first()
-
-                if _fifo_msg:
-                    try:
-                        with db.begin_nested():
-                            if jsonl_uuid:
-                                _fifo_msg.jsonl_uuid = jsonl_uuid
-                            _fifo_msg.session_seq = seq
-                            if not _fifo_msg.delivered_at:
-                                _fifo_msg.delivered_at = _utcnow()
-                            db.flush()
-                        logger.info(
-                            "Agent %s: FIFO-promoted web msg %s → uuid=%s "
-                            "(content mismatch fallback, web=%s jsonl=%s)",
-                            ctx.agent_id[:8], _fifo_msg.id, jsonl_uuid,
-                            (_fifo_msg.content or "")[:40],
-                            (content or "")[:40],
-                        )
-                        if _fifo_msg.delivered_at:
-                            from websocket import emit_message_delivered
-                            asyncio.ensure_future(emit_message_delivered(
-                                ctx.agent_id, _fifo_msg.id,
-                                _fifo_msg.delivered_at.isoformat(),
-                            ))
-                        continue
-                    except IntegrityError:
-                        _dup = db.query(Message).filter(
-                            Message.agent_id == ctx.agent_id,
-                            Message.jsonl_uuid == jsonl_uuid,
-                            Message.source == "cli",
-                        ).first()
-                        if _dup:
-                            logger.warning(
-                                "Agent %s: removing CLI duplicate %s for FIFO fallback",
-                                ctx.agent_id[:8], _dup.id,
-                            )
-                            db.delete(_dup)
-                            _fifo_msg.jsonl_uuid = jsonl_uuid
-                            _fifo_msg.session_seq = seq
-                            if not _fifo_msg.delivered_at:
-                                _fifo_msg.delivered_at = _utcnow()
-                        continue
-
-                # 4. Zero queued web messages — genuine CLI-typed input
-                logger.debug("Agent %s: creating CLI message kind=%s uuid=%s seq=%d",
-                             ctx.agent_id[:8], kind, jsonl_uuid, seq)
-                _now = _utcnow()
-                msg = Message(
-                    agent_id=ctx.agent_id,
-                    role=MessageRole.USER,
-                    content=content,
-                    status=MessageStatus.COMPLETED,
-                    source="cli",
-                    jsonl_uuid=jsonl_uuid,
-                    completed_at=_now,
-                    delivered_at=_now,
-                    tool_use_id=_extract_tool_use_id(meta),
-                    session_seq=seq,
-                    kind=kind,
+                msg = _promote_or_create_user_msg(
+                    db, ctx, content, jsonl_uuid, seq, meta, kind,
                 )
+                if msg is None:
+                    continue
 
             elif role == "assistant":
-                # UUID-based dedup
-                if jsonl_uuid:
-                    existing = db.query(Message.id).filter(
-                        Message.agent_id == ctx.agent_id,
-                        Message.jsonl_uuid == jsonl_uuid,
-                    ).first()
-                    if existing:
-                        logger.debug("Agent %s: dedup skip uuid=%s (already exists)",
-                                     ctx.agent_id[:8], jsonl_uuid)
-                        continue
-
-                logger.debug("Agent %s: creating message role=%s kind=%s uuid=%s seq=%d",
-                             ctx.agent_id[:8], "assistant", kind, jsonl_uuid, seq)
-                _now = _utcnow()
-                # For tool_use turns, extract tool_use_id from tool metadata
-                _tid = (meta.get("tool_use_id") if kind == "tool_use" and meta
-                        else _extract_tool_use_id(meta))
-                msg = Message(
-                    agent_id=ctx.agent_id,
-                    role=MessageRole.AGENT,
-                    content=content,
-                    status=MessageStatus.COMPLETED,
-                    source="cli",
-                    meta_json=meta_json,
-                    jsonl_uuid=jsonl_uuid,
-                    completed_at=_now,
-                    delivered_at=_now,
-                    tool_use_id=_tid,
-                    session_seq=seq,
-                    kind=kind,
+                msg = _create_agent_msg(
+                    db, ctx, content, jsonl_uuid, seq, meta, meta_json, kind, jsonl_ts,
                 )
+                if msg is None:
+                    continue
 
             elif role == "system":
-                # UUID-based dedup (synthetic UUIDs assigned by parser)
-                if jsonl_uuid:
-                    existing = db.query(Message.id).filter(
-                        Message.agent_id == ctx.agent_id,
-                        Message.jsonl_uuid == jsonl_uuid,
-                    ).first()
-                    if existing:
-                        logger.debug("Agent %s: dedup skip uuid=%s (already exists)",
-                                     ctx.agent_id[:8], jsonl_uuid)
-                        continue
-
-                logger.debug("Agent %s: creating message role=%s kind=%s uuid=%s seq=%d",
-                             ctx.agent_id[:8], "system", kind, jsonl_uuid, seq)
-                _now = _utcnow()
-                msg = Message(
-                    agent_id=ctx.agent_id,
-                    role=MessageRole.SYSTEM,
-                    content=content,
-                    status=MessageStatus.COMPLETED,
-                    source="cli",
-                    jsonl_uuid=jsonl_uuid,
-                    completed_at=_now,
-                    delivered_at=_now,
-                    session_seq=seq,
-                    kind=kind,
+                msg = _create_system_msg(
+                    db, ctx, content, jsonl_uuid, seq, kind, jsonl_ts,
                 )
+                if msg is None:
+                    continue
+
             else:
                 continue
 
+            # SAVEPOINT insert — protects against duplicate UUIDs
             try:
-                with db.begin_nested():  # SAVEPOINT
+                with db.begin_nested():
                     db.add(msg)
                     db.flush()
                     _actually_inserted += 1
@@ -584,16 +634,16 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
 
     Called on: startup, compact, clear, new session, manual trigger.
     - On compact: deletes orphaned DB messages, reassigns session_seq.
-    - On mismatch: creates a SYSTEM warning bubble (source="sync_audit").
+    - On mismatch: logs warning, resets pointer for reimport.
     - Always: resets the sync pointer to current state.
     - NEVER creates or updates regular messages from JSONL.
     """
-    from agent_dispatcher import _parse_session_turns
+    from jsonl_parser import parse_session_turns as _parse_session_turns
     from websocket import emit_new_message
 
     logger.info("Full scan for agent %s (reason=%s)", ctx.agent_id, reason)
 
-    turns = _parse_session_turns(ctx.jsonl_path)
+    turns = _parse_session_turns(ctx.jsonl_path, max_bytes=MAX_AUDIT_FILE_SIZE)
     try:
         current_size = os.path.getsize(ctx.jsonl_path)
     except OSError as e:
