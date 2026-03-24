@@ -16,7 +16,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DatabaseError, IntegrityError
 
 from database import SessionLocal
 from models import (
@@ -154,7 +154,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     # 1. Check file size for change detection
     try:
         current_size = os.path.getsize(ctx.jsonl_path)
-    except OSError:
+    except OSError as e:
+        logger.warning("Cannot stat JSONL %s: %s", ctx.jsonl_path, e)
         return "no_change"
 
     if current_size < ctx.last_offset:
@@ -165,6 +166,10 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
 
     # 2. Full parse — simple, correct, the "stable point" approach
     turns = _parse_session_turns(ctx.jsonl_path)
+
+    logger.debug("Agent %s: parsed %d total turns, pointer at %d, new_turns=%d",
+                 ctx.agent_id[:8], len(turns), ctx.last_turn_count,
+                 max(0, len(turns) - ctx.last_turn_count))
 
     # 3. Detect turn count decrease (compact with longer summary)
     if len(turns) < ctx.last_turn_count:
@@ -195,6 +200,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     _role, _content, *_rest = last_turn
                     _meta = _rest[0] if _rest else None
                     _uuid = _rest[1] if len(_rest) > 1 else None
+                    logger.debug("Agent %s: streaming update msg=%s new_len=%d",
+                                 ctx.agent_id[:8], last_msg.id, len(_content))
                     last_msg.content = _content
                     last_msg.completed_at = _utcnow()
                     last_msg.session_seq = last_msg.session_seq or (len(turns) - 1)
@@ -263,6 +270,9 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             kind = rest[2] if len(rest) > 2 else None
             meta_json = json.dumps(meta) if meta else None
 
+            logger.debug("Agent %s: processing turn %d: role=%s kind=%s uuid=%s content_len=%d",
+                         ctx.agent_id[:8], seq, role, kind, jsonl_uuid, len(content or ""))
+
             if role == "user":
                 # Detect user interrupt
                 if "[Request interrupted by user" in (content or ""):
@@ -271,42 +281,98 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     ):
                         ad._stop_generating(ctx.agent_id)
 
-                # Wrapped prompt linking (FIFO order — asc, not desc)
-                from sqlalchemy import or_ as _or
-                if _is_wrapped_prompt(content):
-                    _web_msg = db.query(Message).filter(
+                # ----------------------------------------------------------
+                # Optimistic queue promotion: JSONL is the source of truth.
+                # Web messages are "queued intents" until confirmed here.
+                #
+                # Priority order:
+                #   1. UUID dedup — already imported, skip
+                #   2. Promote pending web message — match by content
+                #      (or FIFO for wrapped prompts)
+                #   3. Fallback — create new CLI-sourced message
+                # ----------------------------------------------------------
+
+                # 1. UUID dedup (fastest — covers restarts/re-reads)
+                if jsonl_uuid:
+                    _existing_by_uuid = db.query(Message).filter(
                         Message.agent_id == ctx.agent_id,
-                        Message.role == MessageRole.USER,
-                        _or(
-                            Message.source == "web",
-                            Message.source == "plan_continue",
-                        ),
-                        Message.jsonl_uuid.is_(None),
+                        Message.jsonl_uuid == jsonl_uuid,
+                    ).first()
+                    if _existing_by_uuid:
+                        # Already imported — just update session_seq if missing
+                        if _existing_by_uuid.session_seq != seq:
+                            _existing_by_uuid.session_seq = seq
+                        logger.debug("Agent %s: dedup skip uuid=%s (already exists)",
+                                     ctx.agent_id[:8], jsonl_uuid)
+                        continue
+
+                # 2. Promote a queued web/task message
+                from sqlalchemy import or_ as _or
+                _link_base = [
+                    Message.agent_id == ctx.agent_id,
+                    Message.role == MessageRole.USER,
+                    _or(
+                        Message.source == "web",
+                        Message.source == "plan_continue",
+                        Message.source == "task",
+                    ),
+                    Message.jsonl_uuid.is_(None),
+                ]
+                if _is_wrapped_prompt(content):
+                    # Wrapped prompt (initial dispatch) — FIFO match
+                    _web_msg = db.query(Message).filter(
+                        *_link_base
                     ).order_by(Message.created_at.asc()).first()
-                    if _web_msg:
-                        if jsonl_uuid:
-                            _web_msg.jsonl_uuid = jsonl_uuid
-                        # Assign session_seq so web message sorts correctly
-                        # alongside cli-sourced messages
-                        _web_msg.session_seq = seq
-                        if not _web_msg.delivered_at:
-                            _web_msg.delivered_at = _utcnow()
+                    _method = "wrapped-fifo"
+                else:
+                    # Raw prompt (follow-up) — exact content match
+                    _web_msg = db.query(Message).filter(
+                        *_link_base,
+                        Message.content == content,
+                    ).order_by(Message.created_at.asc()).first()
+                    _method = "content"
+
+                if _web_msg:
+                    try:
+                        with db.begin_nested():  # SAVEPOINT — protect against UUID collision
+                            if jsonl_uuid:
+                                _web_msg.jsonl_uuid = jsonl_uuid
+                            _web_msg.session_seq = seq
+                            if not _web_msg.delivered_at:
+                                _web_msg.delivered_at = _utcnow()
+                            db.flush()
+                        logger.info("Agent %s: promoted web msg %s → uuid=%s (method=%s)",
+                                    ctx.agent_id[:8], _web_msg.id, jsonl_uuid, _method)
+                        if _web_msg.delivered_at:
                             from websocket import emit_message_delivered
                             asyncio.ensure_future(emit_message_delivered(
                                 ctx.agent_id, _web_msg.id,
                                 _web_msg.delivered_at.isoformat(),
                             ))
-                    continue
-
-                # UUID-based dedup
-                if jsonl_uuid:
-                    existing = db.query(Message.id).filter(
-                        Message.agent_id == ctx.agent_id,
-                        Message.jsonl_uuid == jsonl_uuid,
-                    ).first()
-                    if existing:
+                        continue
+                    except IntegrityError:
+                        # UUID collision: a CLI duplicate already owns this
+                        # jsonl_uuid.  Delete the duplicate and retry.
+                        _dup = db.query(Message).filter(
+                            Message.agent_id == ctx.agent_id,
+                            Message.jsonl_uuid == jsonl_uuid,
+                            Message.source == "cli",
+                        ).first()
+                        if _dup:
+                            logger.warning(
+                                "Agent %s: removing CLI duplicate %s (uuid=%s) in favor of web msg %s",
+                                ctx.agent_id[:8], _dup.id, jsonl_uuid, _web_msg.id,
+                            )
+                            db.delete(_dup)
+                            _web_msg.jsonl_uuid = jsonl_uuid
+                            _web_msg.session_seq = seq
+                            if not _web_msg.delivered_at:
+                                _web_msg.delivered_at = _utcnow()
                         continue
 
+                # 3. No queued message found — create from JSONL
+                logger.debug("Agent %s: creating message role=%s kind=%s uuid=%s seq=%d",
+                             ctx.agent_id[:8], "user", kind, jsonl_uuid, seq)
                 _now = _utcnow()
                 msg = Message(
                     agent_id=ctx.agent_id,
@@ -330,8 +396,12 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         Message.jsonl_uuid == jsonl_uuid,
                     ).first()
                     if existing:
+                        logger.debug("Agent %s: dedup skip uuid=%s (already exists)",
+                                     ctx.agent_id[:8], jsonl_uuid)
                         continue
 
+                logger.debug("Agent %s: creating message role=%s kind=%s uuid=%s seq=%d",
+                             ctx.agent_id[:8], "assistant", kind, jsonl_uuid, seq)
                 _now = _utcnow()
                 # For tool_use turns, extract tool_use_id from tool metadata
                 _tid = (meta.get("tool_use_id") if kind == "tool_use" and meta
@@ -359,8 +429,12 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         Message.jsonl_uuid == jsonl_uuid,
                     ).first()
                     if existing:
+                        logger.debug("Agent %s: dedup skip uuid=%s (already exists)",
+                                     ctx.agent_id[:8], jsonl_uuid)
                         continue
 
+                logger.debug("Agent %s: creating message role=%s kind=%s uuid=%s seq=%d",
+                             ctx.agent_id[:8], "system", kind, jsonl_uuid, seq)
                 _now = _utcnow()
                 msg = Message(
                     agent_id=ctx.agent_id,
@@ -395,7 +469,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
 
         try:
             db.commit()
-        except Exception as exc:
+        except (DatabaseError, IntegrityError) as exc:
             db.rollback()
             logger.warning(
                 "Commit failed for agent %s, will retry next cycle: %s",
@@ -409,6 +483,9 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         ctx.last_turn_count = len(turns)
         ctx.last_offset = current_size
         ctx.last_content_hash = _content_hash(turns[-1][1]) if turns else ""
+
+        logger.debug("Agent %s: sync_import result=%s, inserted=%d, pointer now=%d",
+                     ctx.agent_id[:8], "new_turns", _actually_inserted, ctx.last_turn_count)
 
         ad._emit(emit_agent_update(
             agent.id, agent.status.value, agent.project,
@@ -460,11 +537,13 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
     turns = _parse_session_turns(ctx.jsonl_path)
     try:
         current_size = os.path.getsize(ctx.jsonl_path)
-    except OSError:
+    except OSError as e:
+        logger.warning("Cannot stat JSONL %s during audit: %s", ctx.jsonl_path, e)
         current_size = 0
 
     # Collect all UUIDs from JSONL
-    jsonl_uuids = {uuid for _, _, _, uuid in turns if uuid}
+    jsonl_uuids = {t[3] for t in turns if len(t) > 3 and t[3]}
+    logger.debug("Agent %s: full_scan found %d JSONL UUIDs", ctx.agent_id[:8], len(jsonl_uuids))
 
     db = SessionLocal()
     try:
@@ -480,6 +559,7 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
         )
 
         db_by_uuid = {m.jsonl_uuid: m for m in db_msgs}
+        logger.debug("Agent %s: full_scan found %d DB messages with UUID", ctx.agent_id[:8], len(db_msgs))
 
         # Detect drift
         missing_in_db = [u for u in jsonl_uuids if u not in db_by_uuid]
@@ -488,11 +568,15 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
             if m.jsonl_uuid and m.jsonl_uuid not in jsonl_uuids
         ]
         content_mismatches = []
-        for _, content, _, uuid in turns:
+        for t in turns:
+            content, uuid = t[1], t[3] if len(t) > 3 else None
             if uuid and uuid in db_by_uuid:
                 db_msg = db_by_uuid[uuid]
                 if abs(len(db_msg.content or "") - len(content)) > 50:
                     content_mismatches.append(uuid)
+
+        logger.debug("Agent %s: missing_in_db=%d extra_in_db=%d mismatches=%d",
+                     ctx.agent_id[:8], len(missing_in_db), len(extra_in_db), len(content_mismatches))
 
         _changes_made = False
 
@@ -509,7 +593,8 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
                 _changes_made = True
 
             # Reassign session_seq from fresh turn order
-            for idx, (_, _, _, uuid) in enumerate(turns):
+            for idx, t in enumerate(turns):
+                uuid = t[3] if len(t) > 3 else None
                 if uuid and uuid in db_by_uuid:
                     db_by_uuid[uuid].session_seq = idx
             _changes_made = True
@@ -525,45 +610,39 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
                 ctx.compact_detected_at = _time.monotonic()
             ctx.compact_notified = False
 
-        # Create warning bubble if drift found (beyond compact cleanup)
-        drift_parts = []
+        # Log drift — no UI bubbles, no silent skipping.
         if missing_in_db:
-            drift_parts.append(f"{len(missing_in_db)} turns in JSONL not in DB")
-        if reason != "compact" and extra_in_db:
-            drift_parts.append(
-                f"{len(extra_in_db)} DB messages not in JSONL"
+            logger.warning(
+                "Agent %s: %d JSONL turns not in DB (%s), resetting pointer for reimport",
+                ctx.agent_id, len(missing_in_db), reason,
+            )
+        if extra_in_db and reason != "compact":
+            logger.warning(
+                "Agent %s: %d DB messages not in JSONL (%s)",
+                ctx.agent_id, len(extra_in_db), reason,
             )
         if content_mismatches:
-            drift_parts.append(
-                f"{len(content_mismatches)} content mismatches"
+            logger.warning(
+                "Agent %s: %d content mismatches (%s)",
+                ctx.agent_id, len(content_mismatches), reason,
             )
-
-        if drift_parts:
-            summary = f"Sync audit ({reason}): {', '.join(drift_parts)}"
-            logger.warning("Agent %s: %s", ctx.agent_id, summary)
-
-            warning_msg = Message(
-                agent_id=ctx.agent_id,
-                role=MessageRole.SYSTEM,
-                content=summary,
-                status=MessageStatus.COMPLETED,
-                source="sync_audit",
-                completed_at=_utcnow(),
-            )
-            db.add(warning_msg)
-            _changes_made = True
 
         if _changes_made:
             db.commit()
-            if drift_parts:
-                ad._emit(emit_new_message(
-                    ctx.agent_id, "sync", ctx.agent_name, ctx.agent_project,
-                ))
 
-        # Reset pointer to current state
-        ctx.last_turn_count = len(turns)
-        ctx.last_offset = current_size
-        ctx.last_content_hash = _content_hash(turns[-1][1]) if turns else ""
+        # If turns are missing from DB, reset pointer so sync loop reimports them.
+        # Otherwise, set pointer to current state.
+        _old_count = ctx.last_turn_count
+        if missing_in_db:
+            ctx.last_turn_count = 0
+            ctx.last_offset = 0
+            ctx.last_content_hash = ""
+        else:
+            ctx.last_turn_count = len(turns)
+            ctx.last_offset = current_size
+            ctx.last_content_hash = _content_hash(turns[-1][1]) if turns else ""
+        logger.debug("Agent %s: pointer reset to %d (was %d)",
+                     ctx.agent_id[:8], ctx.last_turn_count, _old_count)
 
         logger.info(
             "Full scan complete for agent %s: %d turns, pointer at %d bytes",
@@ -576,7 +655,7 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
             "extra_in_db": len(extra_in_db),
             "content_mismatches": len(content_mismatches),
         }
-    except Exception as e:
+    except (DatabaseError, IntegrityError) as e:
         logger.error("Full scan failed for %s: %s", ctx.agent_id, e)
         db.rollback()
         return {"error": str(e)}

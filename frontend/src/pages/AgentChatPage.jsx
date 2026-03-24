@@ -793,6 +793,8 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   const isPending = isUser && message.status === "PENDING" && !message.scheduled_at;
   const isSlashCommand = isUser && (message.content || "").trimStart().startsWith("/");
   const isWebUndelivered = isUser && message.source === "web" && !message.delivered_at && !isPending && !isScheduled && !isSlashCommand;
+  const UNDELIVERED_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+  const isUndeliveredTimedOut = isWebUndelivered && (serverNow() - new Date(message.created_at).getTime()) > UNDELIVERED_TIMEOUT_MS;
 
   const [showActions, setShowActions] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -991,7 +993,14 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-2`}>
-      <div className="max-w-[85%] relative">
+      <div className={`max-w-[85%] relative ${isUser ? "flex items-center gap-2" : ""}`}>
+        {isUndeliveredTimedOut && (
+          <div className="flex-shrink-0 text-red-400" title="Message not delivered — Claude may not have received this">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M12 2L2 20h20L12 2z" />
+            </svg>
+          </div>
+        )}
         <div
           className={`rounded-2xl px-4 py-2.5 ${
             isUser
@@ -999,9 +1008,11 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
                 ? "bg-amber-600/80 text-white rounded-br-md"
                 : isPending
                   ? "bg-cyan-600/60 text-white/80 rounded-br-md"
-                  : isWebUndelivered
-                    ? "bg-cyan-600/70 text-white/80 rounded-br-md"
-                    : "bg-cyan-600 text-white rounded-br-md"
+                  : isUndeliveredTimedOut
+                    ? "bg-red-600/40 text-white/70 rounded-br-md"
+                    : isWebUndelivered
+                      ? "bg-cyan-600/70 text-white/80 rounded-br-md"
+                      : "bg-cyan-600 text-white rounded-br-md"
               : "bg-surface shadow-card text-body rounded-bl-md"
           } ${canModify ? "select-none" : ""}`}
           onDoubleClick={handleDoubleClick}
@@ -1072,11 +1083,13 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
                 )
               )
             ) : (
-              <span className={`ml-auto ${message.delivered_at ? "text-green-400" : "text-cyan-300/40"}`}
-                    title={message.delivered_at ? `Delivered ${new Date(message.delivered_at).toLocaleTimeString()}` : "Sending..."}>
+              <span className={`ml-auto ${message.delivered_at ? "text-green-400" : isUndeliveredTimedOut ? "text-red-400" : "text-cyan-300/40"}`}
+                    title={message.delivered_at ? `Delivered ${new Date(message.delivered_at).toLocaleTimeString()}` : isUndeliveredTimedOut ? "Undelivered" : "Sending..."}>
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                   {message.delivered_at ? (
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  ) : isUndeliveredTimedOut ? (
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                   ) : (
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" opacity="0.5" />
                   )}
@@ -2076,6 +2089,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const hookGraceRef = useRef(null);   // timer for grace period
   const streamTimeoutRef = useRef(null);
   const generationIdRef = useRef(null); // tracks current backend generation_id
+  // Debug: ring buffer of recent WS events for frontend-state reporter
+  const wsEventLog = useRef([]);
+  const pushWsEvent = (type, data) => {
+    const entry = `${new Date().toISOString().slice(11,23)} ${type} ${JSON.stringify(data).slice(0,200)}`;
+    wsEventLog.current.push(entry);
+    if (wsEventLog.current.length > 50) wsEventLog.current.shift();
+  };
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const nameInputRef = useRef(null);
@@ -2150,6 +2170,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         fetchTaskV2(agentData.task_id).then(t => setTaskData(t)).catch(() => {});
       }
       const msgs = Array.isArray(msgData?.messages) ? msgData.messages : [];
+      console.log('[messages] fetched', msgs.length, 'messages:', msgs.map(m => ({id: m.id, role: m.role, kind: m.kind, seq: m.session_seq})));
       // Merge API messages with WS-applied state (e.g. delivered_at set by
       // message_delivered events that arrived before this loadData call).
       // Prefer the later delivered_at so we never regress delivery status.
@@ -2226,6 +2247,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const oldest = current[0];
       const data = await fetchMessages(id, { before: oldest.session_seq });
       const older = Array.isArray(data?.messages) ? data.messages : [];
+      console.log('[messages] loadOlderMessages fetched', older.length, 'older messages');
       if (older.length) {
         // Capture scroll height before DOM update for scroll preservation
         const el = scrollContainerRef.current;
@@ -2271,6 +2293,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const [afterData, tailData] = await Promise.all(fetches);
       const newer = Array.isArray(afterData?.messages) ? afterData.messages : [];
       const tail = tailData ? (Array.isArray(tailData?.messages) ? tailData.messages : []) : [];
+      console.log('[messages] refreshMessages: newer=', newer.length, 'tail=', tail.length, 'afterCursor=', afterCursor);
 
       setMessages((prev) => {
         let result = prev;
@@ -2682,6 +2705,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     if (event.data?.agent_id !== id) return;
 
     if (event.type === "agent_stream") {
+      console.log('[ws] agent_stream', event.data.agent_id?.slice(0,8), 'len=', event.data.content?.length);
+      pushWsEvent('agent_stream', { len: event.data.content?.length, gid: event.data.generation_id });
       const gid = event.data.generation_id;
       if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
       if (gid != null) generationIdRef.current = gid;
@@ -2694,6 +2719,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
 
     if (event.type === "agent_stream_end") {
+      console.log('[ws] agent_stream_end', event.data);
+      pushWsEvent('agent_stream_end', event.data);
       const gid = event.data.generation_id;
       if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
       clearTimeout(streamTimeoutRef.current);
@@ -2702,6 +2729,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
 
     if (event.type === "tool_activity") {
+      console.log('[ws] tool_activity', event.data.tool_name, event.data.phase);
+      pushWsEvent('tool_activity', { tool: event.data.tool_name, phase: event.data.phase });
       const { tool_name, phase, summary, output_summary, is_error } = event.data;
       setHookActive(true);
       lastHookTimeRef.current = Date.now();
@@ -2763,6 +2792,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
 
     if (event.type === "new_message") {
+      console.log('[ws] new_message', event.data);
+      pushWsEvent('new_message', event.data);
       const hasActiveCompact = activeTool?.name === "Compact" ||
         toolLog.some((e) => e.name === "Compact" && !e.done);
       if (hasActiveCompact) {
@@ -2790,6 +2821,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
 
     if (event.type === "message_delivered") {
+      console.log('[ws] message_delivered', event.data);
+      pushWsEvent('message_delivered', event.data);
       const { message_id, delivered_at } = event.data;
       setMessages((prev) => {
         const found = prev.some((m) => m.id === message_id);
@@ -2819,6 +2852,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
 
     if (event.type === "agent_update") {
+      console.log('[ws] agent_update', event.data.agent_id?.slice(0,8), event.data.status);
+      pushWsEvent('agent_update', { status: event.data.status });
       const status = event.data.status;
       if (status !== "EXECUTING" && status !== "SYNCING") {
         clearTimeout(streamTimeoutRef.current);
@@ -2847,6 +2882,48 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       clearTimeout(hookGraceRef.current);
     };
   }, []);
+
+  // Debug: POST rendered message state + DOM elements to backend every 10s
+  useEffect(() => {
+    if (!id || !messages?.length) return;
+    const timer = setInterval(() => {
+      // Scan DOM for actual rendered message elements
+      const domElements = [];
+      const container = document.querySelector('[data-chat-container]');
+      if (container) {
+        const containerRect = container.getBoundingClientRect();
+        container.querySelectorAll('[data-msg-id]').forEach(el => {
+          const rect = el.getBoundingClientRect();
+          domElements.push({
+            msgId: el.dataset.msgId,
+            type: el.dataset.msgType || '?',
+            y: Math.round(rect.top - containerRect.top),
+            h: Math.round(rect.height),
+            visible: rect.top < window.innerHeight && rect.bottom > 0,
+            text: el.textContent?.slice(0, 80)?.replace(/\n/g, ' '),
+          });
+        });
+      }
+      const snapshot = {
+        agentId: id,
+        page: 'AgentChatPage',
+        messages: messages.map(m => ({
+          id: m.id, role: m.role, kind: m.kind,
+          session_seq: m.session_seq, source: m.source,
+          created_at: m.created_at,
+          content: (m.content || '').slice(0, 100),
+        })),
+        domElements,
+        wsEvents: wsEventLog.current.slice(),
+      };
+      fetch('/api/debug/frontend-state', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(snapshot),
+      }).catch(() => {});  // fire and forget
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [id, messages]);
 
   // Auto-select name input when rename starts (useEffect runs after DOM commit)
   useEffect(() => {
@@ -3387,6 +3464,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       {/* Messages */}
       <div
         ref={scrollContainerRef}
+        data-chat-container
         onScroll={handleScroll}
         className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 pb-36 ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
         style={{ overflowAnchor: "auto" }}
@@ -3431,6 +3509,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
             {(() => {
               const visible = messages.filter((m) => !(m.role === "USER" && m.status === "PENDING"));
+              console.log('[messages] rendering', visible.length, 'messages after filter');
               // Build tool groups: consecutive tool_use AGENT messages get merged
               const toolGroups = new Map(); // first msg id -> [entries]
               let groupStart = null;
@@ -3448,25 +3527,28 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   groupStart = null;
                 }
               }
+              if (toolGroups.size > 0) console.log('[render] tool groups:', toolGroups.size, 'groups,', [...toolGroups.values()].map(g => g.length + ' entries'));
               return visible.map((msg) => {
                 if (msg.role === "AGENT" && !(msg.content || "").trimStart().startsWith("<task-notification>")) {
+                  console.log('[render] msg', msg.id, 'role=', msg.role, 'kind=', msg.kind);
                   // Case 1: tool_use kind — rendered by grouping logic
                   if (msg.kind === "tool_use") {
                     if (toolGroups.has(msg.id)) {
-                      return <ToolLogBubble key={msg.id} entries={toolGroups.get(msg.id)} />;
+                      return <div key={msg.id} data-msg-id={msg.id} data-msg-type="tool_group"><ToolLogBubble entries={toolGroups.get(msg.id)} /></div>;
                     }
                     return null; // subsequent in group, already rendered
                   }
                   // Case 2: text kind — render as simple ChatBubble
                   if (msg.kind === "text") {
-                    return <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
+                    return <div key={msg.id} data-msg-id={msg.id} data-msg-type="agent_text"><ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} /></div>;
                   }
                   // Case 3: null/undefined kind (legacy) — existing splitMessageSegments logic
+                  console.log('[render] legacy split for msg', msg.id);
                   const segments = splitMessageSegments(msg.content || "");
                   if (segments.length > 1 || segments[0]?.type === "tools") {
                     const lastTextIdx = segments.findLastIndex((s) => s.type === "text");
                     return (
-                      <React.Fragment key={msg.id}>
+                      <div key={msg.id} data-msg-id={msg.id} data-msg-type="legacy_split">
                         {segments.map((seg, i) => {
                           if (seg.type === "tools") return <ToolLogBubble key={`${msg.id}-t${i}`} entries={seg.entries} />;
                           if (i === lastTextIdx) return <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride={seg.text} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
@@ -3475,11 +3557,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         {lastTextIdx === -1 && msg.metadata?.interactive?.length > 0 && (
                           <ChatBubble key={`${msg.id}-c`} message={msg} contentOverride="" project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
                         )}
-                      </React.Fragment>
+                      </div>
                     );
                   }
                 }
-                return <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />;
+                return <div key={msg.id} data-msg-id={msg.id} data-msg-type={msg.role === "USER" ? "user" : msg.role === "SYSTEM" ? "system" : "agent_default"}><ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} /></div>;
               });
             })()}
 
@@ -3494,23 +3576,24 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   lastAgent.content === streamingContent
                   || lastAgent.content.startsWith(streamingContent.slice(0, 200))
                 );
-                if (!isDuplicate) return <StreamingBubble content={streamingContent} project={agent.project} activeTool={activeTool} />;
+                if (!isDuplicate) return <div data-msg-id="streaming" data-msg-type="streaming_bubble"><StreamingBubble content={streamingContent} project={agent.project} activeTool={activeTool} /></div>;
               }
               // Tool activity log — shows completed + in-progress tool calls
-              if (toolLog.length > 0) return <ToolActivityLog toolLog={toolLog} />;
-              return (isExecuting || hookActive) ? <TypingIndicator activeTool={activeTool} toolStartTime={toolStartTime} /> : null;
+              if (toolLog.length > 0) return <div data-msg-id="tool_activity" data-msg-type={`tool_activity_log_${toolLog.length}`}><ToolActivityLog toolLog={toolLog} /></div>;
+              return (isExecuting || hookActive) ? <div data-msg-id="typing" data-msg-type="typing_indicator"><TypingIndicator activeTool={activeTool} toolStartTime={toolStartTime} /></div> : null;
             })()}
 
             {/* Pending permission approval cards for supervised agents */}
             {pendingPermissions.map((req) => (
-              <PermissionCard
-                key={req.request_id}
-                request={req}
-                agentId={id}
-                onResolved={(reqId) => {
-                  setPendingPermissions((prev) => prev.filter((p) => p.request_id !== reqId));
-                }}
-              />
+              <div key={req.request_id} data-msg-id={`perm-${req.request_id}`} data-msg-type="permission_card">
+                <PermissionCard
+                  request={req}
+                  agentId={id}
+                  onResolved={(reqId) => {
+                    setPendingPermissions((prev) => prev.filter((p) => p.request_id !== reqId));
+                  }}
+                />
+              </div>
             ))}
 
             {/* Pending/scheduled messages always at the bottom */}
@@ -3521,10 +3604,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               return (
                 <>
                   {queued.map((msg, idx) => (
-                    <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} queuePosition={idx + 1} queueTotal={queued.length} />
+                    <div key={msg.id} data-msg-id={msg.id} data-msg-type="queued_msg"><ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} queuePosition={idx + 1} queueTotal={queued.length} /></div>
                   ))}
                   {scheduled.map((msg) => (
-                    <ChatBubble key={msg.id} message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} />
+                    <div key={msg.id} data-msg-id={msg.id} data-msg-type="scheduled_msg"><ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} /></div>
                   ))}
                 </>
               );
