@@ -2767,7 +2767,7 @@ Here are the day's conversations (with timestamps):
         self._dispatch_pending_messages(db)
 
         # 4b. Dispatch due scheduled messages to SYNCING agents via tmux
-        self._dispatch_tmux_pending(db)
+        self._dispatch_tmux_scheduled(db)
 
         # 5. Auto-detect CLI sessions + pane dedup + reap dead agents (every ~30s)
         self._cli_detect_counter += 1
@@ -3412,7 +3412,7 @@ Here are the day's conversations (with timestamps):
                 if pane and verify_tmux_pane(pane):
                     agent.tmux_pane = pane
                     self._syncing_no_pane_retries.pop(agent.id, None)
-                    continue  # Pane found — let _dispatch_tmux_pending handle it
+                    continue  # Pane found — let _dispatch_tmux_scheduled handle it
 
             retries = self._syncing_no_pane_retries.get(agent.id, 0) + 1
             self._syncing_no_pane_retries[agent.id] = retries
@@ -3607,27 +3607,23 @@ Here are the day's conversations (with timestamps):
                     json.loads(pending_msg.meta_json),
                 ))
 
-    def _dispatch_tmux_pending(self, db: Session):
-        """Send pending messages to SYNCING/STARTING agents via tmux.
+    def _dispatch_tmux_scheduled(self, db: Session):
+        """Send scheduled messages to SYNCING/STARTING agents via tmux.
 
-        Handles both scheduled messages whose time has arrived AND
-        non-scheduled queued messages (e.g. from "Send now" or messages
-        queued while the agent was busy).
+        Only handles messages with scheduled_at that has arrived.
+        Non-scheduled messages are sent immediately via tmux in the API
+        endpoint (POST /api/agents/{id}/messages).
         """
         active_sync_agents = db.query(Agent).filter(
             Agent.status.in_([AgentStatus.SYNCING, AgentStatus.STARTING]),
             Agent.cli_sync == True,
             Agent.tmux_pane.is_not(None),
-            Agent.generating_msg_id.is_(None),  # not currently processing
         ).all()
 
         for agent in active_sync_agents:
-            # Refresh to catch concurrent status changes (e.g. user stopped agent)
             db.refresh(agent)
             if agent.status not in (AgentStatus.SYNCING, AgentStatus.STARTING) or not agent.tmux_pane:
                 continue
-            if agent.generating_msg_id is not None:
-                continue  # became busy between query and refresh
 
             due_msg = (
                 db.query(Message)
@@ -3635,9 +3631,10 @@ Here are the day's conversations (with timestamps):
                     Message.agent_id == agent.id,
                     Message.role == MessageRole.USER,
                     Message.status == MessageStatus.PENDING,
-                    (Message.scheduled_at == None) | (Message.scheduled_at <= _utcnow()),
+                    Message.scheduled_at.is_not(None),
+                    Message.scheduled_at <= _utcnow(),
                 )
-                .order_by(Message.created_at.asc())
+                .order_by(Message.scheduled_at.asc())
                 .first()
             )
             if not due_msg:
@@ -3649,51 +3646,32 @@ Here are the day's conversations (with timestamps):
                     agent.tmux_pane, agent.id,
                 )
                 self._clear_agent_pane(db, agent, kill_tmux=False)
-                # Don't transition to STOPPED here — the sync loop's
-                # liveness check handles that with a grace period.
-                # But we must skip this agent so messages don't pile up.
                 continue
-
-            # Unified preparation: RAG insights + agent preview
-            project = db.get(Project, agent.project)
-            if project:
-                self._prepare_dispatch(
-                    db, agent, project, due_msg.content,
-                    existing_message=due_msg,
-                    wrap_prompt=False,
-                )
 
             ok = send_tmux_message(agent.tmux_pane, due_msg.content)
             if ok:
-                _is_slash = (due_msg.content or "").strip().startswith("/")
-                if _is_slash:
-                    due_msg.status = MessageStatus.EXECUTING
-                else:
-                    due_msg.status = MessageStatus.COMPLETED
-                    due_msg.completed_at = _utcnow()
-                # Do NOT set delivered_at here — tmux send-keys only injects
-                # text. The UserPromptSubmit hook fires when Claude actually
-                # accepts the prompt, and THAT marks it delivered.
+                due_msg.status = MessageStatus.QUEUED
                 due_msg.scheduled_at = None
                 due_msg.dispatch_seq = self.next_dispatch_seq(db, agent.id)
                 logger.info(
-                    "Dispatched pending message %s to SYNCING agent %s via tmux",
+                    "Dispatched scheduled message %s to agent %s via tmux",
                     due_msg.id, agent.id,
                 )
                 from websocket import emit_message_update
-                _emit_status = "EXECUTING" if _is_slash else "COMPLETED"
-                self._emit(emit_message_update(agent.id, due_msg.id, _emit_status))
-                # Emit metadata_update so frontend gets InsightsBubble
+                self._emit(emit_message_update(agent.id, due_msg.id, "QUEUED"))
                 if due_msg.meta_json:
                     from websocket import emit_metadata_update
                     self._emit(emit_metadata_update(
                         agent.id, due_msg.id,
                         json.loads(due_msg.meta_json),
                     ))
+                # Flush to display file so queued message appears immediately
+                from display_writer import flush_agent as _sched_flush
+                _sched_flush(agent.id)
             else:
                 self._fail_message(due_msg, "Failed to send via tmux")
                 logger.warning(
-                    "Failed to dispatch pending message %s via tmux for agent %s",
+                    "Failed to dispatch scheduled message %s via tmux for agent %s",
                     due_msg.id, agent.id,
                 )
 

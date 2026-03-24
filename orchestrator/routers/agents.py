@@ -2251,18 +2251,22 @@ async def send_agent_message(
     if agent.status == AgentStatus.STOPPED:
         raise HTTPException(status_code=400, detail="Agent is stopped")
 
-    # SYNCING/STARTING agents with a tmux pane: send directly via tmux.
-    # generating_msg_id is set by UserPromptSubmit hook and cleared by Stop
-    # hook — when set, the agent is actively processing and new messages must
-    # be queued instead of typed into the tmux buffer.
-    is_syncing_with_tmux = (
-        agent.status in (AgentStatus.SYNCING, AgentStatus.STARTING)
+    # --- Scheduled messages: store as PENDING for _dispatch_tmux_scheduled ---
+    scheduled_at = None
+    if body.scheduled_at:
+        from datetime import datetime, timezone
+        try:
+            scheduled_at = datetime.fromisoformat(body.scheduled_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scheduled_at format")
+
+    # --- Tmux agents: send via tmux immediately (even while generating) ---
+    has_tmux = (
+        agent.status in (AgentStatus.SYNCING, AgentStatus.STARTING, AgentStatus.EXECUTING)
         and agent.tmux_pane
-        and not body.queue
-        and not body.scheduled_at
-        and not agent.generating_msg_id
+        and not scheduled_at
     )
-    if is_syncing_with_tmux:
+    if has_tmux:
         from agent_dispatcher import (
             _detect_tmux_pane_for_session,
             send_tmux_message,
@@ -2271,8 +2275,6 @@ async def send_agent_message(
         from websocket import emit_new_message
 
         if not verify_tmux_pane(agent.tmux_pane):
-            # Transient tmux lookup failures are common during restarts/races.
-            # Try to recover pane from session_id before falling back to queue.
             recovered_pane = None
             if agent.session_id:
                 project = db.get(Project, agent.project)
@@ -2291,9 +2293,9 @@ async def send_agent_message(
                 else:
                     agent.tmux_pane = None
                 db.commit()
-                is_syncing_with_tmux = False
+                has_tmux = False
 
-        if is_syncing_with_tmux:
+        if has_tmux:
             ok = send_tmux_message(agent.tmux_pane, body.content)
             if not ok:
                 raise HTTPException(
@@ -2301,7 +2303,7 @@ async def send_agent_message(
                     detail="Failed to send via tmux",
                 )
 
-            # Unified preparation: RAG insights + message creation + agent preview
+            # Create message in DB
             project = db.get(Project, agent.project)
             if not project:
                 raise HTTPException(status_code=400, detail="Project not found")
@@ -2320,47 +2322,28 @@ async def send_agent_message(
                     source="web",
                 )
                 db.add(msg)
-            if slash_commands.is_slash_command(body.content):
-                # Slash commands stay EXECUTING until the relevant hook marks
-                # completion (PostCompact for /compact, Stop hook for others).
-                msg.status = MessageStatus.EXECUTING
-            else:
-                msg.status = MessageStatus.COMPLETED
-                msg.completed_at = _utcnow()
-            # Do NOT set delivered_at here — tmux send-keys only injects text
-            # into the pane. The UserPromptSubmit hook fires when Claude actually
-            # accepts the prompt, and THAT is when we mark it delivered.
-            ad = getattr(request.app.state, "agent_dispatcher", None)
+            # QUEUED = sent via tmux, awaiting JSONL delivery confirmation.
+            # Slash commands also get QUEUED — delivery is confirmed the same
+            # way (sync engine matches the turn in JSONL).
+            msg.status = MessageStatus.QUEUED
+            # delivered_at stays NULL — sync engine sets it from JSONL timestamp
             if ad:
                 msg.dispatch_seq = ad.next_dispatch_seq(db, agent.id)
             db.commit()
             db.refresh(msg)
             if ad:
                 ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
-                # Emit metadata_update so frontend gets InsightsBubble
                 if msg.meta_json:
                     import json as _json
                     from websocket import emit_metadata_update
                     ad._emit(emit_metadata_update(agent.id, msg.id, _json.loads(msg.meta_json)))
-            logger.info("Message %s sent to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
+            # Flush to display file so queued message appears immediately
+            from display_writer import flush_agent as _msg_flush
+            _msg_flush(agent.id)
+            logger.info("Message %s queued to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
             return msg
 
-    # SYNCING agents WITHOUT a tmux pane are dispatched via subprocess
-    # (same as IDLE), so they should accept messages directly.
-    is_syncing_no_pane = agent.status == AgentStatus.SYNCING and not agent.tmux_pane
-    is_busy = agent.status in (AgentStatus.EXECUTING, AgentStatus.SYNCING) and not is_syncing_no_pane
-    if is_busy and not body.queue:
-        raise HTTPException(status_code=400, detail="Agent is busy — use send later to queue")
-
-    scheduled_at = None
-    if body.scheduled_at:
-        from datetime import datetime, timezone
-        try:
-            scheduled_at = datetime.fromisoformat(body.scheduled_at.replace("Z", "+00:00"))
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid scheduled_at format")
-
-    # Unified preparation: RAG insights + message creation + agent preview
+    # --- Non-tmux agents or scheduled messages: store as PENDING ---
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if ad:
         project = db.get(Project, agent.project)
@@ -2394,12 +2377,11 @@ async def send_agent_message(
     if ad:
         from websocket import emit_new_message
         ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
-        # Emit metadata_update so frontend gets InsightsBubble without re-fetch
         if msg.meta_json:
             import json as _json
             from websocket import emit_metadata_update
             ad._emit(emit_metadata_update(agent.id, msg.id, _json.loads(msg.meta_json)))
-    logger.info("Message %s sent to agent %s", msg.id, agent.id)
+    logger.info("Message %s pending for agent %s", msg.id, agent.id)
     return msg
 
 

@@ -483,7 +483,7 @@ function NewAgentForm({ showToast, navigate }) {
     setSubmitting(true);
     try {
       const agent = await createAgent({ project, prompt: fullPrompt, mode: "AUTO", model, effort, worktree, skip_permissions: skipPermissions });
-      await sendMessage(agent.id, fullPrompt, { queue: true, scheduled_at: scheduledAt });
+      await sendMessage(agent.id, fullPrompt, { scheduled_at: scheduledAt });
       clearAllDrafts();
       clearAttachments();
       const when = new Date(scheduledAt);

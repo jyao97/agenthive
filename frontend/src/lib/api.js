@@ -212,10 +212,10 @@ export const fetchDisplay = (agentId, { offset = 0, tailBytes = 0 } = {}) => {
 };
 export const wakeSync = (agentId) =>
   request(`/api/agents/${agentId}/wake-sync`, { method: "POST" });
-export const sendMessage = (agentId, content, { queue = false, scheduled_at = null } = {}) =>
+export const sendMessage = (agentId, content, { scheduled_at = null } = {}) =>
   request(`/api/agents/${agentId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content, queue, scheduled_at }),
+    body: JSON.stringify({ content, scheduled_at }),
   });
 export const markAgentRead = (agentId) =>
   request(`/api/agents/${agentId}/read`, { method: "PUT" });

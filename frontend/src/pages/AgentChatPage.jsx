@@ -793,9 +793,10 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
 
   const isUser = message.role === "USER";
   const isScheduled = isUser && message.scheduled_at && message.status === "PENDING";
-  const isPending = isUser && message.status === "PENDING" && !message.scheduled_at;
+  const isPending = isUser && (message.status === "PENDING" || message.status === "QUEUED") && !message.scheduled_at;
+  const isQueued = isUser && message.status === "QUEUED";
   const isSlashCommand = isUser && (message.content || "").trimStart().startsWith("/");
-  const isWebUndelivered = isUser && message.source === "web" && !message.delivered_at && !isPending && !isScheduled && !isSlashCommand;
+  const isWebUndelivered = isUser && message.source === "web" && !message.delivered_at && !isPending && !isScheduled && !isQueued && !isSlashCommand;
   const UNDELIVERED_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
   const isUndeliveredTimedOut = isWebUndelivered && (serverNow() - new Date(message.created_at).getTime()) > UNDELIVERED_TIMEOUT_MS;
 
@@ -2903,15 +2904,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     setEditingName(false);
   };
 
-  // Send message (auto-queues if agent is busy)
+  // Send message — backend decides tmux-immediate (QUEUED) vs PENDING
   const handleSend = async (content) => {
     try {
-      const busy = agent.status === "EXECUTING" || (agent.status === "SYNCING" && !agent.tmux_pane);
       // New turn — clear previous tool activity state
       setActiveTool(null);
       setToolStartTime(null);
-      await sendMessage(id, content, busy ? { queue: true } : {});
-      if (busy) showToast("Queued — will send when ready");
+      await sendMessage(id, content);
       refreshMessages();
     } catch (err) {
       showToast("Failed: " + err.message, "error");
@@ -2921,7 +2920,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // Send later (queued with scheduled_at)
   const handleSendLater = async (content, scheduledAt) => {
     try {
-      await sendMessage(id, content, { queue: true, scheduled_at: scheduledAt });
+      await sendMessage(id, content, { scheduled_at: scheduledAt });
       const when = new Date(scheduledAt);
       const timeStr = when.toLocaleTimeString([], TIME_SHORT);
       showToast(`Scheduled for ${timeStr}`);
@@ -3460,7 +3459,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
             )}
 
             {(() => {
-              const visible = messages.filter((m) => !(m.role === "USER" && m.status === "PENDING"));
+              const visible = messages.filter((m) => !(m.role === "USER" && (m.status === "PENDING" || m.status === "QUEUED")));
               console.log('[messages] rendering', visible.length, 'messages after filter');
               // Build tool groups: consecutive tool_use AGENT messages get merged
               const toolGroups = new Map(); // first msg id -> [entries]
@@ -3547,11 +3546,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               </div>
             ))}
 
-            {/* Pending/scheduled messages always at the bottom */}
+            {/* Queued/pending/scheduled messages always at the bottom */}
             {(() => {
-              const pending = messages.filter((m) => m.role === "USER" && m.status === "PENDING");
-              const queued = pending.filter((m) => !m.scheduled_at);
-              const scheduled = pending.filter((m) => m.scheduled_at);
+              const queued = messages.filter((m) => m.role === "USER" && (m.status === "QUEUED" || (m.status === "PENDING" && !m.scheduled_at)));
+              const scheduled = messages.filter((m) => m.role === "USER" && m.status === "PENDING" && m.scheduled_at);
               return (
                 <>
                   {queued.map((msg, idx) => (
@@ -3582,7 +3580,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         onSendLater={handleSendLater}
         disabled={isStopped || isError || hasPendingInteractive}
         disabledReason={disabledReason}
-        isBusy={isExecuting || (isSyncing && !hasTmux)}
+        isBusy={!hasTmux && isExecuting}
         tmuxMode={hasTmux}
         onEscape={(agent.cli_sync || hasTmuxPane) ? async () => {
           try { await escapeAgent(id); loadData(); } catch (e) { showToast(e.message || "Escape failed", "error"); }

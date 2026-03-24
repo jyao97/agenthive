@@ -161,7 +161,7 @@ def _promote_or_create_user_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, 
     Strategy:
     1. UUID dedup — skip if already imported
     2. Content-match via ContentMatcher (exact → task-stripped →
-       normalised → contained → FIFO fallback)
+       normalised → task-normalised)
     3. No match → create new CLI-sourced message
 
     Returns Message to insert, or None if already handled (dedup/promotion).
@@ -207,6 +207,10 @@ def _promote_or_create_user_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, 
                 web_msg.session_seq = seq
                 if not web_msg.delivered_at:
                     web_msg.delivered_at = _parse_jsonl_ts(jsonl_ts) or _utcnow()
+                # QUEUED → COMPLETED: message appeared in JSONL = delivered
+                if web_msg.status == MessageStatus.QUEUED:
+                    web_msg.status = MessageStatus.COMPLETED
+                    web_msg.completed_at = web_msg.delivered_at
                 db.flush()
         except IntegrityError:
             # UUID collision — skip promotion, fall through to CLI creation

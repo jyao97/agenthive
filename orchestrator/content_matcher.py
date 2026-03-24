@@ -50,8 +50,6 @@ class ContentMatcher:
     2. **task-stripped**     — strip ``_build_task_prompt`` wrapper, then exact
     3. **normalized**        — whitespace-normalised match (tab→space etc.)
     4. **task-normalized**   — strip task wrapper + normalise
-    5. **contained**         — DB content appears as substring of JSONL content
-    6. **fifo**              — oldest unlinked message (wrapped prompts only)
     """
 
     # ------------------------------------------------------------------
@@ -100,17 +98,6 @@ class ContentMatcher:
             for msg in candidates:
                 if msg.content and ContentMatcher.normalize(msg.content) == norm_stripped:
                     return msg, "task-normalized"
-
-        # 5. Containment — DB content embedded in JSONL content
-        #    Guard: require ≥30 chars to avoid trivial substring hits.
-        for msg in candidates:
-            if msg.content and len(msg.content) >= 30:
-                if ContentMatcher.normalize(msg.content) in norm:
-                    return msg, "contained"
-
-        # 6. FIFO fallback — only for clearly wrapped prompts
-        if is_task:
-            return candidates[0], "fifo"
 
         return None, "none"
 
