@@ -215,8 +215,6 @@ export const sendMessage = (agentId, content, { queue = false, scheduled_at = nu
     method: "POST",
     body: JSON.stringify({ content, queue, scheduled_at }),
   });
-export const fetchToolActivities = (agentId) =>
-  request(`/api/agents/${agentId}/tool-activities`);
 export const markAgentRead = (agentId) =>
   request(`/api/agents/${agentId}/read`, { method: "PUT" });
 export const markAllAgentsRead = () =>

@@ -576,15 +576,13 @@ def init_db():
                 conn.commit()
                 logger.info("migration: cleared %d legacy cli messages for fine-grained reimport", _legacy)
 
-        # --- Add tool_use_id column to tool_activities ---
-        ta_cols = _table_columns(conn, "tool_activities")
-        if "tool_use_id" not in ta_cols:
-            conn.execute(text("ALTER TABLE tool_activities ADD COLUMN tool_use_id VARCHAR(100)"))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_tool_activities_tool_use_id "
-                "ON tool_activities(agent_id, tool_use_id) WHERE tool_use_id IS NOT NULL"
-            ))
+        # --- Drop legacy tool_activities table (replaced by Message pipeline) ---
+        if "tool_activities" in [t[0] for t in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )).fetchall()]:
+            conn.execute(text("DROP TABLE tool_activities"))
             conn.commit()
+            logger.info("migration: dropped legacy tool_activities table")
 
         # --- Backfill tool_use_id from metadata JSON ---
         try:
