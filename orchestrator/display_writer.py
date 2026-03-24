@@ -4,6 +4,12 @@ Each agent gets a `data/display/{agent_id}.jsonl` file containing one JSON
 line per message, ordered by display_seq.  The frontend reads these files
 to render the chat history without querying the DB.
 
+Design:
+    - Display file is append-only (rebuild appends new seq block)
+    - File write happens BEFORE DB commit (safe: if DB fails, display_seq
+      stays NULL, next flush retries; frontend deduplicates by id)
+    - File writes use fcntl.flock to prevent interleaved lines
+
 Functions:
     flush_agent       — append undisplayed messages to the display file
     update_last       — append a replacement line for a streaming update
@@ -12,15 +18,17 @@ Functions:
     startup_rebuild_all — rebuild all active agents on server startup
 """
 
+import fcntl
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
 from sqlalchemy import func, text
 
 from config import _resolve
 from database import SessionLocal
-from models import Agent, AgentStatus, Message
+from models import Agent, AgentStatus, Message, MessageRole
 
 logger = logging.getLogger("orchestrator.display_writer")
 
@@ -75,27 +83,53 @@ def _serialize_message(msg: Message, seq: int, replace: bool = False) -> str:
     return json.dumps(obj, separators=(",", ":"))
 
 
+def _write_locked(path: str, lines: list[str]):
+    """Append lines to file with exclusive flock to prevent interleaving."""
+    with open(path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            for line in lines:
+                f.write(line + "\n")
+            f.flush()
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def flush_agent(agent_id: str):
     """Append all undisplayed messages (display_seq IS NULL) to the display file.
 
-    - Query messages WHERE agent_id=X AND display_seq IS NULL
-    - Order by created_at ASC
-    - Get current max display_seq for this agent
-    - Assign sequential display_seq starting from max+1
-    - Append each as a JSON line to data/display/{agent_id}.jsonl
-    - Commit the display_seq updates
+    Order of operations (file-first for safety):
+    1. Query messages WHERE display_seq IS NULL
+    2. Assign display_seq in memory
+    3. Write to file (with flock)
+    4. Commit display_seq to DB
+
+    If file write fails → display_seq stays NULL → next flush retries.
+    If DB commit fails → display_seq reverts to NULL → next flush retries,
+    file has duplicate lines but frontend deduplicates by id.
     """
     db = SessionLocal()
     try:
+        _MAX_TS = datetime(9999, 1, 1, tzinfo=timezone.utc)
         undisplayed = (
             db.query(Message)
             .filter(
                 Message.agent_id == agent_id,
                 Message.display_seq.is_(None),
             )
-            .order_by(Message.created_at.asc())
             .all()
         )
+
+        def _sort_key(msg: Message) -> datetime:
+            """Ordering: system/agent by created_at, user by delivered_at.
+
+            Undelivered user messages sort last (queued at bottom).
+            """
+            if msg.role == MessageRole.USER:
+                return msg.delivered_at or _MAX_TS
+            return msg.created_at or _MAX_TS
+
+        undisplayed.sort(key=_sort_key)
         if not undisplayed:
             return
 
@@ -115,12 +149,19 @@ def flush_agent(agent_id: str):
             lines.append(_serialize_message(msg, next_seq))
             next_seq += 1
 
-        db.commit()
+        # Write file FIRST — if this fails, display_seq stays uncommitted
+        try:
+            _write_locked(path, lines)
+        except OSError:
+            # File write failed — reset display_seq so next flush retries
+            for msg in undisplayed:
+                msg.display_seq = None
+            db.expire_all()
+            logger.exception("File write failed for agent %s display file", agent_id[:8])
+            return
 
-        # Append to file
-        with open(path, "a") as f:
-            for line in lines:
-                f.write(line + "\n")
+        # Commit display_seq to DB — file is already written
+        db.commit()
 
         logger.debug(
             "Flushed %d messages to display file for agent %s (seq %d..%d)",
@@ -135,10 +176,14 @@ def flush_agent(agent_id: str):
 
 
 def update_last(agent_id: str, message_id: str):
-    """Append a replacement line for a message whose content changed (streaming).
+    """Append a replacement line for a message whose content/status changed.
 
-    Only if the message already has display_seq (already in file).
-    Append with _replace=True.
+    Used for:
+    - Streaming content updates (agent response growing)
+    - Delivery status updates (delivered_at set after promotion)
+
+    Only writes if the message already has display_seq (already in file).
+    Appends with _replace=True so frontend overwrites the stale entry.
     """
     db = SessionLocal()
     try:
@@ -151,8 +196,7 @@ def update_last(agent_id: str, message_id: str):
         os.makedirs(DISPLAY_DIR, exist_ok=True)
         path = _display_path(agent_id)
         line = _serialize_message(msg, msg.display_seq, replace=True)
-        with open(path, "a") as f:
-            f.write(line + "\n")
+        _write_locked(path, [line])
     except Exception:
         logger.exception(
             "Failed to update display file for agent %s msg %s",
@@ -163,11 +207,11 @@ def update_last(agent_id: str, message_id: str):
 
 
 def rebuild_agent(agent_id: str):
-    """Rebuild display file by re-flushing all messages as a new seq block.
+    """Rebuild display file from scratch.
 
-    This is append-only: existing display file content is preserved.
-    All messages get new display_seq values (NULL → re-assigned), which
-    produces _replace-free lines that the frontend deduplicates by id.
+    Truncates the existing file and re-flushes all messages with fresh
+    display_seq values.  This prevents stale append-only blocks from
+    accumulating and ensures the file reflects the current DB state.
     """
     db = SessionLocal()
     try:
@@ -184,7 +228,14 @@ def rebuild_agent(agent_id: str):
     finally:
         db.close()
 
-    # flush_agent will append new lines — file is never deleted
+    # Truncate existing file — flush_agent will write a clean file
+    path = _display_path(agent_id)
+    try:
+        with open(path, "w") as f:
+            f.truncate(0)
+    except OSError:
+        pass  # file may not exist yet — flush_agent will create it
+
     flush_agent(agent_id)
 
 
