@@ -65,221 +65,15 @@ def _query_verify_agents(db: Session, task_id, *, alive_only=True):
     return q.all()
 
 
-def _short_path(path: str) -> str:
-    """Shorten a file path for display (last 2 components)."""
-    parts = path.rstrip("/").split("/")
-    if len(parts) <= 2:
-        return path
-    return "/".join(parts[-2:])
+from jsonl_parser import (  # noqa: E402 — extracted module
+    parse_session_turns as _parse_session_turns,
+    strip_agent_preamble as _strip_agent_preamble,
+    format_tool_summary as _format_tool_summary,
+    derive_selected_index as _derive_selected_index,
+    _is_image_metadata,
+)
 
 
-def _derive_selected_index(item: dict) -> None:
-    """Derive selected_index and selected_indices from an interactive item's answer text.
-
-    For ask_user_question, matches the ="label" pattern against each question's options.
-    Populates both selected_index (Q0, backward compat) and selected_indices (all Qs).
-    For exit_plan_mode, uses keyword matching on the answer.
-    """
-    answer = item.get("answer")
-    if not answer or not isinstance(answer, str):
-        return
-    # Skip dismissed/rejected answers — no valid selection to derive
-    if (answer.startswith("The user doesn't want to proceed")
-            or answer.startswith("User declined")
-            or answer.startswith("Tool use rejected")):
-        return
-    if item.get("type") == "ask_user_question":
-        questions = item.get("questions", [])
-        if not questions:
-            return
-        # Find all ="label" patterns in order
-        matches = re.findall(r'="([^"]+)"', answer)
-        if not matches:
-            return
-        sel_indices = item.get("selected_indices", {})
-        # Positional matching: consume match indices so duplicate labels
-        # across questions don't cross-match.
-        used_match_indices: set[int] = set()
-        for qi, q in enumerate(questions):
-            if sel_indices.get(str(qi)) is not None:
-                continue  # Already set for this question
-            options = q.get("options", [])
-            for mi, label in enumerate(matches):
-                if mi in used_match_indices:
-                    continue
-                for oi, opt in enumerate(options):
-                    if opt.get("label") == label:
-                        sel_indices[str(qi)] = oi
-                        used_match_indices.add(mi)
-                        break
-                if sel_indices.get(str(qi)) is not None:
-                    break
-        if sel_indices:
-            item["selected_indices"] = sel_indices
-        # Backward compat: set selected_index from Q0
-        if item.get("selected_index") is None and sel_indices.get("0") is not None:
-            item["selected_index"] = sel_indices["0"]
-    elif item.get("type") == "exit_plan_mode":
-        if item.get("selected_index") is not None:
-            return  # Already set
-        a = answer.lower().strip()
-        # Dismissal / rejection — don't assign any index
-        if (a.startswith("the user doesn't want to proceed")
-                or a.startswith("user declined")
-                or a.startswith("tool use rejected")):
-            return
-        # Exact label matching first (avoids keyword collision like "bypass manual")
-        _PLAN_LABELS_LOWER = [
-            "yes, bypass permissions",
-            "yes, manual approval",
-            "give feedback",
-        ]
-        for i, lbl in enumerate(_PLAN_LABELS_LOWER):
-            if a == lbl:
-                item["selected_index"] = i
-                return
-        # Keyword fallback for answers from Claude's tool_result (may differ in wording)
-        if "bypass" in a and "manual" not in a:
-            item["selected_index"] = 0
-        elif "manual" in a:
-            item["selected_index"] = 1
-        elif "feedback" in a or "type here" in a:
-            item["selected_index"] = 2
-        # else: leave selected_index unset — don't default to 0
-
-
-def _merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> str | None:
-    """Merge interactive metadata, preserving web-set answers during sync.
-
-    When the web UI answers an interactive prompt via /api/agents/{id}/answer,
-    _patch_interactive_answer() immediately stores selected_index + answer in
-    the DB.  The sync loop later re-parses the JSONL and may overwrite the
-    metadata with a version where answer is still null (Claude hasn't written
-    the tool_result yet).  This function prevents that regression by keeping
-    the DB's selected_index/answer when the JSONL version has answer=null.
-
-    If the JSONL version has a non-null answer, it takes precedence (it's the
-    authoritative response from Claude's actual tool_result).
-
-    Returns a JSON string.  Does NOT mutate *new_meta*.
-    """
-    import copy
-
-    if new_meta is None:
-        return db_meta_json  # Nothing to merge — keep existing
-    if not db_meta_json:
-        return json.dumps(new_meta)  # No existing — use new
-
-    try:
-        db_meta = json.loads(db_meta_json)
-    except (json.JSONDecodeError, TypeError):
-        return json.dumps(new_meta)
-
-    db_items = {
-        item.get("tool_use_id"): item
-        for item in db_meta.get("interactive", [])
-        if item.get("tool_use_id")
-    }
-    if not db_items:
-        return json.dumps(new_meta)
-
-    # Work on a copy so the caller's parsed turns are not mutated
-    merged = copy.deepcopy(new_meta)
-
-    for item in merged.get("interactive", []):
-        tid = item.get("tool_use_id", "")
-        db_item = db_items.get(tid)
-        if not db_item:
-            continue
-        # JSONL answer is null but DB has a web-set answer → preserve it
-        if item.get("answer") is None and db_item.get("answer") is not None:
-            item["answer"] = db_item["answer"]
-            if db_item.get("selected_index") is not None:
-                item["selected_index"] = db_item["selected_index"]
-            if db_item.get("selected_indices"):
-                item["selected_indices"] = db_item["selected_indices"]
-        # JSONL has a real answer → usually authoritative, but carry over
-        # selected_index/selected_indices if the JSONL version doesn't have them.
-        # Exception: if the JSONL answer is a dismiss/rejection artifact (e.g.
-        # from context-clear terminating the session) but the DB already has a
-        # valid non-dismissed answer, keep the DB answer — it reflects the
-        # user's actual selection via the web UI.
-        elif item.get("answer") is not None:
-            jsonl_answer = item["answer"]
-            jsonl_is_dismiss = isinstance(jsonl_answer, str) and (
-                jsonl_answer.startswith("The user doesn't want to proceed")
-                or jsonl_answer.startswith("User declined")
-                or jsonl_answer.startswith("Tool use rejected")
-            )
-            db_answer = db_item.get("answer")
-            db_has_valid = (
-                db_answer is not None
-                and isinstance(db_answer, str)
-                and not db_answer.startswith("The user doesn't want to proceed")
-                and not db_answer.startswith("User declined")
-                and not db_answer.startswith("Tool use rejected")
-            )
-            if jsonl_is_dismiss and db_has_valid:
-                # DB answer is the user's real choice; JSONL dismiss is an
-                # artifact (e.g. context-clear killed the old session).
-                item["answer"] = db_item["answer"]
-                if db_item.get("selected_index") is not None:
-                    item["selected_index"] = db_item["selected_index"]
-                if db_item.get("selected_indices"):
-                    item["selected_indices"] = db_item["selected_indices"]
-            else:
-                # DB's selected_index/selected_indices were set by the
-                # user's explicit web UI click (_patch_interactive_answer)
-                # and are more reliable than heuristic derivation from
-                # tool_result text.  Always prefer them when available.
-                if db_item.get("selected_index") is not None:
-                    item["selected_index"] = db_item["selected_index"]
-                if db_item.get("selected_indices"):
-                    item["selected_indices"] = db_item["selected_indices"]
-
-    return json.dumps(merged)
-
-
-# Legacy marker prefix — kept for backward-compat parsing of old sessions.
-# New prompts no longer embed this; ownership is tracked via .owner sidecar
-# files instead.
-_AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt"
-
-# Preamble prefix used to detect system-wrapped prompts in JSONL content.
-# This is the first line of the preamble injected by _build_agent_prompt.
-_PREAMBLE_PREFIX = "You are working in project:"
-
-
-def _parse_agenthive_marker(text: str) -> dict | None:
-    """Extract agent_id and msg_id from a legacy agenthive-prompt marker.
-
-    Returns dict of attributes if marker found, None otherwise.
-    Old-format markers (no attributes) return an empty dict.
-    Kept for backward compat with sessions created before the sidecar system.
-    """
-    prefix = _AGENTHIVE_PROMPT_MARKER
-    pos = text[:200].find(prefix)
-    if pos < 0:
-        return None
-    end = text.find("-->", pos)
-    if end < 0:
-        return {}
-    attrs_str = text[pos + len(prefix):end]
-    attrs: dict[str, str] = {}
-    for part in attrs_str.split():
-        if "=" in part:
-            k, _, v = part.partition("=")
-            attrs[k] = v
-    return attrs
-
-
-def _is_wrapped_prompt(content: str) -> bool:
-    """Check if content is a system-wrapped prompt from _build_agent_prompt.
-
-    Detects both new-style (preamble prefix) and old-style (marker tag).
-    """
-    head = content[:80]
-    return _PREAMBLE_PREFIX in head or _AGENTHIVE_PROMPT_MARKER in head
 
 
 def _write_session_owner(session_dir: str, sid: str, agent_id: str):
@@ -376,48 +170,6 @@ def _write_unlinked_entry(
 
 
 # Image metadata injected by Claude Code's Read tool — internal only, hide from UI
-_IMAGE_META_RE = re.compile(
-    r"^\[Image: original \d+x\d+, displayed at \d+x\d+\."
-)
-
-
-def _is_image_metadata(text: str) -> bool:
-    """Return True if text is CLI-generated image metadata (not user-facing)."""
-    return bool(_IMAGE_META_RE.match(text.strip()))
-
-
-def _format_tool_summary(name: str, input_data: dict) -> str | None:
-    """Format a tool call as a brief one-line markdown summary."""
-    if name == "Bash":
-        desc = input_data.get("description", "")
-        if not desc:
-            cmd = input_data.get("command", "")
-            desc = cmd.split("\n")[0]
-            if len(desc) > 60:
-                desc = desc[:57] + "..."
-        return f"> `Bash` {desc}"
-    if name in ("Read", "Edit", "Write"):
-        path = input_data.get("file_path", "")
-        # Keep full path for media files so the frontend can preview them
-        if path.lower().endswith(
-            (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
-             ".mp4", ".webm", ".mov", ".csv")
-        ):
-            return f"> `{name}` {path}"
-        return f"> `{name}` {_short_path(path)}"
-    if name == "Grep":
-        pat = input_data.get("pattern", "")
-        if len(pat) > 40:
-            pat = pat[:37] + "..."
-        return f'> `Grep` "{pat}"'
-    if name == "Glob":
-        return f"> `Glob` {input_data.get('pattern', '')}"
-    if name == "Task":
-        return f"> `Task` {input_data.get('description', '')}"
-    # Skip noisy internal tools
-    if name in ("ToolSearch",):
-        return None
-    return f"> `{name}`"
 
 
 def _parse_stream_parts(
@@ -683,30 +435,6 @@ def _parse_session_model(jsonl_path: str) -> str | None:
 _detect_session_model = _parse_session_model
 
 
-import re as _re
-
-_PREAMBLE_RE = _re.compile(
-    r"^(?:<!-- agenthive-prompt[^>]*-->\n)?"        # optional marker line
-    r"You are working in project: .+?\n"
-    r"Project path: .+?\n\n"
-    r"First read the project's CLAUDE\.md to understand project conventions\.\n"
-    r"(?:Relevant past insights[^\n]*\n(?:  - [^\n]*\n)*\n?)?"  # legacy insights position
-    r"(?:## Recent conversation context[^\n]*\n(?:.*?\n)*?\n)?",  # optional history
-    _re.DOTALL,
-)
-_POSTAMBLE_RE = _re.compile(
-    r"(?:\n\n---\n"
-    r"The following are past insights.*?)?"  # optional insights block
-    r"\n\nIf you make code changes, commit with message format: \[agent-[0-9a-f]+\] short description$",
-    _re.DOTALL,
-)
-
-
-def _strip_agent_preamble(content: str) -> str:
-    """Strip orchestrator-injected preamble/postamble from user messages."""
-    text = _PREAMBLE_RE.sub("", content)
-    text = _POSTAMBLE_RE.sub("", text)
-    return text.strip() if text != content else content
 
 
 _INSIGHT_RE = re.compile(r"^\d+\.\s+(.+)", re.MULTILINE)
@@ -1226,236 +954,6 @@ def _infer_worktree_from_session(
     except OSError as e:
         logger.debug("_infer_worktree_from_session: scan failed: %s", e)
     return None
-
-
-def _parse_session_turns(jsonl_path: str) -> list[tuple[str, str, dict | None, str | None, str | None]]:
-    """Parse a Claude Code session JSONL into conversation turns.
-
-    Convenience wrapper that reads the file then delegates to
-    _parse_session_turns_from_lines().
-    """
-    try:
-        with open(jsonl_path, "r", errors="replace") as f:
-            lines = f.readlines()
-    except OSError as e:
-        logger.warning("_parse_session_turns: failed to read %s: %s", jsonl_path, e)
-        return []
-
-    # Drop incomplete last line (mid-write by Claude Code)
-    if lines and not lines[-1].endswith("\n"):
-        lines.pop()
-
-    return _parse_session_turns_from_lines(lines)
-
-
-def _parse_session_turns_from_lines(
-    lines: list[str],
-) -> list[tuple[str, str, dict | None, str | None, str | None]]:
-    """Parse pre-read JSONL lines into fine-grained conversation turns.
-
-    Returns a list of (role, content, metadata, jsonl_uuid, kind) tuples:
-    - role: "user", "assistant", or "system"
-    - content: text content of the turn
-    - metadata: dict with tool/interactive info, or None
-    - jsonl_uuid: the JSONL entry's uuid for dedup
-    - kind: "text", "tool_use", or None (interactive/user/system)
-
-    Each text segment and tool call becomes its own turn, so the
-    conversation timeline has fine granularity matching the live view.
-    """
-    turns: list[tuple[str, str, dict | None, str | None, str | None]] = []
-
-    # Accumulate text blocks between tool calls
-    text_parts: list[str] = []
-    # Track interactive tool calls (AskUserQuestion / ExitPlanMode)
-    pending_interactive: list[dict] = []
-    # Map tool_use_id → interactive entry for matching tool_result answers
-    interactive_by_id: dict[str, dict] = {}
-    # UUID for the current accumulated text segment
-    text_uuid: str | None = None
-
-    def flush_text():
-        """Emit accumulated text as a kind='text' turn."""
-        nonlocal text_uuid
-        if not text_parts:
-            return
-        text = "\n\n".join(t.strip() for t in text_parts if t.strip())
-        # Strip legacy markers
-        text = re.sub(r"\n?EXIT_SUCCESS\s*$", "", text).strip()
-        text = re.sub(r"\n?EXIT_FAILURE:?.*$", "", text).strip()
-        if text:
-            turns.append(("assistant", text, None, text_uuid, "text"))
-        text_parts.clear()
-        text_uuid = None
-
-    def flush_all():
-        """Flush text + pending interactive items."""
-        flush_text()
-        if pending_interactive:
-            meta = {"interactive": list(pending_interactive)}
-            # Deterministic UUID from first tool_use_id for dedup on restart
-            _first_tid = pending_interactive[0].get("tool_use_id", "")
-            _interactive_uuid = f"interactive-{_first_tid}" if _first_tid else None
-            turns.append(("assistant", "", meta, _interactive_uuid, None))
-            pending_interactive.clear()
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        entry_type = entry.get("type")
-        entry_uuid = entry.get("uuid")  # present on user/assistant entries
-
-        if entry_type == "user":
-            msg = entry.get("message", {})
-            content = msg.get("content", "")
-            # Check for tool_result in list-type content
-            if isinstance(content, list):
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "tool_result":
-                        tool_use_id = block.get("tool_use_id", "")
-                        if tool_use_id in interactive_by_id:
-                            result_content = block.get("content", "")
-                            # Ensure answer is always a string (content
-                            # can be a list of content blocks in the API)
-                            if isinstance(result_content, list):
-                                result_content = " ".join(
-                                    b.get("text", "") if isinstance(b, dict) else str(b)
-                                    for b in result_content
-                                ).strip() or ""
-                            interactive_by_id[tool_use_id]["answer"] = result_content
-                            _derive_selected_index(interactive_by_id[tool_use_id])
-                            # Flush so each interactive Q&A becomes its
-                            # own message bubble.
-                            flush_all()
-                continue
-            # Real user message = string content (not tool_result list)
-            if isinstance(content, str) and content.strip():
-                stripped = content.strip()
-                # Skip system-injected messages that aren't real user input
-                if (
-                    stripped.startswith("<local-command-caveat>")
-                    or stripped.startswith("<command-name>")
-                    or stripped.startswith("<local-command-stdout>")
-                    or stripped.startswith("<system-reminder>")
-                    or stripped.startswith("<task-notification>")
-                ):
-                    continue
-                # Compact summary → system message instead of user
-                if stripped.startswith(
-                    "This session is being continued from a previous conversation"
-                ):
-                    flush_all()
-                    _compact_uuid = f"sys-{hashlib.md5(content.encode()).hexdigest()[:16]}"
-                    turns.append(("system", content, None, _compact_uuid, None))
-                    continue
-                flush_all()
-                clean = _strip_agent_preamble(stripped)
-                turns.append(("user", clean, None, entry_uuid, None))
-
-        elif entry_type == "assistant":
-            msg = entry.get("message", {})
-            # Skip subagent messages
-            if entry.get("parent_tool_use_id"):
-                continue
-            for block in msg.get("content", []):
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "text" and block.get("text", "").strip():
-                    if not _is_image_metadata(block["text"]):
-                        text_parts.append(block["text"])
-                        if text_uuid is None and entry_uuid:
-                            text_uuid = entry_uuid
-                elif block.get("type") == "tool_use":
-                    tool_name = block.get("name", "")
-                    tool_input = block.get("input", {})
-                    tool_use_id = block.get("id", "")
-
-                    if tool_name in ("AskUserQuestion", "ExitPlanMode"):
-                        # Interactive: flush text, set up interactive state
-                        flush_text()
-                        if tool_name == "AskUserQuestion":
-                            entry_data = {
-                                "type": "ask_user_question",
-                                "tool_use_id": tool_use_id,
-                                "questions": tool_input.get("questions", []),
-                                "answer": None,
-                            }
-                        else:
-                            entry_data = {
-                                "type": "exit_plan_mode",
-                                "tool_use_id": tool_use_id,
-                                "allowedPrompts": tool_input.get("allowedPrompts", []),
-                                "plan": tool_input.get("plan", ""),
-                                "answer": None,
-                            }
-                        pending_interactive.append(entry_data)
-                        interactive_by_id[tool_use_id] = entry_data
-                    else:
-                        # Regular tool: flush text, emit tool_use turn
-                        flush_text()
-                        summary = _format_tool_summary(tool_name, tool_input)
-                        if summary:
-                            tool_uuid = f"tool-{tool_use_id}" if tool_use_id else None
-                            tool_meta = {"tool_name": tool_name, "tool_use_id": tool_use_id}
-                            turns.append(("assistant", summary, tool_meta, tool_uuid, "tool_use"))
-
-        elif entry_type == "queue-operation":
-            if entry.get("operation") == "enqueue":
-                queued_content = entry.get("content", "")
-                if isinstance(queued_content, str) and queued_content.strip():
-                    clean_q = _strip_agent_preamble(queued_content.strip())
-                    _qop_uuid = f"qop-{hashlib.md5(clean_q.encode()).hexdigest()[:16]}"
-                    if clean_q.lstrip().startswith("<task-notification>"):
-                        flush_all()
-                        turns.append(("assistant", clean_q, None, _qop_uuid, None))
-                    else:
-                        flush_all()
-                        turns.append(("user", clean_q, None, _qop_uuid, None))
-
-        elif entry_type == "system":
-            subtype = entry.get("subtype", "")
-            if subtype in ("turn_duration", "stop_hook_summary"):
-                continue
-            flush_all()
-            content = entry.get("content", "")
-            if subtype or content:
-                label = content or subtype.replace("_", " ")
-                _sys_uuid = f"sys-{hashlib.md5(label.encode()).hexdigest()[:16]}"
-                turns.append(("system", label, None, _sys_uuid, None))
-
-    # Flush remaining
-    flush_all()
-
-    # Deduplicate identical user turns
-    if turns:
-        seen_uuids: set[str] = set()
-        seen_content: set[str] = set()
-        deduped: list[tuple[str, str, dict | None, str | None, str | None]] = []
-        for turn in turns:
-            role, content = turn[0], turn[1]
-            uuid = turn[3] if len(turn) > 3 else None
-            if role == "user":
-                if uuid:
-                    if uuid in seen_uuids:
-                        continue
-                    seen_uuids.add(uuid)
-                if content in seen_content:
-                    continue
-                seen_content.add(content)
-            deduped.append(turn)
-        turns = deduped
-
-    logger.debug("Parsed %d turns from %d lines: %s", len(turns), len(lines),
-                 [(t[0], t[4] if len(t) > 4 else None, t[3][:20] if len(t) > 3 and t[3] else 'none') for t in turns[:10]])
-    return turns
 
 
 # ---- tmux helpers ----
@@ -5133,6 +4631,7 @@ Here are the day's conversations (with timestamps):
             if current_size < ctx.last_offset:
                 async with sync_lock:
                     await sync_full_scan(self, ctx, reason="compact")
+                wake_event.set()  # re-enter immediately so sync_import_new_turns runs
                 continue
 
             # File hasn't grown — idle polling
@@ -5213,13 +4712,16 @@ Here are the day's conversations (with timestamps):
 
             ctx.idle_polls = 0
             if not hook_wake:
-                # Poll-triggered: audit only — log discrepancy, don't write
-                _poll_turns = len(_parse_session_turns(ctx.jsonl_path))
-                if _poll_turns != ctx.last_turn_count:
+                # Poll-triggered: audit only — compare file size, not full parse
+                try:
+                    _poll_size = os.path.getsize(ctx.jsonl_path)
+                except OSError:
+                    _poll_size = ctx.last_offset
+                if _poll_size != ctx.last_offset:
                     logger.warning(
-                        "Poll audit for agent %s: JSONL has %d turns, "
-                        "pointer at %d — will sync on next hook wake",
-                        agent_id, _poll_turns, ctx.last_turn_count,
+                        "Poll audit for agent %s: file size changed (%d → %d) "
+                        "without hook wake — will sync on next hook wake",
+                        agent_id, ctx.last_offset, _poll_size,
                     )
                 continue
 
@@ -5231,6 +4733,7 @@ Here are the day's conversations (with timestamps):
             if result == "compact":
                 async with sync_lock:
                     await sync_full_scan(self, ctx, reason="compact")
+                wake_event.set()  # re-enter immediately so sync_import_new_turns runs
                 continue
 
             # Subagent creation/finalization is handled by SubagentStart/Stop
@@ -5238,66 +4741,81 @@ Here are the day's conversations (with timestamps):
 
             # Check if the CLI session has ended
             if self._session_has_ended(ctx.jsonl_path):
-                # Final sync — uses sync_import_new_turns (has UUID dedup)
-                async with sync_lock:
-                    await sync_import_new_turns(self, ctx)
-
-                db = SessionLocal()
-                try:
-                    agent = db.get(Agent, agent_id)
-                    _project_path = ""
-                    if agent:
-                        proj = db.get(Project, agent.project)
-                        if proj:
-                            _project_path = proj.path
-                finally:
-                    db.close()
-
-                if _project_path and _is_cli_session_alive(_project_path, agent.tmux_pane if agent else None):
-                    logger.info(
-                        "CLI session ended for agent %s but process alive — staying SYNCING",
-                        agent_id,
-                    )
-                    continue
-
-                logger.info(
-                    "CLI session ended for agent %s — transitioning to STOPPED",
-                    agent_id,
+                should_break = await self._handle_session_end(
+                    agent_id, ctx, sync_lock,
                 )
-                db = SessionLocal()
-                try:
-                    agent = db.get(Agent, agent_id)
-                    if agent and agent.status == AgentStatus.SYNCING:
-                        saved_pane = agent.tmux_pane
-                        self.stop_agent_cleanup(
-                            db, agent, "",
-                            kill_tmux=False, add_message=False,
-                            emit=False, cancel_tasks=False,
-                        )
-                        sys_msg = self._add_system_message(db, agent_id, "CLI session ended — sync stopped")
-                        agent.last_message_at = _utcnow()
-                        db.commit()
+                if should_break:
+                    break
 
-                        self._emit(emit_agent_update(
-                            agent.id, agent.status.value, agent.project
-                        ))
-                        self._emit(emit_new_message(agent.id, sys_msg.id, ctx.agent_name, ctx.agent_project))
+    async def _handle_session_end(self, agent_id: str, ctx, sync_lock) -> bool:
+        """Handle CLI session end: final sync, status transition, notifications.
 
-                        from notify import notify
-                        _in_use = self._is_agent_in_use(agent_id, agent.tmux_pane if agent else None)
-                        _tc_decision = notify("message", agent_id,
-                               f"\u2705 {ctx.agent_name or agent_id[:8]}",
-                               "CLI session ended — sync complete",
-                               f"/agents/{agent_id}",
-                               in_use=_in_use)
-                        self._emit({"type": "notification_debug",
-                                    "agent_id": agent_id,
-                                    "decision": _tc_decision,
-                                    "channel": "message",
-                                    "body": "session ended"})
-                finally:
-                    db.close()
-                break
+        Returns True if the sync loop should break, False to continue.
+        """
+        from sync_engine import sync_import_new_turns
+        from websocket import emit_agent_update, emit_new_message
+
+        # Final sync — uses sync_import_new_turns (has UUID dedup)
+        async with sync_lock:
+            await sync_import_new_turns(self, ctx)
+
+        # Check if the CLI process is still alive despite session ending
+        db = SessionLocal()
+        try:
+            agent = db.get(Agent, agent_id)
+            _project_path = ""
+            if agent:
+                proj = db.get(Project, agent.project)
+                if proj:
+                    _project_path = proj.path
+        finally:
+            db.close()
+
+        if _project_path and _is_cli_session_alive(_project_path, agent.tmux_pane if agent else None):
+            logger.info(
+                "CLI session ended for agent %s but process alive — staying SYNCING",
+                agent_id,
+            )
+            return False
+
+        # Transition to STOPPED
+        logger.info(
+            "CLI session ended for agent %s — transitioning to STOPPED",
+            agent_id,
+        )
+        db = SessionLocal()
+        try:
+            agent = db.get(Agent, agent_id)
+            if agent and agent.status == AgentStatus.SYNCING:
+                self.stop_agent_cleanup(
+                    db, agent, "",
+                    kill_tmux=False, add_message=False,
+                    emit=False, cancel_tasks=False,
+                )
+                sys_msg = self._add_system_message(db, agent_id, "CLI session ended — sync stopped")
+                agent.last_message_at = _utcnow()
+                db.commit()
+
+                self._emit(emit_agent_update(
+                    agent.id, agent.status.value, agent.project
+                ))
+                self._emit(emit_new_message(agent.id, sys_msg.id, ctx.agent_name, ctx.agent_project))
+
+                from notify import notify
+                _in_use = self._is_agent_in_use(agent_id, agent.tmux_pane if agent else None)
+                _tc_decision = notify("message", agent_id,
+                       f"\u2705 {ctx.agent_name or agent_id[:8]}",
+                       "CLI session ended — sync complete",
+                       f"/agents/{agent_id}",
+                       in_use=_in_use)
+                self._emit({"type": "notification_debug",
+                            "agent_id": agent_id,
+                            "decision": _tc_decision,
+                            "channel": "message",
+                            "body": "session ended"})
+        finally:
+            db.close()
+        return True
 
     @staticmethod
     def _session_has_ended(jsonl_path: str) -> bool:

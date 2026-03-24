@@ -1,0 +1,590 @@
+"""JSONL session parser — parse Claude Code session JSONL into conversation turns.
+
+Extracted from agent_dispatcher.py for testability and clean module boundaries.
+All functions here are pure (no DB, no WebSocket) — they only read JSONL and
+transform data.
+
+Public API:
+    parse_session_turns          — read + parse a JSONL file
+    parse_session_turns_from_lines — parse pre-read lines
+    is_wrapped_prompt            — detect system-wrapped prompts
+    merge_interactive_meta       — merge JSONL + web-UI interactive metadata
+    strip_agent_preamble         — remove orchestrator preamble/postamble
+    format_tool_summary          — format tool_use as one-line markdown
+    parse_agenthive_marker       — legacy marker parsing
+    derive_selected_index        — derive selection from answer text
+"""
+
+import copy
+import hashlib
+import json
+import logging
+import re
+
+logger = logging.getLogger("orchestrator.jsonl_parser")
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Legacy marker prefix — kept for backward-compat parsing of old sessions.
+AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt"
+
+# Preamble prefix used to detect system-wrapped prompts in JSONL content.
+PREAMBLE_PREFIX = "You are working in project:"
+
+_IMAGE_META_RE = re.compile(
+    r"^\[Image: original \d+x\d+, displayed at \d+x\d+\."
+)
+
+_PREAMBLE_RE = re.compile(
+    r"^(?:<!-- agenthive-prompt[^>]*-->\n)?"        # optional marker line
+    r"You are working in project: .+?\n"
+    r"Project path: .+?\n\n"
+    r"First read the project's CLAUDE\.md to understand project conventions\.\n"
+    r"(?:Do NOT write to memory files[^\n]*\n)?"    # optional memory guard line
+    r"(?:Relevant past insights[^\n]*\n(?:  - [^\n]*\n)*\n?)?"  # legacy insights position
+    r"(?:## Recent conversation context[^\n]*\n(?:.*?\n)*?\n)?",  # optional history
+    re.DOTALL,
+)
+_POSTAMBLE_RE = re.compile(
+    r"(?:\n\n---\n"
+    r"The following are past insights.*?)?"  # optional insights block
+    r"\n\nIf you make code changes, commit with message format: \[agent-[0-9a-f]+\] short description$",
+    re.DOTALL,
+)
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+def _short_path(path: str) -> str:
+    """Shorten a file path for display (last 2 components)."""
+    parts = path.rstrip("/").split("/")
+    if len(parts) <= 2:
+        return path
+    return "/".join(parts[-2:])
+
+
+def _is_image_metadata(text: str) -> bool:
+    """Return True if text is CLI-generated image metadata (not user-facing)."""
+    return bool(_IMAGE_META_RE.match(text.strip()))
+
+
+# ---------------------------------------------------------------------------
+# Interactive metadata helpers
+# ---------------------------------------------------------------------------
+
+def derive_selected_index(item: dict) -> None:
+    """Derive selected_index and selected_indices from an interactive item's answer text.
+
+    For ask_user_question, matches the ="label" pattern against each question's options.
+    Populates both selected_index (Q0, backward compat) and selected_indices (all Qs).
+    For exit_plan_mode, uses keyword matching on the answer.
+    """
+    answer = item.get("answer")
+    if not answer or not isinstance(answer, str):
+        return
+    # Skip dismissed/rejected answers — no valid selection to derive
+    if (answer.startswith("The user doesn't want to proceed")
+            or answer.startswith("User declined")
+            or answer.startswith("Tool use rejected")):
+        return
+    if item.get("type") == "ask_user_question":
+        questions = item.get("questions", [])
+        if not questions:
+            return
+        # Find all ="label" patterns in order
+        matches = re.findall(r'="([^"]+)"', answer)
+        if not matches:
+            return
+        sel_indices = item.get("selected_indices", {})
+        # Positional matching: consume match indices so duplicate labels
+        # across questions don't cross-match.
+        used_match_indices: set[int] = set()
+        for qi, q in enumerate(questions):
+            if sel_indices.get(str(qi)) is not None:
+                continue  # Already set for this question
+            options = q.get("options", [])
+            for mi, label in enumerate(matches):
+                if mi in used_match_indices:
+                    continue
+                for oi, opt in enumerate(options):
+                    if opt.get("label") == label:
+                        sel_indices[str(qi)] = oi
+                        used_match_indices.add(mi)
+                        break
+                if sel_indices.get(str(qi)) is not None:
+                    break
+        if sel_indices:
+            item["selected_indices"] = sel_indices
+        # Backward compat: set selected_index from Q0
+        if item.get("selected_index") is None and sel_indices.get("0") is not None:
+            item["selected_index"] = sel_indices["0"]
+    elif item.get("type") == "exit_plan_mode":
+        if item.get("selected_index") is not None:
+            return  # Already set
+        a = answer.lower().strip()
+        # Dismissal / rejection — don't assign any index
+        if (a.startswith("the user doesn't want to proceed")
+                or a.startswith("user declined")
+                or a.startswith("tool use rejected")):
+            return
+        # Exact label matching first (avoids keyword collision like "bypass manual")
+        _PLAN_LABELS_LOWER = [
+            "yes, bypass permissions",
+            "yes, manual approval",
+            "give feedback",
+        ]
+        for i, lbl in enumerate(_PLAN_LABELS_LOWER):
+            if a == lbl:
+                item["selected_index"] = i
+                return
+        # Keyword fallback for answers from Claude's tool_result (may differ in wording)
+        if "bypass" in a and "manual" not in a:
+            item["selected_index"] = 0
+        elif "manual" in a:
+            item["selected_index"] = 1
+        elif "feedback" in a or "type here" in a:
+            item["selected_index"] = 2
+        # else: leave selected_index unset — don't default to 0
+
+
+def merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> str | None:
+    """Merge interactive metadata, preserving web-set answers during sync.
+
+    When the web UI answers an interactive prompt via /api/agents/{id}/answer,
+    _patch_interactive_answer() immediately stores selected_index + answer in
+    the DB.  The sync loop later re-parses the JSONL and may overwrite the
+    metadata with a version where answer is still null (Claude hasn't written
+    the tool_result yet).  This function prevents that regression by keeping
+    the DB's selected_index/answer when the JSONL version has answer=null.
+
+    If the JSONL version has a non-null answer, it takes precedence (it's the
+    authoritative response from Claude's actual tool_result).
+
+    Returns a JSON string.  Does NOT mutate *new_meta*.
+    """
+    if new_meta is None:
+        return db_meta_json  # Nothing to merge — keep existing
+    if not db_meta_json:
+        return json.dumps(new_meta)  # No existing — use new
+
+    try:
+        db_meta = json.loads(db_meta_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps(new_meta)
+
+    db_items = {
+        item.get("tool_use_id"): item
+        for item in db_meta.get("interactive", [])
+        if item.get("tool_use_id")
+    }
+    if not db_items:
+        return json.dumps(new_meta)
+
+    # Work on a copy so the caller's parsed turns are not mutated
+    merged = copy.deepcopy(new_meta)
+
+    for item in merged.get("interactive", []):
+        tid = item.get("tool_use_id", "")
+        db_item = db_items.get(tid)
+        if not db_item:
+            continue
+        # JSONL answer is null but DB has a web-set answer → preserve it
+        if item.get("answer") is None and db_item.get("answer") is not None:
+            item["answer"] = db_item["answer"]
+            if db_item.get("selected_index") is not None:
+                item["selected_index"] = db_item["selected_index"]
+            if db_item.get("selected_indices"):
+                item["selected_indices"] = db_item["selected_indices"]
+        # JSONL has a real answer → usually authoritative, but carry over
+        # selected_index/selected_indices if the JSONL version doesn't have them.
+        # Exception: if the JSONL answer is a dismiss/rejection artifact (e.g.
+        # from context-clear terminating the session) but the DB already has a
+        # valid non-dismissed answer, keep the DB answer — it reflects the
+        # user's actual selection via the web UI.
+        elif item.get("answer") is not None:
+            jsonl_answer = item["answer"]
+            jsonl_is_dismiss = isinstance(jsonl_answer, str) and (
+                jsonl_answer.startswith("The user doesn't want to proceed")
+                or jsonl_answer.startswith("User declined")
+                or jsonl_answer.startswith("Tool use rejected")
+            )
+            db_answer = db_item.get("answer")
+            db_has_valid = (
+                db_answer is not None
+                and isinstance(db_answer, str)
+                and not db_answer.startswith("The user doesn't want to proceed")
+                and not db_answer.startswith("User declined")
+                and not db_answer.startswith("Tool use rejected")
+            )
+            if jsonl_is_dismiss and db_has_valid:
+                item["answer"] = db_item["answer"]
+                if db_item.get("selected_index") is not None:
+                    item["selected_index"] = db_item["selected_index"]
+                if db_item.get("selected_indices"):
+                    item["selected_indices"] = db_item["selected_indices"]
+            else:
+                if db_item.get("selected_index") is not None:
+                    item["selected_index"] = db_item["selected_index"]
+                if db_item.get("selected_indices"):
+                    item["selected_indices"] = db_item["selected_indices"]
+
+    return json.dumps(merged)
+
+
+# ---------------------------------------------------------------------------
+# Prompt detection and stripping
+# ---------------------------------------------------------------------------
+
+def parse_agenthive_marker(text: str) -> dict | None:
+    """Extract agent_id and msg_id from a legacy agenthive-prompt marker.
+
+    Returns dict of attributes if marker found, None otherwise.
+    Old-format markers (no attributes) return an empty dict.
+    Kept for backward compat with sessions created before the sidecar system.
+    """
+    prefix = AGENTHIVE_PROMPT_MARKER
+    pos = text[:200].find(prefix)
+    if pos < 0:
+        return None
+    end = text.find("-->", pos)
+    if end < 0:
+        return {}
+    attrs_str = text[pos + len(prefix):end]
+    attrs: dict[str, str] = {}
+    for part in attrs_str.split():
+        if "=" in part:
+            k, _, v = part.partition("=")
+            attrs[k] = v
+    return attrs
+
+
+def is_wrapped_prompt(content: str) -> bool:
+    """Check if content is a system-wrapped prompt from _build_agent_prompt.
+
+    Detects both new-style (preamble prefix) and old-style (marker tag).
+    """
+    head = content[:80]
+    return PREAMBLE_PREFIX in head or AGENTHIVE_PROMPT_MARKER in head
+
+
+def strip_agent_preamble(content: str) -> str:
+    """Strip orchestrator-injected preamble/postamble from user messages."""
+    text = _PREAMBLE_RE.sub("", content)
+    text = _POSTAMBLE_RE.sub("", text)
+    return text.strip() if text != content else content
+
+
+# ---------------------------------------------------------------------------
+# Tool summary formatting
+# ---------------------------------------------------------------------------
+
+def format_tool_summary(name: str, input_data: dict) -> str | None:
+    """Format a tool call as a brief one-line markdown summary."""
+    if name == "Bash":
+        desc = input_data.get("description", "")
+        if not desc:
+            cmd = input_data.get("command", "")
+            desc = cmd.split("\n")[0]
+            if len(desc) > 60:
+                desc = desc[:57] + "..."
+        return f"> `Bash` {desc}"
+    if name in ("Read", "Edit", "Write"):
+        path = input_data.get("file_path", "")
+        # Keep full path for media files so the frontend can preview them
+        if path.lower().endswith(
+            (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
+             ".mp4", ".webm", ".mov", ".csv")
+        ):
+            return f"> `{name}` {path}"
+        return f"> `{name}` {_short_path(path)}"
+    if name == "Grep":
+        pat = input_data.get("pattern", "")
+        if len(pat) > 40:
+            pat = pat[:37] + "..."
+        return f'> `Grep` "{pat}"'
+    if name == "Glob":
+        return f"> `Glob` {input_data.get('pattern', '')}"
+    if name == "Task":
+        return f"> `Task` {input_data.get('description', '')}"
+    # Skip noisy internal tools
+    if name in ("ToolSearch",):
+        return None
+    return f"> `{name}`"
+
+
+# ---------------------------------------------------------------------------
+# JSONL session parsing
+# ---------------------------------------------------------------------------
+
+def parse_session_turns(
+    jsonl_path: str,
+    max_bytes: int = 0,
+) -> list[tuple[str, str, dict | None, str | None, str | None]]:
+    """Parse a Claude Code session JSONL into conversation turns.
+
+    If *max_bytes* > 0 and the file exceeds that size, only the last
+    *max_bytes* are read (aligned to the next complete line boundary).
+    This prevents OOM on very large session files.
+    """
+    try:
+        file_size = os.path.getsize(jsonl_path) if max_bytes > 0 else 0
+    except OSError:
+        file_size = 0
+
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            if max_bytes > 0 and file_size > max_bytes:
+                f.seek(file_size - max_bytes)
+                f.readline()  # discard partial line
+                logger.warning(
+                    "JSONL file %s is %d bytes, reading last %d bytes only",
+                    jsonl_path, file_size, max_bytes,
+                )
+            lines = f.readlines()
+    except OSError as e:
+        logger.warning("parse_session_turns: failed to read %s: %s", jsonl_path, e)
+        return []
+
+    # Drop incomplete last line (mid-write by Claude Code)
+    if lines and not lines[-1].endswith("\n"):
+        lines.pop()
+
+    return parse_session_turns_from_lines(lines)
+
+
+# Need os for parse_session_turns
+import os
+
+
+def parse_session_turns_from_lines(
+    lines: list[str],
+) -> list[tuple[str, str, dict | None, str | None, str | None, str | None]]:
+    """Parse pre-read JSONL lines into fine-grained conversation turns.
+
+    Returns a list of (role, content, metadata, jsonl_uuid, kind, timestamp) tuples:
+    - role: "user", "assistant", or "system"
+    - content: text content of the turn
+    - metadata: dict with tool/interactive info, or None
+    - jsonl_uuid: the JSONL entry's uuid for dedup
+    - kind: "text", "tool_use", or None (interactive/user/system)
+    - timestamp: ISO 8601 timestamp from the JSONL entry, or None
+
+    Each text segment and tool call becomes its own turn, so the
+    conversation timeline has fine granularity matching the live view.
+    """
+    turns: list[tuple[str, str, dict | None, str | None, str | None, str | None]] = []
+
+    # Accumulate text blocks between tool calls
+    text_parts: list[str] = []
+    # Track interactive tool calls (AskUserQuestion / ExitPlanMode)
+    pending_interactive: list[dict] = []
+    # Map tool_use_id → interactive entry for matching tool_result answers
+    interactive_by_id: dict[str, dict] = {}
+    # UUID for the current accumulated text segment
+    text_uuid: str | None = None
+    # Timestamp for the current accumulated text segment
+    text_ts: str | None = None
+
+    def flush_text():
+        """Emit accumulated text as a kind='text' turn."""
+        nonlocal text_uuid, text_ts
+        if not text_parts:
+            return
+        text = "\n\n".join(t.strip() for t in text_parts if t.strip())
+        # Strip legacy markers
+        text = re.sub(r"\n?EXIT_SUCCESS\s*$", "", text).strip()
+        text = re.sub(r"\n?EXIT_FAILURE:?.*$", "", text).strip()
+        if text:
+            turns.append(("assistant", text, None, text_uuid, "text", text_ts))
+        text_parts.clear()
+        text_uuid = None
+        text_ts = None
+
+    def flush_all():
+        """Flush text + pending interactive items."""
+        flush_text()
+        if pending_interactive:
+            meta = {"interactive": list(pending_interactive)}
+            # Deterministic UUID from first tool_use_id for dedup on restart
+            _first_tid = pending_interactive[0].get("tool_use_id", "")
+            _interactive_uuid = f"interactive-{_first_tid}" if _first_tid else None
+            turns.append(("assistant", "", meta, _interactive_uuid, None, None))
+            pending_interactive.clear()
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        entry_type = entry.get("type")
+        entry_uuid = entry.get("uuid")  # present on user/assistant entries
+        entry_ts = entry.get("timestamp")  # ISO 8601, e.g. "2026-03-24T17:02:44.544Z"
+
+        if entry_type == "user":
+            msg = entry.get("message", {})
+            content = msg.get("content", "")
+            # Check for tool_result in list-type content
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        tool_use_id = block.get("tool_use_id", "")
+                        if tool_use_id in interactive_by_id:
+                            result_content = block.get("content", "")
+                            # Ensure answer is always a string (content
+                            # can be a list of content blocks in the API)
+                            if isinstance(result_content, list):
+                                result_content = " ".join(
+                                    b.get("text", "") if isinstance(b, dict) else str(b)
+                                    for b in result_content
+                                ).strip() or ""
+                            interactive_by_id[tool_use_id]["answer"] = result_content
+                            derive_selected_index(interactive_by_id[tool_use_id])
+                            # Flush so each interactive Q&A becomes its
+                            # own message bubble.
+                            flush_all()
+                continue
+            # Real user message = string content (not tool_result list)
+            if isinstance(content, str) and content.strip():
+                stripped = content.strip()
+                # Skip system-injected messages that aren't real user input
+                if (
+                    stripped.startswith("<local-command-caveat>")
+                    or stripped.startswith("<command-name>")
+                    or stripped.startswith("<local-command-stdout>")
+                    or stripped.startswith("<system-reminder>")
+                    or stripped.startswith("<task-notification>")
+                ):
+                    continue
+                # Compact summary → system message instead of user
+                if stripped.startswith(
+                    "This session is being continued from a previous conversation"
+                ):
+                    flush_all()
+                    _compact_uuid = f"sys-{hashlib.md5(content.encode()).hexdigest()[:16]}"
+                    turns.append(("system", content, None, _compact_uuid, None, entry_ts))
+                    continue
+                flush_all()
+                clean = strip_agent_preamble(stripped)
+                turns.append(("user", clean, None, entry_uuid, None, entry_ts))
+
+        elif entry_type == "assistant":
+            msg = entry.get("message", {})
+            # Skip subagent messages
+            if entry.get("parent_tool_use_id"):
+                continue
+            for block in msg.get("content", []):
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text", "").strip():
+                    if not _is_image_metadata(block["text"]):
+                        text_parts.append(block["text"])
+                        if text_uuid is None and entry_uuid:
+                            text_uuid = entry_uuid
+                        if text_ts is None and entry_ts:
+                            text_ts = entry_ts
+                elif block.get("type") == "tool_use":
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
+                    tool_use_id = block.get("id", "")
+
+                    if tool_name in ("AskUserQuestion", "ExitPlanMode"):
+                        # Interactive: flush text, set up interactive state
+                        flush_text()
+                        if tool_name == "AskUserQuestion":
+                            entry_data = {
+                                "type": "ask_user_question",
+                                "tool_use_id": tool_use_id,
+                                "questions": tool_input.get("questions", []),
+                                "answer": None,
+                            }
+                        else:
+                            entry_data = {
+                                "type": "exit_plan_mode",
+                                "tool_use_id": tool_use_id,
+                                "allowedPrompts": tool_input.get("allowedPrompts", []),
+                                "plan": tool_input.get("plan", ""),
+                                "answer": None,
+                            }
+                        pending_interactive.append(entry_data)
+                        interactive_by_id[tool_use_id] = entry_data
+                    else:
+                        # Regular tool: flush text, emit tool_use turn
+                        flush_text()
+                        summary = format_tool_summary(tool_name, tool_input)
+                        if summary:
+                            tool_uuid = f"tool-{tool_use_id}" if tool_use_id else None
+                            tool_meta = {"tool_name": tool_name, "tool_use_id": tool_use_id}
+                            turns.append(("assistant", summary, tool_meta, tool_uuid, "tool_use", entry_ts))
+
+        elif entry_type == "queue-operation":
+            if entry.get("operation") == "enqueue":
+                queued_content = entry.get("content", "")
+                if isinstance(queued_content, str) and queued_content.strip():
+                    clean_q = strip_agent_preamble(queued_content.strip())
+                    _qop_uuid = f"qop-{hashlib.md5(clean_q.encode()).hexdigest()[:16]}"
+                    if clean_q.lstrip().startswith("<task-notification>"):
+                        flush_all()
+                        turns.append(("assistant", clean_q, None, _qop_uuid, None, entry_ts))
+                    else:
+                        flush_all()
+                        turns.append(("user", clean_q, None, _qop_uuid, None, entry_ts))
+
+        elif entry_type == "system":
+            subtype = entry.get("subtype", "")
+            if subtype in ("turn_duration", "stop_hook_summary"):
+                continue
+            flush_all()
+            content = entry.get("content", "")
+            if subtype or content:
+                label = content or subtype.replace("_", " ")
+                _sys_uuid = f"sys-{hashlib.md5(label.encode()).hexdigest()[:16]}"
+                turns.append(("system", label, None, _sys_uuid, None, entry_ts))
+
+    # Flush remaining
+    flush_all()
+
+    # Deduplicate user turns by UUID only (content dedup is too aggressive —
+    # the same message can legitimately appear before and after compact)
+    if turns:
+        seen_uuids: set[str] = set()
+        deduped: list[tuple[str, str, dict | None, str | None, str | None, str | None]] = []
+        for turn in turns:
+            role = turn[0]
+            uuid = turn[3] if len(turn) > 3 else None
+            if role == "user" and uuid:
+                if uuid in seen_uuids:
+                    continue
+                seen_uuids.add(uuid)
+            deduped.append(turn)
+        turns = deduped
+
+    logger.debug("Parsed %d turns from %d lines: %s", len(turns), len(lines),
+                 [(t[0], t[4] if len(t) > 4 else None, t[3][:20] if len(t) > 3 and t[3] else 'none') for t in turns[:10]])
+    return turns
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat aliases (underscore-prefixed names used by existing code)
+# ---------------------------------------------------------------------------
+
+_parse_session_turns = parse_session_turns
+_parse_session_turns_from_lines = parse_session_turns_from_lines
+_is_wrapped_prompt = is_wrapped_prompt
+_merge_interactive_meta = merge_interactive_meta
+_strip_agent_preamble = strip_agent_preamble
+_format_tool_summary = format_tool_summary
+_parse_agenthive_marker = parse_agenthive_marker
+_derive_selected_index = derive_selected_index
+_AGENTHIVE_PROMPT_MARKER = AGENTHIVE_PROMPT_MARKER
+_PREAMBLE_PREFIX = PREAMBLE_PREFIX
