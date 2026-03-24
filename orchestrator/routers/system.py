@@ -118,6 +118,43 @@ async def test_notify(request: Request):
     }
 
 
+@router.post("/api/debug/frontend-state")
+async def frontend_debug_state(request: Request):
+    """Receive and log frontend rendered state for debugging."""
+    _dbg = logging.getLogger("frontend.debug")
+    body = await request.json()
+    agent_id = body.get("agentId", "?")[:8]
+    page = body.get("page", "?")
+    msgs = body.get("messages", [])
+    ws_events = body.get("wsEvents", [])
+
+    dom_els = body.get("domElements", [])
+
+    _dbg.info("=== Frontend State: agent=%s page=%s ===", agent_id, page)
+    _dbg.info("Data messages: %d | DOM elements: %d", len(msgs), len(dom_els))
+    _dbg.info("--- Data (from React state) ---")
+    for m in msgs:
+        _dbg.info("  %s role=%-6s kind=%-10s seq=%-4s src=%-5s id=%s content=%.80s",
+                   m.get("created_at", "?")[:19] if m.get("created_at") else "?",
+                   m.get("role", "?"), m.get("kind") or "null",
+                   m.get("session_seq", "?"), m.get("source") or "?",
+                   m.get("id", "?"), (m.get("content", "") or "")[:80].replace("\n", " "))
+    if dom_els:
+        _dbg.info("--- DOM (actual rendered elements) ---")
+        for el in dom_els:
+            _dbg.info("  y=%-5s h=%-4s vis=%-5s type=%-15s id=%s text=%.60s",
+                       el.get("y", "?"), el.get("h", "?"),
+                       el.get("visible", "?"), el.get("type", "?"),
+                       el.get("msgId", "?"),
+                       (el.get("text", "") or "")[:60].replace("\n", " "))
+    if ws_events:
+        _dbg.info("--- WS events (last 20) ---")
+        for ev in ws_events[-20:]:
+            _dbg.info("  %s", ev)
+    _dbg.info("=== End Frontend State ===")
+    return {"ok": True}
+
+
 @router.get("/api/system/stats")
 async def system_stats():
     """System resource usage — CPU, memory, disk, and optional GPU."""
@@ -235,9 +272,6 @@ async def system_stats():
         except (OSError, ValueError) as e:
             logger.warning("Failed to collect process stats from /proc: %s", e)
             stats["agenthive"] = None
-    except Exception as e:
-        logger.warning("Failed to collect process stats: %s", e)
-        stats["agenthive"] = None
 
     return stats
 
@@ -610,7 +644,7 @@ def _claude_cli_version() -> str:
         try:
             out = subprocess.check_output(["claude", "--version"], timeout=5, text=True).strip()
             _claude_cli_version._v = out.split()[0]  # "2.1.70 (Claude Code)" → "2.1.70"
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             logger.warning("Claude CLI version detection failed", exc_info=True)
             _claude_cli_version._v = "0.0.0"
     return _claude_cli_version._v
@@ -669,7 +703,7 @@ async def token_usage():
         if exc.code == 429 and _token_usage_cache["data"] is not None:
             return _token_usage_cache["data"]
         raise HTTPException(status_code=exc.code, detail=f"Anthropic API error: {body}")
-    except Exception as exc:
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
         if _token_usage_cache["data"] is not None:
             return _token_usage_cache["data"]
         raise HTTPException(status_code=502, detail=f"Failed to reach Anthropic API: {exc}")

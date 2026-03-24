@@ -144,7 +144,8 @@ async def serve_thumbnail(project: str, path: str, request: Request, db: Session
                 img = img.convert("RGB")
             img.save(thumb_file, "JPEG", quality=80)
         return FileResponse(thumb_file, media_type="image/jpeg")
-    except Exception:
+    except (IOError, OSError, ValueError) as e:
+        logger.debug("Thumbnail generation failed for %s: %s", full_path, e)
         media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
         return _serve_file_with_range(full_path, media_type, request)
 

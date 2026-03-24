@@ -43,15 +43,11 @@ async def transcribe_audio(file: UploadFile):
 
     client = _get_client()
 
-    try:
-        # Whisper accepts various formats: mp3, mp4, mpeg, mpga, m4a, wav, webm
-        transcript = await client.audio.transcriptions.create(
-            model="whisper-1",
-            file=(file.filename, content),
-        )
-    except Exception as e:
-        logger.exception("Whisper API error")
-        raise HTTPException(status_code=502, detail=f"Whisper API error: {e}")
+    # Whisper accepts various formats: mp3, mp4, mpeg, mpga, m4a, wav, webm
+    transcript = await client.audio.transcriptions.create(
+        model="whisper-1",
+        file=(file.filename, content),
+    )
 
     text = transcript.text.strip()
     logger.info("Transcribed %d bytes audio → %d chars text", len(content), len(text))
@@ -84,19 +80,15 @@ async def refine_text(req: RefineRequest):
         return {"text": raw}
 
     client = _get_client()
-    try:
-        resp = await client.chat.completions.create(
-            model=VOICE_REFINE_MODEL,
-            temperature=0,
-            max_tokens=1024,
-            messages=[
-                {"role": "system", "content": REFINE_SYSTEM_PROMPT},
-                {"role": "user", "content": raw},
-            ],
-        )
-        refined = resp.choices[0].message.content.strip()
-        logger.info("Voice refine: %r → %r", raw, refined)
-        return {"text": refined}
-    except Exception:
-        logger.warning("Voice refine failed, returning raw text", exc_info=True)
-        return {"text": raw}
+    resp = await client.chat.completions.create(
+        model=VOICE_REFINE_MODEL,
+        temperature=0,
+        max_tokens=1024,
+        messages=[
+            {"role": "system", "content": REFINE_SYSTEM_PROMPT},
+            {"role": "user", "content": raw},
+        ],
+    )
+    refined = resp.choices[0].message.content.strip()
+    logger.info("Voice refine: %r → %r", raw, refined)
+    return {"text": refined}

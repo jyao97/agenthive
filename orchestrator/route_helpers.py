@@ -137,11 +137,11 @@ def graceful_kill_tmux(pane_id: str, session_name: str):
         _sp.run(["tmux", "send-keys", "-t", pane_id, "C-c"], capture_output=True, timeout=TMUX_CMD_TIMEOUT)
         _sp.run(["tmux", "send-keys", "-t", pane_id, "C-c"], capture_output=True, timeout=TMUX_CMD_TIMEOUT)
         _sp.run(["tmux", "kill-pane", "-t", pane_id], capture_output=True, timeout=TMUX_CMD_TIMEOUT)
-    except Exception:
+    except (OSError, _sp.TimeoutExpired):
         logger.warning("Failed graceful tmux kill for pane %s", pane_id, exc_info=True)
     try:
         _sp.run(["tmux", "kill-session", "-t", session_name], capture_output=True, timeout=TMUX_CMD_TIMEOUT)
-    except Exception:
+    except (OSError, _sp.TimeoutExpired):
         logger.debug("tmux kill-session %s failed (may already be dead)", session_name)
 
 

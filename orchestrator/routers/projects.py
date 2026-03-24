@@ -280,10 +280,6 @@ Here is recent agent activity in this project (last 50 messages):
     except FileNotFoundError:
         _claudemd_job_set(project_name, status="error", error="Claude CLI not found")
         return
-    except Exception as e:
-        logger.exception("Unexpected error in CLAUDE.md refresh for %s", project_name)
-        _claudemd_job_set(project_name, status="error", error=str(e))
-        return
 
     if not proposed:
         _claudemd_job_set(project_name, status="error", error="Claude agent returned empty output")
@@ -436,10 +432,6 @@ Here are today's conversations (with timestamps):
     except FileNotFoundError:
         _progress_job_set(project_name, status="error", error="Claude CLI not found")
         return
-    except Exception as e:
-        logger.exception("Unexpected error in progress summary for %s", project_name)
-        _progress_job_set(project_name, status="error", error=str(e))
-        return
 
     if not new_section:
         _progress_job_set(project_name, status="error", error="Claude agent returned empty output")
@@ -591,9 +583,6 @@ Agent: {agent_name} | Task: {task_title}
     except FileNotFoundError:
         logger.warning("Claude CLI not found for agent summary")
         return
-    except Exception:
-        logger.exception("Unexpected error in agent summary for %s", agent_id)
-        return
 
     if not raw_output:
         logger.info("Claude returned empty output for agent %s summary", agent_id)
@@ -635,26 +624,19 @@ Agent: {agent_name} | Task: {task_title}
                     )[:2000]
         own_db.commit()
         logger.info("Stored %d insight suggestions for agent %s", len(insight_items), agent_id)
-    except Exception:
-        logger.exception("Failed to store insight suggestions for agent %s", agent_id)
-        own_db.rollback()
-        return
     finally:
         own_db.close()
 
     # Emit WS event (from background thread → use stored main event loop)
     from websocket import emit_progress_suggestions_ready
-    try:
-        loop = _main_event_loop
-        if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                emit_progress_suggestions_ready(agent_id, len(insight_items), project_name),
-                loop,
-            )
-        else:
-            logger.debug("Main event loop not available for WS emit")
-    except Exception:
-        logger.debug("Failed to emit progress_suggestions_ready WS event", exc_info=True)
+    loop = _main_event_loop
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(
+            emit_progress_suggestions_ready(agent_id, len(insight_items), project_name),
+            loop,
+        )
+    else:
+        logger.debug("Main event loop not available for WS emit")
 
 
 def _generate_retry_summary_background(agent_id: str, task_id: str,
@@ -663,12 +645,8 @@ def _generate_retry_summary_background(agent_id: str, task_id: str,
                                        incomplete_reason: str | None):
     """Generate a concise retry summary via claude -p: what the agent tried,
     user feedback, and why the task failed."""
-    try:
-        _generate_retry_summary_impl(agent_id, task_id, task_title,
-                                     project_name, project_path, incomplete_reason)
-    except Exception:
-        logger.exception("Unhandled error in retry summary thread for task %s", task_id)
-        _clear_generating_marker(task_id)
+    _generate_retry_summary_impl(agent_id, task_id, task_title,
+                                 project_name, project_path, incomplete_reason)
 
 
 def _generate_retry_summary_impl(agent_id: str, task_id: str,
@@ -748,10 +726,6 @@ Task: {task_title}{reason_line}
         logger.warning("Retry summary timed out for task %s", task_id)
         _clear_generating_marker(task_id)
         return
-    except Exception:
-        logger.exception("Retry summary error for task %s", task_id)
-        _clear_generating_marker(task_id)
-        return
 
     if not summary:
         _clear_generating_marker(task_id)
@@ -765,24 +739,17 @@ Task: {task_title}{reason_line}
             task.agent_summary = summary
             own_db.commit()
             logger.info("Saved retry summary for task %s (%d chars)", task_id, len(summary))
-    except Exception:
-        logger.exception("Failed to save retry summary for task %s", task_id)
-        own_db.rollback()
-        return
     finally:
         own_db.close()
 
     # Emit task_update so frontend refreshes
     from websocket import emit_task_update
-    try:
-        loop = _main_event_loop
-        if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                emit_task_update(task_id, "INBOX", project_name, title=task_title),
-                loop,
-            )
-    except Exception:
-        logger.debug("Failed to emit task_update for retry summary", exc_info=True)
+    loop = _main_event_loop
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(
+            emit_task_update(task_id, "INBOX", project_name, title=task_title),
+            loop,
+        )
 
 
 def _clear_generating_marker(task_id: str):
@@ -793,9 +760,6 @@ def _clear_generating_marker(task_id: str):
         if task and task.agent_summary == ":::generating:::":
             task.agent_summary = None
             own_db.commit()
-    except Exception:
-        logger.exception("Failed to clear generating marker for task %s", task_id)
-        own_db.rollback()
     finally:
         own_db.close()
 
@@ -1265,12 +1229,8 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
     if old_path.endswith(f"/{name}") and os.path.isdir(old_path):
         new_path = old_path.rsplit("/", 1)[0] + f"/{new_name}"
         if not os.path.exists(new_path):
-            try:
-                os.rename(old_path, new_path)
-                logger.info("Renamed project directory %s → %s", old_path, new_path)
-            except OSError:
-                logger.warning("Failed to rename project directory %s → %s", old_path, new_path, exc_info=True)
-                new_path = old_path  # rename failed, keep old path
+            os.rename(old_path, new_path)
+            logger.info("Renamed project directory %s → %s", old_path, new_path)
 
     new_proj.path = new_path
     db.commit()
@@ -1294,11 +1254,8 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
             if os.path.exists(new_dir):
                 logger.info("Skipped %s migration — target already exists: %s", label, new_dir)
                 continue
-            try:
-                os.rename(old_dir, new_dir)
-                logger.info("Migrated %s dir: %s → %s", label, old_dir, new_dir)
-            except OSError:
-                logger.warning("Failed to migrate %s dir: %s → %s", label, old_dir, new_dir, exc_info=True)
+            os.rename(old_dir, new_dir)
+            logger.info("Migrated %s dir: %s → %s", label, old_dir, new_dir)
 
         # Invalidate cached lookups for both old and new paths
         invalidate_path_cache(old_path)
@@ -1373,10 +1330,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
     # Stop all running subprocess workers for this project
     wm = getattr(request.app.state, "worker_manager", None)
     if wm:
-        try:
-            wm.stop_project_processes(name)
-        except Exception:
-            logger.warning("Failed to stop processes for project %s", name, exc_info=True)
+        wm.stop_project_processes(name)
 
     proj.archived = True
     db.commit()
@@ -1404,11 +1358,8 @@ async def delete_project(name: str, request: Request, db: Session = Depends(get_
         agents_to_delete = db.query(Agent).filter(Agent.project == name).all()
         for agent in agents_to_delete:
             if agent.session_id:
-                try:
-                    cleanup_source_session(agent.session_id, proj.path, agent.worktree)
-                    evict_session(agent.session_id, proj.path, agent.worktree)
-                except Exception:
-                    logger.debug("Failed to cleanup session for agent %s", agent.id, exc_info=True)
+                cleanup_source_session(agent.session_id, proj.path, agent.worktree)
+                evict_session(agent.session_id, proj.path, agent.worktree)
 
         # Clean up output logs for all messages of these agents
         agent_ids = [a.id for a in agents_to_delete]
@@ -1426,11 +1377,7 @@ async def delete_project(name: str, request: Request, db: Session = Depends(get_
         db.query(Agent).filter(Agent.project == name).delete(synchronize_session=False)
         db.query(StarredSession).filter(StarredSession.project == name).delete(synchronize_session=False)
         db.delete(proj)
-        try:
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise HTTPException(status_code=500, detail="Failed to delete project records")
+        db.commit()
         _remove_from_registry(name)
 
     # Move files to .trash regardless of DB registration
@@ -1488,23 +1435,19 @@ async def list_project_sessions(name: str, db: Session = Depends(get_db)):
 
     # Group entries by sessionId
     sessions: dict[str, list[dict]] = {}
-    try:
-        with open(history_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                sid = entry.get("sessionId")
-                if not sid:
-                    continue
-                sessions.setdefault(sid, []).append(entry)
-    except Exception:
-        logger.exception("Failed to read history.jsonl")
-        return []
+    with open(history_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            sid = entry.get("sessionId")
+            if not sid:
+                continue
+            sessions.setdefault(sid, []).append(entry)
 
     # Filter sessions matching this project by path basename or full path
     matched: dict[str, list[dict]] = {}
@@ -1645,11 +1588,8 @@ async def get_project_file(name: str, path: str, db: Session = Depends(get_db)):
     filepath = os.path.join(project_path, path)
     if not os.path.isfile(filepath):
         # Auto-scaffold on first access
-        try:
-            from project_scaffolder import scaffold_project
-            scaffold_project(name, project_path)
-        except Exception:
-            logger.warning("Auto-scaffold failed for project %s", name, exc_info=True)
+        from project_scaffolder import scaffold_project
+        scaffold_project(name, project_path)
         if not os.path.isfile(filepath):
             return {"exists": False, "content": None, "path": path}
     try:
@@ -1927,14 +1867,11 @@ async def apply_progress(name: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
     # Store parsed insights into DB + FTS5 for RAG retrieval
-    try:
-        from datetime import datetime as _dt2, timezone as _tz2
-        from agent_dispatcher import store_insights
-        n = store_insights(db, name, _dt2.now(_tz2.utc).date().isoformat(), new_section)
-        if n:
-            logger.info("Stored %d insights in FTS5 for %s", n, name)
-    except Exception:
-        logger.warning("Failed to store FTS5 insights for %s", name, exc_info=True)
+    from datetime import datetime as _dt2, timezone as _tz2
+    from agent_dispatcher import store_insights
+    n = store_insights(db, name, _dt2.now(_tz2.utc).date().isoformat(), new_section)
+    if n:
+        logger.info("Stored %d insights in FTS5 for %s", n, name)
 
     _progress_job_clear(name)
     return {"success": True, "content": final_content, "lines": len(final_content.splitlines())}
@@ -1975,10 +1912,6 @@ async def rebuild_insights(name: str, db: Session = Depends(get_db)):
             ).delete(synchronize_session=False)
             own_db.commit()
         purged = len(existing_ids)
-    except Exception:
-        logger.warning("rebuild-insights: purge failed for %s", name, exc_info=True)
-        own_db.rollback()
-        raise HTTPException(status_code=500, detail="Failed to purge existing insights")
     finally:
         own_db.close()
 

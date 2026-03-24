@@ -112,14 +112,11 @@ async def websocket_endpoint(ws: WebSocket):
     ad = getattr(ws.app.state, "agent_dispatcher", None)
     generating = list(ad._generating_agents) if ad else []
     if generating:
-        try:
-            await ws.send_text(json.dumps({
-                "type": "generating_agents",
-                "data": {"agent_ids": generating},
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }))
-        except Exception:
-            logger.debug("Failed to send generating_agents on connect", exc_info=True)
+        await ws.send_text(json.dumps({
+            "type": "generating_agents",
+            "data": {"agent_ids": generating},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }))
 
     try:
         while True:
