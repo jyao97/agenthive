@@ -536,17 +536,11 @@ def parse_session_turns_from_lines(
                             turns.append(("assistant", summary, tool_meta, tool_uuid, "tool_use", entry_ts))
 
         elif entry_type == "queue-operation":
-            if entry.get("operation") == "enqueue":
-                queued_content = entry.get("content", "")
-                if isinstance(queued_content, str) and queued_content.strip():
-                    clean_q = strip_agent_preamble(queued_content.strip())
-                    _qop_uuid = f"qop-{hashlib.md5(clean_q.encode()).hexdigest()[:16]}"
-                    if clean_q.lstrip().startswith("<task-notification>"):
-                        flush_all()
-                        turns.append(("assistant", clean_q, None, _qop_uuid, None, entry_ts))
-                    else:
-                        flush_all()
-                        turns.append(("user", clean_q, None, _qop_uuid, None, entry_ts))
+            # Skip queue-operation entries — they are bookkeeping for
+            # Claude's internal message queue.  The real "user" entry
+            # that follows is authoritative and will be matched by the
+            # sync engine.  Parsing both creates duplicate messages.
+            pass
 
         elif entry_type == "system":
             subtype = entry.get("subtype", "")
