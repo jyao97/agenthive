@@ -2317,9 +2317,7 @@ Here are the day's conversations (with timestamps):
                     cancel_tasks=True, cascade_subagents=False,
                 )
 
-        # Remove display file for stopped agent
-        from display_writer import delete_agent as _delete_display
-        _delete_display(agent.id)
+        # Keep display file for stopped agents so chat history remains viewable
 
         if not skip_task_transition:
             self._transition_linked_task(db, agent)
@@ -2387,9 +2385,7 @@ Here are the day's conversations (with timestamps):
             from websocket import emit_agent_update
             self._emit(emit_agent_update(agent.id, "ERROR", agent.project))
 
-        # Remove display file for errored agent
-        from display_writer import delete_agent as _delete_display
-        _delete_display(agent.id)
+        # Keep display file for errored agents so chat history remains viewable
 
         self._transition_linked_task(db, agent, TaskStatus.FAILED)
 
@@ -3558,6 +3554,7 @@ Here are the day's conversations (with timestamps):
             Agent.status.in_([AgentStatus.SYNCING, AgentStatus.STARTING]),
             Agent.cli_sync == True,
             Agent.tmux_pane.is_not(None),
+            Agent.generating_msg_id.is_(None),  # not currently processing
         ).all()
 
         for agent in active_sync_agents:
@@ -3565,6 +3562,8 @@ Here are the day's conversations (with timestamps):
             db.refresh(agent)
             if agent.status not in (AgentStatus.SYNCING, AgentStatus.STARTING) or not agent.tmux_pane:
                 continue
+            if agent.generating_msg_id is not None:
+                continue  # became busy between query and refresh
 
             due_msg = (
                 db.query(Message)

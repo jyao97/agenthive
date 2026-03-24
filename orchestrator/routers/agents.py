@@ -1841,7 +1841,13 @@ async def permanently_delete_agent(agent_id: str, request: Request, db: Session 
                 cleaned_files.append(f"{sid}.jsonl")
             evict_session(sid, project.path, worktree)
 
-    # 4. Delete output log files for all messages
+    # 4. Delete display files for all agents being removed
+    from display_writer import delete_agent as _delete_display
+    for aid in all_agent_ids:
+        _delete_display(aid)
+        cleaned_files.append(f"display/{aid}.jsonl")
+
+    # 5. Delete output log files for all messages
     for mid in msg_ids:
         log_path = f"/tmp/claude-output-{mid}.log"
         if os.path.isfile(log_path):
@@ -2215,6 +2221,18 @@ async def get_agent_display(
     )
 
 
+@router.post("/api/agents/{agent_id}/wake-sync")
+async def wake_agent_sync(agent_id: str, request: Request, db: Session = Depends(get_db)):
+    """Wake the sync loop for an agent to trigger immediate JSONL import."""
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if ad and ad.wake_sync(agent_id):
+        return {"status": "ok", "detail": "Sync woken"}
+    raise HTTPException(status_code=409, detail="No active sync loop for this agent")
+
+
 @router.post("/api/agents/{agent_id}/messages", response_model=MessageOut, status_code=201)
 async def send_agent_message(
     agent_id: str,
@@ -2233,12 +2251,16 @@ async def send_agent_message(
     if agent.status == AgentStatus.STOPPED:
         raise HTTPException(status_code=400, detail="Agent is stopped")
 
-    # SYNCING/STARTING agents with a tmux pane: send directly via tmux
+    # SYNCING/STARTING agents with a tmux pane: send directly via tmux.
+    # generating_msg_id is set by UserPromptSubmit hook and cleared by Stop
+    # hook — when set, the agent is actively processing and new messages must
+    # be queued instead of typed into the tmux buffer.
     is_syncing_with_tmux = (
         agent.status in (AgentStatus.SYNCING, AgentStatus.STARTING)
         and agent.tmux_pane
         and not body.queue
         and not body.scheduled_at
+        and not agent.generating_msg_id
     )
     if is_syncing_with_tmux:
         from agent_dispatcher import (
