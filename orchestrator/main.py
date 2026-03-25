@@ -325,8 +325,6 @@ app.include_router(voice_router)
 from websocket import websocket_endpoint
 app.websocket("/ws/status")(websocket_endpoint)
 
-from voice_stream import transcribe_stream_endpoint
-app.websocket("/ws/transcribe")(transcribe_stream_endpoint)
 
 
 # ---- Include all routers ----
