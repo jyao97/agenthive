@@ -534,7 +534,7 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
 async def dispatch_task_v2(task_id: str, request: Request, db: Session = Depends(get_db)):
     """Dispatch a task: create agent synchronously and move to EXECUTING.
 
-    Supports both subprocess (default) and tmux (use_tmux=True) agents.
+    Creates a tmux agent and moves the task to EXECUTING.
     Returns the task with agent_id set so the frontend can navigate immediately.
     """
     task = db.get(Task, task_id)
@@ -569,13 +569,8 @@ async def dispatch_task_v2(task_id: str, request: Request, db: Session = Depends
 
     ad = getattr(request.app.state, "agent_dispatcher", None)
 
-    if task.use_tmux:
-        agent_id = _dispatch_task_tmux(db, task, proj, ad)
-    else:
-        # Subprocess path: create Agent(IDLE) + Message(PENDING)
-        if not ad:
-            raise HTTPException(500, "Dispatcher not available")
-        agent_id = ad._create_task_agent(db, task, proj)
+    # All tasks dispatch via tmux
+    agent_id = _dispatch_task_tmux(db, task, proj, ad)
 
     if not agent_id:
         raise HTTPException(500, "Failed to create agent for task")

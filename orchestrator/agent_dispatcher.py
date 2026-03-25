@@ -2514,10 +2514,6 @@ Here are the day's conversations (with timestamps):
             return
 
         for task in tasks:
-            # Tmux tasks need synchronous dispatch via dispatch_task_v2 endpoint
-            if getattr(task, "use_tmux", False):
-                continue
-
             proj = db.query(Project).filter(Project.name == task.project_name).first()
             if not proj:
                 logger.warning("Task %s: project %s not found, skipping", task.id, task.project_name)
@@ -2533,7 +2529,13 @@ Here are the day's conversations (with timestamps):
             if active >= proj.max_concurrent:
                 continue
 
-            agent_id = self._create_task_agent(db, task, proj)
+            # All tasks dispatch via tmux
+            from routers.tasks import _dispatch_task_tmux
+            try:
+                agent_id = _dispatch_task_tmux(db, task, proj, self)
+            except Exception:
+                logger.exception("Task %s: tmux dispatch failed", task.id)
+                continue
             if agent_id:
                 # Atomic CAS: only update if task is still PENDING
                 rows = (
@@ -2555,8 +2557,8 @@ Here are the day's conversations (with timestamps):
                     task.id, task.status.value, task.project_name or "",
                     title=task.title, agent_id=agent_id,
                 ))
-                self._emit(emit_agent_update(agent_id, AgentStatus.IDLE.value, proj.name))
-                logger.info("Task %s dispatched to agent %s", task.id, agent_id)
+                self._emit(emit_agent_update(agent_id, AgentStatus.STARTING.value, proj.name))
+                logger.info("Task %s dispatched to tmux agent %s", task.id, agent_id)
 
     def _create_task_agent(self, db: Session, task: Task, proj: Project) -> str | None:
         """Create an agent for a v2 task. Reuses the standard IDLE→dispatch flow.

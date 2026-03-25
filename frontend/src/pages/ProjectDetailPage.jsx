@@ -559,9 +559,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const [worktree, setWorktree] = useState(() => {
     try { const v = localStorage.getItem(`pref:project-agent:${name}:worktree`); return v !== null ? (v === "" ? null : v) : null; } catch { return null; }
   });
-  const [syncMode, setSyncMode] = useState(() => {
-    try { const v = localStorage.getItem(`pref:project-agent:${name}:syncMode`); return v !== null ? v === "true" : true; } catch { return true; }
-  });
+  // syncMode removed — all agents use tmux now
   const [skipPermissions, setSkipPermissions] = useState(() => {
     try { return localStorage.getItem(`pref:project-agent:${name}:skipPermissions`) !== "false"; } catch { return true; }
   });
@@ -1082,19 +1080,10 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     const fullPrompt = buildPromptText(prompt.trim(), uploaded);
     setSubmitting(true);
     try {
-      if (syncMode) {
-        const agent = await launchTmuxAgent({ project: name, prompt: fullPrompt, model, effort, worktree, skip_permissions: skipPermissions });
-        clearAllDrafts();
-        clearAttachments();
-        navigate(`/agents/${agent.id}`);
-      } else {
-        const agent = await createAgent({ project: name, prompt: fullPrompt, mode: "AUTO", model, effort, worktree, skip_permissions: skipPermissions });
-        clearAllDrafts();
-        clearAttachments();
-        showToast("Agent created!");
-        setWorktree(null);
-        navigate(`/agents/${agent.id}`);
-      }
+      const agent = await launchTmuxAgent({ project: name, prompt: fullPrompt, model, effort, worktree, skip_permissions: skipPermissions });
+      clearAllDrafts();
+      clearAttachments();
+      navigate(`/agents/${agent.id}`);
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     } finally {
@@ -1522,17 +1511,6 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
             )}
           </div>
           <div />
-          <label className="flex items-center gap-1.5 cursor-pointer">
-            <div
-              role="switch"
-              aria-checked={syncMode}
-              onClick={() => { const next = !syncMode; setSyncMode(next); try { localStorage.setItem(`pref:project-agent:${name}:syncMode`, String(next)); } catch {} }}
-              className={`relative w-9 h-[20px] rounded-full transition-colors ${syncMode ? "bg-emerald-500" : "bg-elevated"}`}
-            >
-              <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${syncMode ? "translate-x-[16px]" : ""}`} />
-            </div>
-            <span className="text-sm text-label">Tmux</span>
-          </label>
         </div>
       </form>
       )}

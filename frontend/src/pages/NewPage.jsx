@@ -275,7 +275,7 @@ function NewAgentForm({ showToast, navigate }) {
   const [model, setModel, clearModel] = useDraft("create-agent:model", MODEL_OPTIONS[0].value);
   const [effort, setEffort, clearEffort] = useDraft("create-agent:effort", "high");
   const [worktree, setWorktree] = useState(null);
-  const [syncMode, setSyncMode] = useState(true);
+  // syncMode removed — all agents use tmux now
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const attachmentCacheKey = "draft:create-agent:attachments";
@@ -455,17 +455,10 @@ function NewAgentForm({ showToast, navigate }) {
     const fullPrompt = buildPromptText(prompt.trim(), uploaded);
     setSubmitting(true);
     try {
-      if (syncMode) {
-        const agent = await launchTmuxAgent({ project, prompt: fullPrompt, model, effort, worktree, skip_permissions: skipPermissions });
-        clearAllDrafts();
-        clearAttachments();
-        navigate(`/agents/${agent.id}`);
-      } else {
-        const agent = await createAgent({ project, prompt: fullPrompt, mode: "AUTO", model, effort, worktree, skip_permissions: skipPermissions });
-        clearAllDrafts();
-        clearAttachments();
-        navigate(`/agents/${agent.id}`);
-      }
+      const agent = await launchTmuxAgent({ project, prompt: fullPrompt, model, effort, worktree, skip_permissions: skipPermissions });
+      clearAllDrafts();
+      clearAttachments();
+      navigate(`/agents/${agent.id}`);
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     } finally {
@@ -680,17 +673,6 @@ function NewAgentForm({ showToast, navigate }) {
               />
             )}
           </div>
-          <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
-            <div
-              role="switch"
-              aria-checked={syncMode}
-              onClick={() => setSyncMode(!syncMode)}
-              className={`relative w-9 h-[20px] rounded-full transition-colors ${syncMode ? "bg-emerald-500" : "bg-elevated"}`}
-            >
-              <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${syncMode ? "translate-x-[16px]" : ""}`} />
-            </div>
-            <span className="text-sm text-label">Tmux</span>
-          </label>
         </div>
       </div>
 

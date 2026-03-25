@@ -25,7 +25,7 @@ class TaskCreate(BaseModel):
     skip_permissions: bool = True
     sync_mode: bool = False
     use_worktree: bool = True
-    use_tmux: bool = False
+    use_tmux: bool = True
     notify_at: datetime | None = None
     auto_dispatch: bool = False
 
@@ -74,7 +74,7 @@ class TaskOut(BaseModel):
     skip_permissions: bool = True
     sync_mode: bool = False
     use_worktree: bool = True
-    use_tmux: bool = False
+    use_tmux: bool = True
     retry_context: str | None = None
     sort_order: int = 0
     notify_at: datetime | None = None

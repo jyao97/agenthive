@@ -24,9 +24,7 @@ function deriveTitle(description) {
 
 export default function NewTaskPage({ embedded = false }) {
   const navigate = useNavigate();
-  const [useTmux, setUseTmux] = useState(() => {
-    try { return localStorage.getItem("pref:useTmux") === "true"; } catch { return false; }
-  });
+  // useTmux removed — all tasks use tmux now
   const [title, setTitle, clearTitle] = useDraft("new-task:title", "");
   const [description, setDescription, clearDesc] = useDraft("new-task:description", "");
   const [project, setProject, clearProject] = useDraft("new-task:project", "");
@@ -188,7 +186,7 @@ export default function NewTaskPage({ embedded = false }) {
           skip_permissions: skipPermissions,
           sync_mode: false,
           use_worktree: !!worktree,
-          use_tmux: useTmux,
+          use_tmux: true,
           notify_at: notifyAt || undefined,
           auto_dispatch: false, // inbox only
         });
@@ -233,7 +231,7 @@ export default function NewTaskPage({ embedded = false }) {
         skip_permissions: skipPermissions,
         sync_mode: false,
         use_worktree: !!worktree,
-        use_tmux: useTmux,
+        use_tmux: true,
         notify_at: notifyAt || undefined,
         auto_dispatch: false,
       });
@@ -274,7 +272,7 @@ export default function NewTaskPage({ embedded = false }) {
         effort: effort || undefined,
         skip_permissions: skipPermissions,
         use_worktree: !!worktree,
-        use_tmux: useTmux,
+        use_tmux: true,
         auto_dispatch: false,
       });
       // Dispatch creates agent synchronously — returns task with agent_id
@@ -577,21 +575,6 @@ export default function NewTaskPage({ embedded = false }) {
                     />
                   )}
                 </div>
-                <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
-                  <div
-                    role="switch"
-                    aria-checked={useTmux}
-                    onClick={() => {
-                      const next = !useTmux;
-                      setUseTmux(next);
-                      try { localStorage.setItem("pref:useTmux", String(next)); } catch {}
-                    }}
-                    className={`relative w-9 h-[20px] rounded-full transition-colors ${useTmux ? "bg-green-500" : "bg-elevated"}`}
-                  >
-                    <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${useTmux ? "translate-x-[16px]" : ""}`} />
-                  </div>
-                  <span className="text-sm text-label">Tmux</span>
-                </label>
               </div>
             </form>
           </div>

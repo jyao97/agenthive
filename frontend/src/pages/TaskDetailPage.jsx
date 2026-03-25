@@ -610,9 +610,8 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
                 <div className="flex items-center gap-1.5">
                   {task.use_worktree && <span className="text-[10px] px-1.5 py-px rounded bg-purple-500/15 text-purple-400">Worktree</span>}
                   {task.sync_mode && <span className="text-[10px] px-1.5 py-px rounded bg-emerald-500/15 text-emerald-400">Sync</span>}
-                  {task.use_tmux && <span className="text-[10px] px-1.5 py-px rounded bg-cyan-500/15 text-cyan-400">Tmux</span>}
                   {task.skip_permissions && <span className="text-[10px] px-1.5 py-px rounded bg-amber-500/15 text-amber-400">Skip perms</span>}
-                  {!task.use_worktree && !task.sync_mode && !task.use_tmux && !task.skip_permissions && <span className="text-[11px] text-faint">None</span>}
+                  {!task.use_worktree && !task.sync_mode && !task.skip_permissions && <span className="text-[11px] text-faint">None</span>}
                 </div>
               </div>
               {/* Elapsed */}

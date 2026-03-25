@@ -10,7 +10,7 @@ import {
   fetchGitStatus,
   fetchGitWorktrees,
   checkoutBranch,
-  createAgent,
+  launchTmuxAgent,
 } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import { useToast } from "../contexts/ToastContext";
@@ -206,7 +206,7 @@ export default function GitPage({ theme, onToggleTheme }) {
               `Steps: 1) git fetch origin, 2) git checkout ${branchName}, 3) git merge ${currentBranch} --no-edit. ` +
               `If there are merge conflicts, resolve them intelligently by reading both versions and picking the correct resolution. ` +
               `After resolving, stage and commit. Then checkout back to ${currentBranch}. Report the result.`;
-        const agent = await createAgent({
+        const agent = await launchTmuxAgent({
           project: selectedProject,
           mode: "AUTO",
           skip_permissions: true,
@@ -252,7 +252,7 @@ export default function GitPage({ theme, onToggleTheme }) {
     const currentBranch = branches.find((b) => b.current)?.name || "current branch";
     setPushing(true);
     try {
-      const agent = await createAgent({
+      const agent = await launchTmuxAgent({
         project: selectedProject,
         mode: "AUTO",
         skip_permissions: true,
@@ -285,7 +285,7 @@ export default function GitPage({ theme, onToggleTheme }) {
 
     setMergingAll(true);
     try {
-      const agent = await createAgent({
+      const agent = await launchTmuxAgent({
         project: selectedProject,
         mode: "AUTO",
         skip_permissions: true,
@@ -325,7 +325,7 @@ export default function GitPage({ theme, onToggleTheme }) {
 
     setCleaning(true);
     try {
-      const agent = await createAgent({
+      const agent = await launchTmuxAgent({
         project: selectedProject,
         mode: "AUTO",
         skip_permissions: true,
