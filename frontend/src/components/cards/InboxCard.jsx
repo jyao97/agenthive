@@ -480,7 +480,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
 
                 {/* Action toolbar */}
                 <div className="flex items-center gap-2">
-                  <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
+                  <input ref={fileInputRef} type="file" multiple className="hidden" onClick={(e) => e.stopPropagation()} onChange={handleFileSelect} />
                   <button type="button" onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
                     className="w-8 h-8 rounded-full bg-elevated flex items-center justify-center text-dim hover:text-heading active:scale-90 transition-all"
                     title="Attach file">
