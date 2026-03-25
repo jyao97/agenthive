@@ -339,11 +339,6 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                       Auto
                     </span>
                   )}
-                  <span className={`text-[10px] font-semibold px-1.5 py-px rounded-full ${
-                    isHigh ? "bg-amber-500/15 text-amber-500 dark:text-amber-400" : "bg-elevated text-faint"
-                  }`}>
-                    {isHigh ? "H" : "N"}
-                  </span>
                   {task.model && (
                     <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-elevated text-dim">
                       {modelDisplayName(task.model)}
