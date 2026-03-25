@@ -2508,13 +2508,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       const open = kbHeight > 100;
 
-      // Prevent iOS from scrolling the page when keyboard is open.
-      // This keeps vvOT ≈ 0 so we can use kbHeight directly for
-      // positioning — no scroll/layout desync, no drift.
-      if (open && vv.offsetTop > 2) {
-        window.scrollTo(0, 0);
-      }
-
       if (kbHeight !== prevOff) {
         prevOff = kbHeight;
         if (open) {
@@ -2536,6 +2529,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       if (open && !isOpen) {
         isOpen = true;
+        // Lock body to prevent iOS viewport scroll — CSS lock is
+        // applied once (no per-frame fight), so no shake.
+        document.body.style.position = 'fixed';
+        document.body.style.width = '100%';
+        document.body.style.top = '0';
+        window.scrollTo(0, 0);
         setKbOpen(true);
         const sc = scrollContainerRef.current;
         if (sc && !userScrolledUp.current) {
@@ -2543,6 +2542,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         }
       } else if (!open && isOpen) {
         isOpen = false;
+        // Unlock body
+        document.body.style.position = '';
+        document.body.style.width = '';
+        document.body.style.top = '';
         setKbOpen(false);
         const sc = scrollContainerRef.current;
         if (sc && !userScrolledUp.current) {
