@@ -1843,7 +1843,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       style={kbOffset > 0 ? { bottom: `${kbOffset}px` } : undefined}
     >
       <div
-        className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
+        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOffset > 0 ? "pb-1.5 rounded-b-2xl" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
         style={{ maxWidth: "24rem" }}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
@@ -2456,27 +2456,31 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
 
   // Track keyboard height via visualViewport so both input bar and messages
-  // area can adapt.  Poll while focused to catch keyboard layout switches
-  // (Chinese ↔ English) that don't fire resize events.
+  // area can adapt.  Uses RAF polling while focused for instant response to
+  // keyboard layout switches (Chinese ↔ English) that don't fire resize events.
   const [kbOffset, setKbOffset] = useState(0);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
-    let pollId = null;
+    let rafId = null;
     let stopTimer = null;
     const update = () => {
       const off = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
       setKbOffset((prev) => (off === prev ? prev : off));
     };
+    const poll = () => {
+      update();
+      rafId = requestAnimationFrame(poll);
+    };
     const startPoll = () => {
       if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
-      if (!pollId) pollId = setInterval(update, 100);
+      if (!rafId) rafId = requestAnimationFrame(poll);
     };
     const stopPoll = () => {
       // Delay stop — keyboard switch may briefly lose focus
       if (stopTimer) clearTimeout(stopTimer);
       stopTimer = setTimeout(() => {
-        if (pollId) { clearInterval(pollId); pollId = null; }
+        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
         update();
       }, 400);
     };
@@ -2489,7 +2493,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       vv.removeEventListener("scroll", update);
       document.removeEventListener("focusin", startPoll);
       document.removeEventListener("focusout", stopPoll);
-      if (pollId) clearInterval(pollId);
+      if (rafId) cancelAnimationFrame(rafId);
       if (stopTimer) clearTimeout(stopTimer);
     };
   }, []);
