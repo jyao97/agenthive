@@ -361,11 +361,7 @@ async def hook_agent_post_compact(request: Request):
         from display_writer import flush_agent
         flush_agent(agent_id)
 
-        # 6. Stop generating — clears in-memory _generating_agents set and
-        #    emits agent_stream_end so the frontend typing indicator clears.
-        ad._stop_generating(agent_id)
-
-        # 7. Emit completed_at update so frontend shows double tick.
+        # 6. Emit completed_at update so frontend shows double tick.
         if compact_msg:
             from websocket import emit_message_update
             asyncio.ensure_future(emit_message_update(
@@ -404,6 +400,11 @@ async def hook_agent_post_compact(request: Request):
     from websocket import emit_tool_activity
     await emit_tool_activity(agent_id, "Compact", "end",
                              tool_output="context compacted")
+
+    # 11. Stop generating LAST — must follow tool_activity "end" because
+    #     useStreamingAgents treats ANY tool_activity event as "active".
+    #     agent_stream_end must be the final signal to clear the typing indicator.
+    ad._stop_generating(agent_id)
 
     logger.info("hook_agent_post_compact: agent=%s", agent_id[:8])
     return {}
@@ -959,10 +960,10 @@ async def hook_agent_session_start(request: Request):
     if isinstance(body, dict):
         source = body.get("source", "") or ""
 
+    logger.info("SessionStart hook: agent=%s session=%s source=%r",
+                agent_id[:8] if agent_id else "(none)", session_id[:12], source)
+
     if agent_id:
-        # Compact completion — resume sync, but do NOT emit "Compact end"
-        # here.  The sync engine emits the authoritative "end" signal only
-        # after it has actually detected and imported the rewritten JSONL.
         # Emitting "end" prematurely here caused a false "compact done" in
         # the UI while the sync engine hadn't processed the new state yet.
         if source == "compact":
