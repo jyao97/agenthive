@@ -1839,11 +1839,11 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
-      style={{ bottom: 'var(--kb-h, 0px)' }}
+      className={`absolute bottom-0 left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "pb-2 safe-area-pb-tight"}`}
+      style={{ transform: 'translateY(calc(-1 * var(--kb-h, 0px)))', willChange: 'transform' }}
     >
       <div
-        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1.5 rounded-b-2xl" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
+        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1 rounded-b-xl" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
         style={{ maxWidth: "24rem" }}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
@@ -2456,8 +2456,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
 
   // Track keyboard height via visualViewport.  Uses direct DOM (CSS variable
-  // + inline paddingBottom) for instant, jank-free updates — no React re-render
-  // on every pixel change.  React state kbOpen only toggles on open/close boundary.
+  // --kb-h) for instant, jank-free updates.  Input bar uses transform (GPU-
+  // composited, no layout reflow) instead of bottom.  Scroll container padding
+  // is debounced to avoid expensive reflow every frame.
   const [kbOpen, setKbOpen] = useState(false);
   const kbContainerRef = useRef(null);
   useEffect(() => {
@@ -2465,37 +2466,52 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     if (!vv) return;
     let rafId = null;
     let stopTimer = null;
+    let padTimer = null;
     let prevOff = 0;
     let isOpen = false;
 
     const update = () => {
-      const off = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      const el = kbContainerRef.current;
+      if (!el) return;
+      // Use container height (not window.innerHeight) so offset matches
+      // the absolute-positioned input bar's containing block — avoids gap
+      // when 100vh differs from innerHeight (iOS Safari URL bar).
+      const off = Math.max(0, Math.round(el.clientHeight - vv.height - vv.offsetTop));
       if (off === prevOff) return;
       prevOff = off;
 
-      const el = kbContainerRef.current;
-      if (!el) return;
-
       const open = off > 100;
-      const sc = scrollContainerRef.current;
 
+      // Instant: CSS variable drives transform (GPU-composited, no layout)
       if (open) {
         el.style.setProperty('--kb-h', `${off}px`);
-        if (sc) sc.style.paddingBottom = `${off + 144}px`;
       } else {
         el.style.removeProperty('--kb-h');
-        if (sc) sc.style.paddingBottom = '';
       }
+
+      // Debounced: scroll container padding (triggers expensive reflow)
+      clearTimeout(padTimer);
+      padTimer = setTimeout(() => {
+        const sc = scrollContainerRef.current;
+        if (!sc) return;
+        if (open) {
+          sc.style.paddingBottom = `${off + 144}px`;
+        } else {
+          sc.style.paddingBottom = '';
+        }
+      }, 80);
 
       if (open && !isOpen) {
         isOpen = true;
         setKbOpen(true);
+        const sc = scrollContainerRef.current;
         if (sc && !userScrolledUp.current) {
           requestAnimationFrame(() => { sc.scrollTop = sc.scrollHeight; });
         }
       } else if (!open && isOpen) {
         isOpen = false;
         setKbOpen(false);
+        const sc = scrollContainerRef.current;
         if (sc && !userScrolledUp.current) {
           requestAnimationFrame(() => { sc.scrollTop = sc.scrollHeight; });
         }
@@ -2529,6 +2545,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       document.removeEventListener("focusout", stopPoll);
       if (rafId) cancelAnimationFrame(rafId);
       if (stopTimer) clearTimeout(stopTimer);
+      clearTimeout(padTimer);
     };
   }, []);
 
