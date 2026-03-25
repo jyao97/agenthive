@@ -2470,24 +2470,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     let pollId = null;
     let isOpen = false;
     let dismissing = false;
-    let lastAppliedH = 0;
-    let rafId = null;
-    let pendingH = 0;
-
-    // Batched DOM write — coalesces multiple update() calls into one
-    // paint per frame, preventing rapid-fire layout thrashing.
-    const flushHeight = () => {
-      rafId = null;
-      const el = kbContainerRef.current;
-      if (!el || dismissing || !pendingH) return;
-      if (Math.abs(pendingH - lastAppliedH) > 2) {
-        el.style.height = `${pendingH}px`;
-        lastAppliedH = pendingH;
-      }
-    };
 
     const finalizeClose = () => {
-      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
       const el = kbContainerRef.current;
       if (el) {
         el.style.height = '';
@@ -2495,8 +2479,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
       isOpen = false;
       dismissing = false;
-      lastAppliedH = 0;
-      pendingH = 0;
       setKbOpen(false);
     };
 
@@ -2511,26 +2493,26 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       if (dismissing) return;
 
-      // ── KEYBOARD OPENING / OPEN ──
+      // ── KEYBOARD OPENING / OPEN: direct DOM ──
       if (open) {
-        // Schedule height update via rAF (batches multiple calls per frame)
-        pendingH = h;
+        el.style.height = `${h}px`;
         el.classList.remove('h-full');
-        if (!rafId) rafId = requestAnimationFrame(flushHeight);
 
         if (!isOpen) {
-          // Boundary: just opened — tell React
+          // Boundary: just opened — tell React (for class toggles)
           isOpen = true;
           setKbOpen(true);
+        }
 
-          // One-time: reset iOS body scroll & snap messages to bottom
-          if (window.scrollY > 0 || vv.offsetTop > 0) {
-            window.scrollTo(0, 0);
-          }
-          const sc = scrollContainerRef.current;
-          if (sc && !userScrolledUp.current) {
-            sc.scrollTop = sc.scrollHeight - sc.clientHeight;
-          }
+        // Reset iOS body scroll (creates gap between input and keyboard)
+        if (window.scrollY > 0 || vv.offsetTop > 0) {
+          window.scrollTo(0, 0);
+        }
+
+        // Keep messages at bottom
+        const sc = scrollContainerRef.current;
+        if (sc && !userScrolledUp.current) {
+          sc.scrollTop = sc.scrollHeight - sc.clientHeight;
         }
       }
     };
@@ -2543,7 +2525,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
     const stopPoll = () => {
       if (pollId) { clearInterval(pollId); pollId = null; }
-      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
 
       const el = kbContainerRef.current;
       if (!el?.style.height || !isOpen) return;
@@ -2568,7 +2549,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       document.removeEventListener("focusin", startPoll);
       document.removeEventListener("focusout", stopPoll);
       if (pollId) clearInterval(pollId);
-      if (rafId) cancelAnimationFrame(rafId);
     };
   }, []);
 
