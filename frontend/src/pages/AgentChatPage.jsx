@@ -1867,9 +1867,9 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
           rows={2}
           className="w-full min-h-[48px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors disabled:opacity-50"
         />
-        {voice.refining && (
+        {(voice.streamingText || voice.refining) && (
           <div className="px-3 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
-            Refining...
+            {voice.refining ? "Refining..." : voice.streamingText}
           </div>
         )}
         {/* Attachment preview chips */}
@@ -2454,21 +2454,22 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [id]);
 
 
-  // Track keyboard via visualViewport.
-  // ADAPTIVE during open/close transition (~500ms), then PINNED to avoid
-  // jitter from micro-fluctuations while typing.  Large changes (>40px)
-  // break through the pin (suggestion bar toggle, orientation change).
+  // Track keyboard via visualViewport — direct DOM for smooth animation.
+  // React state (kbOpen) only toggles at open/close boundaries, never during
+  // the animation itself. Container height is set via el.style.height directly,
+  // bypassing React re-render lag (~16-33ms per frame).
+  //
+  // OPEN:  follow visualViewport.resize events → direct DOM height update
+  // CLOSE: follow resize events (native-matched), spring fallback if needed
   const [kbOpen, setKbOpen] = useState(false);
   const kbContainerRef = useRef(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     let baseHeight = vv.height;
+    let pollId = null;
     let isOpen = false;
     let dismissing = false;
-    let lastH = 0;
-    let settled = false;   // true once transition finishes → pin height
-    let settleTimer = null;
 
     const finalizeClose = () => {
       const el = kbContainerRef.current;
@@ -2478,59 +2479,76 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
       isOpen = false;
       dismissing = false;
-      settled = false;
-      lastH = 0;
-      if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
       setKbOpen(false);
     };
 
-    const onResize = () => {
+    const update = () => {
       if (vv.height > baseHeight) baseHeight = vv.height;
       const kbH = Math.round(baseHeight - vv.height);
       const h = Math.round(vv.height);
       const open = kbH > 100;
 
       const el = kbContainerRef.current;
-      if (!el || dismissing) return;
+      if (!el) return;
 
+      if (dismissing) return;
+
+      // ── KEYBOARD OPENING / OPEN: direct DOM ──
       if (open) {
-        const delta = Math.abs(h - lastH);
-
-        // Update height if: not yet settled, OR large change breaks the pin
-        if (!settled || delta > 40) {
-          el.style.height = `${h}px`;
-          el.classList.remove('h-full');
-          lastH = h;
-
-          // Reset settle timer — pin after 500ms of no significant change
-          if (settleTimer) clearTimeout(settleTimer);
-          settled = false;
-          settleTimer = setTimeout(() => { settled = true; }, 500);
-        }
+        el.style.height = `${h}px`;
+        el.classList.remove('h-full');
 
         if (!isOpen) {
+          // Boundary: just opened — tell React (for class toggles)
           isOpen = true;
           setKbOpen(true);
         }
 
-      } else if (isOpen) {
-        finalizeClose();
+        // Reset iOS body scroll (creates gap between input and keyboard)
+        if (window.scrollY > 0 || vv.offsetTop > 0) {
+          window.scrollTo(0, 0);
+        }
+
+        // Keep messages at bottom
+        const sc = scrollContainerRef.current;
+        if (sc && !userScrolledUp.current) {
+          sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+        }
       }
     };
 
-    const onFocusOut = () => {
-      if (!isOpen) return;
+    const startPoll = () => {
+      dismissing = false;
+      if (!pollId) pollId = setInterval(update, 100);
+      update();
+    };
+
+    const stopPoll = () => {
+      if (pollId) { clearInterval(pollId); pollId = null; }
+
+      const el = kbContainerRef.current;
+      if (!el?.style.height || !isOpen) return;
+
+      // Snap — web can't sync with native keyboard animation, so just be fast.
       dismissing = true;
+      const sc = scrollContainerRef.current;
+      if (sc && !userScrolledUp.current) {
+        sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+      }
       finalizeClose();
     };
 
-    vv.addEventListener("resize", onResize);
-    document.addEventListener("focusout", onFocusOut);
-    onResize();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    document.addEventListener("focusin", startPoll);
+    document.addEventListener("focusout", stopPoll);
+    update(); // initial read
     return () => {
-      vv.removeEventListener("resize", onResize);
-      document.removeEventListener("focusout", onFocusOut);
-      if (settleTimer) clearTimeout(settleTimer);
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+      document.removeEventListener("focusin", startPoll);
+      document.removeEventListener("focusout", stopPoll);
+      if (pollId) clearInterval(pollId);
     };
   }, []);
 
@@ -2638,7 +2656,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const el = scrollContainerRef.current;
     if (!el) return;
     if (kbOpen && !prevKbOpen.current) {
-      // Keyboard just opened — stick to bottom
+      // Keyboard just opened — undo iOS body scroll, stick to bottom
+      window.scrollTo(0, 0);
       if (!userScrolledUp.current) {
         el.scrollTop = el.scrollHeight;
       }
@@ -3678,8 +3697,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         onToggle={feedbackVoice.toggleRecording}
                       />
                     </div>
-                    {feedbackVoice.refining && (
-                      <div className="px-1 text-xs text-amber-400/80 italic animate-pulse">Refining...</div>
+                    {feedbackVoice.streamingText && (
+                      <div className="px-1 text-xs text-amber-400/80 italic animate-pulse">{feedbackVoice.streamingText}</div>
                     )}
                   </div>
                 )}
