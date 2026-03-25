@@ -429,9 +429,9 @@ async def hook_agent_post_compact(request: Request):
 
         db.commit()
 
-        # Flush compact system message to display file
-        from display_writer import flush_agent
-        flush_agent(agent_id)
+        # Don't flush here — let the deferred sync loop pick up both the
+        # "Conversation compacted" and "This session is being continued..."
+        # messages in a single flush_agent() call so they appear together.
 
         # 6. Emit completed_at update so frontend shows double tick.
         if compact_msg:
@@ -459,7 +459,8 @@ async def hook_agent_post_compact(request: Request):
         ctx.compact_detected_at = 0.0
 
         async def _post_compact_sync(_aid):
-            await asyncio.sleep(0.1)
+            from config import JSONL_FLUSH_DELAY
+            await asyncio.sleep(JSONL_FLUSH_DELAY)
             ad.wake_sync(_aid)
         asyncio.ensure_future(_post_compact_sync(agent_id))
 
