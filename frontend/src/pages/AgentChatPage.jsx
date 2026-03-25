@@ -2525,6 +2525,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         if (Math.abs(kbOffset - prevOff) > 3) {
           prevOff = kbOffset;
           el.style.setProperty('--kb-h', `${kbOffset}px`);
+          // Keep messages pinned to bottom while keyboard is animating
+          // (margin-bottom shrinks the scroll container via --kb-h)
+          const sc = scrollContainerRef.current;
+          if (sc && !userScrolledUp.current) {
+            sc.scrollTop = sc.scrollHeight;
+          }
         }
       } else if (prevOff !== 0) {
         prevOff = 0;
@@ -2537,7 +2543,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         padTimer = setTimeout(() => {
           const sc = scrollContainerRef.current;
           if (!sc) return;
-          sc.style.paddingBottom = open ? '180px' : '';
+          sc.style.paddingBottom = open ? '80px' : '';
         }, 80);
       }
 
@@ -3453,7 +3459,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         data-chat-container
         onScroll={handleScroll}
         className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOpen ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
-        style={{ overflowAnchor: "auto", overscrollBehavior: "none" }}
+        style={{ overflowAnchor: "auto", overscrollBehavior: "none", marginBottom: 'var(--kb-h, 0px)' }}
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
