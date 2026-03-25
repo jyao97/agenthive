@@ -1575,7 +1575,7 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, kbOpen = false }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, scrollButton, kbOpen = false }) {
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
@@ -1841,9 +1841,10 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
+      className={`absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
       style={{ bottom: 'var(--kb-h, 0px)' }}
     >
+      {scrollButton}
       <div
         className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1 rounded-b-xl" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
         style={{ maxWidth: "24rem" }}
@@ -3631,27 +3632,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Scroll to bottom button — follows keyboard like ChatInput */}
-      {showScrollToBottom && (
-        <div
-          className="absolute left-1/2 -translate-x-1/2 z-30"
-          style={{ bottom: `calc(var(--kb-h, 0px) + 8rem)` }}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-              setShowScrollToBottom(false);
-            }}
-            className="glass-bar w-9 h-9 rounded-full flex items-center justify-center text-dim hover:text-heading transition-all active:scale-90"
-          >
-            <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-            </svg>
-          </button>
-        </div>
-      )}
-
       {/* Input bar */}
       <ChatInput
         agentId={id}
@@ -3667,6 +3647,20 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         escapeDisabled={isStopped || isError}
         escapeUrgent={isExecuting || hasPendingInteractive}
         escapeAvailable={hasTmuxPane}
+        scrollButton={showScrollToBottom ? (
+          <button
+            type="button"
+            onClick={() => {
+              messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+              setShowScrollToBottom(false);
+            }}
+            className="glass-bar w-9 h-9 rounded-full flex items-center justify-center text-dim hover:text-heading transition-all active:scale-90 pointer-events-auto mb-2"
+          >
+            <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+            </svg>
+          </button>
+        ) : null}
         kbOpen={kbOpen}
       />
 
