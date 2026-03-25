@@ -259,7 +259,14 @@ async def hook_agent_stop(request: Request):
     # Now that the agent has stopped generating, send the first one.
     if ad:
         async def _dispatch_pending(_aid):
-            await asyncio.sleep(0.15)  # let tmux TUI settle after stop
+            # Wait for the sync cycle (triggered by _post_stop_sync above)
+            # to finish importing the agent's last response from JSONL into
+            # the display file.  Without this, the queued user message would
+            # be flushed (via UserPromptSubmit → update_last) before the
+            # preceding agent response, giving it a lower display_seq and
+            # making it appear above the response in the chat.
+            from config import JSONL_FLUSH_DELAY
+            await asyncio.sleep(JSONL_FLUSH_DELAY + 0.35)
             _dispatch_db = SessionLocal()
             try:
                 pending_msg = (
