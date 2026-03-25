@@ -157,15 +157,20 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   });
 
   // --- file upload ---
-  const addFile = useCallback(async (file) => {
-    if (file.size > 50 * 1024 * 1024) return;
-    try {
-      const result = await uploadFile(file);
-      const currentText = editRef.current?.innerText?.trim() || parsed.text;
-      const newFiles = [...parsed.files, result.path];
-      await updateTaskV2(task.id, { description: buildFullDesc(currentText, newFiles) });
-      onRefresh?.();
-    } catch { /* skip */ }
+  const addFiles = useCallback(async (fileList) => {
+    const uploadedPaths = [];
+    for (const file of fileList) {
+      if (file.size > 50 * 1024 * 1024) continue;
+      try {
+        const result = await uploadFile(file);
+        uploadedPaths.push(result.path);
+      } catch { /* skip */ }
+    }
+    if (uploadedPaths.length === 0) return;
+    const currentText = editRef.current?.innerText?.trim() || parsed.text;
+    const newFiles = [...parsed.files, ...uploadedPaths];
+    await updateTaskV2(task.id, { description: buildFullDesc(currentText, newFiles) });
+    onRefresh?.();
   }, [task.id, parsed, buildFullDesc, onRefresh]);
 
   const handleFileSelect = async (e) => {
@@ -173,7 +178,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
     filePickerOpenRef.current = false;
     const files = Array.from(e.target.files || []);
     e.target.value = "";
-    for (const file of files) await addFile(file);
+    await addFiles(files);
   };
 
   const handlePaste = (e) => {
@@ -183,7 +188,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
     for (const item of items) { if (item.kind === "file") { const f = item.getAsFile(); if (f) files.push(f); } }
     if (files.length > 0) {
       e.preventDefault();
-      for (const f of files) addFile(f);
+      addFiles(files);
     }
   };
 
