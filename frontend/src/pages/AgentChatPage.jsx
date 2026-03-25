@@ -2455,36 +2455,36 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [id]);
 
 
-  // Track keyboard via visualViewport — uses CSS custom property (--kb-h)
-  // instead of resizing the container, so the layout stays stable.
-  // The input bar and scroll padding consume --kb-h for positioning.
+  // Track keyboard height via visualViewport so both input bar and messages
+  // area can adapt.  Poll while focused to catch keyboard layout switches
+  // (Chinese ↔ English) that don't fire resize events.
+  // Uses CSS custom property (--kb-h) instead of React state to avoid
+  // re-rendering the entire page on every keyboard height change.
   const [kbOpen, setKbOpen] = useState(false);
   const kbContainerRef = useRef(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
-    let baseHeight = vv.height;
     let pollId = null;
+    let stopTimer = null;
     let isOpen = false;
 
     const update = () => {
-      if (vv.height > baseHeight) baseHeight = vv.height;
-      const kbH = Math.round(baseHeight - vv.height);
+      // Subtract vv.offsetTop to compensate for iOS auto-scrolling the body
+      // when an input is focused — without this, the input bar gets pushed up
+      // by both the body scroll AND our offset (double-movement).
+      const kbH = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
       const open = kbH > 100;
 
       const el = kbContainerRef.current;
       if (!el) return;
 
       if (open) {
-        // Only update if changed significantly (>= 8px) to avoid jitter
-        // from autocomplete bar / prediction fluctuations
         const prevKbH = parseInt(el.style.getPropertyValue('--kb-h')) || 0;
         const changed = prevKbH === 0 || Math.abs(kbH - prevKbH) >= 8;
 
         if (changed) {
-          // Set CSS custom property — children consume for positioning
           el.style.setProperty('--kb-h', `${kbH}px`);
-          // Adjust scroll container padding: base 144px (pb-36) + keyboard
           const sc = scrollContainerRef.current;
           if (sc) sc.style.paddingBottom = `${kbH + 144}px`;
         }
@@ -2492,11 +2492,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         if (!isOpen) {
           isOpen = true;
           setKbOpen(true);
-          // Once on open: reset iOS body scroll
-          window.scrollTo(0, 0);
         }
 
-        // Keep messages at bottom
         if (changed) {
           const sc = scrollContainerRef.current;
           if (sc && !userScrolledUp.current) {
@@ -2504,7 +2501,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           }
         }
       } else if (isOpen) {
-        // Keyboard closed — reset everything
         el.style.removeProperty('--kb-h');
         const sc = scrollContainerRef.current;
         if (sc) sc.style.paddingBottom = '';
@@ -2517,26 +2513,30 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     };
 
     const startPoll = () => {
+      if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
       if (!pollId) pollId = setInterval(update, 100);
-      update();
     };
 
     const stopPoll = () => {
-      if (pollId) { clearInterval(pollId); pollId = null; }
-      update(); // run once more to detect close
+      // Delay stop — keyboard switch may briefly lose focus
+      if (stopTimer) clearTimeout(stopTimer);
+      stopTimer = setTimeout(() => {
+        if (pollId) { clearInterval(pollId); pollId = null; }
+        update();
+      }, 400);
     };
 
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
     document.addEventListener("focusin", startPoll);
     document.addEventListener("focusout", stopPoll);
-    update(); // initial read
     return () => {
       vv.removeEventListener("resize", update);
       vv.removeEventListener("scroll", update);
       document.removeEventListener("focusin", startPoll);
       document.removeEventListener("focusout", stopPoll);
       if (pollId) clearInterval(pollId);
+      if (stopTimer) clearTimeout(stopTimer);
     };
   }, []);
 
@@ -2644,8 +2644,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const el = scrollContainerRef.current;
     if (!el) return;
     if (kbOpen && !prevKbOpen.current) {
-      // Keyboard just opened — undo iOS body scroll, stick to bottom
-      window.scrollTo(0, 0);
+      // Keyboard just opened — stick to bottom
       if (!userScrolledUp.current) {
         el.scrollTop = el.scrollHeight;
       }
