@@ -125,7 +125,6 @@ function NewTaskForm({ showToast, navigate }) {
   const [project, setProject, clearProject] = useDraft("create-task:project", "");
   const [title, setTitle, clearTitle] = useDraft("create-task:title", "");
   const [description, setDescription, clearDesc] = useDraft("create-task:description", "");
-  const [priority, setPriority] = useState(0);
   const [model, setModel] = useState(MODEL_OPTIONS[0].value);
   const [effort, setEffort] = useState("high");
   const [autoDispatch, setAutoDispatch] = useState(false);
@@ -146,7 +145,6 @@ function NewTaskForm({ showToast, navigate }) {
         title: title.trim(),
         description: description.trim() || undefined,
         project_name: project || undefined,
-        priority,
         model: model || undefined,
         effort: effort || undefined,
       };
@@ -216,25 +214,9 @@ function NewTaskForm({ showToast, navigate }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-[auto_auto_1fr] gap-2 items-center">
+        <div className="flex gap-2 items-center">
           <ModelSelector value={model} onChange={setModel} />
           <EffortSelector value={effort} onChange={setEffort} />
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={() => setPriority(priority === 1 ? 0 : 1)}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                priority === 1
-                  ? "bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/30"
-                  : "bg-elevated text-dim hover:text-label"
-              }`}
-            >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
-              </svg>
-              High Priority
-            </button>
-          </div>
         </div>
 
         {project && description.trim() && (

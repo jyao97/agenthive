@@ -12,10 +12,6 @@ const EFFORT_PICKER = [
   { value: "high", label: "High" },
   { value: "max", label: "Max" },
 ];
-const PRIORITY_PICKER = [
-  { value: 0, label: "Normal" },
-  { value: 1, label: "High" },
-];
 
 export default memo(function QueueCard({ task, position, selecting, selected, onToggle, expanded, onExpand, onRefresh }) {
   const isExpanded = expanded && !selecting;
@@ -72,12 +68,6 @@ export default memo(function QueueCard({ task, position, selecting, selected, on
                     {task.effort[0]}
                   </TagPicker>
                 )}
-                <TagPicker options={PRIORITY_PICKER} value={task.priority >= 1 ? 1 : 0} onSelect={(v) => update("priority", v)}
-                  className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-full cursor-pointer active:scale-90 transition-transform ${
-                    task.priority >= 1 ? "bg-amber-500/15 text-amber-500 dark:text-amber-400" : "bg-elevated text-faint"
-                  }`}>
-                  {task.priority >= 1 ? "H" : "N"}
-                </TagPicker>
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
@@ -89,11 +79,6 @@ export default memo(function QueueCard({ task, position, selecting, selected, on
                 {task.effort && (
                   <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-elevated text-dim uppercase">
                     {task.effort[0]}
-                  </span>
-                )}
-                {task.priority >= 1 && (
-                  <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-500 dark:text-amber-400">
-                    H
                   </span>
                 )}
               </div>
