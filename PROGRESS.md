@@ -143,3 +143,8 @@
 - What: Changed task prompt in `agent_dispatcher.py` so agents are told NOT to write to PROGRESS.md. User is setting up a controlled process for selected sessions only.
 - Resolution: Replaced the "append to PROGRESS.md" guideline with "Do NOT write to or modify PROGRESS.md". Removed retry prompt's instruction to log failures there. Reading PROGRESS.md for context is still allowed.
 - Lesson: Straightforward — no issues. Two locations in `_build_task_prompt()`: the main guidelines block (line ~2756) and the retry instructions block (line ~2726).
+
+### 2026-03-24 | Task: Fix queued message display order (appears above agent response) | Status: success
+- What: Queued messages (sent while agent was busy) appeared above the agent's preceding response in the chat. Root cause: `_dispatch_pending` (0.15s delay) and `_post_stop_sync` (0.15s delay) ran concurrently — dispatch→UserPromptSubmit→flush_agent assigned display_seq to the queued message before the sync engine had imported and flushed the agent's JSONL response.
+- Resolution: Increased `_dispatch_pending` delay from 0.15s to `JSONL_FLUSH_DELAY + 0.35s` (~0.5s) so the sync cycle finishes importing the agent's response into the display file before the queued message is dispatched to tmux.
+- Lesson: `display_seq` is assigned per-flush-batch. `flush_agent` sorts correctly by `delivered_at` within a batch, but messages in separate batches get sequential display_seq regardless of timestamp. The fix is to ensure correct batch ordering by controlling dispatch timing, not by fixing timestamps (which were already correct from JSONL).
