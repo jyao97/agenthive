@@ -334,7 +334,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
                       </svg>
-                      {task.worktree_name || ""}
+                      {task.worktree_name || "Worktree"}
                     </span>
                   )}
                   {task.skip_permissions && (
@@ -456,7 +456,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
                       </svg>
-                      {task.worktree_name || ""}
+                      {task.worktree_name || "Worktree"}
                     </span>
                   </TagPicker>
                   <TagPicker options={AUTO_PICKER} value={!!task.skip_permissions} onSelect={(v) => update("skip_permissions", v)}
