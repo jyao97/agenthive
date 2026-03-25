@@ -3650,6 +3650,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         scrollButton={showScrollToBottom ? (
           <button
             type="button"
+            onPointerDown={(e) => e.preventDefault()}
             onClick={() => {
               messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
               setShowScrollToBottom(false);
