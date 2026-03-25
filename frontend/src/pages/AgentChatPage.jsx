@@ -3635,7 +3635,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       {showScrollToBottom && (
         <div
           className="absolute left-1/2 -translate-x-1/2 z-30"
-          style={{ bottom: `calc(var(--kb-h, 0px) + 5.5rem)` }}
+          style={{ bottom: `calc(var(--kb-h, 0px) + 8rem)` }}
         >
           <button
             type="button"
