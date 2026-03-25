@@ -2499,38 +2499,46 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const update = () => {
       const el = kbContainerRef.current;
       if (!el) return;
-      // Use container height (not window.innerHeight) so offset matches
-      // the absolute-positioned input bar's containing block — avoids gap
-      // when 100vh differs from innerHeight (iOS Safari URL bar).
+
       const containerH = el.clientHeight;
+      // kbHeight: actual keyboard height (stable, ignores iOS page scroll)
+      const kbHeight = Math.max(0, Math.round(containerH - vv.height));
+      // off: position offset for absolute-positioned input bar (accounts for
+      // iOS scrolling the page via vvOT — keeps input bar at visual viewport
+      // bottom regardless of scroll position)
       const off = Math.max(0, Math.round(containerH - vv.height - vv.offsetTop));
 
-      // Always log for debugging (even if off unchanged)
-      kbLog(containerH, off, off > 100);
+      kbLog(containerH, off, kbHeight > 100);
 
-      if (off === prevOff) return;
-      prevOff = off;
+      // Detect keyboard open/close using kbHeight (not off) — off drops to
+      // ~62 when iOS scrolls the page, but kbHeight stays 400+ while keyboard
+      // is visible.
+      const open = kbHeight > 100;
 
-      const open = off > 100;
-
-      // Instant: CSS variable drives transform (GPU-composited, no layout)
-      if (open) {
-        el.style.setProperty('--kb-h', `${off}px`);
-      } else {
-        el.style.removeProperty('--kb-h');
+      if (off !== prevOff) {
+        prevOff = off;
+        // Instant: CSS variable drives transform (GPU-composited, no layout)
+        if (open) {
+          el.style.setProperty('--kb-h', `${off}px`);
+        } else {
+          el.style.removeProperty('--kb-h');
+        }
       }
 
-      // Debounced: scroll container padding (triggers expensive reflow)
-      clearTimeout(padTimer);
-      padTimer = setTimeout(() => {
-        const sc = scrollContainerRef.current;
-        if (!sc) return;
-        if (open) {
-          sc.style.paddingBottom = `${off + 144}px`;
-        } else {
-          sc.style.paddingBottom = '';
-        }
-      }, 80);
+      // Debounced: scroll container padding (uses kbHeight for correct
+      // keyboard coverage, not off which varies with scroll)
+      if (open !== isOpen) {
+        clearTimeout(padTimer);
+        padTimer = setTimeout(() => {
+          const sc = scrollContainerRef.current;
+          if (!sc) return;
+          if (open) {
+            sc.style.paddingBottom = `${kbHeight + 144}px`;
+          } else {
+            sc.style.paddingBottom = '';
+          }
+        }, 80);
+      }
 
       if (open && !isOpen) {
         isOpen = true;
