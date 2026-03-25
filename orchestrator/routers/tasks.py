@@ -539,10 +539,23 @@ INSTRUCTIONS:
 4. After confirmation, execute the curl commands to update each task
 5. Report a final summary of what was changed and dispatched"""
 
-    # Launch via the tmux agent endpoint
+    # Create a task for the triage operation itself
+    task_titles = [t.title or t.id for t in inbox_tasks]
+    triage_title = f"AI Triage: {len(inbox_tasks)} inbox task{'s' if len(inbox_tasks) != 1 else ''}"
+    triage_task = Task(
+        title=triage_title,
+        description=f"Batch triage of: {', '.join(task_titles[:5])}{'...' if len(task_titles) > 5 else ''}",
+        project_name=host_project,
+        status=TaskStatus.INBOX,
+        skip_permissions=True,
+        use_worktree=False,
+    )
+    db.add(triage_task)
+    db.flush()
+
+    # Launch via the tmux agent endpoint with task_id linked
     from routers.agents import launch_tmux_agent
 
-    # Build a mock request body for launch_tmux_agent
     class _MockRequest:
         """Thin wrapper to forward app state + override json body."""
         def __init__(self, real_request, body):
@@ -555,10 +568,11 @@ INSTRUCTIONS:
         "project": host_project,
         "prompt": prompt,
         "skip_permissions": True,
+        "task_id": triage_task.id,
     }
     mock_req = _MockRequest(request, mock_body)
     agent_out = await launch_tmux_agent(mock_req, db)
-    return {"ok": True, "agent_id": agent_out.id}
+    return {"ok": True, "agent_id": agent_out.id, "task_id": triage_task.id}
 
 
 @router.put("/api/v2/tasks/reorder")
