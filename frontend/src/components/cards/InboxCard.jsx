@@ -330,8 +330,11 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                     {task.project_name || "Project"}
                   </span>
                   {task.use_worktree !== false && (
-                    <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-purple-500/15 text-purple-500 dark:text-purple-400">
-                      {task.worktree_name ? `WT:${task.worktree_name}` : "WT"}
+                    <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-purple-500/15 text-purple-500 dark:text-purple-400 flex items-center gap-0.5">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
+                      </svg>
+                      {task.worktree_name || ""}
                     </span>
                   )}
                   {task.skip_permissions && (
@@ -449,7 +452,12 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                         className="w-full mt-1 px-2 py-1.5 rounded-lg text-xs bg-elevated text-heading placeholder-hint outline-none border border-edge/30 focus:border-cyan-500/50 transition-colors"
                       />
                     ) : null}>
-                    {task.worktree_name ? `WT:${task.worktree_name}` : "WT"}
+                    <span className="flex items-center gap-0.5">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
+                      </svg>
+                      {task.worktree_name || ""}
+                    </span>
                   </TagPicker>
                   <TagPicker options={AUTO_PICKER} value={!!task.skip_permissions} onSelect={(v) => update("skip_permissions", v)}
                     className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full cursor-pointer active:scale-90 transition-all ${
