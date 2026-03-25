@@ -295,9 +295,9 @@ async def hook_agent_stop(request: Request):
                     from websocket import emit_message_update
                     asyncio.ensure_future(emit_message_update(_aid, pending_msg.id, "QUEUED"))
 
-                    from display_writer import flush_agent
-                    flush_agent(_aid)
-
+                    # No flush_agent here — the message has no delivered_at
+                    # yet, so display_writer skips it.  It enters the display
+                    # file when UserPromptSubmit sets delivered_at.
                     logger.info(
                         "hook_agent_stop: dispatched pending message %s to agent %s",
                         pending_msg.id[:8], _aid[:8],

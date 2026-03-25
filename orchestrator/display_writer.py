@@ -116,12 +116,12 @@ def flush_agent(agent_id: str):
             .filter(
                 Message.agent_id == agent_id,
                 Message.display_seq.is_(None),
-                # Skip PENDING user messages — they'll be flushed when
-                # dispatched (QUEUED) by the stop hook, ensuring they get
-                # display_seq AFTER the preceding agent response.
+                # Skip undelivered user messages — they enter the display
+                # file only after delivered_at is set (by UserPromptSubmit
+                # hook), so they sort after the preceding agent response.
                 ~(
                     (Message.role == MessageRole.USER)
-                    & (Message.status == MessageStatus.PENDING)
+                    & (Message.delivered_at.is_(None))
                 ),
             )
             .all()
