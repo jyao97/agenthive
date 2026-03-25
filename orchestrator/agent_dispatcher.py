@@ -2723,8 +2723,7 @@ Here are the day's conversations (with timestamps):
                 f"This is attempt #{task.attempt_number}. "
                 "Your primary goal is the user feedback above — that describes what still needs to be done. "
                 "The original task description is background context only. "
-                "Do not repeat the same approaches that failed. "
-                "Before starting, briefly note what went wrong before in PROGRESS.md, then proceed."
+                "Do not repeat the same approaches that failed."
             )
         else:
             parts = [f"# Task: {task.title}"]
@@ -2754,7 +2753,7 @@ Here are the day's conversations (with timestamps):
         parts.append("\n## Guidelines")
         parts.append("- Discuss your approach with the user before making large changes — share what you found and your plan")
         parts.append("- Commit all changes with descriptive messages")
-        parts.append("- Before your final message, append a short entry to PROGRESS.md with today's date, task title, and any lessons learned (gotchas, workarounds, or 'straightforward — no issues' if none)")
+        parts.append("- Do NOT write to or modify PROGRESS.md — progress tracking is managed separately")
         parts.append("- Leave a summary of what was done as your final message")
         return "\n".join(parts), insights_list
 
