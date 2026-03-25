@@ -97,8 +97,18 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   const [editing, setEditing] = useState(false);
   const editRef = useRef(null);
   const fileInputRef = useRef(null);
+  const filePickerOpenRef = useRef(false);
 
   useEffect(() => { if (!isExpanded) { setEditing(false); setTitleEditing(false); } }, [isExpanded]);
+
+  // Clear filePickerOpen flag when the file picker is cancelled (no file selected)
+  useEffect(() => {
+    const el = fileInputRef.current;
+    if (!el) return;
+    const onCancel = () => { filePickerOpenRef.current = false; };
+    el.addEventListener("cancel", onCancel);
+    return () => el.removeEventListener("cancel", onCancel);
+  }, []);
 
   const startEditing = (e) => {
     e.stopPropagation();
@@ -160,6 +170,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
 
   const handleFileSelect = async (e) => {
     e.stopPropagation();
+    filePickerOpenRef.current = false;
     const files = Array.from(e.target.files || []);
     e.target.value = "";
     for (const file of files) await addFile(file);
@@ -214,6 +225,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
 
   // --- card actions ---
   const handleClick = () => {
+    if (filePickerOpenRef.current) return;
     if (selecting) onToggle?.(task.id);
     else onExpand?.(task.id);
   };
@@ -481,7 +493,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                 {/* Action toolbar */}
                 <div className="flex items-center gap-2">
                   <input ref={fileInputRef} type="file" multiple className="hidden" onClick={(e) => e.stopPropagation()} onChange={handleFileSelect} />
-                  <button type="button" onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                  <button type="button" onClick={(e) => { e.stopPropagation(); filePickerOpenRef.current = true; fileInputRef.current?.click(); }}
                     className="w-8 h-8 rounded-full bg-elevated flex items-center justify-center text-dim hover:text-heading active:scale-90 transition-all"
                     title="Attach file">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
