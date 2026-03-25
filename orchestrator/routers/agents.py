@@ -1399,20 +1399,23 @@ async def stop_agent(agent_id: str, request: Request,
 # --- Agent Insight Suggestions ---
 
 @router.get("/api/agents/{agent_id}/suggestions", response_model=list[AgentInsightSuggestionOut])
-async def get_agent_suggestions(agent_id: str, db: Session = Depends(get_db)):
-    """Return pending insight suggestions for an agent."""
+async def get_agent_suggestions(agent_id: str, status: str = "pending",
+                                db: Session = Depends(get_db)):
+    """Return insight suggestions for an agent, filtered by status.
+
+    status: "pending" (default), "accepted", "rejected", or "processed" (accepted+rejected).
+    """
     agent = db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    rows = (
-        db.query(AgentInsightSuggestion)
-        .filter(
-            AgentInsightSuggestion.agent_id == agent_id,
-            AgentInsightSuggestion.status == "pending",
-        )
-        .order_by(AgentInsightSuggestion.id)
-        .all()
+    q = db.query(AgentInsightSuggestion).filter(
+        AgentInsightSuggestion.agent_id == agent_id,
     )
+    if status == "processed":
+        q = q.filter(AgentInsightSuggestion.status.in_(["accepted", "rejected"]))
+    else:
+        q = q.filter(AgentInsightSuggestion.status == status)
+    rows = q.order_by(AgentInsightSuggestion.id).all()
     return rows
 
 

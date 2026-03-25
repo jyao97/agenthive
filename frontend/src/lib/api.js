@@ -246,6 +246,8 @@ export const fetchPendingPermissions = (agentId) =>
 // --- Agent Insight Suggestions ---
 export const fetchAgentSuggestions = (agentId) =>
   request(`/api/agents/${agentId}/suggestions`);
+export const fetchProcessedSuggestions = (agentId) =>
+  request(`/api/agents/${agentId}/suggestions?status=processed`);
 export const applyAgentSuggestions = (agentId, payload) =>
   request(`/api/agents/${agentId}/apply-suggestions`, {
     method: "POST",
