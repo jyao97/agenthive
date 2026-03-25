@@ -2296,14 +2296,58 @@ async def send_agent_message(
                 has_tmux = False
 
         if has_tmux:
-            ok = send_tmux_message(agent.tmux_pane, body.content)
-            if not ok:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to send via tmux",
-                )
+            agent_is_busy = bool(agent.generating_msg_id)
 
-            # Create message in DB
+            if not agent_is_busy:
+                # --- IDLE: send via tmux immediately ---
+                ok = send_tmux_message(agent.tmux_pane, body.content)
+                if not ok:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to send via tmux",
+                    )
+
+                # Create message in DB
+                project = db.get(Project, agent.project)
+                if not project:
+                    raise HTTPException(status_code=400, detail="Project not found")
+                ad = getattr(request.app.state, "agent_dispatcher", None)
+                if ad:
+                    msg, _, _ = ad._prepare_dispatch(
+                        db, agent, project, body.content,
+                        source="web",
+                        wrap_prompt=False,
+                    )
+                else:
+                    msg = Message(
+                        agent_id=agent.id,
+                        role=MessageRole.USER,
+                        content=body.content,
+                        source="web",
+                    )
+                    db.add(msg)
+                # QUEUED = sent via tmux, awaiting JSONL delivery confirmation.
+                # Slash commands also get QUEUED — delivery is confirmed the same
+                # way (sync engine matches the turn in JSONL).
+                msg.status = MessageStatus.QUEUED
+                # delivered_at stays NULL — sync engine sets it from JSONL timestamp
+                if ad:
+                    msg.dispatch_seq = ad.next_dispatch_seq(db, agent.id)
+                db.commit()
+                db.refresh(msg)
+                if ad:
+                    ad._emit(emit_new_message(agent.id, msg.id, agent.name, agent.project))
+                    if msg.meta_json:
+                        import json as _json
+                        from websocket import emit_metadata_update
+                        ad._emit(emit_metadata_update(agent.id, msg.id, _json.loads(msg.meta_json)))
+                # Flush to display file so queued message appears immediately
+                from display_writer import flush_agent as _msg_flush
+                _msg_flush(agent.id)
+                logger.info("Message %s queued to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
+                return msg
+
+            # --- BUSY: agent is generating — store as PENDING for stop-hook dispatch ---
             project = db.get(Project, agent.project)
             if not project:
                 raise HTTPException(status_code=400, detail="Project not found")
@@ -2322,13 +2366,7 @@ async def send_agent_message(
                     source="web",
                 )
                 db.add(msg)
-            # QUEUED = sent via tmux, awaiting JSONL delivery confirmation.
-            # Slash commands also get QUEUED — delivery is confirmed the same
-            # way (sync engine matches the turn in JSONL).
-            msg.status = MessageStatus.QUEUED
-            # delivered_at stays NULL — sync engine sets it from JSONL timestamp
-            if ad:
-                msg.dispatch_seq = ad.next_dispatch_seq(db, agent.id)
+            msg.status = MessageStatus.PENDING
             db.commit()
             db.refresh(msg)
             if ad:
@@ -2337,10 +2375,10 @@ async def send_agent_message(
                     import json as _json
                     from websocket import emit_metadata_update
                     ad._emit(emit_metadata_update(agent.id, msg.id, _json.loads(msg.meta_json)))
-            # Flush to display file so queued message appears immediately
             from display_writer import flush_agent as _msg_flush
             _msg_flush(agent.id)
-            logger.info("Message %s queued to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
+            logger.info("Message %s stored PENDING for busy agent %s (generating %s) — stop hook will dispatch",
+                        msg.id, agent.id, agent.generating_msg_id)
             return msg
 
     # --- Non-tmux agents or scheduled messages: store as PENDING ---
