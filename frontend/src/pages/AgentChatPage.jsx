@@ -2497,29 +2497,26 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       // ── KEYBOARD OPENING / OPEN: direct DOM ──
       if (open) {
-        // Only update height when change exceeds threshold — filters out
-        // 1-2px jitter from suggestion bar / autocomplete toggling
-        if (!lastAppliedH || Math.abs(h - lastAppliedH) > 3) {
-          el.style.height = `${h}px`;
-          lastAppliedH = h;
-        }
-        el.classList.remove('h-full');
-
         if (!isOpen) {
-          // Boundary: just opened — tell React (for class toggles)
+          // Boundary: just opened — set height once and tell React
+          el.style.height = `${h}px`;
+          el.classList.remove('h-full');
+          lastAppliedH = h;
           isOpen = true;
           setKbOpen(true);
-        }
 
-        // Reset iOS body scroll (creates gap between input and keyboard)
-        if (window.scrollY > 0 || vv.offsetTop > 0) {
-          window.scrollTo(0, 0);
-        }
-
-        // Keep messages at bottom
-        const sc = scrollContainerRef.current;
-        if (sc && !userScrolledUp.current) {
-          sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+          // One-time: reset iOS body scroll & snap messages to bottom
+          if (window.scrollY > 0 || vv.offsetTop > 0) {
+            window.scrollTo(0, 0);
+          }
+          const sc = scrollContainerRef.current;
+          if (sc && !userScrolledUp.current) {
+            sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+          }
+        } else if (Math.abs(h - lastAppliedH) > 60) {
+          // Already open — only update on large change (orientation, kb resize)
+          el.style.height = `${h}px`;
+          lastAppliedH = h;
         }
       }
     };
