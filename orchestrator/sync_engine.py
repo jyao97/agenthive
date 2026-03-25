@@ -71,6 +71,7 @@ class SyncContext:
     compact_detected_at: float = 0.0
     idle_polls: int = 0
     getsize_error_count: int = 0
+    awaiting_rotation: bool = False     # set by SessionEnd, consumed by SessionStart
 
 
 # ---------------------------------------------------------------------------

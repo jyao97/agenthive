@@ -43,6 +43,27 @@ def _resolve_agent_id_from_body(body: dict) -> str:
     return ""
 
 
+def _is_subprocess_session(agent_id: str, hook_session_id: str, request: Request) -> bool:
+    """Return True if a hook is from a Claude Code subprocess, not the main agent.
+
+    When Claude Code's Agent tool spawns ``claude -p`` subprocesses, they
+    inherit AHIVE_AGENT_ID and fire hooks with the parent agent's ID.
+    These must be ignored to prevent session theft and false state changes.
+
+    Checks if the hook's session_id differs from the agent's tracked
+    session in the sync context.
+    """
+    if not agent_id or not hook_session_id:
+        return False
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if not ad:
+        return False
+    ctx = ad._sync_contexts.get(agent_id)
+    if not ctx or not ctx.session_id:
+        return False
+    return ctx.session_id != hook_session_id
+
+
 # ---- Claude Code Hooks Endpoints ----
 
 # Stop hook signal file directory.  The dispatcher reads (and deletes)
@@ -61,20 +82,32 @@ async def hook_agent_session_end(request: Request):
     check remains as a fallback for abnormal exits that don't fire hooks.
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        body = {}
     if not agent_id:
-        try:
-            body = await request.json()
-        except (ValueError, UnicodeDecodeError):
-            body = {}
         agent_id = _resolve_agent_id_from_body(body)
         if not agent_id:
             logger.warning("hook_agent_session_end: no X-Agent-Id and no session match")
             return {}
 
+    # Guard: ignore hooks from subprocess sessions (Agent tool inherits AHIVE_AGENT_ID)
+    hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
+    if _is_subprocess_session(agent_id, hook_sid, request):
+        logger.info("hook_agent_session_end: ignoring subprocess session %s for agent %s",
+                    hook_sid[:12], agent_id[:8])
+        return {}
+
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if not ad:
         logger.warning("hook_agent_session_end: no agent_dispatcher on app.state for agent %s", agent_id[:8])
         return {}
+
+    # Signal that a rotation is expected — SessionStart should accept the next session.
+    ctx = ad._sync_contexts.get(agent_id)
+    if ctx:
+        ctx.awaiting_rotation = True
 
     # Mark any EXECUTING /loop command as completed — Stop hook skips /loop
     # because Stop fires after each iteration, but SessionEnd is terminal.
@@ -100,16 +133,22 @@ async def hook_agent_user_prompt(request: Request):
     guards with `if not web_msg.delivered_at` so it won't overwrite.
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        body = {}
     if not agent_id:
-        # Adopted sessions don't have AHIVE_AGENT_ID — resolve from body
-        try:
-            body = await request.json()
-        except (ValueError, UnicodeDecodeError):
-            body = {}
         agent_id = _resolve_agent_id_from_body(body)
         if not agent_id:
             logger.warning("hook_agent_user_prompt: no X-Agent-Id and no session match (headers: %s)", dict(request.headers))
             return {}
+
+    # Guard: ignore hooks from subprocess sessions (Agent tool inherits AHIVE_AGENT_ID)
+    hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
+    if _is_subprocess_session(agent_id, hook_sid, request):
+        logger.info("hook_agent_user_prompt: ignoring subprocess session %s for agent %s",
+                    hook_sid[:12], agent_id[:8])
+        return {}
 
     logger.info("hook_agent_user_prompt: received for agent %s", agent_id[:8])
 
@@ -200,6 +239,13 @@ async def hook_agent_stop(request: Request):
         if not agent_id:
             logger.warning("hook_agent_stop: no X-Agent-Id and no session match")
             return {}
+
+    # Guard: ignore hooks from subprocess sessions (Agent tool inherits AHIVE_AGENT_ID)
+    hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
+    if _is_subprocess_session(agent_id, hook_sid, request):
+        logger.info("hook_agent_stop: ignoring subprocess session %s for agent %s",
+                    hook_sid[:12], agent_id[:8])
+        return {}
 
     # Unconditionally clear generating — latest signal wins.
     ad = getattr(request.app.state, "agent_dispatcher", None)
@@ -346,6 +392,13 @@ async def hook_agent_post_compact(request: Request):
         if not agent_id:
             logger.warning("hook_agent_post_compact: no agent_id")
             return {}
+
+    # Guard: ignore hooks from subprocess sessions
+    hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
+    if _is_subprocess_session(agent_id, hook_sid, request):
+        logger.info("hook_agent_post_compact: ignoring subprocess session %s for agent %s",
+                    hook_sid[:12], agent_id[:8])
+        return {}
 
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if not ad:
@@ -504,6 +557,11 @@ async def hook_agent_tool_activity(request: Request):
         if not agent_id:
             logger.warning("hook_agent_tool_activity: no X-Agent-Id and no session match")
             return {}
+
+    # Guard: ignore hooks from subprocess sessions
+    hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
+    if _is_subprocess_session(agent_id, hook_sid, request):
+        return {}
 
     hook_event = body.get("hook_event_name", "")
 
@@ -864,6 +922,11 @@ async def hook_agent_permission(request: Request):
             logger.warning("hook_agent_permission: no X-Agent-Id and no session match")
             return {}
 
+    # Guard: ignore hooks from subprocess sessions
+    hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
+    if _is_subprocess_session(agent_id, hook_sid, request):
+        return {}
+
     if body.get("hook_event_name") != "PreToolUse":
         logger.warning("hook_agent_permission: unexpected event %s for agent %s", body.get("hook_event_name"), agent_id[:8])
         return {}
@@ -1129,6 +1192,24 @@ async def hook_agent_session_start(request: Request):
             import slash_commands as _sc
             _sc.mark_delivered_and_completed(agent_id, "/clear")
 
+        # Guard: ignore SessionStart from subprocesses (Agent tool inherits
+        # AHIVE_AGENT_ID).  Accept if awaiting_rotation (set by SessionEnd)
+        # or if this is a /clear rotation.
+        if source != "clear":
+            ad_check = getattr(request.app.state, "agent_dispatcher", None)
+            if ad_check:
+                ctx = ad_check._sync_contexts.get(agent_id)
+                if ctx and ctx.session_id and ctx.session_id != session_id:
+                    if not ctx.awaiting_rotation:
+                        logger.info(
+                            "SessionStart hook: agent=%s has active session %s, "
+                            "ignoring subprocess session %s",
+                            agent_id[:8], ctx.session_id[:12], session_id[:12],
+                        )
+                        return {}
+                    else:
+                        ctx.awaiting_rotation = False
+
         # Managed agent — session rotation signal
         signal_path = f"/tmp/ahive-{agent_id}.newsession"
         try:
@@ -1144,131 +1225,13 @@ async def hook_agent_session_start(request: Request):
         if ad:
             ad.wake_sync(agent_id)
 
-            # Start exec sync for non-tmux agents on first execution.
-            # session_id wasn't known at dispatch time; now it is.
-            if agent_id not in ad._sync_contexts:
-                from database import SessionLocal as _SL_es
-                _db_es = _SL_es()
-                try:
-                    _ag_es = _db_es.get(Agent, agent_id)
-                    if (
-                        _ag_es
-                        and not _ag_es.tmux_pane
-                        and _ag_es.status == AgentStatus.EXECUTING
-                    ):
-                        _proj_es = _db_es.get(Project, _ag_es.project)
-                        if _proj_es:
-                            ad.start_exec_sync(agent_id, session_id, _proj_es.path)
-                finally:
-                    _db_es.close()
-
         return {}
 
-    # --- Unmanaged session: push-based detection ---
-    # Extract CWD and tmux pane from headers (set via allowedEnvVars).
-    cwd = request.headers.get("X-Session-Cwd", "").strip()
-    tmux_pane = request.headers.get("X-Tmux-Pane", "").strip()
-
-    if not cwd:
-        logger.debug("SessionStart hook: unmanaged session %s has no CWD header", session_id[:12])
-        return {}
-
-    # Only offer tmux-based sessions for adoption — bare CLI sessions
-    # (no tmux pane) are not managed by the orchestrator.
-    if not tmux_pane:
-        logger.debug("SessionStart hook: unmanaged session %s has no tmux pane, skipping", session_id[:12])
-        return {}
-
-    # If this tmux pane is already owned by an active agent, treat this as
-    # a session rotation (e.g. /clear) — write a signal file instead of
-    # creating a new unlinked entry.  This is critical for detected agents
-    # that don't have AHIVE_AGENT_ID in their environment.
-    if tmux_pane:
-        from database import SessionLocal as _SL
-        _db = _SL()
-        try:
-            pane_owner = _db.query(Agent).filter(
-                Agent.tmux_pane == tmux_pane,
-                Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
-            ).first()
-            if pane_owner:
-                signal_path = f"/tmp/ahive-{pane_owner.id}.newsession"
-                try:
-                    with open(signal_path, "w") as f:
-                        f.write(session_id)
-                    logger.info(
-                        "SessionStart hook: pane %s owned by agent %s — "
-                        "wrote rotation signal for session %s",
-                        tmux_pane, pane_owner.id[:8], session_id[:12],
-                    )
-                except OSError as e:
-                    logger.warning("SessionStart hook: failed to write pane-owner signal %s: %s", signal_path, e)
-                return {}
-        finally:
-            _db.close()
-
-    # Match CWD to a registered project
-    from database import SessionLocal
-    db = SessionLocal()
-    try:
-        cwd_real = os.path.realpath(cwd)
-        projects = db.query(Project).filter(Project.archived == False).all()
-        matched_proj = None
-        for p in projects:
-            proj_real = os.path.realpath(p.path)
-            if cwd_real == proj_real or cwd_real.startswith(proj_real + "/"):
-                matched_proj = p
-                break
-        if not matched_proj:
-            logger.debug(
-                "SessionStart hook: unmanaged session %s CWD %s doesn't match any project",
-                session_id[:12], cwd,
-            )
-            return {}
-
-        # Guard: don't create entry if session already owned by an agent
-        existing = db.query(Agent).filter(Agent.session_id == session_id).first()
-        if existing:
-            logger.debug(
-                "SessionStart hook: session %s already owned by agent %s",
-                session_id[:12], existing.id[:8],
-            )
-            return {}
-    finally:
-        db.close()
-
-    # Resolve transcript JSONL path
-    from session_cache import session_source_dir
-    sdir = session_source_dir(matched_proj.path)
-    transcript_path = os.path.join(sdir, f"{session_id}.jsonl")
-    if not os.path.isfile(transcript_path):
-        # JSONL may not exist yet at session start — that's OK,
-        # the unlinked entry will be cleaned up later if it never appears.
-        transcript_path = ""
-
-    # Resolve tmux session name from pane ID
-    tmux_session_name = None
-    if tmux_pane:
-        try:
-            tmux_session_name = subprocess.check_output(
-                ["tmux", "display-message", "-t", tmux_pane, "-p", "#{session_name}"],
-                timeout=2, text=True,
-            ).strip() or None
-        except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-            logger.debug("Failed to resolve tmux session for pane %s: %s", tmux_pane, e)
-
-    from agent_dispatcher import _write_unlinked_entry
-    _write_unlinked_entry(
-        session_id=session_id,
-        cwd=cwd_real,
-        transcript_path=transcript_path,
-        tmux_pane=tmux_pane or None,
-        tmux_session=tmux_session_name,
-        project_name=matched_proj.name,
+    # --- Unmanaged session: no longer tracked ---
+    # Only tmux agents managed by the orchestrator are synced.
+    # User-started `claude` or `claude -p` sessions are ignored.
+    logger.debug(
+        "SessionStart hook: ignoring unmanaged session %s (no X-Agent-Id)",
+        session_id[:12],
     )
-    logger.info(
-        "SessionStart hook: unmanaged session %s → unlinked entry (project=%s, pane=%s, tmux_session=%s)",
-        session_id[:12], matched_proj.name, tmux_pane or "?", tmux_session_name or "?",
-    )
-
     return {}
