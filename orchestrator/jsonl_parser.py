@@ -593,7 +593,8 @@ def parse_session_turns_from_lines(
             if _qc in _real_user_contents:
                 _real_user_contents.remove(_qc)  # consume one match
                 continue
-            _qop_uuid = f"qop-{hashlib.md5(_qc.encode()).hexdigest()[:16]}"
+            _qop_key = f"{_qc}|{_qts or ''}"
+            _qop_uuid = f"qop-{hashlib.md5(_qop_key.encode()).hexdigest()[:16]}"
             turns.append(("user", _qc, None, _qop_uuid, None, _qts))
 
     # Deduplicate user turns by UUID only (content dedup is too aggressive —
