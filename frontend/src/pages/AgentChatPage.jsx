@@ -1573,7 +1573,7 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, kbHeight = 0 }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, kbOffset = 0 }) {
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
@@ -1839,8 +1839,8 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbHeight > 0 ? "" : "pb-2 safe-area-pb-tight"}`}
-      style={{ bottom: 'var(--kb-h, 0px)' }}
+      className={`absolute left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOffset > 0 ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
+      style={kbOffset > 0 ? { bottom: `${kbOffset}px` } : undefined}
     >
       <div
         className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
@@ -2458,65 +2458,20 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // Track keyboard height via visualViewport so both input bar and messages
   // area can adapt.  Poll while focused to catch keyboard layout switches
   // (Chinese ↔ English) that don't fire resize events.
-  // Uses CSS custom property (--kb-h) instead of React state to avoid
-  // re-rendering the entire page on every keyboard height change.
-  const [kbOpen, setKbOpen] = useState(false);
-  const kbContainerRef = useRef(null);
+  const [kbOffset, setKbOffset] = useState(0);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     let pollId = null;
     let stopTimer = null;
-    let isOpen = false;
-
     const update = () => {
-      // Subtract vv.offsetTop to compensate for iOS auto-scrolling the body
-      // when an input is focused — without this, the input bar gets pushed up
-      // by both the body scroll AND our offset (double-movement).
-      const kbH = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-      const open = kbH > 100;
-
-      const el = kbContainerRef.current;
-      if (!el) return;
-
-      if (open) {
-        const prevKbH = parseInt(el.style.getPropertyValue('--kb-h')) || 0;
-        const changed = prevKbH === 0 || Math.abs(kbH - prevKbH) >= 8;
-
-        if (changed) {
-          el.style.setProperty('--kb-h', `${kbH}px`);
-          const sc = scrollContainerRef.current;
-          if (sc) sc.style.paddingBottom = `${kbH + 144}px`;
-        }
-
-        if (!isOpen) {
-          isOpen = true;
-          setKbOpen(true);
-        }
-
-        if (changed) {
-          const sc = scrollContainerRef.current;
-          if (sc && !userScrolledUp.current) {
-            sc.scrollTop = sc.scrollHeight - sc.clientHeight;
-          }
-        }
-      } else if (isOpen) {
-        el.style.removeProperty('--kb-h');
-        const sc = scrollContainerRef.current;
-        if (sc) sc.style.paddingBottom = '';
-        if (sc && !userScrolledUp.current) {
-          sc.scrollTop = sc.scrollHeight - sc.clientHeight;
-        }
-        isOpen = false;
-        setKbOpen(false);
-      }
+      const off = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setKbOffset((prev) => (off === prev ? prev : off));
     };
-
     const startPoll = () => {
       if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
       if (!pollId) pollId = setInterval(update, 100);
     };
-
     const stopPoll = () => {
       // Delay stop — keyboard switch may briefly lose focus
       if (stopTimer) clearTimeout(stopTimer);
@@ -2525,7 +2480,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         update();
       }, 400);
     };
-
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
     document.addEventListener("focusin", startPoll);
@@ -2637,25 +2591,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
   }, [loading, messages.length, scrollCountKey]);
 
-  // When React's kbOpen state changes (boundary only), handle scroll.
-  // Scroll during animation is handled by the resize handler directly.
-  const prevKbOpen = useRef(false);
-  useLayoutEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    if (kbOpen && !prevKbOpen.current) {
-      // Keyboard just opened — stick to bottom
-      if (!userScrolledUp.current) {
-        el.scrollTop = el.scrollHeight;
-      }
-    } else if (!kbOpen && prevKbOpen.current) {
-      // Keyboard just closed — anchor scroll at bottom
-      if (!userScrolledUp.current) {
-        el.scrollTop = el.scrollHeight;
-      }
+  // Auto-scroll when keyboard opens/grows so latest messages stay visible
+  useEffect(() => {
+    if (kbOffset > 0 && !userScrolledUp.current) {
+      const el = scrollContainerRef.current;
+      if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
     }
-    prevKbOpen.current = kbOpen;
-  }, [kbOpen]);
+  }, [kbOffset]);
 
   // WebSocket: re-fetch on new_message events, handle streaming
   const { sendWsMessage } = useWebSocket();
@@ -3096,7 +3038,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }
 
   return (
-    <div ref={kbContainerRef} className="flex flex-col relative h-full">
+    <div className="flex flex-col h-full relative">
 
 
       {/* Header */}
@@ -3404,8 +3346,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         ref={scrollContainerRef}
         data-chat-container
         onScroll={handleScroll}
-        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 pb-36 ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
-        style={{ overflowAnchor: "auto" }}
+        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOffset > 0 ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
+        style={kbOffset > 0 ? { paddingBottom: `${kbOffset + 144}px`, overflowAnchor: "auto" } : { overflowAnchor: "auto" }}
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
@@ -3577,7 +3519,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         escapeDisabled={isStopped || isError}
         escapeUrgent={isExecuting || hasPendingInteractive}
         escapeAvailable={hasTmuxPane}
-        kbHeight={kbOpen ? 1 : 0}
+        kbOffset={kbOffset}
       />
 
       {/* Stop confirmation modal */}
