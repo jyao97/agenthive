@@ -160,6 +160,12 @@ export const regenerateTaskSummary = (id) =>
   request(`/api/v2/tasks/${id}/regenerate-summary`, { method: "POST" });
 export const fetchQueueStatus = () =>
   request(`/api/v2/tasks/queue?tz_offset=${new Date().getTimezoneOffset()}`);
+export const batchProcessTasks = (taskIds) =>
+  request("/api/v2/tasks/batch-process", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(taskIds ? { task_ids: taskIds } : {}),
+  });
 
 // --- Agents ---
 export const fetchAgents = (params = "") =>

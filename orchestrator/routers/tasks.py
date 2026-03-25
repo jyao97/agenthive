@@ -1,6 +1,7 @@
 """Task routes — CRUD, dispatch, cancel, complete, queue status, worktree names."""
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -474,6 +475,90 @@ async def get_task_v2(task_id: str, db: Session = Depends(get_db)):
         conversation=conversation,
     )
 
+
+
+@router.post("/api/v2/tasks/batch-process")
+async def batch_process_tasks(request: Request, db: Session = Depends(get_db)):
+    """Spawn a tmux agent to triage inbox tasks: refine prompts, assign projects, dispatch."""
+    try:
+        body_raw = await request.json()
+    except Exception:
+        body_raw = {}
+    task_ids = body_raw.get("task_ids")
+
+    query = db.query(Task).filter(Task.status == TaskStatus.INBOX)
+    if task_ids:
+        query = query.filter(Task.id.in_(task_ids))
+    inbox_tasks = query.order_by(Task.sort_order, Task.created_at.desc()).all()
+    if not inbox_tasks:
+        raise HTTPException(400, "No inbox tasks to process")
+
+    # Gather available projects
+    projects = db.query(Project).filter(Project.archived == False).all()
+    project_list = [{"name": p.name, "display_name": getattr(p, "display_name", None) or p.name,
+                     "description": getattr(p, "description", None) or ""} for p in projects]
+
+    tasks_data = [{"id": t.id, "title": t.title or "", "description": t.description or "",
+                   "project_name": t.project_name or None} for t in inbox_tasks]
+
+    # Pick first available project as agent host (prefer cc-orchestrator)
+    host_project = "cc-orchestrator"
+    if not db.get(Project, host_project):
+        host_project = projects[0].name if projects else None
+    if not host_project:
+        raise HTTPException(400, "No projects available to host the agent")
+
+    api_base = "http://localhost:8080"
+    prompt = f"""You are a task triage assistant for AgentHive. Analyze the inbox tasks below, then update each one via the local API.
+
+FOR EACH TASK:
+1. **Title**: Rewrite to be clear, specific, and actionable (<80 chars). Keep good titles unchanged.
+2. **Description**: Focus on making the problem definition crystal clear — what is the current behavior, what is the desired outcome, and why it matters. Do NOT add implementation steps or technical solutions — the executing agent will explore the codebase and figure out the approach itself. Preserve existing good content. Keep the original language.
+3. **Project**: If project_name is null, assign the best-matching project. If none fits, leave null.
+4. **Dispatch**: If the task has enough detail AND a project, dispatch it for execution.
+
+AVAILABLE PROJECTS:
+{json.dumps(project_list, ensure_ascii=False, indent=2)}
+
+INBOX TASKS:
+{json.dumps(tasks_data, ensure_ascii=False, indent=2)}
+
+HOW TO UPDATE:
+- Update a task: curl -s -X PUT {api_base}/api/v2/tasks/TASK_ID -H "Content-Type: application/json" -d '{{"title":"...","description":"...","project_name":"..."}}'
+- Dispatch for execution: curl -s -X POST {api_base}/api/v2/tasks/TASK_ID/dispatch
+
+SAFETY RULES:
+- You may ONLY call these API endpoints: PUT /api/v2/tasks/TASK_ID (update) and POST /api/v2/tasks/TASK_ID/dispatch (start execution)
+- Do NOT call any other endpoints (no /api/agents/*, /api/git/*, /api/projects/*, DELETE endpoints, etc.)
+- Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md
+
+INSTRUCTIONS:
+1. First, analyze all tasks and present a summary table of your proposed changes (title, project assignment, ready status)
+2. If anything is ambiguous — unclear intent, multiple possible projects, vague descriptions that could go different directions — ask the user to clarify before proceeding. Don't guess on important decisions.
+3. Ask the user to confirm before applying changes
+4. After confirmation, execute the curl commands to update each task
+5. Report a final summary of what was changed and dispatched"""
+
+    # Launch via the tmux agent endpoint
+    from routers.agents import launch_tmux_agent
+
+    # Build a mock request body for launch_tmux_agent
+    class _MockRequest:
+        """Thin wrapper to forward app state + override json body."""
+        def __init__(self, real_request, body):
+            self.app = real_request.app
+            self._body = body
+        async def json(self):
+            return self._body
+
+    mock_body = {
+        "project": host_project,
+        "prompt": prompt,
+        "skip_permissions": True,
+    }
+    mock_req = _MockRequest(request, mock_body)
+    agent_out = await launch_tmux_agent(mock_req, db)
+    return {"ok": True, "agent_id": agent_out.id}
 
 
 @router.put("/api/v2/tasks/reorder")
