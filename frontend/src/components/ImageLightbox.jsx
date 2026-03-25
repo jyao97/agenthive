@@ -56,6 +56,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     moveStartX: 0,
     moveStartY: 0,
     singleTapTimer: null,
+    touchOnInteractive: false,
   });
 
   // Keep current values in refs for event handlers (avoids stale closures)
@@ -159,6 +160,8 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
     const onTouchStart = (e) => {
       const ts = touchState.current;
       ts.moved = false;
+      // Track whether touch started on an interactive element (button, video, link)
+      ts.touchOnInteractive = !!e.target.closest?.("button, video, a, input, [role='button']");
       if (e.touches.length >= 1) {
         ts.moveStartX = e.touches[0].clientX;
         ts.moveStartY = e.touches[0].clientY;
@@ -182,16 +185,23 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         if (isZoomedRef.current) {
           ts.isPanning = true;
           ts.isSwiping = false;
-        } else {
+        } else if (!ts.touchOnInteractive) {
+          // Only enable swiping if not on an interactive element
           ts.isPanning = false;
           ts.isSwiping = true;
+        } else {
+          ts.isPanning = false;
+          ts.isSwiping = false;
         }
       }
     };
 
     const onTouchMove = (e) => {
-      e.preventDefault(); // works because listener is { passive: false }
       const ts = touchState.current;
+      // Don't preventDefault for interactive elements (let native video controls etc. work)
+      if (!ts.touchOnInteractive || ts.isPinching) {
+        e.preventDefault();
+      }
       if (e.touches.length >= 1) {
         const mdx = e.touches[0].clientX - ts.moveStartX;
         const mdy = e.touches[0].clientY - ts.moveStartY;
@@ -249,8 +259,8 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         const dx = touch.clientX - ts.swipeStartX;
         const dy = touch.clientY - ts.swipeStartY;
 
-        // Swipe up or down to dismiss (low threshold = 60px)
-        if (Math.abs(dy) > 60 && Math.abs(dx) < Math.abs(dy)) {
+        // Swipe up or down to dismiss
+        if (Math.abs(dy) > DISMISS_THRESHOLD && Math.abs(dx) < Math.abs(dy)) {
           handleDismiss();
           return;
         }
@@ -271,8 +281,9 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         }
       }
 
-      // Tap detection: single-tap = close immediately, double-tap = zoom
-      if (!ts.moved && e.changedTouches.length === 1) {
+      // Tap detection: single-tap = delayed close (cancellable by double-tap), double-tap = zoom
+      // Skip tap handling for interactive elements (video controls, buttons, links)
+      if (!ts.moved && e.changedTouches.length === 1 && !ts.touchOnInteractive) {
         const touch = e.changedTouches[0];
         const now = Date.now();
         const dt = now - ts.lastTapTime;
@@ -282,7 +293,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         );
 
         if (dt < LIGHTBOX_DOUBLE_TAP_WINDOW && tapDist < LIGHTBOX_DOUBLE_TAP_DIST) {
-          // Double-tap: zoom toggle
+          // Double-tap: zoom toggle (cancel pending single-tap dismiss)
           ts.lastTapTime = 0;
           clearTimeout(ts.singleTapTimer);
           setAnimating(true);
@@ -308,14 +319,18 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
         } else {
           ts.lastTapTime = now;
           ts.lastTapPos = { x: touch.clientX, y: touch.clientY };
-          // Single-tap: close immediately (if zoomed, reset zoom instead)
+          clearTimeout(ts.singleTapTimer);
           if (isZoomedRef.current) {
+            // Reset zoom on single tap when zoomed
             setAnimating(true);
             setScale(1);
             setTranslate({ x: 0, y: 0 });
             setTimeout(() => setAnimating(false), TRANSITION_DURATION_MS);
           } else {
-            handleDismiss();
+            // Delay dismiss so a second tap (double-tap) can cancel it
+            ts.singleTapTimer = setTimeout(() => {
+              handleDismiss();
+            }, LIGHTBOX_DOUBLE_TAP_WINDOW);
           }
         }
       }
@@ -332,6 +347,7 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
+      clearTimeout(touchState.current.singleTapTimer);
     };
   }, [clampTranslate, goTo, media.length, handleDismiss]);
 
