@@ -290,6 +290,7 @@ async def hook_agent_post_compact(request: Request):
         ctx.compact_end_emitted = True  # prevent duplicate from sync engine
 
     # 2. Mark /compact message completed (double tick).
+    _is_tmux = False
     db = SessionLocal()
     try:
         compact_msg = (
@@ -344,11 +345,14 @@ async def hook_agent_post_compact(request: Request):
         )
         db.add(compact_sys)
 
-        # 5. Transition agent from EXECUTING → SYNCING.
+        # 5. Transition agent status.
         #    After /compact, Claude returns to the prompt — no longer executing.
+        #    tmux agents → SYNCING (sync loop keeps tailing the new session)
+        #    non-tmux agents → IDLE (exec sync restarts on next execution)
         agent = db.get(Agent, agent_id)
+        _is_tmux = bool(agent and agent.tmux_pane)
         if agent and agent.status == AgentStatus.EXECUTING:
-            agent.status = AgentStatus.SYNCING
+            agent.status = AgentStatus.SYNCING if _is_tmux else AgentStatus.IDLE
             agent.generating_msg_id = None
 
         db.commit()
@@ -357,7 +361,11 @@ async def hook_agent_post_compact(request: Request):
         from display_writer import flush_agent
         flush_agent(agent_id)
 
-        # 6. Emit completed_at update so frontend shows double tick.
+        # 6. Stop generating — clears in-memory _generating_agents set and
+        #    emits agent_stream_end so the frontend typing indicator clears.
+        ad._stop_generating(agent_id)
+
+        # 7. Emit completed_at update so frontend shows double tick.
         if compact_msg:
             from websocket import emit_message_update
             asyncio.ensure_future(emit_message_update(
@@ -365,17 +373,18 @@ async def hook_agent_post_compact(request: Request):
                 completed_at=compact_msg.completed_at.isoformat(),
             ))
 
-        # 7. Emit agent status update to frontend.
-        if agent and agent.status == AgentStatus.SYNCING:
+        # 8. Emit agent status update to frontend.
+        _post_status = agent.status.value if agent else "SYNCING"
+        if agent:
             from websocket import ws_manager
             asyncio.ensure_future(ws_manager.broadcast("agent_update", {
                 "agent_id": agent_id,
-                "status": "SYNCING",
+                "status": _post_status,
             }))
     finally:
         db.close()
 
-    # 8. Defer JSONL read + purge to sync loop — PostCompact is blocking,
+    # 9. Defer JSONL read + purge to sync loop — PostCompact is blocking,
     #    so the rewritten JSONL may not be flushed yet.  The sync loop's
     #    compact_turn_decrease path handles purge + reconcile.
     if ctx:
@@ -386,7 +395,12 @@ async def hook_agent_post_compact(request: Request):
             ad.wake_sync(_aid)
         asyncio.ensure_future(_post_compact_sync(agent_id))
 
-    # 9. Emit "Compact end" tool activity to frontend (WS acceleration).
+    # Cancel exec sync for non-tmux agents (will restart on next execution
+    # or via SessionStart rotation with the new session_id).
+    if not _is_tmux:
+        ad._cancel_exec_sync_task(agent_id)
+
+    # 10. Emit "Compact end" tool activity to frontend (WS acceleration).
     from websocket import emit_tool_activity
     await emit_tool_activity(agent_id, "Compact", "end",
                              tool_output="context compacted")
@@ -952,24 +966,84 @@ async def hook_agent_session_start(request: Request):
         # Emitting "end" prematurely here caused a false "compact done" in
         # the UI while the sync engine hadn't processed the new state yet.
         if source == "compact":
-            # Fallback for compact completion — PostCompact is the primary
-            # handler, but if it didn't fire (older Claude Code version,
-            # hook failure), SessionStart still resumes sync.
+            # Compact creates a new session — rotate immediately so the
+            # sync loop starts tailing the new JSONL (imports the
+            # "continued from" system message) without waiting for idle
+            # poll detection (~60s).
             ad = getattr(request.app.state, "agent_dispatcher", None)
             if ad:
                 ctx = ad._sync_contexts.get(agent_id)
                 if ctx:
                     ctx.compact_notified = False
-                    asyncio.create_task(ad.trigger_sync(agent_id))
-            logger.info("SessionStart hook: agent=%s compact complete (fallback), session=%s",
-                        agent_id[:8], session_id[:12])
-            # Still write the rotation signal — session_id changed
-            signal_path = f"/tmp/ahive-{agent_id}.newsession"
-            try:
-                with open(signal_path, "w") as f:
-                    f.write(session_id)
-            except OSError as e:
-                logger.warning("SessionStart hook: failed to write rotation signal %s: %s", signal_path, e)
+
+                # Look up project_path + worktree for rotation
+                _proj_path = None
+                _worktree = None
+                _is_tmux_ss = False
+                _db_ss = SessionLocal()
+                try:
+                    _ag_ss = _db_ss.get(Agent, agent_id)
+                    if _ag_ss:
+                        _is_tmux_ss = bool(_ag_ss.tmux_pane)
+                        _worktree = _ag_ss.worktree
+                        _proj_ss = _db_ss.get(Project, _ag_ss.project) if _ag_ss.project else None
+                        _proj_path = _proj_ss.path if _proj_ss else None
+                finally:
+                    _db_ss.close()
+
+                if _proj_path and _is_tmux_ss:
+                    # Tmux agent: rotate session in-place and start fresh
+                    # sync loop with the new JSONL.
+                    rotated = ad._rotate_agent_session(
+                        agent_id, session_id, _proj_path,
+                        worktree=_worktree,
+                    )
+                    if rotated:
+                        # Wake the new sync loop so it imports immediately
+                        ad.wake_sync(agent_id)
+                        logger.info(
+                            "SessionStart hook: agent=%s compact rotation to %s",
+                            agent_id[:8], session_id[:12],
+                        )
+                    else:
+                        logger.warning(
+                            "SessionStart hook: compact rotation failed for %s",
+                            agent_id[:8],
+                        )
+                elif _proj_path and not _is_tmux_ss:
+                    # Non-tmux agent: already IDLE (set by PostCompact).
+                    # Just update session_id and write continuation bubble.
+                    _db_nr = SessionLocal()
+                    try:
+                        _ag_nr = _db_nr.get(Agent, agent_id)
+                        if _ag_nr:
+                            _ag_nr.session_id = session_id
+                            ad._add_system_message(
+                                _db_nr, agent_id,
+                                "CLI session continued (new context)",
+                            )
+                            _db_nr.commit()
+                    finally:
+                        _db_nr.close()
+                    from display_writer import flush_agent as _flush_nr
+                    _flush_nr(agent_id)
+                    logger.info(
+                        "SessionStart hook: agent=%s compact non-tmux session updated to %s",
+                        agent_id[:8], session_id[:12],
+                    )
+                else:
+                    # Fallback: write signal file for poll-based detection
+                    signal_path = f"/tmp/ahive-{agent_id}.newsession"
+                    try:
+                        with open(signal_path, "w") as f:
+                            f.write(session_id)
+                    except OSError as e:
+                        logger.warning("SessionStart hook: failed to write rotation signal %s: %s", signal_path, e)
+                    logger.info(
+                        "SessionStart hook: agent=%s compact fallback signal for %s",
+                        agent_id[:8], session_id[:12],
+                    )
+
             return {}
 
         # Confirm /clear command execution — no Stop hook follows,

@@ -102,6 +102,11 @@
 - Lesson 1: tmux send-keys works fine even during active generation — keystrokes buffer in the terminal and Claude processes them one at a time after each turn completes.
 - Lesson 2: Consolidating delivered_at into the sync engine (from JSONL timestamp) is more accurate than server utcnow() from the hook — single source of truth.
 
+### 2026-03-24 | Task: Fix post-compact stuck typing indicator + delayed session rotation | Status: success
+- What: After `/compact`, agent was stuck forever — typing indicator spinning, status locked at "executing". Two bugs: (1) PostCompact never called `_stop_generating()`, so `_generating_agents` in-memory set and `agent_stream_end` WS event were never cleared. (2) Session rotation relied on 60s idle poll detection; non-tmux agents had no rotation at all.
+- Resolution: PostCompact now calls `ad._stop_generating()` (emits `agent_stream_end`), differentiates tmux (SYNCING) vs non-tmux (IDLE) status, and cancels exec sync for non-tmux. SessionStart(compact) now directly calls `_rotate_agent_session()` for tmux agents (instant rotation + wake sync) and updates session_id + writes continuation bubble for non-tmux agents.
+- Lesson: When a hook needs to clear "generating" state, it must call `_stop_generating()` not just set `generating_msg_id = None` in DB — the in-memory set and WS event are the signals the frontend uses for the typing indicator.
+
 ### 2026-03-24 — Disable text input when agent status is STARTING
 - What: Added `isStarting` check to disable the chat input bar when an agent's status is "STARTING", with placeholder text "Agent is starting…"
 - Attempts: Straightforward — no issues. Three-line change in AgentChatPage.jsx.
