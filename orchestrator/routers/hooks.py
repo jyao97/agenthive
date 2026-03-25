@@ -93,11 +93,11 @@ async def hook_agent_session_end(request: Request):
 
 @router.post("/api/hooks/agent-user-prompt")
 async def hook_agent_user_prompt(request: Request):
-    """Receive UserPromptSubmit hook — mark executing and wake sync.
+    """Receive UserPromptSubmit hook — mark message delivered and wake sync.
 
-    Delivery confirmation (delivered_at, display update, WS event) is
-    handled by the sync engine when it promotes the web message using the
-    JSONL timestamp — more accurate than server utcnow().
+    This hook fires when Claude actually accepts a prompt.  That IS the
+    delivery event, so we mark delivered_at directly here.  The sync engine
+    guards with `if not web_msg.delivered_at` so it won't overwrite.
     """
     agent_id = request.headers.get("X-Agent-Id", "").strip()
     if not agent_id:
@@ -113,8 +113,8 @@ async def hook_agent_user_prompt(request: Request):
 
     logger.info("hook_agent_user_prompt: received for agent %s", agent_id[:8])
 
-    # Find the undelivered message to use as generating_msg_id.
-    # Delivery itself (delivered_at, display, WS) is deferred to sync engine.
+    # Mark the most recent undelivered web-sent message as delivered.
+    from websocket import emit_message_delivered
     db = SessionLocal()
     msg = None
     try:
@@ -129,6 +129,20 @@ async def hook_agent_user_prompt(request: Request):
             .order_by(Message.created_at.asc())
             .first()
         )
+        if msg:
+            now = _utcnow()
+            msg.delivered_at = now
+            db.commit()
+
+            from display_writer import update_last
+            update_last(agent_id, msg.id)
+
+            asyncio.ensure_future(emit_message_delivered(
+                agent_id, msg.id, now.isoformat(),
+            ))
+            logger.info("hook_agent_user_prompt: message %s delivered for agent %s", msg.id, agent_id[:8])
+        else:
+            logger.info("hook_agent_user_prompt: no undelivered message for agent %s", agent_id[:8])
     finally:
         db.close()
 

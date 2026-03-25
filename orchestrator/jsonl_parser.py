@@ -397,6 +397,10 @@ def parse_session_turns_from_lines(
     text_uuid: str | None = None
     # Timestamp for the current accumulated text segment
     text_ts: str | None = None
+    # Queue-operation tracking: enqueue→remove/dequeue cycle detection.
+    # Pending = enqueued but not yet consumed.  Delivered = full cycle.
+    _qop_pending: list[tuple[str, str | None]] = []   # (content, timestamp)
+    _qop_delivered: list[tuple[str, str | None]] = []  # completed cycles
 
     def flush_text():
         """Emit accumulated text as a kind='text' turn."""
@@ -536,11 +540,22 @@ def parse_session_turns_from_lines(
                             turns.append(("assistant", summary, tool_meta, tool_uuid, "tool_use", entry_ts))
 
         elif entry_type == "queue-operation":
-            # Skip queue-operation entries — they are bookkeeping for
-            # Claude's internal message queue.  The real "user" entry
-            # that follows is authoritative and will be matched by the
-            # sync engine.  Parsing both creates duplicate messages.
-            pass
+            # Track enqueue→remove cycles for queued message delivery.
+            # Path 1 (normal dequeue): a real "user" entry follows → skip.
+            # Path 2 (attachment injection): no "user" entry → enqueue
+            # is the only JSONL evidence of delivery.  Collected here,
+            # reconciled after the main parse loop.
+            op = entry.get("operation")
+            if op == "enqueue":
+                qop_content = entry.get("content")
+                if isinstance(qop_content, str) and qop_content.strip():
+                    _qop_pending.append((qop_content.strip(), entry_ts))
+            elif op in ("remove", "dequeue"):
+                if _qop_pending:
+                    _qop_delivered.append(_qop_pending.pop(0))
+            elif op == "popAll":
+                _qop_delivered.extend(_qop_pending)
+                _qop_pending.clear()
 
         elif entry_type == "system":
             subtype = entry.get("subtype", "")
@@ -555,6 +570,31 @@ def parse_session_turns_from_lines(
 
     # Flush remaining
     flush_all()
+
+    # Reconcile queue-operation enqueue→remove cycles (Path 2 delivery).
+    # Only emit enqueue entries that completed the full cycle AND don't
+    # already have a matching real "user" entry (Path 1 dedup).
+    if _qop_delivered:
+        _real_user_contents: list[str] = []
+        for t in turns:
+            if t[0] == "user" and t[1]:
+                _real_user_contents.append(t[1].strip())
+
+        for _qc, _qts in _qop_delivered:
+            # Skip system-injected content (same filter as real user entries)
+            if (
+                _qc.startswith("<task-notification>")
+                or _qc.startswith("<local-command-caveat>")
+                or _qc.startswith("<command-name>")
+                or _qc.startswith("<system-reminder>")
+            ):
+                continue
+            # Skip if a real user entry already covers this content
+            if _qc in _real_user_contents:
+                _real_user_contents.remove(_qc)  # consume one match
+                continue
+            _qop_uuid = f"qop-{hashlib.md5(_qc.encode()).hexdigest()[:16]}"
+            turns.append(("user", _qc, None, _qop_uuid, None, _qts))
 
     # Deduplicate user turns by UUID only (content dedup is too aggressive —
     # the same message can legitimately appear before and after compact)
