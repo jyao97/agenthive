@@ -330,12 +330,14 @@ export default function App() {
 
     document.addEventListener("focusout", onFocusOut);
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("resize", microScroll);
+    // NOTE: intentionally NOT listening to window.resize here.
+    // Resize fires while the keyboard is open (autocomplete bar changes, etc.)
+    // and the scrollTo(1)→scrollTo(0) micro-scroll causes visible jitter.
+    // focusout + visibilitychange cover the dismiss/resume cases we need.
     return () => {
       timers.forEach(clearTimeout);
       document.removeEventListener("focusout", onFocusOut);
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("resize", microScroll);
     };
   }, []);
 
