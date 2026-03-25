@@ -128,14 +128,8 @@ def flush_agent(agent_id: str):
         )
 
         def _sort_key(msg: Message) -> datetime:
-            """Ordering: system/agent by created_at, user by delivered_at.
-
-            Undelivered user messages sort last (queued at bottom).
-            """
-            if msg.role == MessageRole.USER:
-                ts = msg.delivered_at or _MAX_TS
-            else:
-                ts = msg.created_at or _MAX_TS
+            """Ordering: delivered_at if available, else created_at."""
+            ts = msg.delivered_at or msg.created_at or _MAX_TS
             # Ensure tz-aware for consistent comparison (some DB rows
             # may have naive timestamps from older code paths).
             if ts.tzinfo is None:
