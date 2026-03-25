@@ -2467,9 +2467,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const vv = window.visualViewport;
     if (!vv) return;
     let baseHeight = vv.height;
-    let pollId = null;
     let isOpen = false;
     let dismissing = false;
+    let lastH = 0;
 
     const finalizeClose = () => {
       const el = kbContainerRef.current;
@@ -2479,10 +2479,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
       isOpen = false;
       dismissing = false;
+      lastH = 0;
       setKbOpen(false);
     };
 
-    const update = () => {
+    const onResize = () => {
       if (vv.height > baseHeight) baseHeight = vv.height;
       const kbH = Math.round(baseHeight - vv.height);
       const h = Math.round(vv.height);
@@ -2493,43 +2494,34 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       if (dismissing) return;
 
-      // ── KEYBOARD OPENING / OPEN: direct DOM ──
+      // ── KEYBOARD OPENING / OPEN ──
       if (open) {
-        el.style.height = `${h}px`;
+        // Skip DOM write if height unchanged — avoids redundant reflows
+        if (h !== lastH) {
+          el.style.height = `${h}px`;
+          lastH = h;
+        }
         el.classList.remove('h-full');
 
         if (!isOpen) {
-          // Boundary: just opened — tell React (for class toggles)
           isOpen = true;
           setKbOpen(true);
-        }
-
-        // Reset iOS body scroll (creates gap between input and keyboard)
-        if (window.scrollY > 0 || vv.offsetTop > 0) {
-          window.scrollTo(0, 0);
-        }
-
-        // Keep messages at bottom
-        const sc = scrollContainerRef.current;
-        if (sc && !userScrolledUp.current) {
-          sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+          // One-time: reset iOS body scroll & snap messages to bottom
+          if (window.scrollY > 0 || vv.offsetTop > 0) {
+            window.scrollTo(0, 0);
+          }
+          const sc = scrollContainerRef.current;
+          if (sc && !userScrolledUp.current) {
+            sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+          }
         }
       }
     };
 
-    const startPoll = () => {
-      dismissing = false;
-      if (!pollId) pollId = setInterval(update, 100);
-      update();
-    };
-
-    const stopPoll = () => {
-      if (pollId) { clearInterval(pollId); pollId = null; }
-
+    const onFocusOut = () => {
       const el = kbContainerRef.current;
       if (!el?.style.height || !isOpen) return;
 
-      // Snap — web can't sync with native keyboard animation, so just be fast.
       dismissing = true;
       const sc = scrollContainerRef.current;
       if (sc && !userScrolledUp.current) {
@@ -2538,17 +2530,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       finalizeClose();
     };
 
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    document.addEventListener("focusin", startPoll);
-    document.addEventListener("focusout", stopPoll);
-    update(); // initial read
+    vv.addEventListener("resize", onResize);
+    document.addEventListener("focusout", onFocusOut);
+    onResize(); // initial read
     return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-      document.removeEventListener("focusin", startPoll);
-      document.removeEventListener("focusout", stopPoll);
-      if (pollId) clearInterval(pollId);
+      vv.removeEventListener("resize", onResize);
+      document.removeEventListener("focusout", onFocusOut);
     };
   }, []);
 
