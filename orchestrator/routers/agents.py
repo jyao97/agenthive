@@ -2375,8 +2375,9 @@ async def send_agent_message(
                     import json as _json
                     from websocket import emit_metadata_update
                     ad._emit(emit_metadata_update(agent.id, msg.id, _json.loads(msg.meta_json)))
-            from display_writer import flush_agent as _msg_flush
-            _msg_flush(agent.id)
+            # No flush_agent here — PENDING messages stay out of the display
+            # file until dispatched (QUEUED) by the stop hook, so they get
+            # display_seq after the preceding agent response.
             logger.info("Message %s stored PENDING for busy agent %s (generating %s) — stop hook will dispatch",
                         msg.id, agent.id, agent.generating_msg_id)
             return msg

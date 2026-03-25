@@ -28,7 +28,7 @@ from sqlalchemy import func, text
 
 from config import _resolve
 from database import SessionLocal
-from models import Agent, AgentStatus, Message, MessageRole
+from models import Agent, AgentStatus, Message, MessageRole, MessageStatus
 
 logger = logging.getLogger("orchestrator.display_writer")
 
@@ -116,6 +116,13 @@ def flush_agent(agent_id: str):
             .filter(
                 Message.agent_id == agent_id,
                 Message.display_seq.is_(None),
+                # Skip PENDING user messages — they'll be flushed when
+                # dispatched (QUEUED) by the stop hook, ensuring they get
+                # display_seq AFTER the preceding agent response.
+                ~(
+                    (Message.role == MessageRole.USER)
+                    & (Message.status == MessageStatus.PENDING)
+                ),
             )
             .all()
         )
