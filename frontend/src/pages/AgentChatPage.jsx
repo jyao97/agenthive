@@ -1573,7 +1573,7 @@ import SendLaterPicker from "../components/SendLaterPicker";
 
 // --- Chat Input ---
 
-function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, kbOffset = 0 }) {
+function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, kbOpen = false }) {
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
@@ -1839,11 +1839,11 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOffset > 0 ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
-      style={kbOffset > 0 ? { bottom: `${kbOffset}px` } : undefined}
+      className={`absolute left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
+      style={{ bottom: 'var(--kb-h, 0px)' }}
     >
       <div
-        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOffset > 0 ? "pb-1.5 rounded-b-2xl" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
+        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1.5 rounded-b-2xl" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
         style={{ maxWidth: "24rem" }}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
@@ -2455,19 +2455,53 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [id]);
 
 
-  // Track keyboard height via visualViewport so both input bar and messages
-  // area can adapt.  Uses RAF polling while focused for instant response to
-  // keyboard layout switches (Chinese ↔ English) that don't fire resize events.
-  const [kbOffset, setKbOffset] = useState(0);
+  // Track keyboard height via visualViewport.  Uses direct DOM (CSS variable
+  // + inline paddingBottom) for instant, jank-free updates — no React re-render
+  // on every pixel change.  React state kbOpen only toggles on open/close boundary.
+  const [kbOpen, setKbOpen] = useState(false);
+  const kbContainerRef = useRef(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     let rafId = null;
     let stopTimer = null;
+    let prevOff = 0;
+    let isOpen = false;
+
     const update = () => {
       const off = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-      setKbOffset((prev) => (off === prev ? prev : off));
+      if (off === prevOff) return;
+      prevOff = off;
+
+      const el = kbContainerRef.current;
+      if (!el) return;
+
+      const open = off > 100;
+      const sc = scrollContainerRef.current;
+
+      if (open) {
+        el.style.setProperty('--kb-h', `${off}px`);
+        if (sc) sc.style.paddingBottom = `${off + 144}px`;
+      } else {
+        el.style.removeProperty('--kb-h');
+        if (sc) sc.style.paddingBottom = '';
+      }
+
+      if (open && !isOpen) {
+        isOpen = true;
+        setKbOpen(true);
+        if (sc && !userScrolledUp.current) {
+          requestAnimationFrame(() => { sc.scrollTop = sc.scrollHeight; });
+        }
+      } else if (!open && isOpen) {
+        isOpen = false;
+        setKbOpen(false);
+        if (sc && !userScrolledUp.current) {
+          requestAnimationFrame(() => { sc.scrollTop = sc.scrollHeight; });
+        }
+      }
     };
+
     const poll = () => {
       update();
       rafId = requestAnimationFrame(poll);
@@ -2595,13 +2629,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
   }, [loading, messages.length, scrollCountKey]);
 
-  // Auto-scroll when keyboard opens/grows so latest messages stay visible
-  useEffect(() => {
-    if (kbOffset > 0 && !userScrolledUp.current) {
-      const el = scrollContainerRef.current;
-      if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
-    }
-  }, [kbOffset]);
 
   // WebSocket: re-fetch on new_message events, handle streaming
   const { sendWsMessage } = useWebSocket();
@@ -3042,7 +3069,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }
 
   return (
-    <div className="flex flex-col h-full relative">
+    <div ref={kbContainerRef} className="flex flex-col h-full relative">
 
 
       {/* Header */}
@@ -3350,8 +3377,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         ref={scrollContainerRef}
         data-chat-container
         onScroll={handleScroll}
-        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOffset > 0 ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
-        style={kbOffset > 0 ? { paddingBottom: `${kbOffset + 144}px`, overflowAnchor: "auto" } : { overflowAnchor: "auto" }}
+        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOpen ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
+        style={{ overflowAnchor: "auto" }}
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
@@ -3523,7 +3550,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         escapeDisabled={isStopped || isError}
         escapeUrgent={isExecuting || hasPendingInteractive}
         escapeAvailable={hasTmuxPane}
-        kbOffset={kbOffset}
+        kbOpen={kbOpen}
       />
 
       {/* Stop confirmation modal */}
