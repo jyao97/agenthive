@@ -1839,7 +1839,8 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute bottom-0 left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbHeight > 0 ? "" : "pb-2 safe-area-pb-tight"}`}
+      className={`absolute left-0 right-0 flex justify-center px-4 z-20 pointer-events-none ${kbHeight > 0 ? "" : "pb-2 safe-area-pb-tight"}`}
+      style={{ bottom: 'var(--kb-h, 0px)' }}
     >
       <div
         className="glass-bar-nav rounded-[22px] px-3 pt-2 pb-2.5 flex flex-col gap-2 w-full relative pointer-events-auto"
@@ -2454,13 +2455,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [id]);
 
 
-  // Track keyboard via visualViewport — direct DOM for smooth animation.
-  // React state (kbOpen) only toggles at open/close boundaries, never during
-  // the animation itself. Container height is set via el.style.height directly,
-  // bypassing React re-render lag (~16-33ms per frame).
-  //
-  // OPEN:  follow visualViewport.resize events → direct DOM height update
-  // CLOSE: follow resize events (native-matched), spring fallback if needed
+  // Track keyboard via visualViewport — uses CSS custom property (--kb-h)
+  // instead of resizing the container, so the layout stays stable.
+  // The input bar and scroll padding consume --kb-h for positioning.
   const [kbOpen, setKbOpen] = useState(false);
   const kbContainerRef = useRef(null);
   useEffect(() => {
@@ -2469,84 +2466,64 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     let baseHeight = vv.height;
     let pollId = null;
     let isOpen = false;
-    let dismissing = false;
-
-    const finalizeClose = () => {
-      const el = kbContainerRef.current;
-      if (el) {
-        el.style.height = '';
-        el.classList.add('h-full');
-      }
-      isOpen = false;
-      dismissing = false;
-      setKbOpen(false);
-    };
 
     const update = () => {
       if (vv.height > baseHeight) baseHeight = vv.height;
       const kbH = Math.round(baseHeight - vv.height);
-      const h = Math.round(vv.height);
       const open = kbH > 100;
 
       const el = kbContainerRef.current;
       if (!el) return;
 
-      if (dismissing) return;
-
-      // ── KEYBOARD OPENING / OPEN: direct DOM ──
       if (open) {
-        // Only update height if it changed significantly (>= 8px).
-        // Prevents jitter from 1-2px visualViewport fluctuations during typing
-        // (autocomplete bar, prediction changes, etc.)
-        const currentH = parseInt(el.style.height) || 0;
-        const heightChanged = currentH === 0 || Math.abs(h - currentH) >= 8;
+        // Only update if changed significantly (>= 8px) to avoid jitter
+        // from autocomplete bar / prediction fluctuations
+        const prevKbH = parseInt(el.style.getPropertyValue('--kb-h')) || 0;
+        const changed = prevKbH === 0 || Math.abs(kbH - prevKbH) >= 8;
 
-        if (heightChanged) {
-          el.style.height = `${h}px`;
-          el.classList.remove('h-full');
+        if (changed) {
+          // Set CSS custom property — children consume for positioning
+          el.style.setProperty('--kb-h', `${kbH}px`);
+          // Adjust scroll container padding: base 144px (pb-36) + keyboard
+          const sc = scrollContainerRef.current;
+          if (sc) sc.style.paddingBottom = `${kbH + 144}px`;
         }
 
         if (!isOpen) {
-          // Boundary: just opened — tell React (for class toggles)
           isOpen = true;
           setKbOpen(true);
-        }
-
-        // Reset iOS body scroll (creates gap between input and keyboard)
-        if (window.scrollY > 0 || vv.offsetTop > 0) {
+          // Once on open: reset iOS body scroll
           window.scrollTo(0, 0);
         }
 
-        // Keep messages at bottom — only when height actually changed to
-        // avoid layout thrashing (scrollHeight read forces reflow)
-        if (heightChanged) {
+        // Keep messages at bottom
+        if (changed) {
           const sc = scrollContainerRef.current;
           if (sc && !userScrolledUp.current) {
             sc.scrollTop = sc.scrollHeight - sc.clientHeight;
           }
         }
+      } else if (isOpen) {
+        // Keyboard closed — reset everything
+        el.style.removeProperty('--kb-h');
+        const sc = scrollContainerRef.current;
+        if (sc) sc.style.paddingBottom = '';
+        if (sc && !userScrolledUp.current) {
+          sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+        }
+        isOpen = false;
+        setKbOpen(false);
       }
     };
 
     const startPoll = () => {
-      dismissing = false;
       if (!pollId) pollId = setInterval(update, 100);
       update();
     };
 
     const stopPoll = () => {
       if (pollId) { clearInterval(pollId); pollId = null; }
-
-      const el = kbContainerRef.current;
-      if (!el?.style.height || !isOpen) return;
-
-      // Snap — web can't sync with native keyboard animation, so just be fast.
-      dismissing = true;
-      const sc = scrollContainerRef.current;
-      if (sc && !userScrolledUp.current) {
-        sc.scrollTop = sc.scrollHeight - sc.clientHeight;
-      }
-      finalizeClose();
+      update(); // run once more to detect close
     };
 
     vv.addEventListener("resize", update);
@@ -3120,7 +3097,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }
 
   return (
-    <div ref={kbContainerRef} className={`flex flex-col relative ${kbOpen ? "" : "h-full"}`}>
+    <div ref={kbContainerRef} className="flex flex-col relative h-full">
 
 
       {/* Header */}
