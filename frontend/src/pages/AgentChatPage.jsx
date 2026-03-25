@@ -2483,6 +2483,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       setKbOpen(false);
     };
 
+    // Height tracking — only fires on actual viewport size change
     const onResize = () => {
       if (vv.height > baseHeight) baseHeight = vv.height;
       const kbH = Math.round(baseHeight - vv.height);
@@ -2494,9 +2495,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       if (dismissing) return;
 
-      // ── KEYBOARD OPENING / OPEN ──
       if (open) {
-        // Skip DOM write if height unchanged — avoids redundant reflows
         if (h !== lastH) {
           el.style.height = `${h}px`;
           lastH = h;
@@ -2506,15 +2505,23 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         if (!isOpen) {
           isOpen = true;
           setKbOpen(true);
-          // One-time: reset iOS body scroll & snap messages to bottom
-          if (window.scrollY > 0 || vv.offsetTop > 0) {
-            window.scrollTo(0, 0);
-          }
           const sc = scrollContainerRef.current;
           if (sc && !userScrolledUp.current) {
             sc.scrollTop = sc.scrollHeight - sc.clientHeight;
           }
         }
+      } else if (isOpen) {
+        // Keyboard closed without focusout (e.g. hardware kb, app switch)
+        finalizeClose();
+      }
+    };
+
+    // iOS body-scroll guard — iOS auto-scrolls the page to show the
+    // focused input; reset it so the container stays at viewport top.
+    // Only touches window.scrollTo, never container height → no jitter.
+    const onVvScroll = () => {
+      if (isOpen && (window.scrollY > 0 || vv.offsetTop > 0)) {
+        window.scrollTo(0, 0);
       }
     };
 
@@ -2531,10 +2538,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     };
 
     vv.addEventListener("resize", onResize);
+    vv.addEventListener("scroll", onVvScroll);
     document.addEventListener("focusout", onFocusOut);
     onResize(); // initial read
     return () => {
       vv.removeEventListener("resize", onResize);
+      vv.removeEventListener("scroll", onVvScroll);
       document.removeEventListener("focusout", onFocusOut);
     };
   }, []);
