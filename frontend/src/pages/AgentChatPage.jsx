@@ -2461,7 +2461,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // is debounced to avoid expensive reflow every frame.
   const [kbOpen, setKbOpen] = useState(false);
   const kbContainerRef = useRef(null);
-  const kbDebugRef = useRef(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -2470,6 +2469,32 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     let padTimer = null;
     let prevOff = 0;
     let isOpen = false;
+
+    // --- KB debug logging: batch samples and flush to backend ---
+    const kbSamples = [];
+    let kbFlushTimer = null;
+    const kbFlush = () => {
+      if (!kbSamples.length) return;
+      const batch = kbSamples.splice(0);
+      fetch("/api/debug/kb-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ samples: batch }),
+      }).catch(() => {});
+    };
+    const kbLog = (containerH, off, open) => {
+      kbSamples.push({
+        t: Date.now(),
+        cH: containerH,
+        iH: window.innerHeight,
+        vvH: Math.round(vv.height),
+        vvOT: Math.round(vv.offsetTop),
+        off,
+        open,
+      });
+      clearTimeout(kbFlushTimer);
+      kbFlushTimer = setTimeout(kbFlush, 500);
+    };
 
     const update = () => {
       const el = kbContainerRef.current;
@@ -2480,11 +2505,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const containerH = el.clientHeight;
       const off = Math.max(0, Math.round(containerH - vv.height - vv.offsetTop));
 
-      // Debug overlay — shows key values on-screen
-      const dbg = kbDebugRef.current;
-      if (dbg) {
-        dbg.textContent = `cH:${containerH} iH:${window.innerHeight} vvH:${Math.round(vv.height)} vvOT:${Math.round(vv.offsetTop)} off:${off} prev:${prevOff}`;
-      }
+      // Always log for debugging (even if off unchanged)
+      kbLog(containerH, off, off > 100);
 
       if (off === prevOff) return;
       prevOff = off;
@@ -2555,6 +2577,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (rafId) cancelAnimationFrame(rafId);
       if (stopTimer) clearTimeout(stopTimer);
       clearTimeout(padTimer);
+      kbFlush(); // flush remaining samples
     };
   }, []);
 
@@ -3096,9 +3119,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
   return (
     <div ref={kbContainerRef} className="flex flex-col h-full relative">
-
-      {/* KB debug overlay */}
-      <div ref={kbDebugRef} style={{ position: 'fixed', top: 60, left: 8, right: 8, zIndex: 9999, background: 'rgba(0,0,0,0.8)', color: '#0f0', fontSize: 11, fontFamily: 'monospace', padding: '4px 6px', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'pre-wrap' }} />
 
       {/* Header */}
       <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10`}>
