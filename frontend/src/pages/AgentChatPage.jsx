@@ -2477,6 +2477,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         el.style.height = '';
         el.classList.add('h-full');
       }
+      // Unlock body scroll so dismiss micro-scroll hack works
+      document.body.style.overflow = '';
       isOpen = false;
       dismissing = false;
       setKbOpen(false);
@@ -2510,11 +2512,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           // Boundary: just opened — tell React (for class toggles)
           isOpen = true;
           setKbOpen(true);
-        }
-
-        // Reset iOS body scroll (creates gap between input and keyboard)
-        if (window.scrollY > 0 || vv.offsetTop > 0) {
-          window.scrollTo(0, 0);
+          // Lock body scroll to prevent scroll-fight jitter.
+          // The body::after 1px hack makes body scrollable, and browsers
+          // micro-scroll it during typing — fighting that with scrollTo(0,0)
+          // every tick causes visible shake. Lock it while keyboard is open.
+          document.body.style.overflow = 'hidden';
+          // One-time reset of any existing body scroll offset
+          if (window.scrollY > 0 || vv.offsetTop > 0) {
+            window.scrollTo(0, 0);
+          }
         }
 
         // Keep messages at bottom — only when height actually changed to
@@ -2560,6 +2566,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       document.removeEventListener("focusin", startPoll);
       document.removeEventListener("focusout", stopPoll);
       if (pollId) clearInterval(pollId);
+      // Restore body overflow if unmounting while keyboard is open
+      document.body.style.overflow = '';
     };
   }, []);
 
