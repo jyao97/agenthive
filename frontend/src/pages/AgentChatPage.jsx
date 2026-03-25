@@ -2470,6 +2470,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     let pollId = null;
     let isOpen = false;
     let dismissing = false;
+    let lastAppliedH = 0;
 
     const finalizeClose = () => {
       const el = kbContainerRef.current;
@@ -2479,6 +2480,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
       isOpen = false;
       dismissing = false;
+      lastAppliedH = 0;
       setKbOpen(false);
     };
 
@@ -2495,7 +2497,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       // ── KEYBOARD OPENING / OPEN: direct DOM ──
       if (open) {
-        el.style.height = `${h}px`;
+        // Only update height when change exceeds threshold — filters out
+        // 1-2px jitter from suggestion bar / autocomplete toggling
+        if (!lastAppliedH || Math.abs(h - lastAppliedH) > 3) {
+          el.style.height = `${h}px`;
+          lastAppliedH = h;
+        }
         el.classList.remove('h-full');
 
         if (!isOpen) {
