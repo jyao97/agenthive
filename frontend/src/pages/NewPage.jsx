@@ -201,9 +201,9 @@ function NewTaskForm({ showToast, navigate }) {
                 rows={4}
                 className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-heading placeholder-hint resize-none focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-colors"
               />
-              {voice.streamingText && (
+              {voice.refining && (
                 <div className="px-3 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
-                  {voice.streamingText}
+                  Refining...
                 </div>
               )}
             </div>
@@ -534,9 +534,9 @@ function NewAgentForm({ showToast, navigate }) {
             rows={3}
             className="w-full min-h-[72px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors"
           />
-          {voice.streamingText && (
+          {voice.refining && (
             <div className="px-3 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
-              {voice.streamingText}
+              Refining...
             </div>
           )}
           {attachments.length > 0 && (

@@ -295,9 +295,9 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                 >
                   {parsed.text || (editing ? "" : "Tap to add description...")}
                 </div>
-                {voice.streamingText && (
+                {voice.refining && (
                   <div className="px-1 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
-                    {voice.streamingText}
+                    Refining...
                   </div>
                 )}
               </div>

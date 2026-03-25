@@ -1867,9 +1867,9 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
           rows={2}
           className="w-full min-h-[48px] max-h-[180px] rounded-xl bg-transparent px-3 py-2 text-sm text-heading placeholder-hint resize-none focus:outline-none transition-colors disabled:opacity-50"
         />
-        {(voice.streamingText || voice.refining) && (
+        {voice.refining && (
           <div className="px-3 pb-1 text-sm text-cyan-400/80 italic animate-pulse">
-            {voice.refining ? "Refining..." : voice.streamingText}
+            Refining...
           </div>
         )}
         {/* Attachment preview chips */}
@@ -2471,8 +2471,23 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     let isOpen = false;
     let dismissing = false;
     let lastAppliedH = 0;
+    let rafId = null;
+    let pendingH = 0;
+
+    // Batched DOM write — coalesces multiple update() calls into one
+    // paint per frame, preventing rapid-fire layout thrashing.
+    const flushHeight = () => {
+      rafId = null;
+      const el = kbContainerRef.current;
+      if (!el || dismissing || !pendingH) return;
+      if (Math.abs(pendingH - lastAppliedH) > 2) {
+        el.style.height = `${pendingH}px`;
+        lastAppliedH = pendingH;
+      }
+    };
 
     const finalizeClose = () => {
+      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
       const el = kbContainerRef.current;
       if (el) {
         el.style.height = '';
@@ -2481,6 +2496,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       isOpen = false;
       dismissing = false;
       lastAppliedH = 0;
+      pendingH = 0;
       setKbOpen(false);
     };
 
@@ -2495,13 +2511,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       if (dismissing) return;
 
-      // ── KEYBOARD OPENING / OPEN: direct DOM ──
+      // ── KEYBOARD OPENING / OPEN ──
       if (open) {
+        // Schedule height update via rAF (batches multiple calls per frame)
+        pendingH = h;
+        el.classList.remove('h-full');
+        if (!rafId) rafId = requestAnimationFrame(flushHeight);
+
         if (!isOpen) {
-          // Boundary: just opened — set height once and tell React
-          el.style.height = `${h}px`;
-          el.classList.remove('h-full');
-          lastAppliedH = h;
+          // Boundary: just opened — tell React
           isOpen = true;
           setKbOpen(true);
 
@@ -2513,10 +2531,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           if (sc && !userScrolledUp.current) {
             sc.scrollTop = sc.scrollHeight - sc.clientHeight;
           }
-        } else if (Math.abs(h - lastAppliedH) > 60) {
-          // Already open — only update on large change (orientation, kb resize)
-          el.style.height = `${h}px`;
-          lastAppliedH = h;
         }
       }
     };
@@ -2529,6 +2543,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
     const stopPoll = () => {
       if (pollId) { clearInterval(pollId); pollId = null; }
+      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
 
       const el = kbContainerRef.current;
       if (!el?.style.height || !isOpen) return;
@@ -2553,6 +2568,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       document.removeEventListener("focusin", startPoll);
       document.removeEventListener("focusout", stopPoll);
       if (pollId) clearInterval(pollId);
+      if (rafId) cancelAnimationFrame(rafId);
     };
   }, []);
 
@@ -3701,8 +3717,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         onToggle={feedbackVoice.toggleRecording}
                       />
                     </div>
-                    {feedbackVoice.streamingText && (
-                      <div className="px-1 text-xs text-amber-400/80 italic animate-pulse">{feedbackVoice.streamingText}</div>
+                    {feedbackVoice.refining && (
+                      <div className="px-1 text-xs text-amber-400/80 italic animate-pulse">Refining...</div>
                     )}
                   </div>
                 )}

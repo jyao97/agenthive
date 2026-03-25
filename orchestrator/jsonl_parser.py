@@ -539,6 +539,7 @@ def parse_session_turns_from_lines(
                             tool_meta = {"tool_name": tool_name, "tool_use_id": tool_use_id}
                             turns.append(("assistant", summary, tool_meta, tool_uuid, "tool_use", entry_ts))
 
+<<<<<<< HEAD
         elif entry_type == "queue-operation":
             # Track enqueue→remove cycles for queued message delivery.
             # Path 1 (normal dequeue): a real "user" entry follows → skip.
@@ -557,6 +558,8 @@ def parse_session_turns_from_lines(
                 _qop_delivered.extend(_qop_pending)
                 _qop_pending.clear()
 
+=======
+>>>>>>> worktree-agent-a12fc034
         elif entry_type == "system":
             subtype = entry.get("subtype", "")
             if subtype in ("turn_duration", "stop_hook_summary"):
