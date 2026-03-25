@@ -157,17 +157,16 @@ async def frontend_debug_state(request: Request):
 
 @router.post("/api/debug/kb-log")
 async def kb_debug_log(request: Request):
-    """Receive keyboard viewport debug samples from frontend."""
-    _kblog = logging.getLogger("frontend.kb")
+    """Receive keyboard viewport debug samples — writes to logs/kb-debug.log."""
     body = await request.json()
     samples = body.get("samples", [])
-    for s in samples:
-        _kblog.info(
-            "t=%s cH=%s iH=%s vvH=%s vvOT=%s off=%s open=%s",
-            s.get("t", "?"), s.get("cH", "?"), s.get("iH", "?"),
-            s.get("vvH", "?"), s.get("vvOT", "?"), s.get("off", "?"),
-            s.get("open", "?"),
-        )
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logs")
+    log_path = os.path.join(log_dir, "kb-debug.log")
+    with open(log_path, "a") as f:
+        for s in samples:
+            f.write(f"t={s.get('t','?')} cH={s.get('cH','?')} iH={s.get('iH','?')} "
+                    f"vvH={s.get('vvH','?')} vvOT={s.get('vvOT','?')} "
+                    f"off={s.get('off','?')} open={s.get('open','?')}\n")
     return {"ok": True, "count": len(samples)}
 
 
