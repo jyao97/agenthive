@@ -2039,6 +2039,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     onError: (msg) => console.warn("Feedback voice error:", msg),
   });
   const [showTaskCard, setShowTaskCard] = useState(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   // Sync generateSummary with per-project localStorage preference
   const generateSummaryInitialized = useRef(false);
   useEffect(() => {
@@ -2632,6 +2633,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     if (!el) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     userScrolledUp.current = distFromBottom > 100;
+    setShowScrollToBottom(distFromBottom > el.clientHeight);
     // Scroll-up trigger for lazy loading
     if (el.scrollTop < 200 && hasMore && !loadingMore) {
       loadOlderMessages();
@@ -3627,6 +3629,23 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Scroll to bottom button */}
+      {showScrollToBottom && (
+        <button
+          type="button"
+          onClick={() => {
+            messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            setShowScrollToBottom(false);
+          }}
+          className="absolute left-1/2 -translate-x-1/2 bottom-24 z-20 w-9 h-9 rounded-full bg-surface border border-divider shadow-lg flex items-center justify-center text-dim hover:text-heading hover:bg-elevated transition-all active:scale-95"
+          title="Scroll to bottom"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+          </svg>
+        </button>
+      )}
 
       {/* Input bar */}
       <ChatInput
