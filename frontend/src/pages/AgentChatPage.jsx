@@ -1840,7 +1840,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   return (
     <div
       className={`absolute left-0 right-0 bottom-0 flex flex-col items-center z-20 pointer-events-none ${kbOpen ? "" : "pb-2 safe-area-pb-tight"}`}
-      style={kbOpen ? { paddingBottom: 'var(--kb-h, 0px)', background: 'var(--color-surface)' } : {}}
+      style={kbOpen ? { paddingBottom: 'var(--kb-h, 0px)' } : {}}
     >
       <div className="w-full px-4 flex justify-center">
       <div
