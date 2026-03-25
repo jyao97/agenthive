@@ -2470,6 +2470,14 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     let prevOff = 0;
     let isOpen = false;
 
+    // Prevent touchmove outside the message scroll container so iOS
+    // visual-viewport doesn't scroll when dragging on the input bar.
+    const blockTouchOutsideScroll = (e) => {
+      const sc = scrollContainerRef.current;
+      if (sc && sc.contains(e.target)) return; // allow message list scroll
+      e.preventDefault();
+    };
+
     // --- KB debug logging: batch samples and flush to backend ---
     const kbSamples = [];
     let kbFlushTimer = null;
@@ -2501,20 +2509,26 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (!el) return;
 
       const containerH = el.clientHeight;
-      // kbHeight: actual keyboard height — stable, doesn't depend on scroll
-      const kbHeight = Math.max(0, Math.round(containerH - vv.height));
+      // rawDelta: detects keyboard presence (ignores viewport scroll)
+      const rawDelta = Math.max(0, Math.round(containerH - vv.height));
+      // kbOffset: actual positioning offset — subtracts vv.offsetTop so
+      // the input bar stays flush with the keyboard even when iOS scrolls
+      // the visual viewport (common on 2nd+ keyboard open).
+      const kbOffset = Math.max(0, Math.round(containerH - vv.height - vv.offsetTop));
 
-      kbLog(containerH, kbHeight, kbHeight > 100);
+      kbLog(containerH, kbOffset, rawDelta > 100);
 
-      const open = kbHeight > 100;
+      const open = rawDelta > 100;
 
-      if (kbHeight !== prevOff) {
-        prevOff = kbHeight;
-        if (open) {
-          el.style.setProperty('--kb-h', `${kbHeight}px`);
-        } else {
-          el.style.removeProperty('--kb-h');
+      if (open) {
+        // Only update CSS var when change > 3px to suppress sub-pixel jitter
+        if (Math.abs(kbOffset - prevOff) > 3) {
+          prevOff = kbOffset;
+          el.style.setProperty('--kb-h', `${kbOffset}px`);
         }
+      } else if (prevOff !== 0) {
+        prevOff = 0;
+        el.style.removeProperty('--kb-h');
       }
 
       // Scroll container padding: input bar height + some breathing room
@@ -2534,7 +2548,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         document.body.style.position = 'fixed';
         document.body.style.width = '100%';
         document.body.style.top = '0';
+        document.body.style.touchAction = 'none';
         window.scrollTo(0, 0);
+        // Block touchmove outside scroll container to prevent iOS
+        // visual-viewport scroll via touch gestures on the input bar.
+        document.addEventListener('touchmove', blockTouchOutsideScroll, { passive: false });
         setKbOpen(true);
         const sc = scrollContainerRef.current;
         if (sc && !userScrolledUp.current) {
@@ -2546,6 +2564,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         document.body.style.position = '';
         document.body.style.width = '';
         document.body.style.top = '';
+        document.body.style.touchAction = '';
+        document.removeEventListener('touchmove', blockTouchOutsideScroll);
         setKbOpen(false);
         const sc = scrollContainerRef.current;
         if (sc && !userScrolledUp.current) {
@@ -2582,6 +2602,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (rafId) cancelAnimationFrame(rafId);
       if (stopTimer) clearTimeout(stopTimer);
       clearTimeout(padTimer);
+      document.removeEventListener('touchmove', blockTouchOutsideScroll);
+      document.body.style.touchAction = '';
       kbFlush(); // flush remaining samples
     };
   }, []);
@@ -3431,7 +3453,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         data-chat-container
         onScroll={handleScroll}
         className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOpen ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
-        style={{ overflowAnchor: "auto" }}
+        style={{ overflowAnchor: "auto", overscrollBehavior: "none" }}
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
