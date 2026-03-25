@@ -50,6 +50,8 @@ class ContentMatcher:
     2. **task-stripped**     — strip ``_build_task_prompt`` wrapper, then exact
     3. **normalized**        — whitespace-normalised match (tab→space etc.)
     4. **task-normalized**   — strip task wrapper + normalise
+    5. **task-description-contained** — stripped description found inside candidate
+       (handles retry prompts where display_content includes title + retry info)
     """
 
     # ------------------------------------------------------------------
@@ -99,6 +101,17 @@ class ContentMatcher:
                 if msg.content and ContentMatcher.normalize(msg.content) == norm_stripped:
                     return msg, "task-normalized"
 
+        # 5. Task description contained in candidate (retry dedup)
+        #    For retry tasks, display_content = title + desc + "Retry attempt #N"
+        #    + retry_context, while strip_task_prompt extracts only the
+        #    description from "## Original Task".  Check if the stripped
+        #    description is a substring of any candidate's content.
+        if is_task and len(stripped) > 20:
+            norm_stripped = ContentMatcher.normalize(stripped)
+            for msg in candidates:
+                if msg.content and norm_stripped in ContentMatcher.normalize(msg.content):
+                    return msg, "task-description-contained"
+
         return None, "none"
 
     # ------------------------------------------------------------------
@@ -120,13 +133,17 @@ class ContentMatcher:
         if not content.startswith("# Task:"):
             return content
 
+        # Retry first — "## Your Focus" distinguishes retry from non-retry.
+        # Must check before _TASK_BODY_RE because that regex also matches
+        # retry prompts (they have ## Before You Start at the end too),
+        # capturing all retry sections as "description".
+        if "## Your Focus" in content[:500]:
+            m = _RETRY_BODY_RE.search(content)
+            if m:
+                return m.group(1).strip()
+
         # Non-retry: description sits between title and first ## section
         m = _TASK_BODY_RE.match(content)
-        if m:
-            return m.group(1).strip()
-
-        # Retry: description lives under "## Original Task …"
-        m = _RETRY_BODY_RE.search(content)
         if m:
             return m.group(1).strip()
 
