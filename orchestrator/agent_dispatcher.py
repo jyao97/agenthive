@@ -2464,7 +2464,7 @@ Here are the day's conversations (with timestamps):
         tasks = (
             db.query(Task)
             .filter(Task.status == TaskStatus.PENDING)
-            .order_by(Task.priority.desc(), Task.created_at.asc())
+            .order_by(Task.created_at.asc())
             .limit(5)
             .all()
         )

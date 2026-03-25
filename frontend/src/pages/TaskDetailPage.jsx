@@ -201,9 +201,6 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               {task.effort}
             </span>
           )}
-          {task.priority === 1 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-medium">High Priority</span>
-          )}
           {task.use_worktree && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400">Worktree</span>
           )}
@@ -599,11 +596,6 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
                   <span className="text-[11px] text-dim">#{task.attempt_number}</span>
                 </div>
               )}
-              {/* Priority */}
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-label">Priority</span>
-                <span className="text-[11px] text-dim">{task.priority === 1 ? "High" : "Normal"}</span>
-              </div>
               {/* Flags */}
               <div className="flex items-center justify-between">
                 <span className="text-xs text-label">Flags</span>

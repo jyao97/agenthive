@@ -198,7 +198,6 @@ async def create_task_v2(body: TaskCreate, db: Session = Depends(get_db)):
         title=title,
         description=body.description,
         project_name=body.project_name,
-        priority=body.priority,
         model=body.model,
         effort=body.effort,
         skip_permissions=body.skip_permissions,
@@ -350,7 +349,7 @@ async def task_queue_status(
     pending_tasks = (
         db.query(Task)
         .filter(Task.status == TaskStatus.PENDING)
-        .order_by(Task.priority.desc(), Task.created_at.asc())
+        .order_by(Task.created_at.asc())
         .all()
     )
     pending_list = [TaskOut.model_validate(t).model_dump() for t in pending_tasks]
@@ -590,7 +589,7 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
             TaskStateMachine.transition(task, new_status)
         except (ValueError, InvalidTransitionError) as exc:
             raise HTTPException(409, str(exc))
-    for field in ("title", "description", "project_name", "priority", "model", "effort"):
+    for field in ("title", "description", "project_name", "model", "effort"):
         val = getattr(body, field, None)
         if val is not None:
             setattr(task, field, val)

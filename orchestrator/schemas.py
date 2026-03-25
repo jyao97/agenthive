@@ -19,7 +19,6 @@ class TaskCreate(BaseModel):
     title: str = Field("", max_length=300)
     description: str | None = Field(None, max_length=50000)
     project_name: str | None = None
-    priority: int = Field(0, ge=0, le=1)  # 0=normal, 1=high
     model: str | None = None
     effort: Literal["low", "medium", "high", "max"] | None = None
     skip_permissions: bool = True
@@ -44,7 +43,6 @@ class TaskUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=300)
     description: str | None = None
     project_name: str | None = None
-    priority: int | None = Field(None, ge=0, le=1)
     model: str | None = None
     effort: str | None = None
     status: str | None = None
@@ -61,7 +59,6 @@ class TaskOut(BaseModel):
     title: str
     description: str | None = None
     project_name: str | None = None
-    priority: int = 0
     status: TaskStatus
     agent_id: str | None = None
     worktree_name: str | None = None

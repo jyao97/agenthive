@@ -24,7 +24,6 @@ function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand,
   const navigate = useNavigate();
   const subState = task.planning_status || (!task.agent_id ? "queued" : "planning");
   const projColor = task.project_name ? projectBadgeColor(task.project_name) : "";
-  const isHigh = task.priority >= 1;
   const isExpanded = expanded && !selecting;
 
   const savedDesc = task.description || "";
@@ -138,11 +137,6 @@ function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand,
                   {task.effort}
                 </span>
               )}
-              {isHigh && (
-                <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-500 dark:text-amber-400">
-                  High
-                </span>
-              )}
               {task.notify_at && (
                 <span className="text-[11px] text-amber-500 dark:text-amber-400 flex items-center gap-0.5">
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -214,7 +208,6 @@ function PlanningCard({ task, selecting, selected, onToggle, expanded, onExpand,
 
 export default function PlanningView({ tasks, loading, selecting, selected, onToggle, expandedTaskId, onExpandTask, onRefresh }) {
   const sorted = [...tasks].sort((a, b) => {
-    if (b.priority !== a.priority) return b.priority - a.priority;
     return new Date(a.created_at) - new Date(b.created_at);
   });
 

@@ -15,10 +15,6 @@ const EFFORT_PICKER = [
   { value: "high", label: "High" },
   { value: "max", label: "Max" },
 ];
-const PRIORITY_PICKER = [
-  { value: 0, label: "Normal" },
-  { value: 1, label: "High" },
-];
 const WT_PICKER = [
   { value: true, label: "On" },
   { value: false, label: "Off" },
@@ -51,7 +47,6 @@ function isImagePath(path) {
 
 export default memo(function InboxCard({ task, selecting, selected, onToggle, expanded, onExpand, onRefresh, dragHandleProps }) {
   const projColor = "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400";
-  const isHigh = task.priority >= 1;
   const isExpanded = expanded && !selecting;
   const { projects } = useProjects();
   const projectPicker = useMemo(() => [
@@ -466,12 +461,6 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                       task.skip_permissions ? "bg-amber-500/15 text-amber-500 dark:text-amber-400" : "bg-elevated text-faint"
                     }`}>
                     Auto
-                  </TagPicker>
-                  <TagPicker options={PRIORITY_PICKER} value={task.priority >= 1 ? 1 : 0} onSelect={(v) => update("priority", v)}
-                    className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-full cursor-pointer active:scale-90 transition-transform ${
-                      isHigh ? "bg-amber-500/15 text-amber-500 dark:text-amber-400" : "bg-elevated text-faint"
-                    }`}>
-                    {isHigh ? "H" : "N"}
                   </TagPicker>
                   {task.model && (
                     <TagPicker options={MODEL_PICKER} value={task.model} onSelect={(v) => update("model", v)}

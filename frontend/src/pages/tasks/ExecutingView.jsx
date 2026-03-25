@@ -8,10 +8,7 @@ export default function ExecutingView({ tasks, loading, onRefresh, selecting, se
 
   const queued = tasks
     .filter((t) => t.status === "PENDING")
-    .sort((a, b) => {
-      if (b.priority !== a.priority) return b.priority - a.priority;
-      return new Date(a.created_at) - new Date(b.created_at);
-    });
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
   if (!loading && active.length === 0 && queued.length === 0) {
     return (
