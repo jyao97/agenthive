@@ -1,0 +1,13 @@
+# Project Registry
+# Add your projects here. Each project needs a name and path.
+# Optional: git_remote for repository tracking.
+#
+# Example:
+# projects:
+#   - name: my-project
+#     path: /home/user/projects/my-project
+#     git_remote: https://github.com/user/my-project.git
+#   - name: another-project
+#     path: /home/user/projects/another-project
+
+projects: []

@@ -1,7 +1,8 @@
 {
   "name": "agenthive-frontend",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "AgentHive frontend — multi-agent orchestration dashboard",
   "type": "module",
   "scripts": {
     "dev": "vite",

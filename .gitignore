@@ -48,6 +48,9 @@ Thumbs.db
 *.swo
 .claude/
 
+# Internal tracking
+PROGRESS.md
+
 # Dev artifacts
 *.sqlite3
 :memory:
