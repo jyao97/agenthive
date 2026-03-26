@@ -1962,7 +1962,7 @@ async def get_agent_display(
             continue
         seen[entry.id] = entry
 
-    messages = list(seen.values())
+    messages = [m for m in seen.values() if m.kind != "tool_activity"]
 
     # Queued messages: sent from web/plan but not yet in the display file
     queued = (
