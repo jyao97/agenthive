@@ -1962,13 +1962,13 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
-      style={{ bottom: 'var(--kb-h, 0px)' }}
+      className={`absolute left-0 right-0 flex flex-col items-center z-20 pointer-events-none ${kbOpen ? "" : "px-4 pb-2 safe-area-pb-tight"}`}
+      style={{ bottom: kbOpen ? 0 : 'var(--kb-h, 0px)' }}
     >
       {scrollButton}
       <div
-        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1 rounded-b-none" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
-        style={{ maxWidth: "24rem" }}
+        className={`glass-bar-nav rounded-[22px] ${kbOpen ? "px-4 pt-2 pb-1 rounded-b-none" : "px-3 pt-2 pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
+        style={{ maxWidth: kbOpen ? 'none' : '24rem' }}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
@@ -2120,6 +2120,10 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
           </button>
         </div>
       </div>
+      {/* Fill gap between glass bar and keyboard with page bg */}
+      {kbOpen && (
+        <div className="w-full bg-page" style={{ height: 'var(--kb-h, 0px)' }} />
+      )}
       {attPreviewIndex != null && attachments.length > 0 && (
         <ImageLightbox
           media={attachments.filter(a => !a.uploading).map(a => ({
