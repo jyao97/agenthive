@@ -22,9 +22,9 @@ const FILTER_TABS = [
 
 const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, onToggle, isStreaming }) {
   const navigate = useNavigate();
-  const state = agentBotState(agent.status);
   // When hook/stream activity indicates work during IDLE, promote visual status
   const effectiveStatus = (agent.status === "IDLE" && (isStreaming || agent.is_generating)) ? "EXECUTING" : agent.status;
+  const state = agentBotState(effectiveStatus);
   const statusDotColor = AGENT_STATUS_COLORS[effectiveStatus] || "bg-gray-500";
   const statusTextColor = AGENT_STATUS_TEXT_COLORS[effectiveStatus] || "text-dim";
   const [copied, setCopied] = useState(false);

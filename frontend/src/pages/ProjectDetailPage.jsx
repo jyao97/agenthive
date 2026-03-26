@@ -274,7 +274,7 @@ function AgentRow({ agent, onClick, starred, onToggleStar, onError, project, isS
       className="w-full text-left rounded-xl bg-surface shadow-card p-4 flex items-center gap-3 transition-colors active:bg-input focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 hover:ring-1 hover:ring-ring-hover"
     >
       <div className="relative shrink-0" onClick={handleCopyId} title={`Copy ID: ${agent.id}`}>
-        <BotIcon state={agentBotState(agent.status)} className="w-9 h-9 cursor-pointer hover:opacity-70 transition-opacity" />
+        <BotIcon state={agentBotState(effectiveStatus)} className="w-9 h-9 cursor-pointer hover:opacity-70 transition-opacity" />
         {copied && (
           <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[10px] text-cyan-400 font-medium whitespace-nowrap">
             Copied!

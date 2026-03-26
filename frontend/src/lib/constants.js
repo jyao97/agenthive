@@ -177,6 +177,7 @@ export const TASK_PERSPECTIVE_TABS = [
 /** Map agent status to BotIcon visual state. */
 export function agentBotState(status) {
   if (status === "EXECUTING") return "running";
+  if (status === "SYNCING") return "running";
   if (status === "ERROR") return "error";
   if (status === "IDLE") return "completed";
   if (status === "STOPPED") return "idle";
