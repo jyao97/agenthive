@@ -1349,6 +1349,13 @@ async def stop_agent(agent_id: str, request: Request,
         if _linked_task and _linked_task.status in (TaskStatus.EXECUTING, TaskStatus.COMPLETE):
             if task_drop:
                 TaskStateMachine.transition(_linked_task, TaskStatus.CANCELLED, strict=False)
+                if incomplete_reason:
+                    db.add(Message(
+                        agent_id=agent.id, role=MessageRole.SYSTEM,
+                        content=f"Task dropped — {incomplete_reason}",
+                        status=MessageStatus.COMPLETED,
+                        delivered_at=datetime.now(timezone.utc),
+                    ))
                 logger.info("Task %s CANCELLED/dropped (agent %s stopped by user)", _linked_task.id, agent.id)
             elif task_complete:
                 TaskStateMachine.transition(_linked_task, TaskStatus.COMPLETE, strict=False)
@@ -1358,6 +1365,12 @@ async def stop_agent(agent_id: str, request: Request,
                 _ctx_parts = []
                 if incomplete_reason:
                     _ctx_parts.append(f"User feedback: {incomplete_reason}")
+                    db.add(Message(
+                        agent_id=agent.id, role=MessageRole.SYSTEM,
+                        content=f"Redo — {incomplete_reason}",
+                        status=MessageStatus.COMPLETED,
+                        delivered_at=datetime.now(timezone.utc),
+                    ))
                 if _ctx_parts:
                     _linked_task.retry_context = "\n".join(_ctx_parts)
                 # Mark summary as generating — background thread will replace

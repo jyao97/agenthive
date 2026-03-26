@@ -3123,7 +3123,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         generateSummary: generateSummary && !!agent?.task_id,
         taskComplete: agent?.task_id ? taskOutcome === "complete" : true,
         taskDrop: taskOutcome === "drop",
-        incompleteReason: (taskOutcome === "incomplete" && feedbackText) ? feedbackText : null,
+        incompleteReason: (taskOutcome !== "complete" && feedbackText) ? feedbackText : null,
       });
       const label = !agent?.task_id
         ? "Agent stopped"
@@ -3818,8 +3818,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                     Drop
                   </button>
                 </div>
-                {/* Incomplete reason with file + voice support */}
-                {taskOutcome === "incomplete" && (
+                {/* Feedback note for Redo / Drop */}
+                {taskOutcome !== "complete" && (
                   <div className="space-y-2">
                     <textarea
                       value={incompleteReason}
