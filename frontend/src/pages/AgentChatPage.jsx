@@ -1122,7 +1122,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
                 </div>
               </div>
             ) : (
-              displayContent && <p className="text-sm whitespace-pre-wrap">{displayContent}</p>
+              displayContent && <p className="text-sm whitespace-pre-wrap break-words">{displayContent}</p>
             )
           ) : (
             <div className="text-sm" ref={markdownRef} onClick={handleMarkdownClick}>
@@ -3672,7 +3672,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                     );
                   }
                 }
-                return <div key={msg.id} data-msg-id={msg.id} data-msg-type={msg.role === "USER" ? "user" : msg.role === "SYSTEM" ? "system" : "agent_default"}><ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} contentOverride={msg.id === retryFirstMsgId ? taskData.retry_context.replace(/^User feedback:\s*/i, "") : undefined} /></div>;
+                return <div key={msg.id} data-msg-id={msg.id} data-msg-type={msg.role === "USER" ? "user" : msg.role === "SYSTEM" ? "system" : "agent_default"}><ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} contentOverride={msg.id === retryFirstMsgId ? stripAttachmentTags(taskData.retry_context.replace(/^User feedback:\s*/i, "")) : undefined} /></div>;
               });
             })()}
 
