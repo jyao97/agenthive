@@ -2597,19 +2597,18 @@ async def send_escape_to_agent(agent_id: str, request: Request, db: Session = De
             except OSError:
                 pass
 
-    if interrupted and ad:
-        ad._stop_generating(agent_id)
-        logger.info("escape: interrupt confirmed in JSONL for %s, cleared generating", agent_id[:8])
-    elif not interrupted:
-        logger.info("escape: interrupt not yet in JSONL for %s after 150ms, sync will detect it", agent_id[:8])
-
-    # Always wake sync after sending C-c.  The Stop hook does NOT fire on
-    # user interrupt (CC skips it on abort), so without this wake the sync
-    # loop would sleep until the next 5-min poll.  Even if the quick JSONL
-    # check above missed the entry (disk flush lag), the sync loop will
-    # pick it up on the woken pass.
+    # Always clear generating state when the user explicitly requests interrupt.
+    # Two scenarios:
+    #   1. CC was generating → C-c aborts, JSONL entry written, sync will import it
+    #   2. CC was already idle (Stop hook arrived but sync hadn't processed it yet)
+    #      → no JSONL entry, but UI still shows EXECUTING — must clear it here
     if ad:
+        ad._stop_generating(agent_id)
         ad.wake_sync(agent_id)
+        if interrupted:
+            logger.info("escape: interrupt confirmed in JSONL for %s", agent_id[:8])
+        else:
+            logger.info("escape: no JSONL entry for %s (CC may have been idle), cleared generating", agent_id[:8])
 
     logger.info("Sent Escape to agent %s pane %s", agent_id, agent.tmux_pane)
     return {"detail": "ok", "interrupted": interrupted}
