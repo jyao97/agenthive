@@ -2592,7 +2592,11 @@ async def send_escape_to_agent(agent_id: str, request: Request, db: Session = De
 
     if interrupted and ad:
         ad._stop_generating(agent_id)
-        logger.info("escape: interrupt confirmed in JSONL for %s, cleared generating", agent_id[:8])
+        # Wake the sync loop so it immediately processes the interrupt entry.
+        # The Stop hook does NOT fire on user interrupt (CC skips it on abort),
+        # so without this wake the sync loop would sleep until the next 5-min poll.
+        ad.wake_sync(agent_id)
+        logger.info("escape: interrupt confirmed in JSONL for %s, cleared generating + woke sync", agent_id[:8])
     elif not interrupted:
         logger.warning("escape: no interrupt entry in JSONL for %s after 150ms", agent_id[:8])
 
