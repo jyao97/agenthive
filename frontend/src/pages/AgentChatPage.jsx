@@ -1005,7 +1005,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   // Editing UI for scheduled/pending messages
   const editDateRef = useRef(null);
 
-  if (editing) {
+  if (editing && isScheduled) {
     const scheduleLabel = editSchedule
       ? new Date(editSchedule).toLocaleString([], DATE_SHORT)
       : "Set time";
@@ -1095,7 +1095,35 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
           onTouchCancel={handleLongPressEnd}
         >
           {isUser ? (
-            displayContent && <p className="text-sm whitespace-pre-wrap">{displayContent}</p>
+            editing ? (
+              <div className="space-y-2">
+                <textarea
+                  ref={editTextareaRef}
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  rows={2}
+                  className="w-full rounded-lg bg-black/10 border border-cyan-300/30 px-2 py-1.5 text-sm text-white placeholder-cyan-200/50 resize-none focus:border-cyan-300 focus:outline-none"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleEditSave}
+                    className="flex-1 rounded-lg bg-cyan-500/40 hover:bg-cyan-500/60 text-white text-xs py-1.5 font-medium transition-colors"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleEditCancel}
+                    className="flex-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs py-1.5 font-medium transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              displayContent && <p className="text-sm whitespace-pre-wrap">{displayContent}</p>
+            )
           ) : (
             <div className="text-sm" ref={markdownRef} onClick={handleMarkdownClick}>
               <SafeMarkdown fallback={displayContent}>
