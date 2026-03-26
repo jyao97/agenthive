@@ -18,9 +18,9 @@ def test_inbox_to_cancelled():
     assert can_transition(TaskStatus.INBOX, TaskStatus.CANCELLED) is True
 
 
-def test_inbox_to_executing_invalid():
-    """INBOX -> EXECUTING should be invalid (must go through PENDING)."""
-    assert can_transition(TaskStatus.INBOX, TaskStatus.EXECUTING) is False
+def test_inbox_to_executing():
+    """INBOX -> EXECUTING should be valid (direct tmux dispatch)."""
+    assert can_transition(TaskStatus.INBOX, TaskStatus.EXECUTING) is True
 
 
 def test_pending_to_executing():
@@ -28,9 +28,9 @@ def test_pending_to_executing():
     assert can_transition(TaskStatus.PENDING, TaskStatus.EXECUTING) is True
 
 
-def test_executing_to_review():
-    """EXECUTING -> REVIEW should be valid."""
-    assert can_transition(TaskStatus.EXECUTING, TaskStatus.REVIEW) is True
+def test_executing_to_review_invalid():
+    """EXECUTING -> REVIEW is no longer valid (REVIEW is a legacy status)."""
+    assert can_transition(TaskStatus.EXECUTING, TaskStatus.REVIEW) is False
 
 
 def test_executing_to_complete():
@@ -50,9 +50,9 @@ def test_cancelled_is_terminal():
         assert can_transition(TaskStatus.CANCELLED, status) is False
 
 
-def test_rejected_to_pending():
-    """REJECTED -> PENDING should be valid (retry)."""
-    assert can_transition(TaskStatus.REJECTED, TaskStatus.PENDING) is True
+def test_rejected_to_pending_invalid():
+    """REJECTED -> PENDING is no longer valid (REJECTED is a legacy status)."""
+    assert can_transition(TaskStatus.REJECTED, TaskStatus.PENDING) is False
 
 
 def test_failed_to_pending():

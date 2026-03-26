@@ -136,14 +136,14 @@ def sample_message(db_session, sample_agent):
 
 
 @pytest.fixture()
-def idle_agent(db_session, sample_project):
-    """Insert and return an IDLE cli_sync agent for sync harness tests."""
+def syncing_agent(db_session, sample_project):
+    """Insert and return a SYNCING tmux agent for sync harness tests."""
     agent = Agent(
         id="sync11112222",
         project=sample_project.name,
         name="Sync harness agent",
         mode=AgentMode.AUTO,
-        status=AgentStatus.IDLE,
+        status=AgentStatus.SYNCING,
         cli_sync=True,
         session_id="test-session-001",
         model="claude-opus-4-6",

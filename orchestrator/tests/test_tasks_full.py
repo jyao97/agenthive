@@ -33,20 +33,19 @@ def test_all_invalid_transitions_from_terminal():
 
 
 def test_planning_transitions():
-    """PLANNING -> PENDING, PLANNING -> INBOX, PLANNING -> CANCELLED are valid."""
-    valid_targets = {TaskStatus.PENDING, TaskStatus.INBOX, TaskStatus.CANCELLED}
+    """PLANNING is a legacy status — only CANCELLED is valid."""
+    valid_targets = {TaskStatus.CANCELLED}
     for target in valid_targets:
         assert can_transition(TaskStatus.PLANNING, target) is True
 
-    # Verify invalid ones
     invalid_targets = set(TaskStatus) - valid_targets
     for target in invalid_targets:
         assert can_transition(TaskStatus.PLANNING, target) is False
 
 
 def test_merging_transitions():
-    """MERGING -> COMPLETE, MERGING -> CONFLICT, MERGING -> FAILED, MERGING -> CANCELLED."""
-    valid_targets = {TaskStatus.COMPLETE, TaskStatus.CONFLICT, TaskStatus.FAILED, TaskStatus.CANCELLED}
+    """MERGING is a legacy status — only CANCELLED is valid."""
+    valid_targets = {TaskStatus.CANCELLED}
     for target in valid_targets:
         assert can_transition(TaskStatus.MERGING, target) is True
 
@@ -56,8 +55,8 @@ def test_merging_transitions():
 
 
 def test_conflict_transitions():
-    """CONFLICT -> MERGING, CONFLICT -> CANCELLED."""
-    valid_targets = {TaskStatus.MERGING, TaskStatus.CANCELLED}
+    """CONFLICT is a legacy status — only CANCELLED is valid."""
+    valid_targets = {TaskStatus.CANCELLED}
     for target in valid_targets:
         assert can_transition(TaskStatus.CONFLICT, target) is True
 
@@ -67,8 +66,8 @@ def test_conflict_transitions():
 
 
 def test_timeout_transitions():
-    """TIMEOUT -> PENDING, TIMEOUT -> CANCELLED."""
-    valid_targets = {TaskStatus.PENDING, TaskStatus.CANCELLED}
+    """TIMEOUT -> PENDING, TIMEOUT -> EXECUTING, TIMEOUT -> CANCELLED."""
+    valid_targets = {TaskStatus.PENDING, TaskStatus.EXECUTING, TaskStatus.CANCELLED}
     for target in valid_targets:
         assert can_transition(TaskStatus.TIMEOUT, target) is True
 
@@ -78,8 +77,8 @@ def test_timeout_transitions():
 
 
 def test_review_transitions():
-    """REVIEW -> MERGING, REVIEW -> REJECTED, REVIEW -> CANCELLED."""
-    valid_targets = {TaskStatus.MERGING, TaskStatus.REJECTED, TaskStatus.CANCELLED}
+    """REVIEW is a legacy status — only CANCELLED is valid."""
+    valid_targets = {TaskStatus.CANCELLED}
     for target in valid_targets:
         assert can_transition(TaskStatus.REVIEW, target) is True
 
@@ -406,19 +405,18 @@ async def test_cancel_complete_task_fails(client, db_engine):
     assert resp.status_code == 409
 
 
-# ---- Task reject tests ----
+# ---- Task reject endpoint removed (REVIEW/REJECTED are legacy statuses) ----
 
 
 @pytest.mark.anyio
-async def test_reject_review_task(client, db_engine):
-    """POST /api/v2/tasks/{id}/reject from REVIEW status sets REJECTED."""
+async def test_reject_endpoint_removed(client, db_engine):
+    """POST /api/v2/tasks/{id}/reject endpoint no longer exists."""
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
     db.add(Project(name="rej-proj", display_name="RJ", path="/tmp/rj"))
     db.commit()
 
-    # Insert task directly in REVIEW status via DB manipulation
     task = Task(
         title="Review me",
         project_name="rej-proj",
@@ -426,18 +424,14 @@ async def test_reject_review_task(client, db_engine):
     )
     db.add(task)
     db.commit()
-    db.refresh(task)
     task_id = task.id
     db.close()
 
     resp = await client.post(f"/api/v2/tasks/{task_id}/reject", json={
         "reason": "Code quality is insufficient",
     })
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "REJECTED"
-    assert data["rejection_reason"] == "Code quality is insufficient"
-    assert data["completed_at"] is not None
+    # Endpoint removed — expect 404 (Method Not Allowed) or 404 (Not Found)
+    assert resp.status_code in (404, 405)
 
 
 # ---- Task model enum test ----

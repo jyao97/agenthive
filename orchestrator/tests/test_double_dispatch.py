@@ -81,7 +81,7 @@ async def test_sequential_double_dispatch(client, db_engine):
 
     r1 = await client.post(f"/api/v2/tasks/{task_id}/dispatch")
     assert r1.status_code == 200
-    assert r1.json()["status"] == "PENDING"
+    assert r1.json()["status"] == "EXECUTING"
 
     r2 = await client.post(f"/api/v2/tasks/{task_id}/dispatch")
     assert r2.status_code == 409, f"Second dispatch should be rejected, got {r2.status_code}: {r2.text}"

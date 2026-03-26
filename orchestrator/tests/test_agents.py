@@ -27,7 +27,7 @@ def test_agent_model_defaults(db_session):
     assert agent.unread_count == 0
     assert agent.muted is False
     assert agent.is_subagent is False
-    assert agent.cli_sync is True
+    assert agent.cli_sync is False
     assert agent.timeout_seconds == 1800
     assert agent.skip_permissions is True
     assert agent.created_at is not None
@@ -35,7 +35,7 @@ def test_agent_model_defaults(db_session):
 
 def test_agent_status_enum_values():
     """All expected agent status values should be valid."""
-    expected = {"STARTING", "IDLE", "EXECUTING", "ERROR", "STOPPED"}
+    expected = {"STARTING", "IDLE", "EXECUTING", "SYNCING", "ERROR", "STOPPED"}
     actual = {s.value for s in AgentStatus}
     assert actual == expected
 
@@ -151,8 +151,8 @@ async def test_list_agents_excludes_subagents(client, db_engine):
 
 
 @pytest.mark.anyio
-async def test_dispatch_pending_idle_no_pane_grace_then_stop(db_engine, monkeypatch):
-    """IDLE cli_sync agents should not stop immediately on transient no-pane."""
+async def test_dispatch_pending_syncing_no_pane_grace_then_stop(db_engine, monkeypatch):
+    """SYNCING tmux agents should not stop immediately on transient no-pane."""
     from sqlalchemy.orm import sessionmaker
     from agent_dispatcher import AgentDispatcher
 
@@ -164,7 +164,7 @@ async def test_dispatch_pending_idle_no_pane_grace_then_stop(db_engine, monkeypa
         id="syncgrace1111",
         project="sync-grace",
         name="Grace Agent",
-        status=AgentStatus.IDLE,
+        status=AgentStatus.SYNCING,
         cli_sync=True,
         tmux_pane=None,
         session_id="sess-grace",
@@ -185,7 +185,7 @@ async def test_dispatch_pending_idle_no_pane_grace_then_stop(db_engine, monkeypa
             raise AssertionError("idle dispatch should not run in this test")
 
     dispatcher = AgentDispatcher(DummyWorkerManager())
-    dispatcher._max_idle_no_pane_retries = 3
+    dispatcher._max_syncing_no_pane_retries = 3
 
     monkeypatch.setattr(
         "agent_dispatcher._detect_tmux_pane_for_session",
@@ -204,12 +204,12 @@ async def test_dispatch_pending_idle_no_pane_grace_then_stop(db_engine, monkeypa
     # First two ticks: still in grace window.
     dispatcher._dispatch_pending_messages(db)
     db.flush()
-    assert agent.status == AgentStatus.IDLE
+    assert agent.status == AgentStatus.SYNCING
     assert pending.status == MessageStatus.PENDING
 
     dispatcher._dispatch_pending_messages(db)
     db.flush()
-    assert agent.status == AgentStatus.IDLE
+    assert agent.status == AgentStatus.SYNCING
     assert pending.status == MessageStatus.PENDING
 
     # Third tick: grace exhausted, agent is stopped and pending message fails.

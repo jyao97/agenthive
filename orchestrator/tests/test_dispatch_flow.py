@@ -1,15 +1,13 @@
-"""Tests for the task dispatch flow: creation → dispatch → agent → harvest.
+"""Tests for the task dispatch flow: creation → dispatch → agent.
 
 Covers:
 - Dispatch endpoint (API level)
-- _dispatch_pending_tasks (task → agent creation)
-- _create_task_agent (agent + message creation)
+- _dispatch_pending_tasks (task → tmux agent creation)
 - _build_task_prompt (prompt assembly)
-- _harvest_task_completions (agent done → task review/failed)
 - Concurrency controls (per-project + global)
 - Auto-dispatch on creation
-- Scheduled task dispatch
-- Retry flow (rejected/failed → re-dispatch)
+- Retry flow (failed/timeout → re-dispatch)
+- State machine edge cases
 """
 
 import os
@@ -98,8 +96,8 @@ def dispatcher(db_session):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.anyio
-async def test_dispatch_endpoint_inbox_to_pending(client, db_engine):
-    """Dispatch should move INBOX task to PENDING."""
+async def test_dispatch_endpoint_inbox_to_executing(client, db_engine):
+    """Dispatch should create tmux agent and move INBOX task to EXECUTING."""
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
@@ -115,7 +113,7 @@ async def test_dispatch_endpoint_inbox_to_pending(client, db_engine):
 
     resp = await client.post(f"/api/v2/tasks/{task_id}/dispatch")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "PENDING"
+    assert resp.json()["status"] == "EXECUTING"
     db.close()
 
 
@@ -183,8 +181,8 @@ async def test_dispatch_from_executing_invalid(client, db_engine):
 
 
 @pytest.mark.anyio
-async def test_dispatch_retry_from_rejected(client, db_engine):
-    """Dispatch from REJECTED should increment attempt_number and clear fields."""
+async def test_dispatch_from_rejected_invalid(client, db_engine):
+    """REJECTED is a legacy status — dispatch should return 409."""
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
@@ -194,10 +192,6 @@ async def test_dispatch_retry_from_rejected(client, db_engine):
         project_name="rej-proj",
         status=TaskStatus.REJECTED,
         attempt_number=1,
-        agent_summary="Previous attempt summary",
-        agent_id=None,
-        started_at=_utcnow(),
-        completed_at=_utcnow(),
     )
     db.add(t)
     db.commit()
@@ -205,19 +199,12 @@ async def test_dispatch_retry_from_rejected(client, db_engine):
     db.close()
 
     resp = await client.post(f"/api/v2/tasks/{task_id}/dispatch")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "PENDING"
-    assert data["attempt_number"] == 2
-    # retry_context is only in TaskDetailOut, not in dispatch response (TaskOut)
-    assert data["agent_summary"] is None
-    assert data["started_at"] is None
-    assert data["completed_at"] is None
+    assert resp.status_code == 409
 
 
 @pytest.mark.anyio
 async def test_dispatch_retry_from_failed(client, db_engine):
-    """Dispatch from FAILED should increment attempt_number."""
+    """Dispatch from FAILED should increment attempt_number and go to EXECUTING."""
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
@@ -237,13 +224,13 @@ async def test_dispatch_retry_from_failed(client, db_engine):
     resp = await client.post(f"/api/v2/tasks/{task_id}/dispatch")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] == "PENDING"
+    assert data["status"] == "EXECUTING"
     assert data["attempt_number"] == 3
 
 
 @pytest.mark.anyio
 async def test_dispatch_retry_from_timeout(client, db_engine):
-    """Dispatch from TIMEOUT should work (retry)."""
+    """Dispatch from TIMEOUT should create tmux agent and go to EXECUTING."""
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
@@ -256,7 +243,7 @@ async def test_dispatch_retry_from_timeout(client, db_engine):
 
     resp = await client.post(f"/api/v2/tasks/{task_id}/dispatch")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "PENDING"
+    assert resp.json()["status"] == "EXECUTING"
 
 
 @pytest.mark.anyio
@@ -316,7 +303,7 @@ async def test_auto_dispatch_invalid_project(client):
 # ---------------------------------------------------------------------------
 
 def test_dispatch_picks_up_pending_tasks(db_session, proj, dispatcher):
-    """_dispatch_pending_tasks should pick up PENDING tasks and create agents."""
+    """_dispatch_pending_tasks should pick up PENDING tasks and create tmux agents."""
     t = Task(title="Test dispatch", project_name=proj.name, status=TaskStatus.PENDING)
     db_session.add(t)
     db_session.commit()
@@ -326,7 +313,7 @@ def test_dispatch_picks_up_pending_tasks(db_session, proj, dispatcher):
     db_session.add(agent)
     db_session.commit()
 
-    with patch.object(dispatcher, '_create_task_agent', return_value="aabbccdd1122"):
+    with patch("routers.tasks._dispatch_task_tmux", return_value="aabbccdd1122"):
         dispatcher._dispatch_pending_tasks(db_session)
 
     db_session.refresh(t)
@@ -341,9 +328,9 @@ def test_dispatch_skips_missing_project(db_session, dispatcher):
     db_session.add(t)
     db_session.commit()
 
-    with patch.object(dispatcher, '_create_task_agent') as mock_create:
+    with patch("routers.tasks._dispatch_task_tmux") as mock_tmux:
         dispatcher._dispatch_pending_tasks(db_session)
-        mock_create.assert_not_called()
+        mock_tmux.assert_not_called()
 
     db_session.refresh(t)
     assert t.status == TaskStatus.PENDING  # stays pending
@@ -365,9 +352,9 @@ def test_dispatch_respects_project_concurrency(db_session, proj, dispatcher):
     db_session.add(t)
     db_session.commit()
 
-    with patch.object(dispatcher, '_create_task_agent') as mock_create:
+    with patch("routers.tasks._dispatch_task_tmux") as mock_tmux:
         dispatcher._dispatch_pending_tasks(db_session)
-        mock_create.assert_not_called()
+        mock_tmux.assert_not_called()
 
     db_session.refresh(t)
     assert t.status == TaskStatus.PENDING
@@ -388,9 +375,9 @@ def test_dispatch_starting_agents_count_toward_capacity(db_session, proj, dispat
     db_session.add(t)
     db_session.commit()
 
-    with patch.object(dispatcher, '_create_task_agent') as mock_create:
+    with patch("routers.tasks._dispatch_task_tmux") as mock_tmux:
         dispatcher._dispatch_pending_tasks(db_session)
-        mock_create.assert_not_called()
+        mock_tmux.assert_not_called()
 
     db_session.refresh(t)
     assert t.status == TaskStatus.PENDING
@@ -407,7 +394,7 @@ def test_dispatch_idle_agents_dont_count(db_session, proj, dispatcher):
     db_session.add(t)
     db_session.commit()
 
-    with patch.object(dispatcher, '_create_task_agent', return_value="new000000001"):
+    with patch("routers.tasks._dispatch_task_tmux", return_value="new000000001"):
         dispatcher._dispatch_pending_tasks(db_session)
 
     db_session.refresh(t)
@@ -430,96 +417,37 @@ def test_dispatch_priority_ordering(db_session, proj, dispatcher):
     dispatched_order = []
     agent_ids = iter(["agent_000001", "agent_000002"])
 
-    def mock_create(db, task, proj_obj):
+    def mock_tmux(db, task, proj_obj, ad):
         dispatched_order.append(task.title)
         return next(agent_ids)
 
-    with patch.object(dispatcher, '_create_task_agent', side_effect=mock_create):
+    with patch("routers.tasks._dispatch_task_tmux", side_effect=mock_tmux):
         dispatcher._dispatch_pending_tasks(db_session)
 
     assert dispatched_order[0] == "High priority task"
     assert dispatched_order[1] == "Normal task"
 
 
-def test_dispatch_scheduled_future_not_dispatched(db_session, proj, dispatcher):
-    """Tasks scheduled in the future should not be dispatched."""
-    future = _utcnow() + timedelta(hours=1)
-    t = Task(title="Future task", project_name=proj.name, status=TaskStatus.PENDING, scheduled_at=future)
-    db_session.add(t)
-    db_session.commit()
-
-    with patch.object(dispatcher, '_create_task_agent') as mock_create:
-        dispatcher._dispatch_pending_tasks(db_session)
-        mock_create.assert_not_called()
-
-
-def test_dispatch_scheduled_past_dispatched(db_session, proj, dispatcher):
-    """Tasks scheduled in the past should be dispatched."""
-    past = _utcnow() - timedelta(hours=1)
-    db_session.add(Agent(id="sched0000001", project=proj.name, name="Sched", status=AgentStatus.IDLE))
-    db_session.commit()
-
-    t = Task(title="Past scheduled", project_name=proj.name, status=TaskStatus.PENDING, scheduled_at=past)
-    db_session.add(t)
-    db_session.commit()
-
-    with patch.object(dispatcher, '_create_task_agent', return_value="sched0000001"):
-        dispatcher._dispatch_pending_tasks(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.EXECUTING
-
-
-def test_dispatch_limit_5_per_tick(db_session, proj, dispatcher):
-    """At most 5 tasks should be dispatched per tick."""
-    # Increase project capacity to not be a bottleneck
-    proj.max_concurrent = 10
-    db_session.commit()
-
-    # Pre-create agents for FK
-    for i in range(8):
-        db_session.add(Agent(id=f"lim{i:09d}", project=proj.name, name=f"A{i}", status=AgentStatus.IDLE))
-    db_session.commit()
-
-    for i in range(8):
-        db_session.add(Task(
-            title=f"Task {i}", project_name=proj.name, status=TaskStatus.PENDING,
-        ))
-    db_session.commit()
-
-    call_count = 0
-
-    def mock_create(db, task, proj_obj):
-        nonlocal call_count
-        call_count += 1
-        return f"lim{call_count - 1:09d}"
-
-    with patch.object(dispatcher, '_create_task_agent', side_effect=mock_create):
-        dispatcher._dispatch_pending_tasks(db_session)
-
-    assert call_count == 5
-
-
-def test_dispatch_handles_create_agent_failure(db_session, proj, dispatcher):
-    """If _create_task_agent fails, task should remain PENDING."""
+def test_dispatch_handles_tmux_failure(db_session, proj, dispatcher):
+    """If _dispatch_task_tmux raises, task should remain PENDING."""
     t = Task(title="Fail create", project_name=proj.name, status=TaskStatus.PENDING)
     db_session.add(t)
     db_session.commit()
 
-    with patch.object(dispatcher, '_create_task_agent', side_effect=Exception("agent creation failed")):
+    with patch("routers.tasks._dispatch_task_tmux", side_effect=Exception("tmux launch failed")):
         dispatcher._dispatch_pending_tasks(db_session)
 
     db_session.refresh(t)
     assert t.status == TaskStatus.PENDING
 
 
-def test_dispatch_create_returns_none(db_session, proj, dispatcher):
-    """If _create_task_agent returns None, task stays PENDING."""
+def test_dispatch_tmux_returns_none(db_session, proj, dispatcher):
+    """If _dispatch_task_tmux returns None, task stays PENDING."""
     t = Task(title="Null agent", project_name=proj.name, status=TaskStatus.PENDING)
     db_session.add(t)
     db_session.commit()
 
-    with patch.object(dispatcher, '_create_task_agent', return_value=None):
+    with patch("routers.tasks._dispatch_task_tmux", return_value=None):
         dispatcher._dispatch_pending_tasks(db_session)
 
     db_session.refresh(t)
@@ -542,11 +470,11 @@ def test_dispatch_cross_project_independence(db_session, proj, proj2, dispatcher
 
     dispatched = []
 
-    def mock_create(db, task, proj_obj):
+    def mock_tmux(db, task, proj_obj, ad):
         dispatched.append(task.title)
         return "p1new0000001"
 
-    with patch.object(dispatcher, '_create_task_agent', side_effect=mock_create):
+    with patch("routers.tasks._dispatch_task_tmux", side_effect=mock_tmux):
         dispatcher._dispatch_pending_tasks(db_session)
 
     # proj1 should dispatch, proj2 should not (at capacity)
@@ -554,109 +482,38 @@ def test_dispatch_cross_project_independence(db_session, proj, proj2, dispatcher
     assert "Proj2 task" not in dispatched
 
 
-# ---------------------------------------------------------------------------
-# 4. _create_task_agent (unit tests)
-# ---------------------------------------------------------------------------
-
-def test_create_task_agent_produces_agent_and_message(db_session, proj, dispatcher):
-    """_create_task_agent should create an Agent(IDLE) + Message(PENDING)."""
-    t = Task(title="Agent creation test", description="Do something", project_name=proj.name, status=TaskStatus.PENDING)
-    db_session.add(t)
+def test_dispatch_limit_5_per_tick(db_session, proj, dispatcher):
+    """At most 5 tasks should be dispatched per tick."""
+    # Increase project capacity to not be a bottleneck
+    proj.max_concurrent = 10
     db_session.commit()
 
-    agent_id = dispatcher._create_task_agent(db_session, t, proj)
-    assert agent_id is not None
-    assert len(agent_id) == 12
-
-    # Verify agent record
-    agent = db_session.get(Agent, agent_id)
-    assert agent is not None
-    assert agent.project == proj.name
-    assert agent.status == AgentStatus.IDLE
-    assert agent.mode == AgentMode.AUTO
-    assert agent.task_id == t.id
-    assert agent.name.startswith("Task: ")
-    assert agent.effort == "high"  # default when task.effort is None
-
-    # Verify pending message
-    msg = db_session.query(Message).filter(Message.agent_id == agent_id).first()
-    assert msg is not None
-    assert msg.role == MessageRole.USER
-    assert msg.status == MessageStatus.PENDING
-    assert msg.source == "task"
-    assert "Agent creation test" in msg.content
-
-
-def test_create_task_agent_worktree(db_session, proj, dispatcher):
-    """Worktree task should set worktree and branch on the task."""
-    t = Task(title="Worktree task", project_name=proj.name, status=TaskStatus.PENDING, use_worktree=True)
-    db_session.add(t)
+    # Pre-create agents for FK
+    for i in range(8):
+        db_session.add(Agent(id=f"lim{i:09d}", project=proj.name, name=f"A{i}", status=AgentStatus.IDLE))
     db_session.commit()
 
-    agent_id = dispatcher._create_task_agent(db_session, t, proj)
-    assert agent_id is not None
-
-    agent = db_session.get(Agent, agent_id)
-    assert agent.worktree is not None
-
-    db_session.refresh(t)
-    assert t.worktree_name is not None
-    assert t.branch_name is not None
-    assert t.branch_name.startswith(f"task/{t.id}/")
-
-
-def test_create_task_agent_no_worktree(db_session, proj, dispatcher):
-    """Non-worktree task should not set worktree on agent."""
-    t = Task(title="No worktree", project_name=proj.name, status=TaskStatus.PENDING, use_worktree=False)
-    db_session.add(t)
+    for i in range(8):
+        db_session.add(Task(
+            title=f"Task {i}", project_name=proj.name, status=TaskStatus.PENDING,
+        ))
     db_session.commit()
 
-    # Mock git rev-parse to avoid needing real repo
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(stdout="abcdef1234567890\n")
-        agent_id = dispatcher._create_task_agent(db_session, t, proj)
+    call_count = 0
 
-    agent = db_session.get(Agent, agent_id)
-    assert agent.worktree is None
+    def mock_tmux(db, task, proj_obj, ad):
+        nonlocal call_count
+        call_count += 1
+        return f"lim{call_count - 1:09d}"
 
+    with patch("routers.tasks._dispatch_task_tmux", side_effect=mock_tmux):
+        dispatcher._dispatch_pending_tasks(db_session)
 
-def test_create_task_agent_uses_task_model(db_session, proj, dispatcher):
-    """Agent should use task-level model override when present."""
-    t = Task(title="Model test", project_name=proj.name, status=TaskStatus.PENDING, model="claude-sonnet-4-6")
-    db_session.add(t)
-    db_session.commit()
-
-    agent_id = dispatcher._create_task_agent(db_session, t, proj)
-    agent = db_session.get(Agent, agent_id)
-    assert agent.model == "claude-sonnet-4-6"
-
-
-def test_create_task_agent_falls_back_to_project_model(db_session, proj, dispatcher):
-    """Agent should use project default_model when task.model is None."""
-    t = Task(title="Default model", project_name=proj.name, status=TaskStatus.PENDING)
-    db_session.add(t)
-    db_session.commit()
-
-    agent_id = dispatcher._create_task_agent(db_session, t, proj)
-    agent = db_session.get(Agent, agent_id)
-    assert agent.model == proj.default_model
-
-
-def test_create_task_agent_unique_id(db_session, proj, dispatcher):
-    """Multiple agent creations should produce unique IDs."""
-    ids = set()
-    for i in range(5):
-        t = Task(title=f"Unique {i}", project_name=proj.name, status=TaskStatus.PENDING)
-        db_session.add(t)
-        db_session.commit()
-        agent_id = dispatcher._create_task_agent(db_session, t, proj)
-        assert agent_id is not None
-        ids.add(agent_id)
-    assert len(ids) == 5
+    assert call_count == 5
 
 
 # ---------------------------------------------------------------------------
-# 5. _build_task_prompt (unit tests)
+# 4. _build_task_prompt (unit tests)
 # ---------------------------------------------------------------------------
 
 def test_build_prompt_basic(dispatcher):
@@ -665,8 +522,7 @@ def test_build_prompt_basic(dispatcher):
     prompt, insights = dispatcher._build_task_prompt(t)
     assert "# Task: Simple task" in prompt
     assert "## Guidelines" in prompt
-    assert "Work autonomously" in prompt
-    assert "PROGRESS.md" in prompt
+    assert "## Before You Start" in prompt
     assert insights == []
 
 
@@ -685,259 +541,64 @@ def test_build_prompt_retry_context(dispatcher):
         retry_context="Previous attempt failed because of timeout",
     )
     prompt, _insights = dispatcher._build_task_prompt(t)
-    assert "Previous Attempt Context" in prompt
+    assert "Your Focus" in prompt
     assert "attempt #2" in prompt
     assert "Previous attempt failed because of timeout" in prompt
-    assert "Redo Context" in prompt
-
-
-def test_build_prompt_rejection_reason(dispatcher):
-    """Prompt should include rejection reason when present."""
-    t = Task(
-        title="Rejected task",
-        attempt_number=1,
-        rejection_reason="The CSS was not responsive",
-    )
-    prompt, _insights = dispatcher._build_task_prompt(t)
-    assert "Rejection Reason" in prompt
-    assert "The CSS was not responsive" in prompt
 
 
 def test_build_prompt_no_redo_on_first_attempt(dispatcher):
     """First attempt should not include redo context."""
     t = Task(title="First attempt", attempt_number=1)
     prompt, _insights = dispatcher._build_task_prompt(t)
-    assert "Redo Context" not in prompt
-    assert "Previous Attempt" not in prompt
+    assert "Your Focus" not in prompt
+    assert "What Was Tried" not in prompt
 
 
 # ---------------------------------------------------------------------------
-# 6. _harvest_task_completions (unit tests)
+# 5. _check_scheduled_tasks (notify_at reminders)
 # ---------------------------------------------------------------------------
 
-def test_harvest_agent_idle_no_pending_moves_to_review(db_session, proj, dispatcher):
-    """Agent IDLE with no pending messages → task should move to REVIEW."""
-    agent = Agent(id="harv00000001", project=proj.name, name="Done Agent", status=AgentStatus.IDLE)
-    db_session.add(agent)
-    db_session.flush()
-
-    t = Task(title="Review me", project_name=proj.name, status=TaskStatus.EXECUTING, agent_id=agent.id)
-    db_session.add(t)
-    db_session.flush()
-
-    # Add a completed agent message (the "output")
-    msg = Message(agent_id=agent.id, role=MessageRole.AGENT, content="Task completed successfully", status=MessageStatus.COMPLETED)
-    db_session.add(msg)
-    db_session.commit()
-
-    dispatcher._harvest_task_completions(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.REVIEW
-    assert t.agent_summary == "Task completed successfully"
-
-
-def test_harvest_agent_idle_with_pending_stays_executing(db_session, proj, dispatcher):
-    """Agent IDLE with pending messages should not trigger harvest."""
-    agent = Agent(id="pend00000001", project=proj.name, name="Waiting Agent", status=AgentStatus.IDLE)
-    db_session.add(agent)
-    db_session.flush()
-
-    t = Task(title="Still executing", project_name=proj.name, status=TaskStatus.EXECUTING, agent_id=agent.id)
-    db_session.add(t)
-    db_session.flush()
-
-    # Pending message — agent hasn't started processing yet
-    msg = Message(agent_id=agent.id, role=MessageRole.USER, content="Do this", status=MessageStatus.PENDING)
-    db_session.add(msg)
-    db_session.commit()
-
-    dispatcher._harvest_task_completions(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.EXECUTING  # stays
-
-
-def test_harvest_agent_stopped_with_output_to_review(db_session, proj, dispatcher):
-    """Agent STOPPED with output → task to REVIEW."""
-    agent = Agent(id="stpd00000001", project=proj.name, name="Stopped Agent", status=AgentStatus.STOPPED)
-    db_session.add(agent)
-    db_session.flush()
-
-    t = Task(title="Stopped task", project_name=proj.name, status=TaskStatus.EXECUTING, agent_id=agent.id)
-    db_session.add(t)
-    db_session.flush()
-
-    msg = Message(agent_id=agent.id, role=MessageRole.AGENT, content="Done before stop", status=MessageStatus.COMPLETED)
-    db_session.add(msg)
-    db_session.commit()
-
-    dispatcher._harvest_task_completions(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.REVIEW
-
-
-def test_harvest_agent_stopped_no_output_to_failed(db_session, proj, dispatcher):
-    """Agent STOPPED without any agent output → task FAILED."""
-    agent = Agent(id="noout0000001", project=proj.name, name="Silent Agent", status=AgentStatus.STOPPED)
-    db_session.add(agent)
-    db_session.flush()
-
-    t = Task(title="No output task", project_name=proj.name, status=TaskStatus.EXECUTING, agent_id=agent.id)
-    db_session.add(t)
-    db_session.commit()
-
-    dispatcher._harvest_task_completions(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.FAILED
-    assert t.completed_at is not None
-    assert "without producing output" in (t.error_message or "")
-
-
-def test_harvest_agent_deleted_fails_task(db_session, proj, dispatcher):
-    """Missing agent → task should be FAILED."""
-    # Create agent, task referencing it, then delete via FK-disabled raw SQL
-    agent = Agent(id="ghost0000001", project=proj.name, name="Ghost", status=AgentStatus.IDLE)
-    db_session.add(agent)
-    db_session.flush()
-
-    t = Task(title="Ghost agent task", project_name=proj.name, status=TaskStatus.EXECUTING, agent_id="ghost0000001")
-    db_session.add(t)
-    db_session.commit()
-
-    # Temporarily disable FK to delete the agent while task still references it
-    from sqlalchemy import text
-    db_session.execute(text("PRAGMA foreign_keys=OFF"))
-    db_session.execute(text("DELETE FROM agents WHERE id = 'ghost0000001'"))
-    db_session.execute(text("PRAGMA foreign_keys=ON"))
-    db_session.commit()
-
-    dispatcher._harvest_task_completions(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.FAILED
-    assert t.completed_at is not None
-
-
-def test_harvest_agent_error_fails_task(db_session, proj, dispatcher):
-    """Agent in ERROR state → task should be FAILED."""
-    agent = Agent(id="errr00000001", project=proj.name, name="Error Agent", status=AgentStatus.ERROR)
-    db_session.add(agent)
-    db_session.flush()
-
-    t = Task(title="Error task", project_name=proj.name, status=TaskStatus.EXECUTING, agent_id=agent.id)
-    db_session.add(t)
-    db_session.commit()
-
-    dispatcher._harvest_task_completions(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.FAILED
-    assert t.completed_at is not None
-
-
-def test_harvest_agent_executing_no_change(db_session, proj, dispatcher):
-    """Agent still EXECUTING → task should stay EXECUTING."""
-    agent = Agent(id="busy00000001", project=proj.name, name="Busy Agent", status=AgentStatus.EXECUTING)
-    db_session.add(agent)
-    db_session.flush()
-
-    t = Task(title="Busy task", project_name=proj.name, status=TaskStatus.EXECUTING, agent_id=agent.id)
-    db_session.add(t)
-    db_session.commit()
-
-    dispatcher._harvest_task_completions(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.EXECUTING
-
-
-def test_harvest_summary_truncated_to_2000(db_session, proj, dispatcher):
-    """Agent summary should be truncated to 2000 chars."""
-    agent = Agent(id="long00000001", project=proj.name, name="Long Agent", status=AgentStatus.STOPPED)
-    db_session.add(agent)
-    db_session.flush()
-
-    t = Task(title="Long summary", project_name=proj.name, status=TaskStatus.EXECUTING, agent_id=agent.id)
-    db_session.add(t)
-    db_session.flush()
-
-    long_content = "x" * 5000
-    msg = Message(agent_id=agent.id, role=MessageRole.AGENT, content=long_content, status=MessageStatus.COMPLETED)
-    db_session.add(msg)
-    db_session.commit()
-
-    dispatcher._harvest_task_completions(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.REVIEW
-    assert len(t.agent_summary) == 2000
-
-
-def test_harvest_stale_merging_fails(db_session, proj, dispatcher):
-    """Stale MERGING tasks should be failed by the harvester."""
-    t = Task(title="Stale merge", project_name=proj.name, status=TaskStatus.MERGING)
-    db_session.add(t)
-    db_session.commit()
-
-    dispatcher._harvest_task_completions(db_session)
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.FAILED
-    assert "stale" in (t.error_message or "").lower()
-
-
-# ---------------------------------------------------------------------------
-# 7. _check_scheduled_tasks (unit tests)
-# ---------------------------------------------------------------------------
-
-def test_scheduled_inbox_clears_schedule(db_session, proj, dispatcher):
-    """INBOX task with due scheduled_at should clear scheduled_at."""
+def test_check_scheduled_clears_notify_at(db_session, proj, dispatcher):
+    """Task with due notify_at should have it cleared."""
     past = _utcnow() - timedelta(minutes=5)
-    t = Task(title="Scheduled inbox", project_name=proj.name, status=TaskStatus.INBOX, scheduled_at=past)
+    t = Task(title="Notify me", project_name=proj.name, status=TaskStatus.INBOX, notify_at=past)
     db_session.add(t)
     db_session.commit()
 
-    # Patch push to avoid SessionLocal hitting a different in-memory DB
-    with patch("push.is_notification_enabled", return_value=False):
+    with patch("notify.notify"):
         dispatcher._check_scheduled_tasks(db_session)
-        db_session.commit()  # _check_scheduled_tasks relies on _tick's commit
+        db_session.commit()
 
     db_session.refresh(t)
-    assert t.scheduled_at is None
-    assert t.status == TaskStatus.INBOX  # stays INBOX, just notifies
+    assert t.notify_at is None
+    assert t.status == TaskStatus.INBOX  # status unchanged
 
 
-def test_scheduled_planning_moves_to_pending(db_session, proj, dispatcher):
-    """PLANNING task with due scheduled_at and project should move to PENDING."""
-    past = _utcnow() - timedelta(minutes=5)
-    t = Task(title="Scheduled planning", project_name=proj.name, status=TaskStatus.PLANNING, scheduled_at=past)
-    db_session.add(t)
-    db_session.commit()
-
-    with patch("push.is_notification_enabled", return_value=False):
-        dispatcher._check_scheduled_tasks(db_session)
-        db_session.commit()  # _check_scheduled_tasks relies on _tick's commit
-
-    db_session.refresh(t)
-    assert t.status == TaskStatus.PENDING
-    assert t.scheduled_at is None
-
-
-def test_scheduled_future_not_triggered(db_session, proj, dispatcher):
-    """Tasks scheduled in the future should not be triggered."""
+def test_check_scheduled_future_not_triggered(db_session, proj, dispatcher):
+    """Tasks with future notify_at should not be triggered."""
     future = _utcnow() + timedelta(hours=1)
-    t = Task(title="Future scheduled", project_name=proj.name, status=TaskStatus.PLANNING, scheduled_at=future)
+    t = Task(title="Future notify", project_name=proj.name, status=TaskStatus.INBOX, notify_at=future)
     db_session.add(t)
     db_session.commit()
 
-    dispatcher._check_scheduled_tasks(db_session)
+    with patch("notify.notify") as mock_notify:
+        dispatcher._check_scheduled_tasks(db_session)
+        mock_notify.assert_not_called()
 
     db_session.refresh(t)
-    assert t.status == TaskStatus.PLANNING  # unchanged
-    assert t.scheduled_at is not None
+    assert t.notify_at is not None  # unchanged
+
+
+def test_check_scheduled_terminal_not_triggered(db_session, proj, dispatcher):
+    """Terminal tasks should not trigger notify_at."""
+    past = _utcnow() - timedelta(minutes=5)
+    t = Task(title="Done task", project_name=proj.name, status=TaskStatus.COMPLETE, notify_at=past)
+    db_session.add(t)
+    db_session.commit()
+
+    with patch("notify.notify") as mock_notify:
+        dispatcher._check_scheduled_tasks(db_session)
+        mock_notify.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -946,7 +607,7 @@ def test_scheduled_future_not_triggered(db_session, proj, dispatcher):
 
 @pytest.mark.anyio
 async def test_full_flow_create_dispatch_verify(client, db_engine):
-    """Create → dispatch → verify task is PENDING ready for agent pickup."""
+    """Create → dispatch → verify task is EXECUTING with tmux agent."""
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
@@ -965,21 +626,22 @@ async def test_full_flow_create_dispatch_verify(client, db_engine):
     assert task["status"] == "INBOX"
     task_id = task["id"]
 
-    # Dispatch
+    # Dispatch — goes directly to EXECUTING via tmux
     resp = await client.post(f"/api/v2/tasks/{task_id}/dispatch")
     assert resp.status_code == 200
     task = resp.json()
-    assert task["status"] == "PENDING"
+    assert task["status"] == "EXECUTING"
     assert task["priority"] == 1
     assert task["project_name"] == "flow-proj"
+    assert task["agent_id"] is not None
 
     # Verify via list endpoint
-    resp = await client.get("/api/v2/tasks?status=PENDING")
+    resp = await client.get("/api/v2/tasks?status=EXECUTING")
     assert resp.status_code == 200
     tasks = resp.json()
     matching = [t for t in tasks if t["id"] == task_id]
     assert len(matching) == 1
-    assert matching[0]["status"] == "PENDING"
+    assert matching[0]["status"] == "EXECUTING"
     db.close()
 
 
@@ -1006,10 +668,10 @@ async def test_auto_dispatch_flow(client, db_engine):
 # 9. State machine edge cases in dispatch context
 # ---------------------------------------------------------------------------
 
-def test_all_dispatchable_states():
-    """Verify which states can transition to PENDING (dispatchable)."""
-    dispatchable = {s for s in TaskStatus if can_transition(s, TaskStatus.PENDING)}
-    expected = {TaskStatus.INBOX, TaskStatus.PLANNING, TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.TIMEOUT}
+def test_all_dispatchable_to_executing():
+    """Verify which states can transition directly to EXECUTING (dispatchable)."""
+    dispatchable = {s for s in TaskStatus if can_transition(s, TaskStatus.EXECUTING)}
+    expected = {TaskStatus.INBOX, TaskStatus.PENDING, TaskStatus.FAILED, TaskStatus.TIMEOUT}
     assert dispatchable == expected
 
 
@@ -1018,13 +680,13 @@ def test_pending_to_executing_valid():
     assert can_transition(TaskStatus.PENDING, TaskStatus.EXECUTING)
 
 
-def test_executing_to_review_valid():
-    """EXECUTING → REVIEW must be valid for harvest to work."""
-    assert can_transition(TaskStatus.EXECUTING, TaskStatus.REVIEW)
+def test_inbox_to_executing_valid():
+    """INBOX → EXECUTING must be valid for direct dispatch."""
+    assert can_transition(TaskStatus.INBOX, TaskStatus.EXECUTING)
 
 
 def test_executing_to_failed_valid():
-    """EXECUTING → FAILED must be valid for error harvest."""
+    """EXECUTING → FAILED must be valid for error handling."""
     assert can_transition(TaskStatus.EXECUTING, TaskStatus.FAILED)
 
 
@@ -1033,14 +695,14 @@ def test_executing_to_cancelled_valid():
     assert can_transition(TaskStatus.EXECUTING, TaskStatus.CANCELLED)
 
 
-def test_review_to_rejected_valid():
-    """REVIEW → REJECTED must be valid for rejection flow."""
-    assert can_transition(TaskStatus.REVIEW, TaskStatus.REJECTED)
+def test_executing_to_complete_valid():
+    """EXECUTING → COMPLETE must be valid for task completion."""
+    assert can_transition(TaskStatus.EXECUTING, TaskStatus.COMPLETE)
 
 
-def test_rejected_to_pending_valid():
-    """REJECTED → PENDING must be valid for retry flow."""
-    assert can_transition(TaskStatus.REJECTED, TaskStatus.PENDING)
+def test_failed_to_executing_valid():
+    """FAILED → EXECUTING must be valid for retry flow."""
+    assert can_transition(TaskStatus.FAILED, TaskStatus.EXECUTING)
 
 
 # ---------------------------------------------------------------------------
@@ -1054,15 +716,9 @@ def test_dispatch_no_pending_tasks_noop(db_session, proj, dispatcher):
     db_session.add(Task(title="Executing", project_name=proj.name, status=TaskStatus.EXECUTING))
     db_session.commit()
 
-    with patch.object(dispatcher, '_create_task_agent') as mock_create:
+    with patch("routers.tasks._dispatch_task_tmux") as mock_tmux:
         dispatcher._dispatch_pending_tasks(db_session)
-        mock_create.assert_not_called()
-
-
-def test_harvest_no_executing_tasks_noop(db_session, dispatcher):
-    """No executing tasks → _harvest_task_completions should be a no-op."""
-    # Should not raise
-    dispatcher._harvest_task_completions(db_session)
+        mock_tmux.assert_not_called()
 
 
 @pytest.mark.anyio
