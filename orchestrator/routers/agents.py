@@ -1343,6 +1343,12 @@ async def stop_agent(agent_id: str, request: Request,
     db.refresh(agent)
     logger.info("Agent %s stopped", agent.id)
 
+    # Flush "Agent stopped" to display file + notify WS clients
+    from display_writer import flush_agent as _stop_flush
+    from websocket import emit_new_message as _stop_enm
+    _stop_flush(agent.id)
+    asyncio.ensure_future(_stop_enm(agent.id, "sync", agent.name, agent.project))
+
     # Transition linked task based on user choice
     if agent.task_id:
         _linked_task = db.get(Task, agent.task_id)
@@ -1384,6 +1390,9 @@ async def stop_agent(agent_id: str, request: Request,
                 _retry_project_name = _linked_task.project_name or ""
                 _retry_task_title = _linked_task.title or "Unknown task"
             db.commit()
+            # Flush drop/redo message to display file + notify WS clients
+            _stop_flush(agent.id)
+            asyncio.ensure_future(_stop_enm(agent.id, "sync", agent.name, agent.project))
             asyncio.ensure_future(emit_task_update(
                 _linked_task.id, _linked_task.status.value, _linked_task.project_name or "",
                 title=_linked_task.title, agent_id=agent.id,
@@ -1409,11 +1418,6 @@ async def stop_agent(agent_id: str, request: Request,
         )
         thread.start()
         logger.info("Spawned retry summary for task %s", _retry_task_id)
-
-    # Flush "Agent stopped" + "Task dropped"/"Redo" messages to the display
-    # file — the sync engine loop has already exited for this agent.
-    from display_writer import flush_agent as _stop_flush
-    _stop_flush(agent.id)
 
     return agent
 
