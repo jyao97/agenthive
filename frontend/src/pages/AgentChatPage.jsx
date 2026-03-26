@@ -3548,8 +3548,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
             {/* Original task description + previous summary for retry tasks */}
             {taskData && taskData.attempt_number > 1 && (taskData.description || taskData.agent_summary) && (
-              <div className="mx-auto max-w-[85%] mb-3 rounded-xl bg-surface border border-edge/30 px-4 py-3">
-                <p className="text-[11px] font-semibold text-dim mb-1.5">
+              <div className="mx-auto max-w-[85%] mb-3 rounded-xl bg-orange-500/8 border border-orange-500/20 px-4 py-3">
+                <p className="text-[11px] font-semibold text-orange-500 dark:text-orange-400 mb-1.5">
                   Original task
                 </p>
                 {taskData.description && (
@@ -3557,7 +3557,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                 )}
                 {taskData.agent_summary && (
                   <div className="mt-2">
-                    <p className="text-[10px] font-medium text-dim mb-0.5">Previous agent summary</p>
+                    <p className="text-[10px] font-medium text-orange-500 dark:text-orange-400 mb-0.5">Previous agent summary</p>
                     {taskData.agent_summary === ":::generating:::" ? (
                       <p className="text-xs text-dim/50 italic">Generating summary...</p>
                     ) : (
