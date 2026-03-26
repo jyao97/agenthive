@@ -467,7 +467,6 @@ async def hook_agent_post_compact(request: Request):
         # 5. Transition agent status.
         #    After /compact, Claude returns to the prompt — no longer executing.
         #    tmux agents → IDLE (sync loop keeps tailing the new session)
-        #    non-tmux agents → IDLE (exec sync restarts on next execution)
         agent = db.get(Agent, agent_id)
         if agent and agent.status == AgentStatus.EXECUTING:
             agent.status = AgentStatus.IDLE

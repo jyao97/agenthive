@@ -3221,7 +3221,7 @@ Here are the day's conversations (with timestamps):
     # ---- Step 4: Dispatch pending messages ----
 
     def _dispatch_pending_messages(self, db: Session):
-        """For IDLE agents with PENDING user messages, exec claude."""
+        """Handle IDLE agents with no tmux pane (grace window + reap)."""
         from websocket import emit_agent_update
 
         # IDLE cli_sync agents without a pane: retry pane re-detection for a
@@ -3274,21 +3274,6 @@ Here are the day's conversations (with timestamps):
             logger.info(
                 "Stopped dead IDLE agent %s — tmux pane gone", agent.id,
             )
-
-        # All agents are now tmux-managed. IDLE agents are legacy — stop them.
-        idle_agents = db.query(Agent).filter(
-            Agent.status == AgentStatus.IDLE,
-        ).all()
-        for agent in idle_agents:
-            logger.warning(
-                "Stopping legacy IDLE agent %s — all agents must be tmux-managed",
-                agent.id,
-            )
-            self.stop_agent_cleanup(
-                db, agent, "Legacy non-tmux agent stopped",
-                kill_tmux=False, cancel_tasks=False,
-            )
-            self._fail_pending_messages(db, agent.id, "Non-tmux agents are no longer supported")
 
     def _dispatch_tmux_scheduled(self, db: Session):
         """Send scheduled messages to IDLE/STARTING agents via tmux.
@@ -3651,11 +3636,9 @@ Here are the day's conversations (with timestamps):
     def _reap_dead_agents(self, db: Session):
         """Stop agents whose underlying process is dead.
 
-        Checks all non-STOPPED agents:
-        - CLI-synced agents (STARTING/IDLE/ERROR): verifies the
-          tmux pane still has a running claude process, or falls back to
-          session file freshness.
-        - Orchestrator agents: checks EXECUTING agents are still tracked.
+        Checks all non-STOPPED agents (STARTING/IDLE/EXECUTING/ERROR):
+        verifies the tmux pane still has a running claude process, or
+        falls back to session file freshness.
         """
         import time
         from websocket import emit_agent_update
@@ -3667,8 +3650,7 @@ Here are the day's conversations (with timestamps):
         candidates = db.query(Agent).filter(
             Agent.status.in_([
                 AgentStatus.STARTING, AgentStatus.IDLE,
-                AgentStatus.IDLE, AgentStatus.ERROR,
-                AgentStatus.EXECUTING,
+                AgentStatus.ERROR, AgentStatus.EXECUTING,
             ]),
         ).all()
 
@@ -3683,19 +3665,6 @@ Here are the day's conversations (with timestamps):
                     db, agent, "Non-tmux agents are no longer supported",
                     kill_tmux=False, add_message=False, cancel_tasks=False,
                 )
-                continue
-
-            # IDLE agents without tmux panes are orphaned — stop them.
-            if agent.status == AgentStatus.IDLE:
-                if agent.id not in self._sync_tasks and agent.id not in self._active_execs:
-                    logger.warning(
-                        "Agent %s is IDLE with no sync task — stopping",
-                        agent.id,
-                    )
-                    self.stop_agent_cleanup(
-                        db, agent, "Sync lost — agent stopped (no active CLI session)",
-                        kill_tmux=False, cancel_tasks=False,
-                    )
                 continue
 
             # Determine if this agent's underlying process is alive.
@@ -4612,7 +4581,7 @@ Here are the day's conversations (with timestamps):
             # Recover agents
             alive_statuses = [
                 AgentStatus.IDLE, AgentStatus.EXECUTING,
-                AgentStatus.STARTING, AgentStatus.IDLE,
+                AgentStatus.STARTING,
             ]
             agents = db.query(Agent).filter(
                 Agent.status.in_(alive_statuses)
@@ -4639,8 +4608,7 @@ Here are the day's conversations (with timestamps):
 
                 # Check if this CLI-synced agent has an active session
                 if agent.cli_sync and agent.session_id and agent.status in (
-                    AgentStatus.IDLE, AgentStatus.IDLE,
-                    AgentStatus.EXECUTING,
+                    AgentStatus.IDLE, AgentStatus.EXECUTING,
                 ):
                     project = db.get(Project, agent.project)
                     if project:
