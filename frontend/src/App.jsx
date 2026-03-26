@@ -114,9 +114,7 @@ function AuthGuard({ children }) {
     const doCheck = () =>
       authCheck()
         .then((r) => {
-          if (!token) {
-            navigate("/login", { replace: true });
-          } else if (r.authenticated) {
+          if (r.authenticated) {
             setAuthed(true);
             setServerDown(false);
             // Always re-send existing subscription to backend (works in dev mode too)
@@ -127,8 +125,10 @@ function AuthGuard({ children }) {
                 console.warn("Push notification setup failed:", err);
               });
             }
-          } else {
+          } else if (token) {
             clearAuthToken();
+            navigate("/login", { replace: true });
+          } else {
             navigate("/login", { replace: true });
           }
           setChecked(true);

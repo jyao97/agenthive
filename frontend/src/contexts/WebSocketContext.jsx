@@ -48,18 +48,11 @@ export function WebSocketProvider({ children }) {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     const token = getAuthToken();
-    if (!token) {
-      // No auth token available — skip connection attempt and retry later.
-      // Without a token the server rejects with 403, creating a spam loop.
-      reconnectTimer.current = setTimeout(() => {
-        reconnectDelay.current = Math.min(reconnectDelay.current * 1.5, 30000);
-        connect();
-      }, reconnectDelay.current);
-      return;
-    }
 
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/ws/status?token=${encodeURIComponent(token)}`;
+    const url = token
+      ? `${proto}//${window.location.host}/ws/status?token=${encodeURIComponent(token)}`
+      : `${proto}//${window.location.host}/ws/status`;
 
     try {
       const ws = new WebSocket(url);

@@ -15,7 +15,9 @@ export default function LoginPage() {
   useEffect(() => {
     authCheck()
       .then((r) => {
-        if (r.needs_setup) {
+        if (r.authenticated) {
+          navigate("/", { replace: true });
+        } else if (r.needs_setup) {
           setNeedsSetup(true);
         }
       })
