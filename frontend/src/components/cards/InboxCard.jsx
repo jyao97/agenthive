@@ -100,6 +100,13 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   const fileInputRef = useRef(null);
   const filePickerOpenRef = useRef(false);
 
+  /** Rebuild full description from text + attached files */
+  const buildFullDesc = useCallback((text, files) => {
+    const parts = [text.trim()];
+    for (const f of files) parts.push(`[Attached file: ${f}]`);
+    return parts.filter(Boolean).join("\n") || null;
+  }, []);
+
   useEffect(() => {
     if (isExpanded) { lastEditedTextRef.current = null; return; }
     setEditing(false);
@@ -184,13 +191,6 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
       sel.collapseToEnd();
     });
   };
-
-  /** Rebuild full description from text + attached files */
-  const buildFullDesc = useCallback((text, files) => {
-    const parts = [text.trim()];
-    for (const f of files) parts.push(`[Attached file: ${f}]`);
-    return parts.filter(Boolean).join("\n") || null;
-  }, []);
 
   const saveDesc = useCallback(async () => {
     const el = editRef.current;
