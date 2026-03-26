@@ -289,7 +289,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   };
 
   // collapsed preview: text only, no [Attached file:] lines
-  const preview = parsed.text || task.project_name || null;
+  const preview = parsed.text || null;
 
   if (dispatching) return null;
 
