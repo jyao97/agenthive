@@ -870,7 +870,7 @@ function AgentTextSegment({ text, project }) {
 
 function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, agentId, onRefresh, queuePosition, queueTotal, contentOverride }) {
   if (message.kind === "tool_activity") {
-    return <ToolActivityBubble message={message} />;
+    return null;
   }
   if (message.role === "SYSTEM") {
     if (message.content.startsWith("Task dropped") || message.content.startsWith("Redo")) {
@@ -1582,39 +1582,15 @@ function PermissionCard({ request, agentId, onResolved }) {
 
 // --- Typing Indicator (shown when executing but no streaming content yet) ---
 
-function TypingIndicator({ activeTool, toolStartTime }) {
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    if (!toolStartTime) { setElapsed(0); return; }
-    setElapsed(Math.floor((serverNow() - toolStartTime) / 1000));
-    const timer = setInterval(() => {
-      setElapsed(Math.floor((serverNow() - toolStartTime) / 1000));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [toolStartTime]);
-
+function TypingIndicator() {
   return (
     <div className="flex justify-start my-2">
       <div className="bg-surface shadow-card rounded-2xl rounded-bl-md px-5 py-3.5">
-        {activeTool ? (
-          <div className="flex items-center gap-2">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-            <span className="text-xs text-dim">
-              <code className="text-[11px] px-1 py-0.5 rounded bg-elevated text-cyan-300 font-mono">{activeTool.name}</code>
-              {" "}running...
-              {activeTool.summary && (
-                <span className="text-faint ml-1 font-mono text-[11px] truncate inline-block max-w-[200px] align-bottom">{activeTool.summary}</span>
-              )}
-              {elapsed > 3 && <span className="text-faint ml-1">({elapsed}s)</span>}
-            </span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-[5px]">
-            <span className="typing-dot" style={{ animationDelay: "0ms" }} />
-            <span className="typing-dot" style={{ animationDelay: "200ms" }} />
-            <span className="typing-dot" style={{ animationDelay: "400ms" }} />
-          </div>
-        )}
+        <div className="flex items-center gap-[5px]">
+          <span className="typing-dot" style={{ animationDelay: "0ms" }} />
+          <span className="typing-dot" style={{ animationDelay: "200ms" }} />
+          <span className="typing-dot" style={{ animationDelay: "400ms" }} />
+        </div>
       </div>
     </div>
   );
@@ -3701,7 +3677,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                 if (!isDuplicate) return <div data-msg-id="streaming" data-msg-type="streaming_bubble"><StreamingBubble content={streamingContent} project={agent.project} activeTool={activeTool} /></div>;
               }
               // Tool activity log — shows completed + in-progress tool calls
-              return (isExecuting || hookActive) ? <div data-msg-id="typing" data-msg-type="typing_indicator"><TypingIndicator activeTool={activeTool} toolStartTime={toolStartTime} /></div> : null;
+              return (isExecuting || hookActive) ? <div data-msg-id="typing" data-msg-type="typing_indicator"><TypingIndicator /></div> : null;
             })()}
 
             {/* Pending permission approval cards for supervised agents */}
