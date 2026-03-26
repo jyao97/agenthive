@@ -2852,6 +2852,17 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
   }, [loading, messages.length, scrollCountKey]);
 
+  // Auto-load older messages when content doesn't overflow the viewport
+  // but has_earlier is true (scroll-based trigger can't fire without overflow)
+  useEffect(() => {
+    if (loading || !messages.length || !hasMore || loadingMore) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    // Content fits without scrollbar — onScroll will never fire
+    if (el.scrollHeight <= el.clientHeight + 10) {
+      loadOlderMessages();
+    }
+  }, [loading, messages, hasMore, loadingMore, loadOlderMessages]);
 
   // WebSocket: re-fetch on new_message events, handle streaming
   const { sendWsMessage } = useWebSocket();
