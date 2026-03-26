@@ -109,6 +109,27 @@ function SystemBubble({ message }) {
   );
 }
 
+// --- Stop note card (Redo / Drop) ---
+function StopNoteCard({ message }) {
+  const isDrop = message.content.startsWith("Task dropped");
+  const label = isDrop ? "Dropped" : "Redo";
+  const note = message.content.replace(/^(Task dropped|Redo)\s*—\s*/, "");
+  const color = isDrop ? "gray" : "amber";
+  return (
+    <div className={`mx-4 my-3 rounded-xl border px-4 py-3 ${
+      isDrop
+        ? "bg-gray-500/8 border-gray-500/20"
+        : "bg-amber-500/8 border-amber-500/20"
+    }`}>
+      <div className={`text-[11px] font-semibold mb-1 ${
+        isDrop ? "text-gray-400" : "text-amber-500"
+      }`}>{label}</div>
+      {note && <div className="text-sm text-body whitespace-pre-wrap">{note}</div>}
+      <div className="text-[10px] text-dim mt-1">{relativeTime(message.completed_at || message.created_at)}</div>
+    </div>
+  );
+}
+
 // --- Sub-agent task notification bubble (collapsible) ---
 
 function SubAgentBubble({ message, project }) {
@@ -852,6 +873,9 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     return <ToolActivityBubble message={message} />;
   }
   if (message.role === "SYSTEM") {
+    if (message.content.startsWith("Task dropped") || message.content.startsWith("Redo")) {
+      return <StopNoteCard message={message} />;
+    }
     return <SystemBubble message={message} />;
   }
 
