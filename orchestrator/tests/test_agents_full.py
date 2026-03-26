@@ -48,11 +48,11 @@ def _seed_agent(db, agent_id, project="proj-full", **kwargs):
 
 @pytest.mark.anyio
 async def test_list_agents_filter_by_status(client, db_engine):
-    """Filter agents by status query param (SYNCING / IDLE)."""
+    """Filter agents by status query param (IDLE / EXECUTING)."""
     db = _make_session(db_engine)
     _seed_project(db)
     _seed_agent(db, "idle11111111", status=AgentStatus.IDLE)
-    _seed_agent(db, "sync11111111", status=AgentStatus.SYNCING)
+    _seed_agent(db, "exec11111111", status=AgentStatus.EXECUTING)
     _seed_agent(db, "idle22222222", status=AgentStatus.IDLE)
     db.close()
 
@@ -62,13 +62,13 @@ async def test_list_agents_filter_by_status(client, db_engine):
     ids = [a["id"] for a in data]
     assert "idle11111111" in ids
     assert "idle22222222" in ids
-    assert "sync11111111" not in ids
+    assert "exec11111111" not in ids
 
-    resp2 = await client.get("/api/agents?status=SYNCING")
+    resp2 = await client.get("/api/agents?status=EXECUTING")
     assert resp2.status_code == 200
     data2 = resp2.json()
     ids2 = [a["id"] for a in data2]
-    assert "sync11111111" in ids2
+    assert "exec11111111" in ids2
     assert "idle11111111" not in ids2
 
 

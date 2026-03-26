@@ -309,9 +309,9 @@ async def task_queue_status(
 ):
     """Return queue status: pending/executing tasks + per-project capacity."""
     # Dispatcher uses these to gate capacity
-    dispatcher_active = [AgentStatus.STARTING, AgentStatus.EXECUTING, AgentStatus.SYNCING]
+    dispatcher_active = [AgentStatus.STARTING, AgentStatus.EXECUTING, AgentStatus.IDLE]
     # All non-stopped agents (full picture for UI)
-    alive_statuses = [AgentStatus.STARTING, AgentStatus.IDLE, AgentStatus.EXECUTING, AgentStatus.SYNCING]
+    alive_statuses = [AgentStatus.STARTING, AgentStatus.IDLE, AgentStatus.EXECUTING, AgentStatus.IDLE]
 
     # ── Source of truth: agents table ──
     # All non-stopped, non-subagent agents
@@ -325,9 +325,9 @@ async def task_queue_status(
     # Build unified agent list with effective status + task info
     agents_list = []
     for a in active_agents:
-        # Effective status: SYNCING + is_generating → EXECUTING (matches Agents page logic)
+        # Effective status: IDLE + is_generating → EXECUTING (matches Agents page logic)
         effective = a.status.value
-        if a.status == AgentStatus.SYNCING and a.is_generating:
+        if a.status == AgentStatus.IDLE and a.is_generating:
             effective = "EXECUTING"
         entry = {
             "agent_id": a.id,
@@ -368,16 +368,16 @@ async def task_queue_status(
             .filter(Agent.project == proj.name, Agent.status.in_(alive_statuses))
             .scalar()
         )
-        syncing = (
+        idle = (
             db.query(func.count(Agent.id))
-            .filter(Agent.project == proj.name, Agent.status == AgentStatus.SYNCING)
+            .filter(Agent.project == proj.name, Agent.status == AgentStatus.IDLE)
             .scalar()
         )
         capacity[proj.name] = {
             "max_concurrent": proj.max_concurrent,
             "active": active,
             "alive": alive,
-            "syncing": syncing,
+            "idle": idle,
         }
 
     # Today's completed tasks (in client's local timezone)

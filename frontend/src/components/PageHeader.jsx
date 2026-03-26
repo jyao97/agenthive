@@ -10,9 +10,7 @@ import { relativeTime, durationDisplay } from "../lib/formatters";
 function QueueItem({ status, label, sub, dim, onClick }) {
   const s = status || "";
   const isIdle = s === "IDLE";
-  const isSyncing = s === "SYNCING";
   const bgClass = isIdle ? "bg-green-500/15 text-green-500"
-    : isSyncing ? "bg-violet-500/15 text-violet-500"
     : "bg-cyan-500/15 text-cyan-500";
   return (
     <div className="flex items-center gap-2 text-xs cursor-pointer hover:bg-surface-hover rounded px-1 -mx-1 py-0.5" onClick={onClick}>
@@ -22,10 +20,6 @@ function QueueItem({ status, label, sub, dim, onClick }) {
           <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor">
             <rect x="6" y="5" width="4" height="14" rx="1" />
             <rect x="14" y="5" width="4" height="14" rx="1" />
-          </svg>
-        ) : isSyncing ? (
-          <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182M21.015 4.356v4.992" />
           </svg>
         ) : (
           <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -82,8 +76,8 @@ function QueuePopover({ onClose, containerRef, navigate }) {
   const capacity = data?.capacity ?? {};
   const todayDone = data?.today_done ?? [];
   const todayCompleted = todayDone.filter(t => t.status === "COMPLETE");
-  // Sort: EXECUTING first, then STARTING, SYNCING, IDLE last
-  const statusOrder = { EXECUTING: 0, STARTING: 1, SYNCING: 2, IDLE: 3 };
+  // Sort: EXECUTING first, then STARTING, IDLE last
+  const statusOrder = { EXECUTING: 0, STARTING: 1, IDLE: 2 };
   const sortedAgents = [...agents].sort((a, b) =>
     (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
   );
@@ -133,10 +127,10 @@ function QueuePopover({ onClose, containerRef, navigate }) {
           <div className="border-t border-divider px-4 py-3 space-y-3">
             {activeProjects.map(([name, cap]) => {
               const max = cap.max_concurrent;
-              const active = cap.active;         // dispatcher-counted (STARTING/EXECUTING/SYNCING)
+              const active = cap.active;         // dispatcher-counted (STARTING/EXECUTING/IDLE)
               const alive = cap.alive ?? active;  // all non-stopped (includes IDLE)
-              const syncing = cap.syncing ?? 0;   // SYNCING subset of active
-              const executing = active - syncing; // STARTING/EXECUTING
+              const idleCount = cap.idle ?? 0; // IDLE subset of active
+              const executing = active - idleCount; // STARTING/EXECUTING
               const idle = alive - active;        // IDLE agents
               const projPending = pending.filter(t => t.project_name === name).length;
               return (
@@ -165,8 +159,8 @@ function QueuePopover({ onClose, containerRef, navigate }) {
                           : "bg-cyan-500 shadow-[0_0_4px_rgba(6,182,212,0.4)]"
                       }`} />
                     ))}
-                    {/* Syncing agents — violet */}
-                    {Array.from({ length: syncing }, (_, i) => (
+                    {/* Idle agents — violet */}
+                    {Array.from({ length: idleCount }, (_, i) => (
                       <div key={`s${i}`} className={`w-[10px] h-[10px] rounded-sm transition-all ${
                         (executing + i) >= max
                           ? "bg-amber-500 shadow-[0_0_4px_rgba(245,158,11,0.5)]"

@@ -466,11 +466,11 @@ async def hook_agent_post_compact(request: Request):
 
         # 5. Transition agent status.
         #    After /compact, Claude returns to the prompt — no longer executing.
-        #    tmux agents → SYNCING (sync loop keeps tailing the new session)
+        #    tmux agents → IDLE (sync loop keeps tailing the new session)
         #    non-tmux agents → IDLE (exec sync restarts on next execution)
         agent = db.get(Agent, agent_id)
         if agent and agent.status == AgentStatus.EXECUTING:
-            agent.status = AgentStatus.SYNCING
+            agent.status = AgentStatus.IDLE
             agent.generating_msg_id = None
 
         db.commit()
@@ -488,7 +488,7 @@ async def hook_agent_post_compact(request: Request):
             ))
 
         # 8. Emit agent status update to frontend.
-        _post_status = agent.status.value if agent else "SYNCING"
+        _post_status = agent.status.value if agent else "IDLE"
         if agent:
             from websocket import ws_manager
             asyncio.ensure_future(ws_manager.broadcast("agent_update", {
@@ -670,7 +670,7 @@ async def hook_agent_tool_activity(request: Request):
                     project=_project_name,
                     name=_name,
                     mode=_AM.AUTO,
-                    status=_AS.SYNCING,
+                    status=_AS.IDLE,
                     cli_sync=True,
                     parent_id=agent_id,
                     is_subagent=True,
@@ -685,7 +685,7 @@ async def hook_agent_tool_activity(request: Request):
                     "last_size": 0,
                     "idle_polls": 0,
                 }
-                ad._emit(_eau(_sub.id, "SYNCING", _project_name))
+                ad._emit(_eau(_sub.id, "IDLE", _project_name))
                 logger.info(
                     "SubagentStart hook: created subagent %s (%s) for parent %s",
                     _sub.id, _name, agent_id[:8],
@@ -733,7 +733,7 @@ async def hook_agent_tool_activity(request: Request):
                                 _db, sub_db_id, turns[existing_count:],
                             )
                     sub_ag = _db.get(Agent, sub_db_id)
-                    if sub_ag and sub_ag.status == AgentStatus.SYNCING:
+                    if sub_ag and sub_ag.status == AgentStatus.IDLE:
                         if last_msg:
                             _preview = str(last_msg)[:200] if isinstance(last_msg, str) else str(last_msg.get("content", ""))[:200]
                             sub_ag.last_message_preview = _preview

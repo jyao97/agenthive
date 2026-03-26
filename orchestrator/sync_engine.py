@@ -378,7 +378,7 @@ def _handle_streaming_update(ad, ctx: SyncContext, turns, current_size) -> str:
     db = SessionLocal()
     try:
         agent = db.get(Agent, ctx.agent_id)
-        if not agent or agent.status != AgentStatus.SYNCING:
+        if not agent or agent.status != AgentStatus.IDLE:
             return "exit"
 
         last_msg = db.query(Message).filter(
@@ -485,7 +485,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     db = SessionLocal()
     try:
         agent = db.get(Agent, ctx.agent_id)
-        if not agent or agent.status != AgentStatus.SYNCING:
+        if not agent or agent.status != AgentStatus.IDLE:
             return "exit"
 
         # Finalize previous turn if it grew (streaming → new turn arrived)

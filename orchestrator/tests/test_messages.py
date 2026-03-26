@@ -202,10 +202,10 @@ async def test_message_search_no_results(client):
 
 
 @pytest.mark.anyio
-async def test_send_message_syncing_tmux_pane_missing_falls_back_to_pending(
+async def test_send_message_idle_tmux_pane_missing_falls_back_to_pending(
     client, db_engine, monkeypatch
 ):
-    """SYNCING agent with stale pane should queue message instead of 400."""
+    """IDLE agent with stale pane should queue message instead of 400."""
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
@@ -215,7 +215,7 @@ async def test_send_message_syncing_tmux_pane_missing_falls_back_to_pending(
         id="syncmsg11111",
         project="sync-proj",
         name="Sync Agent",
-        status=AgentStatus.SYNCING,
+        status=AgentStatus.IDLE,
         cli_sync=True,
         tmux_pane="%999",
         session_id="sess-abc",
@@ -252,7 +252,7 @@ async def test_send_message_syncing_tmux_pane_missing_falls_back_to_pending(
 
 
 @pytest.mark.anyio
-async def test_send_message_syncing_tmux_recover_pane_and_send_direct(
+async def test_send_message_idle_tmux_recover_pane_and_send_direct(
     client, db_engine, monkeypatch
 ):
     """If old pane is stale but session pane can be recovered, send directly."""
@@ -265,7 +265,7 @@ async def test_send_message_syncing_tmux_recover_pane_and_send_direct(
         id="syncmsg22222",
         project="sync-proj2",
         name="Sync Agent 2",
-        status=AgentStatus.SYNCING,
+        status=AgentStatus.IDLE,
         cli_sync=True,
         tmux_pane="%111",
         session_id="sess-def",

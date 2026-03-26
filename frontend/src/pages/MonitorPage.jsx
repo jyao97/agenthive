@@ -17,7 +17,7 @@ const HEALTH_COLORS = {
   unknown: "bg-gray-500",
 };
 
-const AGENT_STATUS_ORDER = ["EXECUTING", "SYNCING", "IDLE", "STARTING", "ERROR", "STOPPED"];
+const AGENT_STATUS_ORDER = ["EXECUTING", "IDLE", "IDLE", "STARTING", "ERROR", "STOPPED"];
 
 function formatResetTime(isoStr) {
   if (!isoStr) return "";

@@ -72,7 +72,7 @@ import useHealthStatus from "../hooks/useHealthStatus";
 import usePageVisible from "../hooks/usePageVisible";
 import { useToast } from "../contexts/ToastContext";
 
-const ACTIVE_AGENT_STATUSES = new Set(["EXECUTING", "SYNCING"]);
+const ACTIVE_AGENT_STATUSES = new Set(["EXECUTING", "IDLE"]);
 // --- Chat Bubble ---
 
 function SystemBubble({ message }) {
@@ -2394,8 +2394,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // Check if any interactive cards are waiting for an answer
   // (must be before polling useEffect which depends on it)
   const hasPendingInteractive = useMemo(() => {
-    // Only block input when agent is actively waiting (SYNCING) for a response
-    if (agent?.status !== "SYNCING") return false;
+    // Only block input when agent is actively waiting (IDLE) for a response
+    if (agent?.status !== "IDLE") return false;
 
     // Only check the LAST agent message with interactive metadata
     // (old cards are stale — agent has continued past them)
@@ -2439,7 +2439,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // Polling — faster when executing, pauses when page hidden
   useEffect(() => {
     if (!visible) return;
-    const isActive = agent?.status === "EXECUTING" || agent?.status === "SYNCING" || hasPendingInteractiveRef.current;
+    const isActive = agent?.status === "EXECUTING" || agent?.status === "IDLE" || hasPendingInteractiveRef.current;
     const interval = isActive ? POLL_ACTIVE_INTERVAL : POLL_IDLE_INTERVAL;
     const timer = setInterval(refreshMessages, interval);
     return () => clearInterval(timer);
@@ -2924,7 +2924,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       console.log('[ws] agent_update', event.data.agent_id?.slice(0,8), event.data.status);
       pushWsEvent('agent_update', { status: event.data.status });
       const status = event.data.status;
-      if (status !== "EXECUTING" && status !== "SYNCING") {
+      if (status !== "EXECUTING" && status !== "IDLE") {
         clearTimeout(streamTimeoutRef.current);
         clearTimeout(hookGraceRef.current);
         setStreamingContent(null);
@@ -3141,7 +3141,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
   // Smooth EXECUTING→off: hold true for 1s to avoid flicker
   // (must be before early returns to maintain hooks ordering)
-  const isExecutingRaw = agent?.status === "EXECUTING" || (agent?.status === "SYNCING" && (hookActive || agent?.is_generating));
+  const isExecutingRaw = agent?.status === "EXECUTING" || (agent?.status === "IDLE" && (hookActive || agent?.is_generating));
   const [isExecuting, setIsExecuting] = useState(isExecutingRaw);
   const execTimerRef = useRef(null);
   useEffect(() => {
@@ -3182,13 +3182,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const healthDotColor = health === null ? "bg-gray-400" : isHealthy ? "bg-green-500" : "bg-red-500";
   const healthLabel = health === null ? "..." : isHealthy ? "OK" : "Error";
 
-  // When hooks indicate active work during SYNCING, promote the visual status to "executing"
-  const effectiveStatus = (agent.status === "SYNCING" && (hookActive || agent.is_generating))
+  // When hooks indicate active work during IDLE, promote the visual status to "executing"
+  const effectiveStatus = (agent.status === "IDLE" && (hookActive || agent.is_generating))
     ? "EXECUTING" : agent.status;
   const statusDot = AGENT_STATUS_COLORS[effectiveStatus] || "bg-gray-500";
   const statusText = AGENT_STATUS_TEXT_COLORS[effectiveStatus] || "text-dim";
-  const isSyncing = agent.status === "SYNCING";
-  const hasTmux = isSyncing && !!agent.tmux_pane;
+  const isIdle = agent.status === "IDLE";
+  const hasTmux = isIdle && !!agent.tmux_pane;
   const hasTmuxPane = !!agent.tmux_pane;
   const isStopped = agent.status === "STOPPED";
   const isError = agent.status === "ERROR";
@@ -3534,7 +3534,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
           <InitializingIndicator />
-        ) : messages.length === 0 && agent.status === "SYNCING" ? (
+        ) : messages.length === 0 && agent.status === "IDLE" ? (
           <SyncPrompt agentId={id} onSync={refreshMessages} />
         ) : (
           <>
@@ -3644,7 +3644,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               });
             })()}
 
-            {/* Streaming output or typing indicator while executing/syncing */}
+            {/* Streaming output or typing indicator while executing/idle */}
             {(() => {
               // Guard: don't show streaming bubble if content matches
               // the last saved AGENT message (prevents duplicate bubbles

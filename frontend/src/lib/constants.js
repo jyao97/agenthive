@@ -1,6 +1,6 @@
 export const STATUS_COLORS = {
   PENDING: "bg-gray-500",
-  SYNCING: "bg-violet-500",
+  IDLE: "bg-green-500",
   EXECUTING: "bg-cyan-500",
   COMPLETED: "bg-green-500",
   FAILED: "bg-red-500",
@@ -10,7 +10,7 @@ export const STATUS_COLORS = {
 
 export const STATUS_TEXT_COLORS = {
   PENDING: "text-dim",
-  SYNCING: "text-violet-400",
+  IDLE: "text-green-400",
   EXECUTING: "text-cyan-400",
   COMPLETED: "text-green-400",
   FAILED: "text-red-400",
@@ -22,7 +22,6 @@ export const AGENT_STATUS_COLORS = {
   STARTING: "bg-gray-500",
   IDLE: "bg-green-500",
   EXECUTING: "bg-cyan-500",
-  SYNCING: "bg-violet-500",
   ERROR: "bg-red-500",
   STOPPED: "bg-gray-600",
 };
@@ -31,7 +30,6 @@ export const AGENT_STATUS_TEXT_COLORS = {
   STARTING: "text-dim",
   IDLE: "text-green-400",
   EXECUTING: "text-cyan-400",
-  SYNCING: "text-violet-400",
   ERROR: "text-red-400",
   STOPPED: "text-faint",
 };
@@ -89,7 +87,7 @@ export const POLL_INTERVAL = 5000;
 
 // ---- Timing constants (ms) ----
 
-/** Polling interval when agent is active (EXECUTING/SYNCING). */
+/** Polling interval when agent is active (EXECUTING/IDLE). */
 export const POLL_ACTIVE_INTERVAL = 3000;
 
 /** Polling interval when agent is idle. */
@@ -178,7 +176,7 @@ export const TASK_PERSPECTIVE_TABS = [
 
 /** Map agent status to BotIcon visual state. */
 export function agentBotState(status) {
-  if (status === "EXECUTING" || status === "SYNCING") return "running";
+  if (status === "EXECUTING") return "running";
   if (status === "ERROR") return "error";
   if (status === "IDLE") return "completed";
   if (status === "STOPPED") return "idle";

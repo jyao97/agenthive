@@ -76,7 +76,7 @@ def _check_no_active_agents(name: str, db: Session):
             Agent.status.in_([
                 AgentStatus.STARTING,
                 AgentStatus.EXECUTING,
-                AgentStatus.SYNCING,
+                AgentStatus.IDLE,
             ]),
         )
         .count()
@@ -711,7 +711,7 @@ async def list_projects(db: Session = Depends(get_db)):
                 func.count(
                     case((Agent.status.in_([
                         AgentStatus.EXECUTING,
-                        AgentStatus.STARTING, AgentStatus.SYNCING,
+                        AgentStatus.STARTING, AgentStatus.IDLE,
                     ]), 1))
                 ).label("active"),
             )
@@ -800,7 +800,7 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
                     Agent.project == dirname,
                     Agent.status.in_([
                         AgentStatus.IDLE, AgentStatus.EXECUTING,
-                        AgentStatus.STARTING, AgentStatus.SYNCING,
+                        AgentStatus.STARTING, AgentStatus.IDLE,
                     ]),
                 )
                 .scalar()
@@ -1067,14 +1067,14 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
     if db.get(Project, new_name):
         raise HTTPException(status_code=409, detail=f"Project '{new_name}' already exists")
 
-    # Block rename when agents are actively running (including SYNCING)
+    # Block rename when agents are actively running (including IDLE)
     busy = (
         db.query(Agent)
         .filter(
             Agent.project == name,
             Agent.status.in_([
                 AgentStatus.STARTING, AgentStatus.IDLE,
-                AgentStatus.EXECUTING, AgentStatus.SYNCING,
+                AgentStatus.EXECUTING, AgentStatus.IDLE,
             ]),
         )
         .count()
@@ -1181,7 +1181,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
     if proj.archived:
         raise HTTPException(status_code=400, detail="Project is already archived")
 
-    # Stop all active agents for this project (including SYNCING/tmux agents)
+    # Stop all active agents for this project (including IDLE/tmux agents)
     active_agents = (
         db.query(Agent)
         .filter(

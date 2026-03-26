@@ -38,7 +38,6 @@ class AgentStatus(str, enum.Enum):
     STARTING = "STARTING"
     IDLE = "IDLE"
     EXECUTING = "EXECUTING"
-    SYNCING = "SYNCING"       # Importing conversation from CLI session
     ERROR = "ERROR"
     STOPPED = "STOPPED"
 

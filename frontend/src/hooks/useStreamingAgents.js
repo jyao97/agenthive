@@ -61,7 +61,7 @@ export function useStreamingAgents() {
           next.add(aid);
           return next;
         });
-      } else if (s !== "SYNCING") {
+      } else if (s !== "IDLE") {
         setActiveAgents((prev) => {
           if (!prev.has(aid)) return prev;
           const next = new Set(prev);

@@ -233,7 +233,7 @@ function projectBotState(proj) {
 
 
 function AgentRow({ agent, onClick, starred, onToggleStar, onError, project, isStreaming }) {
-  const effectiveStatus = (agent.status === "SYNCING" && isStreaming) ? "EXECUTING" : agent.status;
+  const effectiveStatus = (agent.status === "IDLE" && isStreaming) ? "EXECUTING" : agent.status;
   const statusDot = AGENT_STATUS_COLORS[effectiveStatus] || "bg-gray-500";
   const statusText = AGENT_STATUS_TEXT_COLORS[effectiveStatus] || "text-dim";
   const [copied, setCopied] = useState(false);

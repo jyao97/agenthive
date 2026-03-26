@@ -50,18 +50,18 @@ agent_short = agent_id[:8]
 log(f"Agent created: {agent_id}")
 
 # ------------------------------------------------------------------
-# Step 2: Wait for agent to reach SYNCING
+# Step 2: Wait for agent to reach IDLE
 # ------------------------------------------------------------------
-log("Waiting for agent to reach SYNCING...")
+log("Waiting for agent to reach IDLE...")
 deadline = time.time() + TIMEOUT_AGENT_READY
 while time.time() < deadline:
     sc, agent = api("get", f"/api/agents/{agent_id}")
-    if sc == 200 and agent["status"] in ("SYNCING", "IDLE"):
+    if sc == 200 and agent["status"] == "IDLE":
         log(f"Agent status: {agent['status']}")
         break
     time.sleep(2)
 else:
-    log(f"Agent never reached SYNCING (last: {agent.get('status', '?')})", "FAIL")
+    log(f"Agent never reached IDLE (last: {agent.get('status', '?')})", "FAIL")
     sys.exit(1)
 
 # ------------------------------------------------------------------
@@ -72,7 +72,7 @@ deadline = time.time() + TIMEOUT_HOOK
 initial_stop_seen = False
 while time.time() < deadline:
     sc, agent = api("get", f"/api/agents/{agent_id}")
-    if sc == 200 and agent["status"] == "SYNCING":
+    if sc == 200 and agent["status"] == "IDLE":
         # Check if there's an agent response
         sc2, msgs_data = api("get", f"/api/agents/{agent_id}/messages?limit=10")
         if sc2 == 200:

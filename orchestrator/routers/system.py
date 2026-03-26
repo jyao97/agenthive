@@ -808,6 +808,6 @@ async def sync_status(request: Request):
         })
 
     return {
-        "syncing_agents": len(agents),
+        "idle_agents": len(agents),
         "agents": agents,
     }

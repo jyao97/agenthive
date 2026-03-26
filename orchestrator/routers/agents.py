@@ -392,9 +392,9 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
         logger.warning("Invalid model %r for agent, falling back to %s", agent_model, CC_MODEL)
         agent_model = CC_MODEL
 
-    # Determine initial status: SYNCING if importing CLI session
+    # Determine initial status: IDLE if importing CLI session
     is_sync = body.sync_session and body.resume_session_id
-    initial_status = AgentStatus.SYNCING if is_sync else AgentStatus.STARTING
+    initial_status = AgentStatus.IDLE if is_sync else AgentStatus.STARTING
 
     # Pre-generate agent ID so we can use it for worktree naming
     import uuid
@@ -1038,7 +1038,7 @@ async def _launch_tmux_background(
             )
             return
 
-        # Update agent with session_id and transition to SYNCING
+        # Update agent with session_id and transition to IDLE
         db = SessionLocal()
         try:
             agent = db.get(Agent, agent_id)
@@ -1061,7 +1061,7 @@ async def _launch_tmux_background(
                 )
                 return
             agent.session_id = session_id
-            agent.status = AgentStatus.SYNCING
+            agent.status = AgentStatus.IDLE
             _init_msg = (
                 db.query(Message)
                 .filter(
@@ -1092,7 +1092,7 @@ async def _launch_tmux_background(
                 from display_writer import update_last
                 update_last(agent_id, _init_msg.id)
 
-            ad._emit(emit_agent_update(agent_id, "SYNCING", agent.project))
+            ad._emit(emit_agent_update(agent_id, "IDLE", agent.project))
         finally:
             db.close()
 
@@ -1687,7 +1687,7 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
         pane_id = _create_tmux_claude_session(tmux_session, project.path, claude_cmd, agent_id=agent.id)
 
         agent.tmux_pane = pane_id
-        agent.status = AgentStatus.SYNCING
+        agent.status = AgentStatus.IDLE
         if agent.session_id and ad:
             ad.start_session_sync(agent.id, agent.session_id, project.path)
         resumed_sync = True
@@ -1738,12 +1738,12 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
             jsonl_path = _resolve_session_jsonl(sid, project.path, agent.worktree)
             if os.path.exists(jsonl_path) and not ad._session_has_ended(jsonl_path):
                 pane = _detect_tmux_pane_for_session(sid, project.path)
-                agent.status = AgentStatus.SYNCING
+                agent.status = AgentStatus.IDLE
                 agent.tmux_pane = pane  # may be None; sync loop will retry
                 ad.start_session_sync(agent.id, sid, project.path)
                 resumed_sync = True
 
-    if not resumed_sync and agent.status not in (AgentStatus.IDLE, AgentStatus.SYNCING):
+    if not resumed_sync and agent.status not in (AgentStatus.IDLE, AgentStatus.IDLE):
         agent.status = AgentStatus.IDLE
 
     msg = Message(
@@ -1999,7 +1999,7 @@ async def send_agent_message(
 
     # --- Tmux agents: send via tmux immediately (even while generating) ---
     has_tmux = (
-        agent.status in (AgentStatus.SYNCING, AgentStatus.STARTING, AgentStatus.EXECUTING)
+        agent.status in (AgentStatus.IDLE, AgentStatus.STARTING, AgentStatus.EXECUTING)
         and agent.tmux_pane
         and not scheduled_at
     )
@@ -2350,7 +2350,7 @@ async def answer_agent_interactive(
     agent = db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if agent.status not in (AgentStatus.SYNCING, AgentStatus.EXECUTING, AgentStatus.IDLE):
+    if agent.status not in (AgentStatus.IDLE, AgentStatus.EXECUTING, AgentStatus.IDLE):
         raise HTTPException(status_code=400, detail=f"Agent is {agent.status}, not in interactive state")
 
     # Non-tmux agents (e.g. skip_permissions agents without a pane): patch DB only.

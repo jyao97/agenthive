@@ -27,7 +27,7 @@ def _make_dispatcher(monkeypatch, *, max_retries=3):
     monkeypatch.setattr("agent_dispatcher.verify_tmux_pane", lambda _pane: False)
 
     dispatcher = AgentDispatcher(DummyWorkerManager())
-    dispatcher._max_syncing_no_pane_retries = max_retries
+    dispatcher._max_idle_no_pane_retries = max_retries
 
     # Discard emitted WebSocket coroutines — no running event loop in tests.
     def _drop_coro(coro):
@@ -40,8 +40,8 @@ def _make_dispatcher(monkeypatch, *, max_retries=3):
     return dispatcher
 
 
-def _setup_syncing_agent(db, *, agent_id="synctest1111", project_name="disp-proj"):
-    """Insert a SYNCING cli_sync agent with a PENDING message and return (agent, message)."""
+def _setup_idle_agent(db, *, agent_id="synctest1111", project_name="disp-proj"):
+    """Insert an IDLE cli_sync agent with a PENDING message and return (agent, message)."""
     existing = db.query(Project).filter(Project.name == project_name).first()
     if not existing:
         db.add(Project(name=project_name, display_name="DP", path="/tmp/dp"))
@@ -50,7 +50,7 @@ def _setup_syncing_agent(db, *, agent_id="synctest1111", project_name="disp-proj
         id=agent_id,
         project=project_name,
         name="Sync Test Agent",
-        status=AgentStatus.SYNCING,
+        status=AgentStatus.IDLE,
         cli_sync=True,
         tmux_pane=None,
         session_id="sess-disp",
@@ -73,8 +73,8 @@ def _setup_syncing_agent(db, *, agent_id="synctest1111", project_name="disp-proj
 # ===========================================================================
 
 
-def test_agent_status_transitions_starting_to_syncing(db_engine):
-    """Verify STARTING agent can transition to SYNCING."""
+def test_agent_status_transitions_starting_to_idle(db_engine):
+    """Verify STARTING agent can transition to IDLE."""
     from sqlalchemy.orm import sessionmaker
 
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
@@ -82,7 +82,7 @@ def test_agent_status_transitions_starting_to_syncing(db_engine):
     db.add(Project(name="st-proj", display_name="ST", path="/tmp/st"))
     db.flush()
     agent = Agent(
-        id="start2sync11",
+        id="start2idle_11",
         project="st-proj",
         name="Transition Agent",
         status=AgentStatus.STARTING,
@@ -91,32 +91,6 @@ def test_agent_status_transitions_starting_to_syncing(db_engine):
     db.commit()
 
     assert agent.status == AgentStatus.STARTING
-    agent.status = AgentStatus.SYNCING
-    db.commit()
-    db.refresh(agent)
-    assert agent.status == AgentStatus.SYNCING
-    db.close()
-
-
-def test_agent_status_transitions_syncing_to_idle(db_engine):
-    """SYNCING -> IDLE when session ends."""
-    from sqlalchemy.orm import sessionmaker
-
-    Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
-    db = Session()
-    db.add(Project(name="sy-proj", display_name="SY", path="/tmp/sy"))
-    db.flush()
-    agent = Agent(
-        id="sync2idle1111",
-        project="sy-proj",
-        name="Sync Idle Agent",
-        status=AgentStatus.SYNCING,
-        cli_sync=True,
-    )
-    db.add(agent)
-    db.commit()
-
-    assert agent.status == AgentStatus.SYNCING
     agent.status = AgentStatus.IDLE
     db.commit()
     db.refresh(agent)
@@ -124,33 +98,59 @@ def test_agent_status_transitions_syncing_to_idle(db_engine):
     db.close()
 
 
+def test_agent_status_transitions_idle_to_executing(db_engine):
+    """IDLE -> EXECUTING when agent starts processing."""
+    from sqlalchemy.orm import sessionmaker
+
+    Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+    db = Session()
+    db.add(Project(name="sy-proj", display_name="SY", path="/tmp/sy"))
+    db.flush()
+    agent = Agent(
+        id="idle2exec1111",
+        project="sy-proj",
+        name="Idle Exec Agent",
+        status=AgentStatus.IDLE,
+        cli_sync=True,
+    )
+    db.add(agent)
+    db.commit()
+
+    assert agent.status == AgentStatus.IDLE
+    agent.status = AgentStatus.EXECUTING
+    db.commit()
+    db.refresh(agent)
+    assert agent.status == AgentStatus.EXECUTING
+    db.close()
+
+
 @pytest.mark.anyio
-async def test_syncing_agent_no_pane_retry_counter_increments(db_engine, monkeypatch):
+async def test_idle_agent_no_pane_retry_counter_increments(db_engine, monkeypatch):
     """Each tick with no pane increments retry counter."""
     from sqlalchemy.orm import sessionmaker
 
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
-    agent, _pending = _setup_syncing_agent(db, agent_id="retrycnt1111")
+    agent, _pending = _setup_idle_agent(db, agent_id="retrycnt1111")
     dispatcher = _make_dispatcher(monkeypatch, max_retries=10)
 
     # Tick 1
     dispatcher._dispatch_pending_messages(db)
     db.flush()
-    assert dispatcher._syncing_no_pane_retries.get(agent.id) == 1
+    assert dispatcher._idle_no_pane_retries.get(agent.id) == 1
 
     # Tick 2
     dispatcher._dispatch_pending_messages(db)
     db.flush()
-    assert dispatcher._syncing_no_pane_retries.get(agent.id) == 2
+    assert dispatcher._idle_no_pane_retries.get(agent.id) == 2
 
     # Tick 3
     dispatcher._dispatch_pending_messages(db)
     db.flush()
-    assert dispatcher._syncing_no_pane_retries.get(agent.id) == 3
+    assert dispatcher._idle_no_pane_retries.get(agent.id) == 3
 
-    # Agent should still be SYNCING since max_retries=10
-    assert agent.status == AgentStatus.SYNCING
+    # Agent should still be IDLE since max_retries=10
+    assert agent.status == AgentStatus.IDLE
     db.close()
 
 
@@ -161,7 +161,7 @@ async def test_syncing_agent_no_pane_retry_counter_increments(db_engine, monkeyp
 
 @pytest.mark.anyio
 async def test_liveness_check_skips_cli_sync_agents(db_engine, monkeypatch):
-    """cli_sync=True SYNCING agents should not be stopped by _reap_dead_agents
+    """cli_sync=True IDLE agents should not be stopped by _reap_dead_agents
     when they still have a tmux pane in the pane map."""
     from sqlalchemy.orm import sessionmaker
     from agent_dispatcher import AgentDispatcher
@@ -174,7 +174,7 @@ async def test_liveness_check_skips_cli_sync_agents(db_engine, monkeypatch):
         id="livecli11111",
         project="live-proj",
         name="CLI Sync Agent",
-        status=AgentStatus.SYNCING,
+        status=AgentStatus.IDLE,
         cli_sync=True,
         tmux_pane="%5",
         session_id="sess-live",
@@ -203,8 +203,8 @@ async def test_liveness_check_skips_cli_sync_agents(db_engine, monkeypatch):
     dispatcher._reap_dead_agents(db)
     db.flush()
 
-    # Agent should remain SYNCING — not stopped
-    assert agent.status == AgentStatus.SYNCING
+    # Agent should remain IDLE — not stopped
+    assert agent.status == AgentStatus.IDLE
     db.close()
 
 
@@ -297,68 +297,68 @@ async def test_liveness_check_skips_stopped_agents(db_engine, monkeypatch):
 
 
 # ===========================================================================
-# Grace period for SYNCING no-pane (split into three ticks)
+# Grace period for IDLE no-pane (split into three ticks)
 # ===========================================================================
 
 
 @pytest.mark.anyio
-async def test_syncing_grace_period_tick1(db_engine, monkeypatch):
-    """First tick: agent should remain SYNCING."""
+async def test_idle_grace_period_tick1(db_engine, monkeypatch):
+    """First tick: agent should remain IDLE."""
     from sqlalchemy.orm import sessionmaker
 
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
-    agent, pending = _setup_syncing_agent(db, agent_id="gracetick1_1")
+    agent, pending = _setup_idle_agent(db, agent_id="gracetick1_1")
     dispatcher = _make_dispatcher(monkeypatch, max_retries=3)
 
     dispatcher._dispatch_pending_messages(db)
     db.flush()
 
-    assert agent.status == AgentStatus.SYNCING
+    assert agent.status == AgentStatus.IDLE
     assert pending.status == MessageStatus.PENDING
     db.close()
 
 
 @pytest.mark.anyio
-async def test_syncing_grace_period_tick2(db_engine, monkeypatch):
-    """Second tick: agent should still be SYNCING."""
+async def test_idle_grace_period_tick2(db_engine, monkeypatch):
+    """Second tick: agent should still be IDLE."""
     from sqlalchemy.orm import sessionmaker
 
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
-    agent, pending = _setup_syncing_agent(db, agent_id="gracetick2_1")
+    agent, pending = _setup_idle_agent(db, agent_id="gracetick2_1")
     dispatcher = _make_dispatcher(monkeypatch, max_retries=3)
 
     dispatcher._dispatch_pending_messages(db)
     db.flush()
-    assert agent.status == AgentStatus.SYNCING
+    assert agent.status == AgentStatus.IDLE
 
     dispatcher._dispatch_pending_messages(db)
     db.flush()
-    assert agent.status == AgentStatus.SYNCING
+    assert agent.status == AgentStatus.IDLE
     assert pending.status == MessageStatus.PENDING
     db.close()
 
 
 @pytest.mark.anyio
-async def test_syncing_grace_period_tick3_stops(db_engine, monkeypatch):
+async def test_idle_grace_period_tick3_stops(db_engine, monkeypatch):
     """Third tick: grace exhausted — agent STOPPED, pending message FAILED."""
     from sqlalchemy.orm import sessionmaker
 
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
     db = Session()
-    agent, pending = _setup_syncing_agent(db, agent_id="gracetick3_1")
+    agent, pending = _setup_idle_agent(db, agent_id="gracetick3_1")
     dispatcher = _make_dispatcher(monkeypatch, max_retries=3)
 
     # Tick 1
     dispatcher._dispatch_pending_messages(db)
     db.flush()
-    assert agent.status == AgentStatus.SYNCING
+    assert agent.status == AgentStatus.IDLE
 
     # Tick 2
     dispatcher._dispatch_pending_messages(db)
     db.flush()
-    assert agent.status == AgentStatus.SYNCING
+    assert agent.status == AgentStatus.IDLE
 
     # Tick 3 — grace exhausted
     dispatcher._dispatch_pending_messages(db)

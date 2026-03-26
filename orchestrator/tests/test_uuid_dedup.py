@@ -676,7 +676,7 @@ class TestSessionOwnerSidecar:
 class TestWebTmuxContentDedup:
     """Tests for the web→tmux round-trip content dedup in incremental sync.
 
-    When a web message is sent via tmux to a SYNCING agent, the JSONL
+    When a web message is sent via tmux to an IDLE agent, the JSONL
     records it as a user entry.  The sync loop must detect that this
     turn corresponds to the existing web Message and skip import.
     """
