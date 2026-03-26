@@ -123,6 +123,9 @@ def flush_agent(agent_id: str):
                     (Message.role == MessageRole.USER)
                     & (Message.delivered_at.is_(None))
                 ),
+                # Skip tool_activity messages — real-time display handled
+                # by WS events only; no need to persist in display file.
+                Message.kind != "tool_activity",
             )
             .all()
         )
