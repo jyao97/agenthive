@@ -130,7 +130,7 @@ const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArc
           </span>
         )}
         {folder.active && (folder.agent_active || 0) > 0 && (
-          <span className="text-emerald-400">{folder.agent_active} active</span>
+          <span className="text-cyan-400">{folder.agent_active} active</span>
         )}
         {folder.active && (folder.task_total || 0) > 0 && (
           <span className="text-label">
