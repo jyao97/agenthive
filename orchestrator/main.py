@@ -7,7 +7,7 @@ import re
 from contextlib import asynccontextmanager
 
 # Clear Claude Code nesting-detection vars from the orchestrator process
-# so spawned agents (subprocess and tmux) don't refuse to start.
+# so spawned agents don't refuse to start.
 os.environ.pop("CLAUDECODE", None)
 os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
 

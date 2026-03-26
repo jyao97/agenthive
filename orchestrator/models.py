@@ -123,7 +123,7 @@ class Agent(Base):
     branch: Mapped[str | None] = mapped_column(String(200), nullable=True)
     worktree: Mapped[str | None] = mapped_column(String(200), nullable=True)
     session_id: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
-    cli_sync: Mapped[bool] = mapped_column(Boolean, default=False)
+    cli_sync: Mapped[bool] = mapped_column(Boolean, default=True)
     tmux_pane: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     effort: Mapped[str | None] = mapped_column(String(10), nullable=True)

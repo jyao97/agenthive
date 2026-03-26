@@ -27,7 +27,7 @@ def test_agent_model_defaults(db_session):
     assert agent.unread_count == 0
     assert agent.muted is False
     assert agent.is_subagent is False
-    assert agent.cli_sync is False
+    assert agent.cli_sync is True
     assert agent.timeout_seconds == 1800
     assert agent.skip_permissions is True
     assert agent.created_at is not None

@@ -139,7 +139,7 @@ class _AgentBase(BaseModel):
 
 
 class AgentOut(_AgentBase):
-    cli_sync: bool = False
+    cli_sync: bool = True
     timeout_seconds: int = 1800
     successor_id: str | None = None
     session_size_bytes: int | None = None

@@ -2119,7 +2119,7 @@ async def send_agent_message(
                         msg.id, agent.id, agent.generating_msg_id)
             return msg
 
-    # --- Non-tmux agents or scheduled messages: store as PENDING ---
+    # --- Agents without active tmux pane, or scheduled messages: store as PENDING ---
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if ad:
         project = db.get(Project, agent.project)
@@ -2353,7 +2353,7 @@ async def answer_agent_interactive(
     if agent.status not in (AgentStatus.IDLE, AgentStatus.EXECUTING, AgentStatus.IDLE):
         raise HTTPException(status_code=400, detail=f"Agent is {agent.status}, not in interactive state")
 
-    # Non-tmux agents (e.g. skip_permissions agents without a pane): patch DB only.
+    # Agents without active tmux pane: patch DB only.
     # Claude auto-approves with --dangerously-skip-permissions, so the card is informational.
     has_tmux = bool(agent.tmux_pane)
     if has_tmux:
@@ -2378,7 +2378,7 @@ async def answer_agent_interactive(
         else:
             keys = []
 
-        # Patch DB after successful key delivery (or immediately for non-tmux)
+        # Patch DB after successful key delivery (or immediately if no tmux pane)
         patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, body.selected_index, body.type, body.question_index)
         if not patched:
             logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
@@ -2518,9 +2518,9 @@ async def answer_agent_interactive(
                 (post_content or "")[-2000:],
             )
         else:
-            prompt_type = "non-tmux"
+            prompt_type = "no-pane"
 
-        # Non-tmux: patch DB immediately (no keys to send)
+        # No tmux pane: patch DB immediately (no keys to send)
         if not has_tmux:
             patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, effective_index, body.type)
             if not patched:

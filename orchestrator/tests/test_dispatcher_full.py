@@ -209,8 +209,8 @@ async def test_liveness_check_skips_cli_sync_agents(db_engine, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_liveness_check_skips_idle_agents(db_engine, monkeypatch):
-    """IDLE orchestrator agents (cli_sync=False) should not be affected by _reap_dead_agents."""
+async def test_liveness_check_skips_idle_agent_with_live_pane(db_engine, monkeypatch):
+    """IDLE tmux agent with a live pane should not be stopped by _reap_dead_agents."""
     from sqlalchemy.orm import sessionmaker
     from agent_dispatcher import AgentDispatcher
 
@@ -223,7 +223,9 @@ async def test_liveness_check_skips_idle_agents(db_engine, monkeypatch):
         project="idle-proj",
         name="Idle Agent",
         status=AgentStatus.IDLE,
-        cli_sync=False,
+        cli_sync=True,
+        tmux_pane="%9",
+        session_id="sess-idle",
     )
     db.add(agent)
     db.commit()
@@ -240,14 +242,15 @@ async def test_liveness_check_skips_idle_agents(db_engine, monkeypatch):
 
     monkeypatch.setattr(
         "agent_dispatcher._build_tmux_claude_map",
-        lambda: {},
+        lambda: {"%9": {"is_orchestrator": False}},
     )
     dispatcher._tmux_map_cache = None
+    monkeypatch.setattr("agent_dispatcher.verify_tmux_pane", lambda _pane: True)
 
     dispatcher._reap_dead_agents(db)
     db.flush()
 
-    # IDLE orchestrator agent should remain IDLE
+    # IDLE agent with live pane should remain IDLE
     assert agent.status == AgentStatus.IDLE
     db.close()
 
@@ -399,8 +402,8 @@ def test_agent_session_name_format():
 # ===========================================================================
 
 
-def test_agent_cli_sync_default_false(db_engine):
-    """Default cli_sync is False."""
+def test_agent_cli_sync_default_true(db_engine):
+    """Default cli_sync is True (all agents are tmux-managed)."""
     from sqlalchemy.orm import sessionmaker
 
     Session = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
@@ -416,7 +419,7 @@ def test_agent_cli_sync_default_false(db_engine):
     db.commit()
     db.refresh(agent)
 
-    assert agent.cli_sync is False
+    assert agent.cli_sync is True
     db.close()
 
 

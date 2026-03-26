@@ -1367,7 +1367,7 @@ def _is_cli_session_alive(project_path: str, tmux_pane: str | None = None) -> bo
         if not info["is_orchestrator"] and _cwd_matches_project(info["cwd"], real_project):
             return True
 
-    # Check non-tmux claude processes
+    # Check other claude processes (fallback when no tmux pane matched)
     try:
         result = _sp.run(
             ["pgrep", "-f", "claude"], capture_output=True, text=True, timeout=5,
@@ -1384,7 +1384,7 @@ def _is_cli_session_alive(project_path: str, tmux_pane: str | None = None) -> bo
                 except (OSError, ValueError):
                     continue
     except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
-        logger.debug("Non-tmux alive check failed for project %s: %s", project_path, e)
+        logger.debug("Fallback alive check failed for project %s: %s", project_path, e)
 
     return False
 
@@ -2829,112 +2829,67 @@ Here are the day's conversations (with timestamps):
                 db.add(resp)
                 agent.status = post_exec_status
             else:
-                # --- Check if exec sync already imported turns from JSONL ---
-                # If so, skip harvest message creation to avoid duplicates.
-                # The sync pipeline is the authoritative source for non-tmux
-                # agents when it ran successfully.
-                _exec_sync_ran = (
-                    agent_id in self._sync_contexts
-                    or db.query(Message).filter(
-                        Message.agent_id == agent.id,
-                        Message.source == "cli",
-                        Message.jsonl_uuid.is_not(None),
-                        ~Message.jsonl_uuid.like("harvest-%"),
-                    ).limit(1).count() > 0
-                )
-
-                if _exec_sync_ran:
-                    logger.info(
-                        "Agent %s: exec sync handled message import, "
-                        "skipping harvest message creation",
-                        agent.id[:8],
-                    )
-                    # Use latest agent message for downstream refs (preview, etc.)
-                    resp = (
-                        db.query(Message)
-                        .filter(
-                            Message.agent_id == agent.id,
-                            Message.role == MessageRole.AGENT,
-                        )
-                        .order_by(Message.created_at.desc())
-                        .first()
-                    )
-                    _fg_msgs = []
-                    if not resp:
-                        # Edge case: sync ran but no agent messages — create
-                        # fallback single message so downstream code has a resp.
-                        resp = Message(
-                            agent_id=agent.id,
-                            role=MessageRole.AGENT,
-                            content=result_text or "",
-                            status=MessageStatus.COMPLETED,
-                            stream_log=_truncate(logs, 50000),
-                            meta_json=result_meta_json,
-                            delivered_at=_now,
-                        )
-                        db.add(resp)
-                else:
-                    # --- Fine-grained message creation (Phase E) ---
-                    # Create one Message per text segment / tool call instead of
-                    # a single blob, so the frontend can render them individually.
-                    _fg_seq = 0
-                    _fg_msgs = []
-                    # Use triggering message ID in harvest UUID to avoid collision
-                    # across multiple prompts to the same agent.
-                    _fg_origin = info["message_id"]
-                    for _fg_kind, _fg_content in harvest_parts:
-                        _fg_seq += 1
-                        _fg_content = _fg_content.strip()
+                # --- Fine-grained message creation (Phase E) ---
+                # Create one Message per text segment / tool call instead of
+                # a single blob, so the frontend can render them individually.
+                _fg_seq = 0
+                _fg_msgs = []
+                # Use triggering message ID in harvest UUID to avoid collision
+                # across multiple prompts to the same agent.
+                _fg_origin = info["message_id"]
+                for _fg_kind, _fg_content in harvest_parts:
+                    _fg_seq += 1
+                    _fg_content = _fg_content.strip()
+                    if not _fg_content:
+                        continue
+                    # Strip legacy markers from text parts
+                    if _fg_kind == "text":
+                        _fg_content = re.sub(r"\n?EXIT_SUCCESS\s*$", "", _fg_content).strip()
+                        _fg_content = re.sub(r"\n?EXIT_FAILURE:?.*$", "", _fg_content).strip()
                         if not _fg_content:
                             continue
-                        # Strip legacy markers from text parts
-                        if _fg_kind == "text":
-                            _fg_content = re.sub(r"\n?EXIT_SUCCESS\s*$", "", _fg_content).strip()
-                            _fg_content = re.sub(r"\n?EXIT_FAILURE:?.*$", "", _fg_content).strip()
-                            if not _fg_content:
-                                continue
-                        _fg_now = _utcnow()
-                        _fg_uuid = f"harvest-{_fg_origin}-{_fg_seq}"
-                        _fg_actual_kind = "text" if _fg_kind == "text" else "tool_use"
-                        logger.debug("Agent %s: harvest creating msg kind=%s uuid=%s seq=%d content_len=%d",
-                                     agent.id[:8], _fg_actual_kind, _fg_uuid, _fg_seq, len(_fg_content))
-                        _fg_msg = Message(
-                            agent_id=agent.id,
-                            role=MessageRole.AGENT,
-                            content=_fg_content,
-                            status=MessageStatus.COMPLETED,
-                            source=None,
-                            jsonl_uuid=_fg_uuid,
-                            completed_at=_fg_now,
-                            delivered_at=_fg_now,
-                            session_seq=_fg_seq,
-                            kind=_fg_actual_kind,
-                        )
-                        db.add(_fg_msg)
-                        _fg_msgs.append(_fg_msg)
+                    _fg_now = _utcnow()
+                    _fg_uuid = f"harvest-{_fg_origin}-{_fg_seq}"
+                    _fg_actual_kind = "text" if _fg_kind == "text" else "tool_use"
+                    logger.debug("Agent %s: harvest creating msg kind=%s uuid=%s seq=%d content_len=%d",
+                                 agent.id[:8], _fg_actual_kind, _fg_uuid, _fg_seq, len(_fg_content))
+                    _fg_msg = Message(
+                        agent_id=agent.id,
+                        role=MessageRole.AGENT,
+                        content=_fg_content,
+                        status=MessageStatus.COMPLETED,
+                        source=None,
+                        jsonl_uuid=_fg_uuid,
+                        completed_at=_fg_now,
+                        delivered_at=_fg_now,
+                        session_seq=_fg_seq,
+                        kind=_fg_actual_kind,
+                    )
+                    db.add(_fg_msg)
+                    _fg_msgs.append(_fg_msg)
 
-                    # Attach interactive metadata to last fine-grained message
-                    if harvest_interactive and _fg_msgs:
-                        _fg_msgs[-1].meta_json = json.dumps({"interactive": harvest_interactive})
+                # Attach interactive metadata to last fine-grained message
+                if harvest_interactive and _fg_msgs:
+                    _fg_msgs[-1].meta_json = json.dumps({"interactive": harvest_interactive})
 
-                    if _fg_msgs:
-                        # Attach stream_log to the first message
-                        _fg_msgs[0].stream_log = _truncate(logs, 50000)
-                        resp = _fg_msgs[-1]  # downstream refs use resp.id
-                    else:
-                        # Empty response — fall back to single message with
-                        # _extract_result output (preserves existing behaviour).
-                        logger.debug("Agent %s: harvest fallback to single message", agent.id[:8])
-                        resp = Message(
-                            agent_id=agent.id,
-                            role=MessageRole.AGENT,
-                            content=result_text,
-                            status=MessageStatus.COMPLETED,
-                            stream_log=_truncate(logs, 50000),
-                            meta_json=result_meta_json,
-                            delivered_at=_now,
-                        )
-                        db.add(resp)
+                if _fg_msgs:
+                    # Attach stream_log to the first message
+                    _fg_msgs[0].stream_log = _truncate(logs, 50000)
+                    resp = _fg_msgs[-1]  # downstream refs use resp.id
+                else:
+                    # Empty response — fall back to single message with
+                    # _extract_result output (preserves existing behaviour).
+                    logger.debug("Agent %s: harvest fallback to single message", agent.id[:8])
+                    resp = Message(
+                        agent_id=agent.id,
+                        role=MessageRole.AGENT,
+                        content=result_text,
+                        status=MessageStatus.COMPLETED,
+                        stream_log=_truncate(logs, 50000),
+                        meta_json=result_meta_json,
+                        delivered_at=_now,
+                    )
+                    db.add(resp)
 
                 # Backfill hook-created interactive cards with answers from result
                 if result_meta_json:
@@ -2987,48 +2942,6 @@ Here are the day's conversations (with timestamps):
                 # Successful completion — reset retry counters
                 self._stale_session_retries.pop(agent_id, None)
                 self._timeout_retries.pop(info["message_id"], None)
-
-            # Auto-continue after ExitPlanMode in exec mode.
-            # When a non-cli_sync agent calls ExitPlanMode, the CLI
-            # auto-approves (no tmux) and exits.  Create a follow-up
-            # PENDING message so the next dispatch cycle resumes the
-            # agent and executes the plan.
-            if result_meta_json and not agent.cli_sync:
-                try:
-                    _meta = json.loads(result_meta_json)
-                    _has_exit_plan = any(
-                        item.get("type") == "exit_plan_mode"
-                        for item in _meta.get("interactive", [])
-                    )
-                    if _has_exit_plan:
-                        # Guard: don't auto-continue if this exec was
-                        # itself a plan follow-up (prevents infinite loop).
-                        trigger_msg = db.get(Message, info["message_id"])
-                        is_already_followup = (
-                            trigger_msg
-                            and trigger_msg.source == "plan_continue"
-                        )
-                        # Don't auto-continue planning agents — their plan needs user review
-                        _linked_task = db.get(Task, agent.task_id) if agent.task_id else None
-                        is_planning_agent = _linked_task and _linked_task.status == TaskStatus.PLANNING
-                        if not is_already_followup and not is_planning_agent:
-                            follow_up = Message(
-                                agent_id=agent.id,
-                                role=MessageRole.USER,
-                                content=(
-                                    "Plan approved. Proceed with implementation now. "
-                                    "Do not re-plan — execute the plan directly."
-                                ),
-                                status=MessageStatus.PENDING,
-                                source="plan_continue",
-                            )
-                            db.add(follow_up)
-                            logger.info(
-                                "Auto-created plan execution follow-up for agent %s",
-                                agent.id,
-                            )
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to parse meta_json for plan-continue on agent %s", agent.id, exc_info=True)
 
             # Update agent denormalized fields — skip if hook already
             # handled preview/unread (adopted _hook_resp above).
@@ -3213,9 +3126,8 @@ Here are the day's conversations (with timestamps):
     # ---- Step 4: Start new agents ----
 
     def _start_new_agents(self, db: Session):
-        """No-op — all agents are now tmux-managed (STARTING → IDLE via
-        the background launch task). Previously transitioned non-cli_sync
-        STARTING agents to IDLE for subprocess dispatch."""
+        """No-op — all agents are tmux-managed (STARTING → IDLE via
+        the background launch task)."""
         pass
 
     # ---- Step 4: Dispatch pending messages ----
@@ -3224,7 +3136,7 @@ Here are the day's conversations (with timestamps):
         """Handle IDLE agents with no tmux pane (grace window + reap)."""
         from websocket import emit_agent_update
 
-        # IDLE cli_sync agents without a pane: retry pane re-detection for a
+        # IDLE agents without a pane: retry pane re-detection for a
         # short grace window before declaring them dead. This avoids false
         # STOPPED transitions from transient tmux lookup failures.
         idle_no_pane = db.query(Agent).filter(
@@ -3634,11 +3546,11 @@ Here are the day's conversations (with timestamps):
             self.start_session_sync(aid, sid, ppath)
 
     def _reap_dead_agents(self, db: Session):
-        """Stop agents whose underlying process is dead.
+        """Stop agents whose underlying tmux process is dead.
 
         Checks all non-STOPPED agents (STARTING/IDLE/EXECUTING/ERROR):
-        verifies the tmux pane still has a running claude process, or
-        falls back to session file freshness.
+        verifies the tmux pane still has a running claude process,
+        falling back to session file freshness when no pane is assigned.
         """
         import time
         from websocket import emit_agent_update
@@ -3658,15 +3570,6 @@ Here are the day's conversations (with timestamps):
         pane_map = self._get_tmux_map()
 
         for agent in candidates:
-            # All agents must be tmux-managed. Stop any legacy non-cli_sync agents.
-            if not agent.cli_sync:
-                logger.warning("Stopping legacy non-tmux agent %s", agent.id)
-                self.stop_agent_cleanup(
-                    db, agent, "Non-tmux agents are no longer supported",
-                    kill_tmux=False, add_message=False, cancel_tasks=False,
-                )
-                continue
-
             # Determine if this agent's underlying process is alive.
             # Priority: tmux pane check > session file freshness.
             alive = False
@@ -3904,7 +3807,7 @@ Here are the day's conversations (with timestamps):
         if task and not task.done():
             task.cancel()
 
-    # ---- Exec Sync (non-tmux agents) ----
+    # ---- Launch / Sync Task Management ----
 
     def track_launch_task(self, agent_id: str, task: asyncio.Task):
         """Track a tmux launch background task so it can be cancelled."""
@@ -4638,8 +4541,7 @@ Here are the day's conversations (with timestamps):
                                 session_active = False
                             else:
                                 # No pane detected — fall back to session file
-                                # freshness (works for CLI sessions running in
-                                # non-tmux terminals or panes we can't match)
+                                # freshness (works for panes we can't match)
                                 try:
                                     age = _time.time() - os.path.getmtime(jsonl_path)
                                     session_active = age < _STALE_SESSION_THRESHOLD
@@ -4727,9 +4629,9 @@ Here are the day's conversations (with timestamps):
                     continue
 
                 if agent.status == AgentStatus.EXECUTING:
-                    # Non-tmux EXECUTING agent — stop it (all agents must be tmux-managed)
+                    # Orphaned EXECUTING agent — stop it
                     self.stop_agent_cleanup(
-                        db, agent, "Non-tmux agent stopped after restart",
+                        db, agent, "Orphaned agent stopped after restart",
                         kill_tmux=False, emit=False, cancel_tasks=False,
                     )
                     continue
