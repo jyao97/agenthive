@@ -2561,8 +2561,12 @@ async def send_escape_to_agent(agent_id: str, request: Request, db: Session = De
     if not verify_tmux_pane(agent.tmux_pane):
         raise HTTPException(status_code=400, detail="Tmux pane no longer exists")
 
-    if not send_tmux_keys(agent.tmux_pane, ["Escape"]):
-        raise HTTPException(status_code=500, detail="Failed to send Escape to tmux")
+    # Send Ctrl+C (hardcoded app:interrupt in Claude Code) instead of Escape.
+    # Escape is context-dependent: with queued prompts it pulls text back to
+    # the input bar; in vim mode it switches to NORMAL; in tmux it has a 50ms
+    # disambiguation delay.  Ctrl+C always interrupts generation reliably.
+    if not send_tmux_keys(agent.tmux_pane, ["C-c"]):
+        raise HTTPException(status_code=500, detail="Failed to send interrupt to tmux")
 
     # Wait briefly for Claude Code to write "[Request interrupted by user]"
     # to JSONL, then verify the interrupt actually happened before clearing state.
