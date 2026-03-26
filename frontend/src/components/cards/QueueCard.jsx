@@ -8,7 +8,7 @@ import TaskExpandedContent from "./TaskExpandedContent";
 const MODEL_PICKER = MODEL_OPTIONS.map(m => ({ value: m.value, label: m.label }));
 const EFFORT_PICKER = [
   { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
+  { value: "medium", label: "Med" },
   { value: "high", label: "High" },
   { value: "max", label: "Max" },
 ];
@@ -64,8 +64,8 @@ export default memo(function QueueCard({ task, position, selecting, selected, on
                 )}
                 {task.effort && (
                   <TagPicker options={EFFORT_PICKER} value={task.effort} onSelect={(v) => update("effort", v)}
-                    className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-elevated text-dim cursor-pointer active:scale-90 transition-transform">
-                    {task.effort.charAt(0).toUpperCase() + task.effort.slice(1)}
+                    className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-elevated text-dim uppercase cursor-pointer active:scale-90 transition-transform">
+                    {task.effort[0]}
                   </TagPicker>
                 )}
               </div>
@@ -77,8 +77,8 @@ export default memo(function QueueCard({ task, position, selecting, selected, on
                   </span>
                 )}
                 {task.effort && (
-                  <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-elevated text-dim">
-                    {task.effort.charAt(0).toUpperCase() + task.effort.slice(1)}
+                  <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-elevated text-dim uppercase">
+                    {task.effort[0]}
                   </span>
                 )}
               </div>
