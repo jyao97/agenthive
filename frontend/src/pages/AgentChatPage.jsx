@@ -1938,12 +1938,12 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`${kbOpen ? "fixed" : "absolute"} left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
-      style={{ bottom: kbOpen ? 'var(--kb-h-fixed, 0px)' : 'var(--kb-h, 0px)' }}
+      className={`absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "bottom-0 pb-2 safe-area-pb-tight"}`}
+      style={{ bottom: 'var(--kb-h, 0px)' }}
     >
       {scrollButton}
       <div
-        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1 rounded-b-xl" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
+        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1 rounded-b-none" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
         style={{ maxWidth: "24rem" }}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
@@ -2611,15 +2611,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const containerH = el.clientHeight;
       // rawDelta: detects keyboard presence (ignores viewport scroll)
       const rawDelta = Math.max(0, Math.round(containerH - vv.height));
-      // kbOffset: container-relative offset for scroll container marginBottom.
-      // Uses el.clientHeight (may be 100vh, larger than visible viewport on iOS
-      // when URL bar is showing) — that's correct for margin within the
-      // container's coordinate system.
+      // kbOffset: actual positioning offset — subtracts vv.offsetTop so
+      // the input bar stays flush with the keyboard even when iOS scrolls
+      // the visual viewport (common on 2nd+ keyboard open).
       const kbOffset = Math.max(0, Math.round(containerH - vv.height - vv.offsetTop));
-      // kbFixedOffset: viewport-relative offset for the fixed-position input bar.
-      // Uses window.innerHeight so the bar sits flush against the keyboard
-      // regardless of 100vh vs actual viewport discrepancy.
-      const kbFixedOffset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
 
       kbLog(containerH, kbOffset, rawDelta > 100);
 
@@ -2630,7 +2625,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         if (Math.abs(kbOffset - prevOff) > 3) {
           prevOff = kbOffset;
           el.style.setProperty('--kb-h', `${kbOffset}px`);
-          el.style.setProperty('--kb-h-fixed', `${kbFixedOffset}px`);
           // Keep messages pinned to bottom while keyboard is animating
           // (margin-bottom shrinks the scroll container via --kb-h)
           const sc = scrollContainerRef.current;
@@ -2641,7 +2635,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       } else if (prevOff !== 0) {
         prevOff = 0;
         el.style.removeProperty('--kb-h');
-        el.style.removeProperty('--kb-h-fixed');
       }
 
       // Scroll container padding: keep small so messages peek behind glass
