@@ -118,6 +118,9 @@
 }
 
 /* ── Global overflow prevention ── */
+html {
+  background-color: var(--color-page);
+}
 body {
   overflow-wrap: break-word;
   background-color: var(--color-page);
