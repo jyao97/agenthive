@@ -589,10 +589,13 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
             TaskStateMachine.transition(task, new_status)
         except (ValueError, InvalidTransitionError) as exc:
             raise HTTPException(409, str(exc))
-    for field in ("title", "description", "project_name", "model", "effort"):
+    for field in ("title", "project_name", "model", "effort"):
         val = getattr(body, field, None)
         if val is not None:
             setattr(task, field, val)
+    # Allow explicit null to clear description
+    if "description" in body.model_fields_set:
+        task.description = body.description
     # Boolean fields: explicit set check (None means "not sent")
     for field in ("skip_permissions", "use_worktree", "use_tmux"):
         if field in body.model_fields_set:
