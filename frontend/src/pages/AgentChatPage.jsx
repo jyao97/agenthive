@@ -2645,7 +2645,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         padTimer = setTimeout(() => {
           const sc = scrollContainerRef.current;
           if (!sc) return;
-          sc.style.paddingBottom = open ? '0px' : '';
+          sc.style.paddingBottom = open ? '80px' : '';
         }, 80);
       }
 
