@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Sparkles } from "lucide-react";
 import { fetchTasksV2, fetchTaskCounts, dispatchTask, cancelTask, batchProcessTasks } from "../lib/api";
@@ -24,8 +24,16 @@ export default function TasksPage({ theme, onToggleTheme }) {
   // --- Multi-select state ---
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState(new Set());
-  const [expandedTaskId, setExpandedTaskId] = useState(null);
+  const [expandedTaskId, setExpandedTaskId] = useState(() => {
+    try { return localStorage.getItem("inbox:expandedTaskId") || null; } catch { return null; }
+  });
   const [actionLoading, setActionLoading] = useState(false);
+
+  // Scroll position persistence
+  const inboxScrollRef = useRef(null);
+  const scrollSaveTimer = useRef(null);
+  const scrollRestored = useRef(false);
+  const SCROLL_SAVE_DEBOUNCE = 200;
 
 
   const enterSelectMode = useCallback((preSelectId) => {
@@ -59,7 +67,14 @@ export default function TasksPage({ theme, onToggleTheme }) {
   const allSelected = tasks.length > 0 && selected.size === tasks.length;
 
   const handleExpandTask = useCallback((taskId) => {
-    setExpandedTaskId((prev) => prev === taskId ? null : taskId);
+    setExpandedTaskId((prev) => {
+      const next = prev === taskId ? null : taskId;
+      try {
+        if (next) localStorage.setItem("inbox:expandedTaskId", next);
+        else localStorage.removeItem("inbox:expandedTaskId");
+      } catch { /* ignore */ }
+      return next;
+    });
   }, []);
 
   // Fetch counts for all perspectives (server-side)
@@ -188,6 +203,56 @@ export default function TasksPage({ theme, onToggleTheme }) {
     }
   }, [selected, actionLoading, exitSelectMode, showToast, onRefresh]);
 
+  // Debounced scroll position save
+  const handleInboxScroll = useCallback(() => {
+    const el = inboxScrollRef.current;
+    if (!el) return;
+    clearTimeout(scrollSaveTimer.current);
+    scrollSaveTimer.current = setTimeout(() => {
+      try { localStorage.setItem("inbox:scrollTop", String(el.scrollTop)); } catch { /* ignore */ }
+    }, SCROLL_SAVE_DEBOUNCE);
+  }, []);
+
+  // Save scroll position on unmount
+  useEffect(() => {
+    return () => {
+      clearTimeout(scrollSaveTimer.current);
+      const el = inboxScrollRef.current;
+      if (el) {
+        try { localStorage.setItem("inbox:scrollTop", String(el.scrollTop)); } catch { /* ignore */ }
+      }
+    };
+  }, []);
+
+  // Restore scroll position after first load
+  useLayoutEffect(() => {
+    if (loading || tasks.length === 0 || scrollRestored.current) return;
+    scrollRestored.current = true;
+    try {
+      const savedPos = localStorage.getItem("inbox:scrollTop");
+      const savedCount = localStorage.getItem("inbox:taskCount");
+      if (savedPos && savedCount && Number(savedCount) === tasks.length) {
+        const el = inboxScrollRef.current;
+        if (el) el.scrollTop = Number(savedPos);
+      }
+    } catch { /* ignore */ }
+  }, [loading, tasks.length]);
+
+  // Keep saved task count in sync for future visits
+  useEffect(() => {
+    if (!loading && tasks.length > 0) {
+      try { localStorage.setItem("inbox:taskCount", String(tasks.length)); } catch { /* ignore */ }
+    }
+  }, [loading, tasks.length]);
+
+  // Clear expanded task if the task no longer exists in the list
+  useEffect(() => {
+    if (!loading && expandedTaskId && tasks.length > 0 && !tasks.some(t => t.id === expandedTaskId)) {
+      setExpandedTaskId(null);
+      try { localStorage.removeItem("inbox:expandedTaskId"); } catch { /* ignore */ }
+    }
+  }, [loading, tasks, expandedTaskId]);
+
   return (
     <div className="h-full flex flex-col">
       <PageHeader
@@ -249,7 +314,9 @@ export default function TasksPage({ theme, onToggleTheme }) {
       </PageHeader>
 
       <div
+        ref={inboxScrollRef}
         className="flex-1 overflow-y-auto overflow-x-hidden"
+        onScroll={handleInboxScroll}
         onClick={(e) => {
           if (expandedTaskId && !e.target.closest("[data-card]")) setExpandedTaskId(null);
         }}

@@ -2711,7 +2711,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
     clearTimeout(scrollSaveTimer.current);
     scrollSaveTimer.current = setTimeout(() => {
-      try { sessionStorage.setItem(scrollKey, String(el.scrollTop)); } catch { /* ignore */ }
+      try { localStorage.setItem(scrollKey, String(el.scrollTop)); } catch { /* ignore */ }
     }, SCROLL_SAVE_DEBOUNCE);
   }, [scrollKey, hasMore, loadingMore, loadOlderMessages]);
 
@@ -2721,7 +2721,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       clearTimeout(scrollSaveTimer.current);
       const el = scrollContainerRef.current;
       if (el) {
-        try { sessionStorage.setItem(scrollKey, String(el.scrollTop)); } catch { /* ignore */ }
+        try { localStorage.setItem(scrollKey, String(el.scrollTop)); } catch { /* ignore */ }
       }
     };
   }, [scrollKey]);
@@ -2741,8 +2741,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     if (isFirstLoad) {
       // Restore saved position if message count matches (no new messages since last visit)
       try {
-        const savedCount = sessionStorage.getItem(scrollCountKey);
-        const savedPos = sessionStorage.getItem(scrollKey);
+        const savedCount = localStorage.getItem(scrollCountKey);
+        const savedPos = localStorage.getItem(scrollKey);
         if (savedPos && savedCount && Number(savedCount) === messages.length) {
           const el = scrollContainerRef.current;
           if (el) {
@@ -2769,8 +2769,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     // New messages appended — clear saved position, auto-scroll
     if (newMessagesAppended) {
       try {
-        sessionStorage.removeItem(scrollKey);
-        sessionStorage.setItem(scrollCountKey, String(messages.length));
+        localStorage.removeItem(scrollKey);
+        localStorage.setItem(scrollCountKey, String(messages.length));
       } catch { /* ignore */ }
     }
     if (!userScrolledUp.current) {
@@ -2781,7 +2781,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // Keep saved message count in sync for future visits
   useEffect(() => {
     if (!loading && messages.length > 0) {
-      try { sessionStorage.setItem(scrollCountKey, String(messages.length)); } catch { /* ignore */ }
+      try { localStorage.setItem(scrollCountKey, String(messages.length)); } catch { /* ignore */ }
     }
   }, [loading, messages.length, scrollCountKey]);
 
