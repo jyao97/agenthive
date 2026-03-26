@@ -1965,6 +1965,13 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       className={`absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "pb-2 safe-area-pb-tight"}`}
       style={{ bottom: 'var(--kb-h, 0px)' }}
     >
+      {/* Full-width glass fill — covers px-4 side gaps when keyboard is open */}
+      {kbOpen && (
+        <div
+          className="absolute inset-0 glass-bar-nav pointer-events-none"
+          style={{ borderRadius: 0, border: 'none', boxShadow: 'none', zIndex: -1 }}
+        />
+      )}
       {scrollButton}
       <div
         className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1 rounded-b-none" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
@@ -2669,7 +2676,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         padTimer = setTimeout(() => {
           const sc = scrollContainerRef.current;
           if (!sc) return;
-          sc.style.paddingBottom = open ? '80px' : '';
+          sc.style.paddingBottom = open ? 'calc(var(--kb-h, 0px) + 80px)' : '';
         }, 80);
       }
 
@@ -3597,7 +3604,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         data-chat-container
         onScroll={handleScroll}
         className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOpen ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
-        style={{ overflowAnchor: "auto", overscrollBehavior: "contain", marginBottom: 'var(--kb-h, 0px)' }}
+        style={{ overflowAnchor: "auto", overscrollBehavior: "contain" }}
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
