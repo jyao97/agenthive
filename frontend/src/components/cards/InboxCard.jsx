@@ -1,4 +1,4 @@
-import { memo, useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { memo, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import { modelDisplayName, MODEL_OPTIONS } from "../../lib/constants";
 import { relativeTime } from "../../lib/formatters";
 import { updateTaskV2, uploadFile, cancelTask, dispatchTask, regenerateTaskSummary } from "../../lib/api";
@@ -86,6 +86,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
       await updateTaskV2(task.id, { title: text });
       onRefresh?.();
     }
+    try { localStorage.removeItem(`draft:inbox-title:${task.id}`); } catch {}
   }, [task.id, task.title, onRefresh]);
 
   // --- inline description editing ---
@@ -95,6 +96,49 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   const filePickerOpenRef = useRef(false);
 
   useEffect(() => { if (!isExpanded) { setEditing(false); setTitleEditing(false); } }, [isExpanded]);
+
+  // --- draft persistence (survives app close/restart) ---
+  useLayoutEffect(() => {
+    if (!isExpanded) return;
+    try {
+      const td = localStorage.getItem(`draft:inbox-title:${task.id}`);
+      if (td && titleRef.current) titleRef.current.innerText = td;
+      const dd = localStorage.getItem(`draft:inbox-desc:${task.id}`);
+      if (dd != null && editRef.current) editRef.current.innerText = dd;
+    } catch {}
+  }, [isExpanded, task.id]);
+
+  useEffect(() => {
+    if (!isExpanded) return;
+    const titleEl = titleRef.current;
+    const descEl = editRef.current;
+    const saveTitleDraft = () => {
+      try {
+        const t = titleEl?.innerText?.trim() || "";
+        if (t && t !== task.title) localStorage.setItem(`draft:inbox-title:${task.id}`, t);
+        else localStorage.removeItem(`draft:inbox-title:${task.id}`);
+      } catch {}
+    };
+    const saveDescDraft = () => {
+      try {
+        const t = descEl?.innerText?.trim() || "";
+        if (t !== (parsed.text || "").trim()) localStorage.setItem(`draft:inbox-desc:${task.id}`, t);
+        else localStorage.removeItem(`draft:inbox-desc:${task.id}`);
+      } catch {}
+    };
+    titleEl?.addEventListener("input", saveTitleDraft);
+    descEl?.addEventListener("input", saveDescDraft);
+    const flush = () => { saveTitleDraft(); saveDescDraft(); };
+    const onVis = () => { if (document.visibilityState === "hidden") flush(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      titleEl?.removeEventListener("input", saveTitleDraft);
+      descEl?.removeEventListener("input", saveDescDraft);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [isExpanded, task.id, task.title, parsed.text]);
 
   // Clear filePickerOpen flag when the file picker is cancelled (no file selected)
   useEffect(() => {
@@ -135,6 +179,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
       await updateTaskV2(task.id, { description: buildFullDesc(text, parsed.files) });
       onRefresh?.();
     }
+    try { localStorage.removeItem(`draft:inbox-desc:${task.id}`); } catch {}
   }, [task.id, parsed, buildFullDesc, onRefresh]);
 
   // --- voice recording ---
@@ -143,6 +188,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
     const currentText = el ? el.innerText.trim() : parsed.text;
     const updated = currentText ? currentText + "\n" + text : text;
     if (el) el.innerText = updated;
+    try { localStorage.removeItem(`draft:inbox-desc:${task.id}`); } catch {}
     updateTaskV2(task.id, { description: buildFullDesc(updated, parsed.files) }).then(() => onRefresh?.());
   }, [task.id, parsed, buildFullDesc, onRefresh]);
 
@@ -220,6 +266,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
       }
     }
     await dispatchTask(task.id);
+    try { localStorage.removeItem(`draft:inbox-title:${task.id}`); localStorage.removeItem(`draft:inbox-desc:${task.id}`); } catch {}
     onRefresh?.();
   };
 
