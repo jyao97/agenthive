@@ -588,7 +588,7 @@ def _translate_to_english(text_input: str) -> str:
     import openai
     client = openai.OpenAI(timeout=5)
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=os.getenv("SUMMARY_MODEL", "gpt-4o-mini"),
         messages=[{
             "role": "user",
             "content": f"Translate the following to English technical keywords (no explanation, just the keywords separated by spaces):\n{text_input[:300]}",
@@ -708,7 +708,7 @@ def query_insights_ai(db, project: str, user_message: str, limit: int = 50) -> l
     import openai
     client = openai.OpenAI(timeout=5)
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=os.getenv("SUMMARY_MODEL", "gpt-4o-mini"),
         messages=[{"role": "user", "content": prompt}],
         max_tokens=100,
         temperature=0,

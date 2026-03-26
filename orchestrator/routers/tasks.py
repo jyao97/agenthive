@@ -507,7 +507,7 @@ async def batch_process_tasks(request: Request, db: Session = Depends(get_db)):
     if not host_project:
         raise HTTPException(400, "No projects available to host the agent")
 
-    api_base = "http://localhost:8080"
+    api_base = os.getenv("API_BASE_URL", f"http://localhost:{os.getenv('PORT', '8080')}")
     prompt = f"""You are a task triage assistant for AgentHive. Analyze the inbox tasks below, then update each one via the local API.
 
 FOR EACH TASK:
@@ -804,7 +804,7 @@ async def generate_worktree_name(request: Request):
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=OPENAI_API_KEY)
         resp = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=os.getenv("TRIAGE_MODEL", "gpt-4o-mini"),
             messages=[
                 {"role": "system", "content": (
                     "Generate a short git branch name (kebab-case, lowercase, "
