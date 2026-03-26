@@ -2128,7 +2128,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [generateSummary, setGenerateSummary] = useState(false);
-  const [taskComplete, setTaskComplete] = useState(true);
+  const [taskOutcome, setTaskOutcome] = useState("complete"); // "complete" | "incomplete" | "drop"
   const [incompleteReason, setIncompleteReason] = useState("");
   const [feedbackAttachments, setFeedbackAttachments] = useState([]);
   const feedbackFileInputRef = useRef(null);
@@ -3121,14 +3121,17 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
       await stopAgent(id, {
         generateSummary: generateSummary && !!agent?.task_id,
-        taskComplete: agent?.task_id ? taskComplete : true,
-        incompleteReason: (!taskComplete && feedbackText) ? feedbackText : null,
+        taskComplete: agent?.task_id ? taskOutcome === "complete" : true,
+        taskDrop: taskOutcome === "drop",
+        incompleteReason: (taskOutcome === "incomplete" && feedbackText) ? feedbackText : null,
       });
       const label = !agent?.task_id
         ? "Agent stopped"
-        : taskComplete
+        : taskOutcome === "complete"
           ? "Agent stopped — task complete"
-          : "Agent stopped — task returned to inbox";
+          : taskOutcome === "drop"
+            ? "Agent stopped — task dropped"
+            : "Agent stopped — task returned to inbox";
       showToast(generateSummary && agent?.task_id ? label + " (generating insights...)" : label);
       loadData();
       window.dispatchEvent(new CustomEvent("agents-data-changed"));
@@ -3137,7 +3140,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     } finally {
       setStopping(false);
       setShowStopConfirm(false);
-      setTaskComplete(true);
+      setTaskOutcome("complete");
       setIncompleteReason("");
       clearFeedbackAttachments();
     }
@@ -3783,9 +3786,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => setTaskComplete(true)}
+                    onClick={() => setTaskOutcome("complete")}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      taskComplete
+                      taskOutcome === "complete"
                         ? "bg-green-600 text-white"
                         : "bg-input text-body hover:bg-elevated"
                     }`}
@@ -3794,18 +3797,29 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   </button>
                   <button
                     type="button"
-                    onClick={() => setTaskComplete(false)}
+                    onClick={() => setTaskOutcome("incomplete")}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      !taskComplete
+                      taskOutcome === "incomplete"
                         ? "bg-amber-600 text-white"
                         : "bg-input text-body hover:bg-elevated"
                     }`}
                   >
                     Incomplete
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setTaskOutcome("drop")}
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      taskOutcome === "drop"
+                        ? "bg-gray-600 text-white"
+                        : "bg-input text-body hover:bg-elevated"
+                    }`}
+                  >
+                    Drop
+                  </button>
                 </div>
                 {/* Incomplete reason with file + voice support */}
-                {!taskComplete && (
+                {taskOutcome === "incomplete" && (
                   <div className="space-y-2">
                     <textarea
                       value={incompleteReason}
@@ -3901,7 +3915,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               </button>
               <button
                 type="button"
-                onClick={() => { setShowStopConfirm(false); setTaskComplete(true); setIncompleteReason(""); clearFeedbackAttachments(); }}
+                onClick={() => { setShowStopConfirm(false); setTaskOutcome("complete"); setIncompleteReason(""); clearFeedbackAttachments(); }}
                 className="flex-1 min-h-[44px] rounded-lg bg-input hover:bg-elevated text-body text-sm transition-colors"
               >
                 Cancel
@@ -3941,10 +3955,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
           onAction={(action) => {
             setShowTaskCard(false);
             if (action === "complete") {
-              setTaskComplete(true);
+              setTaskOutcome("complete");
               setShowStopConfirm(true);
             } else if (action === "incomplete") {
-              setTaskComplete(false);
+              setTaskOutcome("incomplete");
               setShowStopConfirm(true);
             }
           }}

@@ -1258,6 +1258,7 @@ async def get_agent(agent_id: str, request: Request, db: Session = Depends(get_d
 async def stop_agent(agent_id: str, request: Request,
                      generate_summary: bool = False,
                      task_complete: bool = True,
+                     task_drop: bool = False,
                      incomplete_reason: str | None = None,
                      db: Session = Depends(get_db)):
     """Stop an agent — marks STOPPED."""
@@ -1346,7 +1347,10 @@ async def stop_agent(agent_id: str, request: Request,
     if agent.task_id:
         _linked_task = db.get(Task, agent.task_id)
         if _linked_task and _linked_task.status in (TaskStatus.EXECUTING, TaskStatus.COMPLETE):
-            if task_complete:
+            if task_drop:
+                TaskStateMachine.transition(_linked_task, TaskStatus.CANCELLED, strict=False)
+                logger.info("Task %s CANCELLED/dropped (agent %s stopped by user)", _linked_task.id, agent.id)
+            elif task_complete:
                 TaskStateMachine.transition(_linked_task, TaskStatus.COMPLETE, strict=False)
                 logger.info("Task %s marked COMPLETE (agent %s stopped by user)", _linked_task.id, agent.id)
             else:

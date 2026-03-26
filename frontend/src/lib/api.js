@@ -182,10 +182,11 @@ export const launchTmuxAgent = (data) =>
   request("/api/agents/launch-tmux", { method: "POST", body: JSON.stringify(data) });
 export const scanAgents = () =>
   request("/api/agents/scan", { method: "POST" });
-export const stopAgent = (id, { generateSummary = false, taskComplete = true, incompleteReason = null } = {}) => {
+export const stopAgent = (id, { generateSummary = false, taskComplete = true, taskDrop = false, incompleteReason = null } = {}) => {
   const params = new URLSearchParams();
   if (generateSummary) params.set("generate_summary", "true");
   if (!taskComplete) params.set("task_complete", "false");
+  if (taskDrop) params.set("task_drop", "true");
   if (incompleteReason) params.set("incomplete_reason", incompleteReason);
   const qs = params.toString();
   return request(`/api/agents/${id}${qs ? "?" + qs : ""}`, { method: "DELETE" });
