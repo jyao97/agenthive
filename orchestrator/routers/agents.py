@@ -2201,12 +2201,12 @@ async def mark_agent_read(agent_id: str, db: Session = Depends(get_db)):
 
 @router.delete("/api/agents/{agent_id}/messages/{message_id}")
 async def cancel_message(agent_id: str, message_id: str, db: Session = Depends(get_db)):
-    """Cancel a pending/scheduled message. Only allowed if status is PENDING."""
+    """Cancel a pending/queued/scheduled message."""
     msg = db.get(Message, message_id)
     if not msg or msg.agent_id != agent_id:
         raise HTTPException(status_code=404, detail="Message not found")
-    if msg.status != MessageStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Only PENDING messages can be cancelled")
+    if msg.status not in (MessageStatus.PENDING, MessageStatus.QUEUED):
+        raise HTTPException(status_code=400, detail="Only PENDING or QUEUED messages can be cancelled")
     db.delete(msg)
     db.commit()
     logger.info("Message %s cancelled for agent %s", message_id, agent_id)
