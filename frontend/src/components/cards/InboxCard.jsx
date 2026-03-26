@@ -56,6 +56,8 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
 
   const savedDesc = task.description || "";
   const parsed = useMemo(() => parseDesc(savedDesc), [savedDesc]);
+  const parsedRef = useRef(parsed);
+  parsedRef.current = parsed;
 
   const [dispatching, setDispatching] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(null);
@@ -93,10 +95,28 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   // --- inline description editing ---
   const [editing, setEditing] = useState(false);
   const editRef = useRef(null);
+  const lastEditedTextRef = useRef(null);
+  const [optimisticDesc, setOptimisticDesc] = useState(undefined);
   const fileInputRef = useRef(null);
   const filePickerOpenRef = useRef(false);
 
-  useEffect(() => { if (!isExpanded) { setEditing(false); setTitleEditing(false); } }, [isExpanded]);
+  useEffect(() => {
+    if (isExpanded) { lastEditedTextRef.current = null; return; }
+    setEditing(false);
+    setTitleEditing(false);
+    // Collapse-save: if blur didn't fire, save pending description changes
+    const editedText = lastEditedTextRef.current;
+    lastEditedTextRef.current = null;
+    if (editedText !== null && editedText !== (parsedRef.current.text || "").trim()) {
+      const newDesc = buildFullDesc(editedText, parsedRef.current.files);
+      setOptimisticDesc(newDesc);
+      updateTaskV2(task.id, { description: newDesc }).then(() => onRefresh?.());
+      try { localStorage.removeItem(`draft:inbox-desc:${task.id}`); } catch {}
+    }
+  }, [isExpanded, task.id, buildFullDesc, onRefresh]);
+
+  // Clear optimistic override once server data arrives
+  useEffect(() => { setOptimisticDesc(undefined); }, [task.description]);
 
   // --- draft persistence (survives app close/restart) ---
   useLayoutEffect(() => {
@@ -123,6 +143,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
     const saveDescDraft = () => {
       try {
         const t = descEl?.innerText?.trim() || "";
+        lastEditedTextRef.current = t;
         if (t !== (parsed.text || "").trim()) localStorage.setItem(`draft:inbox-desc:${task.id}`, t);
         else localStorage.removeItem(`draft:inbox-desc:${task.id}`);
       } catch {}
@@ -175,9 +196,12 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
     const el = editRef.current;
     if (!el) return;
     const text = el.innerText.trim();
+    lastEditedTextRef.current = null; // Mark as handled by blur
     setEditing(false);
     if (text !== parsed.text.trim()) {
-      await updateTaskV2(task.id, { description: buildFullDesc(text, parsed.files) });
+      const newDesc = buildFullDesc(text, parsed.files);
+      setOptimisticDesc(newDesc);
+      await updateTaskV2(task.id, { description: newDesc });
       onRefresh?.();
     }
     try { localStorage.removeItem(`draft:inbox-desc:${task.id}`); } catch {}
@@ -189,6 +213,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
     const currentText = el ? el.innerText.trim() : parsed.text;
     const updated = currentText ? currentText + "\n" + text : text;
     if (el) el.innerText = updated;
+    lastEditedTextRef.current = null;
     try { localStorage.removeItem(`draft:inbox-desc:${task.id}`); } catch {}
     updateTaskV2(task.id, { description: buildFullDesc(updated, parsed.files) }).then(() => onRefresh?.());
   }, [task.id, parsed, buildFullDesc, onRefresh]);
@@ -268,6 +293,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
           await updateTaskV2(task.id, { description: buildFullDesc(text, parsed.files) });
         }
       }
+      lastEditedTextRef.current = null;
       await dispatchTask(task.id);
       try { localStorage.removeItem(`draft:inbox-title:${task.id}`); localStorage.removeItem(`draft:inbox-desc:${task.id}`); } catch {}
       onRefresh?.();
@@ -289,7 +315,10 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   };
 
   // collapsed preview: text only, no [Attached file:] lines
-  const preview = parsed.text || null;
+  // Use optimistic desc if a save is in-flight (prevents flash of stale text)
+  const preview = optimisticDesc !== undefined
+    ? (parseDesc(optimisticDesc || "").text || null)
+    : (parsed.text || null);
 
   if (dispatching) return null;
 
