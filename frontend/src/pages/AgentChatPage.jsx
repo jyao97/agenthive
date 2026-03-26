@@ -2637,12 +2637,21 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (!el) return;
 
       const containerH = el.clientHeight;
-      // rawDelta: detects keyboard presence (ignores viewport scroll)
+      // On iOS with viewport-fit=cover, el.clientHeight (100vh) includes
+      // the dynamic-island / status-bar safe area, but visualViewport is
+      // measured from the *layout* viewport (innerHeight).  Using the
+      // container height directly inflates the offset by the safe-area
+      // difference (~62 px on iPhone 15+).  We prefer innerHeight, but
+      // fall back to containerH when innerHeight is stale (e.g. during
+      // rapid keyboard toggles where innerHeight < visual viewport).
+      const layoutH = window.innerHeight;
+      const refH = (layoutH >= vv.height + vv.offsetTop) ? layoutH : containerH;
+      // rawDelta: detects keyboard presence — uses containerH so the
+      // threshold check isn't affected by the safe-area adjustment.
       const rawDelta = Math.max(0, Math.round(containerH - vv.height));
-      // kbOffset: actual positioning offset — subtracts vv.offsetTop so
-      // the input bar stays flush with the keyboard even when iOS scrolls
-      // the visual viewport (common on 2nd+ keyboard open).
-      const kbOffset = Math.max(0, Math.round(containerH - vv.height - vv.offsetTop));
+      // kbOffset: actual positioning offset — uses the corrected refH so
+      // the input bar sits flush with the keyboard, not 62 px above it.
+      const kbOffset = Math.max(0, Math.round(refH - vv.height - vv.offsetTop));
 
       kbLog(containerH, kbOffset, rawDelta > 100);
 
