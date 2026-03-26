@@ -650,6 +650,17 @@ def init_db():
             """))
             conn.commit()
 
+        # --- Migrate SYNCING → IDLE agent status (tmux-only agents) ---
+        _syncing_count = conn.execute(text(
+            "SELECT COUNT(*) FROM agents WHERE status = 'SYNCING'"
+        )).scalar()
+        if _syncing_count:
+            conn.execute(text(
+                "UPDATE agents SET status = 'IDLE' WHERE status = 'SYNCING'"
+            ))
+            conn.commit()
+            logger.info("migration: migrated %d agents from SYNCING to IDLE", _syncing_count)
+
     # Ensure jwt_secret exists in SystemConfig
     from auth import get_jwt_secret
     db = SessionLocal()
