@@ -57,6 +57,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   const savedDesc = task.description || "";
   const parsed = useMemo(() => parseDesc(savedDesc), [savedDesc]);
 
+  const [dispatching, setDispatching] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(null);
 
   // --- inline title editing ---
@@ -259,15 +260,20 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   // --- dispatch (launch agent) ---
   const handleDispatch = async (e) => {
     e.stopPropagation();
-    if (editing && editRef.current) {
-      const text = editRef.current.innerText.trim();
-      if (text !== parsed.text.trim()) {
-        await updateTaskV2(task.id, { description: buildFullDesc(text, parsed.files) });
+    setDispatching(true);
+    try {
+      if (editing && editRef.current) {
+        const text = editRef.current.innerText.trim();
+        if (text !== parsed.text.trim()) {
+          await updateTaskV2(task.id, { description: buildFullDesc(text, parsed.files) });
+        }
       }
+      await dispatchTask(task.id);
+      try { localStorage.removeItem(`draft:inbox-title:${task.id}`); localStorage.removeItem(`draft:inbox-desc:${task.id}`); } catch {}
+      onRefresh?.();
+    } catch {
+      setDispatching(false);
     }
-    await dispatchTask(task.id);
-    try { localStorage.removeItem(`draft:inbox-title:${task.id}`); localStorage.removeItem(`draft:inbox-desc:${task.id}`); } catch {}
-    onRefresh?.();
   };
 
   // --- card actions ---
@@ -284,6 +290,8 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
 
   // collapsed preview: text only, no [Attached file:] lines
   const preview = parsed.text || task.project_name || null;
+
+  if (dispatching) return null;
 
   return (
     <div className="relative">
