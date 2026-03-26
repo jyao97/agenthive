@@ -3793,7 +3793,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         : "bg-input text-body hover:bg-elevated"
                     }`}
                   >
-                    Task complete
+                    Done
                   </button>
                   <button
                     type="button"
@@ -3804,7 +3804,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         : "bg-input text-body hover:bg-elevated"
                     }`}
                   >
-                    Incomplete
+                    Redo
                   </button>
                   <button
                     type="button"
