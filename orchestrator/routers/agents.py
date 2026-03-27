@@ -2100,6 +2100,17 @@ async def send_agent_message(
 
             if not agent_is_busy:
                 # --- IDLE: send via tmux immediately ---
+                # After C-c interrupt, CC needs time to finish processing
+                # (write file-history-snapshot, return to input prompt).
+                # If we send too soon, CC treats it as enqueued input and
+                # skips all hooks (UserPromptSubmit + Stop).
+                import time as _time
+                POST_ESC_GRACE = 2.0  # seconds
+                last_esc = _last_escape.get(agent_id, 0)
+                since_esc = _time.time() - last_esc
+                if 0 < since_esc < POST_ESC_GRACE:
+                    await asyncio.sleep(POST_ESC_GRACE - since_esc)
+
                 ok = send_tmux_message(agent.tmux_pane, body.content)
                 if not ok:
                     raise HTTPException(
