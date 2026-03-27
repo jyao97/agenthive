@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { createTaskV2, dispatchTask, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
 import { DATE_SHORT } from "../lib/formatters";
@@ -24,6 +24,8 @@ function deriveTitle(description) {
 
 export default function NewTaskPage({ embedded = false }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const hasBackground = !!location.state?.backgroundLocation;
   // useTmux removed — all tasks use tmux now
   const [title, setTitle, clearTitle] = useDraft("new-task:title", "");
   const [description, setDescription, clearDesc] = useDraft("new-task:description", "");
@@ -200,7 +202,7 @@ export default function NewTaskPage({ embedded = false }) {
       }
     }
     setIsClosing(true);
-    setTimeout(() => navigate(-1), 250);
+    setTimeout(() => hasBackground ? navigate(-1) : navigate("/tasks", { replace: true }), 250);
   };
 
   // ---- Submit (enter key) → save to inbox ----

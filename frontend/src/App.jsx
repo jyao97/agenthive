@@ -212,7 +212,7 @@ function AppRoutes({ themeProps }) {
   // Persist current route so app resumes where you left off
   useEffect(() => {
     const path = location.pathname;
-    if (path && path !== "/login" && path !== "/" && path !== "/split") {
+    if (path && path !== "/login" && path !== "/" && path !== "/split" && !path.startsWith("/new")) {
       localStorage.setItem("ah:last-route", path);
     }
   }, [location.pathname]);
