@@ -2496,15 +2496,7 @@ Here are the day's conversations (with timestamps):
                 logger.warning("Task %s: project %s not found, skipping", task.id, task.project_name)
                 continue
 
-            # Check project capacity (only count agents actively running)
-            active = (
-                db.query(Agent)
-                .filter(Agent.project == proj.name)
-                .filter(Agent.status.in_(ACTIVE_STATUSES))
-                .count()
-            )
-            if active >= proj.max_concurrent:
-                continue
+            # max_concurrent enforcement removed — all tasks dispatch immediately
 
             # All tasks dispatch via tmux
             from routers.tasks import _dispatch_task_tmux

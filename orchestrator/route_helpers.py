@@ -70,11 +70,7 @@ def check_project_capacity(db, project_name: str) -> tuple[int, int]:
         .filter(Agent.project == project_name, Agent.status.in_(ACTIVE_STATUSES))
         .scalar() or 0
     )
-    if active >= proj.max_concurrent:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Project '{project_name}' at capacity ({active}/{proj.max_concurrent}) — wait for an agent to finish or increase the limit",
-        )
+    # max_concurrent enforcement removed — all agents launch immediately
     return (active, proj.max_concurrent)
 
 
