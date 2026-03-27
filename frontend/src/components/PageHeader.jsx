@@ -159,12 +159,12 @@ function QueuePopover({ onClose, containerRef, navigate }) {
                           : "bg-cyan-500 shadow-[0_0_4px_rgba(6,182,212,0.4)]"
                       }`} />
                     ))}
-                    {/* Idle agents — violet */}
+                    {/* Idle agents — green */}
                     {Array.from({ length: idleCount }, (_, i) => (
                       <div key={`s${i}`} className={`w-[10px] h-[10px] rounded-sm transition-all ${
                         (executing + i) >= max
                           ? "bg-amber-500 shadow-[0_0_4px_rgba(245,158,11,0.5)]"
-                          : "bg-violet-500 shadow-[0_0_4px_rgba(139,92,246,0.4)]"
+                          : "bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.4)]"
                       }`} />
                     ))}
                     {/* Idle agents — dimmer */}
