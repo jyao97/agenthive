@@ -419,14 +419,25 @@ function classifyExt(filename) {
  *
  * Returns array of { path, resolvedUrl, type, ext }.
  */
-export function extractFileAttachments(text, project, role) {
-  if (!text) return [];
+export function extractFileAttachments(text, project, role, metadata) {
+  if (!text && !metadata?.attachments?.length) return [];
 
   const seen = new Set();
   const results = [];
 
   // --- USER messages: only uploaded file tags ---
   if (role === "USER") {
+    // Pre-parsed attachment paths from display file metadata
+    if (metadata?.attachments?.length) {
+      return metadata.attachments.map(filePath => {
+        const filename = filePath.split("/").pop();
+        const resolvedUrl = `/api/uploads/${encodeURIComponent(filename)}`;
+        const ext = filename.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
+        const type = classifyExt(filename);
+        return { path: filename, resolvedUrl, type, ext, originalPath: filePath };
+      });
+    }
+    // Fallback: parse from content tags (legacy messages)
     let m;
     RE_ATTACHED_FILE.lastIndex = 0;
     while ((m = RE_ATTACHED_FILE.exec(text)) !== null) {

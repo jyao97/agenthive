@@ -1902,16 +1902,23 @@ async def get_agent_messages(
 
 
 def _apply_display_content(msg: Message) -> MessageOut:
-    """Serialize a queued Message to MessageOut, applying display_content
-    override from metadata if present (e.g. retry task first message)."""
+    """Serialize a queued Message to MessageOut, applying the same display
+    transformations used when writing the JSONL file (attachment stripping,
+    stop-note parsing, task-notification XML, display_content override)."""
+    from display_writer import transform_for_display
+
     out = MessageOut.model_validate(msg)
+    meta = None
     if msg.meta_json:
         try:
             meta = json.loads(msg.meta_json)
-            if isinstance(meta, dict) and "display_content" in meta:
-                out.content = meta["display_content"]
         except (json.JSONDecodeError, ValueError):
             pass
+    role_val = msg.role.value if msg.role else None
+    content, meta = transform_for_display(role_val, out.content, meta)
+    out.content = content
+    if meta is not None:
+        out.metadata = meta
     return out
 
 

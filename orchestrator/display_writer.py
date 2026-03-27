@@ -22,6 +22,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import func, text
@@ -35,9 +36,67 @@ logger = logging.getLogger("orchestrator.display_writer")
 DISPLAY_DIR = _resolve("data/display")
 
 
+_ATTACHMENT_TAG_RE = re.compile(r'\n?\[Attached file: [^\]]+\]')
+_ATTACHMENT_PATH_RE = re.compile(r'\[Attached file: ([^\]]+)\]')
+_STOP_NOTE_RE = re.compile(r'^(Task dropped|Redo)\s*—\s*(.*)', re.DOTALL)
+_TASK_NOTIFICATION_FIELD_RE = {
+    f: re.compile(rf'<{f}>([\s\S]*?)</{f}>') for f in ('status', 'summary', 'result')
+}
+
+
 def _display_path(agent_id: str) -> str:
     """Return path: data/display/{agent_id}.jsonl"""
     return os.path.join(DISPLAY_DIR, f"{agent_id}.jsonl")
+
+
+def transform_for_display(role: str | None, content: str | None,
+                          metadata: dict | None) -> tuple[str | None, dict | None]:
+    """Apply display transformations so the JSONL/API content matches what
+    the UI should render without further frontend processing.
+
+    Returns (content, metadata) — both may be modified copies.
+
+    Transformations:
+    - display_content override (e.g. retry agent first message)
+    - USER messages: strip [Attached file: ...] tags, store paths in metadata
+    - SYSTEM stop notes: strip prefix, store stop_action in metadata
+    - Task notifications: parse XML into metadata.task_notification
+    """
+    if content is None:
+        return content, metadata
+
+    # 1. display_content override (already set by _prepare_dispatch)
+    if isinstance(metadata, dict) and "display_content" in metadata:
+        content = metadata["display_content"]
+
+    # 2. USER: strip attachment tags, store paths
+    if role == "USER":
+        paths = _ATTACHMENT_PATH_RE.findall(content)
+        if paths:
+            content = _ATTACHMENT_TAG_RE.sub('', content).strip()
+            metadata = dict(metadata) if metadata else {}
+            metadata['attachments'] = paths
+
+    # 3. SYSTEM stop notes: "Task dropped — reason" / "Redo — reason"
+    if role == "SYSTEM":
+        m = _STOP_NOTE_RE.match(content)
+        if m:
+            metadata = dict(metadata) if metadata else {}
+            metadata['stop_action'] = 'dropped' if m.group(1) == 'Task dropped' else 'redo'
+            content = m.group(2)
+
+    # 4. Task notifications: parse XML fields into metadata
+    if content.lstrip().startswith('<task-notification>'):
+        tn = {}
+        for field, regex in _TASK_NOTIFICATION_FIELD_RE.items():
+            fm = regex.search(content)
+            if fm:
+                tn[field] = fm.group(1).strip()
+        if tn:
+            metadata = dict(metadata) if metadata else {}
+            metadata['task_notification'] = tn
+
+    return content, metadata
 
 
 def _serialize_message(msg: Message, seq: int, replace: bool = False) -> str:
@@ -63,16 +122,15 @@ def _serialize_message(msg: Message, seq: int, replace: bool = False) -> str:
                 tool_use_id = item["tool_use_id"]
                 break
 
-    # Use display_content from metadata if present (e.g. retry agents
-    # store the user's feedback here instead of the full task prompt).
-    content = msg.content
-    if isinstance(metadata, dict) and "display_content" in metadata:
-        content = metadata["display_content"]
+    # Apply display transformations (attachment stripping, stop-note
+    # parsing, task-notification XML, display_content override).
+    role_val = msg.role.value if msg.role else None
+    content, metadata = transform_for_display(role_val, msg.content, metadata)
 
     obj = {
         "id": msg.id,
         "seq": seq,
-        "role": msg.role.value if msg.role else None,
+        "role": role_val,
         "kind": msg.kind if hasattr(msg, "kind") else "message",
         "content": content,
         "source": msg.source,
