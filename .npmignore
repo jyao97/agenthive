@@ -1,0 +1,7 @@
+# Only install.js and package.json are published to npm.
+# Everything else is excluded.
+*
+!install.js
+!package.json
+!README.md
+!LICENSE

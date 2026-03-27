@@ -1,0 +1,28 @@
+{
+  "name": "create-agenthive",
+  "version": "1.0.0",
+  "description": "One-command installer for AgentHive — multi-agent Claude Code dashboard",
+  "bin": {
+    "create-agenthive": "./install.js"
+  },
+  "files": [
+    "install.js"
+  ],
+  "keywords": [
+    "agenthive",
+    "claude",
+    "claude-code",
+    "agent",
+    "orchestrator",
+    "installer"
+  ],
+  "author": "jyao97",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jyao97/AgentHive.git"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
