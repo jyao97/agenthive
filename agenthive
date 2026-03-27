@@ -1,178 +1,71 @@
 #!/bin/bash
-# AgentHive management CLI
-# Usage: agenthive {start|stop|restart|status|logs}
+# AgentHive management CLI (cross-platform — Linux + macOS)
+# Uses pm2 for process management.
+# Usage: agenthive {start|stop|restart|status|logs|kill|startup}
 
 set -uo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-BACKEND_SVC="cc-orchestrator.service"
-FRONTEND_SVC="cc-frontend.service"
-
-# Check if systemd user services are enabled
-_has_systemd() {
-    systemctl --user is-enabled "$BACKEND_SVC" &>/dev/null
+# Resolve project dir (works on both Linux and macOS)
+_resolve_dir() {
+    local src="$0"
+    # Follow symlinks (macOS readlink has no -f)
+    while [ -L "$src" ]; do
+        local dir="$(cd "$(dirname "$src")" && pwd)"
+        src="$(readlink "$src")"
+        [[ "$src" != /* ]] && src="$dir/$src"
+    done
+    cd "$(dirname "$src")" && pwd
 }
+PROJECT_DIR="$(_resolve_dir)"
+ECOSYSTEM="$PROJECT_DIR/ecosystem.config.cjs"
 
-# --- systemd mode ---
-
-_systemd_start() {
-    echo "Starting AgentHive (systemd)..."
-    systemctl --user start "$BACKEND_SVC" "$FRONTEND_SVC"
-    sleep 2
-    _systemd_status
-}
-
-_systemd_stop() {
-    echo "Stopping AgentHive (systemd)..."
-    systemctl --user stop "$FRONTEND_SVC" "$BACKEND_SVC"
-    echo "Stopped."
-}
-
-_systemd_restart() {
-    echo "Restarting AgentHive (systemd)..."
-    systemctl --user restart "$BACKEND_SVC" "$FRONTEND_SVC"
-    sleep 2
-    _systemd_status
-}
-
-_systemd_status() {
-    systemctl --user status "$BACKEND_SVC" "$FRONTEND_SVC" --no-pager -l 2>/dev/null | head -30
-}
-
-_systemd_logs() {
-    local target="${1:-backend}"
-    case "$target" in
-        backend|b)  journalctl --user -u "$BACKEND_SVC" -f ;;
-        frontend|f) journalctl --user -u "$FRONTEND_SVC" -f ;;
-        all|a)      journalctl --user -u "$BACKEND_SVC" -u "$FRONTEND_SVC" -f ;;
-        *)          echo "Usage: agenthive logs {backend|frontend|all}" ;;
-    esac
-}
-
-# --- fallback mode (no systemd) ---
-
-BACKEND_PORT="${PORT:-8080}"
-FRONTEND_PORT="${FRONTEND_PORT:-3000}"
-BACKEND_LOG="$PROJECT_DIR/logs/server.log"
-FRONTEND_LOG="$PROJECT_DIR/logs/vite.log"
-
-_backend_pid() {
-    lsof -ti:"$BACKEND_PORT" 2>/dev/null | head -1 || true
-}
-
-_frontend_pid() {
-    lsof -ti:"$FRONTEND_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true
-}
-
-_manual_stop() {
-    echo "Stopping AgentHive..."
-    local pid
-    pid=$(_backend_pid)
-    if [ -n "$pid" ]; then
-        kill "$pid" 2>/dev/null || true
-        for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
-        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
-        echo "Backend stopped (pid $pid)"
-    else
-        echo "Backend not running"
-    fi
-    pid=$(_frontend_pid)
-    if [ -n "$pid" ]; then
-        kill "$pid" 2>/dev/null || true
-        sleep 1
-        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
-        echo "Frontend stopped (pid $pid)"
-    else
-        echo "Frontend not running"
-    fi
-}
-
-_manual_start() {
-    echo "Starting AgentHive..."
-    if [ -z "$(_backend_pid)" ]; then
-        (cd "$PROJECT_DIR" && nohup bash run.sh >> "$BACKEND_LOG" 2>&1 &)
-        sleep 2
-        local pid=$(_backend_pid)
-        [ -n "$pid" ] && echo "Backend started (pid $pid)" || echo "Backend failed — check $BACKEND_LOG"
-    else
-        echo "Backend already running (pid $(_backend_pid))"
-    fi
-    if [ -z "$(_frontend_pid)" ]; then
-        (cd "$PROJECT_DIR/frontend" && nohup npx vite --host 0.0.0.0 --port "$FRONTEND_PORT" >> "$FRONTEND_LOG" 2>&1 &)
-        sleep 2
-        local pid=$(_frontend_pid)
-        [ -n "$pid" ] && echo "Frontend started (pid $pid)" || echo "Frontend failed — check $FRONTEND_LOG"
-    else
-        echo "Frontend already running (pid $(_frontend_pid))"
-    fi
-}
-
-_manual_restart() {
-    _manual_stop
-    sleep 1
-    _manual_start
-}
-
-_manual_status() {
-    local bpid=$(_backend_pid) fpid=$(_frontend_pid)
-    [ -n "$bpid" ] && echo "Backend:  running (pid $bpid)" || echo "Backend:  stopped"
-    [ -n "$fpid" ] && echo "Frontend: running (pid $fpid)" || echo "Frontend: stopped"
-    echo "(no auto-restart — run 'agenthive enable' to set up systemd)"
-}
-
-_manual_logs() {
-    local target="${1:-backend}"
-    case "$target" in
-        backend|b)  tail -f "$BACKEND_LOG" ;;
-        frontend|f) tail -f "$FRONTEND_LOG" ;;
-        *)          echo "Usage: agenthive logs {backend|frontend}" ;;
-    esac
-}
-
-# --- enable/disable systemd ---
-
-cmd_enable() {
-    echo "Enabling systemd auto-restart..."
-    systemctl --user daemon-reload
-    systemctl --user enable "$BACKEND_SVC" "$FRONTEND_SVC"
-    # Also enable lingering so services run even when not logged in
-    loginctl enable-linger "$(whoami)" 2>/dev/null || true
-    echo "Enabled. Services will auto-start on login and auto-restart on crash."
-}
-
-cmd_disable() {
-    echo "Disabling systemd auto-restart..."
-    systemctl --user stop "$FRONTEND_SVC" "$BACKEND_SVC" 2>/dev/null || true
-    systemctl --user disable "$BACKEND_SVC" "$FRONTEND_SVC"
-    echo "Disabled."
-}
-
-# --- main ---
+# Ensure pm2 is available
+if ! command -v pm2 >/dev/null 2>&1; then
+    echo "pm2 not found — installing globally..."
+    npm install -g pm2
+fi
 
 case "${1:-}" in
     start)
-        if _has_systemd; then _systemd_start; else _manual_start; fi ;;
+        echo "Starting AgentHive..."
+        pm2 start "$ECOSYSTEM" 2>/dev/null || pm2 restart "$ECOSYSTEM"
+        pm2 status
+        ;;
     stop)
-        if _has_systemd; then _systemd_stop; else _manual_stop; fi ;;
+        echo "Stopping AgentHive..."
+        pm2 stop "$ECOSYSTEM" 2>/dev/null || true
+        echo "Stopped."
+        ;;
     restart)
-        if _has_systemd; then _systemd_restart; else _manual_restart; fi ;;
+        echo "Restarting AgentHive..."
+        pm2 restart "$ECOSYSTEM" 2>/dev/null || pm2 start "$ECOSYSTEM"
+        pm2 status
+        ;;
     status)
-        if _has_systemd; then _systemd_status; else _manual_status; fi ;;
+        pm2 status
+        ;;
     logs)
-        if _has_systemd; then _systemd_logs "${2:-}"; else _manual_logs "${2:-}"; fi ;;
+        local target="${2:-}"
+        case "$target" in
+            backend|b)  pm2 logs agenthive-backend --lines 50 ;;
+            frontend|f) pm2 logs agenthive-frontend --lines 50 ;;
+            *)          pm2 logs --lines 50 ;;
+        esac
+        ;;
     kill)
         echo "Force-killing all AgentHive processes..."
-        local bpid fpid
-        bpid=$(_backend_pid)
-        fpid=$(_frontend_pid)
-        [ -n "$bpid" ] && kill -9 "$bpid" 2>/dev/null && echo "Killed backend (pid $bpid)" || echo "Backend not running"
-        [ -n "$fpid" ] && kill -9 "$fpid" 2>/dev/null && echo "Killed frontend (pid $fpid)" || echo "Frontend not running"
+        pm2 delete "$ECOSYSTEM" 2>/dev/null || true
         echo "Done."
         ;;
-    enable)  cmd_enable ;;
-    disable) cmd_disable ;;
+    startup)
+        echo "Configuring auto-start on boot..."
+        pm2 start "$ECOSYSTEM" 2>/dev/null || true
+        pm2 save
+        pm2 startup
+        echo "Follow the instructions above if prompted."
+        ;;
     *)
-        echo "Usage: agenthive {start|stop|restart|status|logs|kill|enable|disable}"
+        echo "Usage: agenthive {start|stop|restart|status|logs|kill|startup}"
         echo ""
         echo "Commands:"
         echo "  start    Start backend and frontend"
@@ -180,9 +73,8 @@ case "${1:-}" in
         echo "  restart  Restart both servers"
         echo "  status   Show running state"
         echo "  logs     Tail logs (backend|frontend|all)"
-        echo "  kill     Force-kill all AgentHive processes (SIGKILL)"
-        echo "  enable   Enable systemd auto-restart on crash/login"
-        echo "  disable  Disable systemd services"
+        echo "  kill     Force-kill all AgentHive processes"
+        echo "  startup  Enable auto-start on boot (pm2 startup)"
         exit 1
         ;;
 esac
