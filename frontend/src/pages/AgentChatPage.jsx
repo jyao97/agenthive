@@ -1168,8 +1168,8 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     [message.content, project, message.role, message.metadata],
   );
 
-  // Strip [Attached file: ...] tags from user message display text.
-  // When contentOverride is provided (interleaved mode), use it directly.
+  // Display content: use contentOverride for interleaved mode, otherwise
+  // use message.content directly (backend handles attachment stripping).
   const displayContent = useMemo(() => {
     if (contentOverride != null) return contentOverride;
     return message.content;
