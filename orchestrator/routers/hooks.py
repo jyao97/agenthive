@@ -228,11 +228,19 @@ async def hook_agent_stop(request: Request):
                     hook_sid[:12], agent_id[:8])
         return {}
 
-    # Unconditionally clear generating — latest signal wins.
+    # Defer status transition — the sync loop will call _stop_generating
+    # AFTER importing the final JSONL content, so the frontend sees the
+    # message before the status switches to IDLE.
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if ad:
-        logger.info("hook_agent_stop: clearing generating state for %s", agent_id[:8])
-        ad._stop_generating(agent_id)
+        logger.info("hook_agent_stop: deferring generating→idle for %s to sync loop", agent_id[:8])
+        ctx = ad._sync_contexts.get(agent_id)
+        if ctx:
+            ctx.stop_pending = True
+        else:
+            # No sync context — fall back to immediate stop
+            logger.info("hook_agent_stop: no sync context, immediate _stop_generating for %s", agent_id[:8])
+            ad._stop_generating(agent_id)
 
         # Increment unread + push notification (without creating a Message —
         # the sync loop imports the full content from JSONL after wake).
@@ -488,8 +496,11 @@ async def hook_agent_post_compact(request: Request):
     await emit_tool_activity(agent_id, "Compact", "end",
                              tool_output="context compacted")
 
-    # 11. Stop generating LAST — handles DB status → IDLE + WS events.
-    ad._stop_generating(agent_id)
+    # 11. Defer IDLE transition to sync loop so messages arrive before status change.
+    if ctx:
+        ctx.stop_pending = True
+    else:
+        ad._stop_generating(agent_id)
 
     logger.info("hook_agent_post_compact: agent=%s", agent_id[:8])
     return {}
