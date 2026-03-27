@@ -715,12 +715,12 @@ async def list_projects(db: Session = Depends(get_db)):
                     ]), 1))
                 ).label("active"),
             )
-            .filter(Agent.project == proj.name)
+            .filter(Agent.project == proj.name, Agent.is_subagent == False)  # noqa: E712
             .one()
         )
 
         last_activity = db.query(func.max(Agent.last_message_at)).filter(
-            Agent.project == proj.name
+            Agent.project == proj.name, Agent.is_subagent == False,  # noqa: E712
         ).scalar()
 
         results.append(
@@ -773,10 +773,12 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
         active = proj is not None and not proj.archived
 
         agent_count = db.query(func.count(Agent.id)).filter(
-            Agent.project == dirname
+            Agent.project == dirname,
+            Agent.is_subagent == False,  # noqa: E712
         ).scalar()
         last_activity = db.query(func.max(Agent.last_message_at)).filter(
-            Agent.project == dirname
+            Agent.project == dirname,
+            Agent.is_subagent == False,  # noqa: E712
         ).scalar()
 
         entry = {
@@ -798,9 +800,10 @@ async def list_all_folders(request: Request, db: Session = Depends(get_db)):
                 db.query(func.count(Agent.id))
                 .filter(
                     Agent.project == dirname,
+                    Agent.is_subagent == False,  # noqa: E712
                     Agent.status.in_([
                         AgentStatus.IDLE, AgentStatus.EXECUTING,
-                        AgentStatus.STARTING, AgentStatus.IDLE,
+                        AgentStatus.STARTING,
                     ]),
                 )
                 .scalar()
