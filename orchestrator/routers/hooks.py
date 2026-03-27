@@ -1027,7 +1027,9 @@ async def hook_agent_permission(request: Request):
     try:
         agent = db.get(Agent, agent_id)
         if not agent or agent.skip_permissions:
-            return {}
+            # Return explicit "allow" so agents launched without the CLI flag
+            # but marked skip_permissions in DB still auto-approve.
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
         agent_name = agent.name or ""
         agent_project = agent.project or ""
     except Exception:
