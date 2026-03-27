@@ -4688,10 +4688,19 @@ Here are the day's conversations (with timestamps):
                 logger.info("Re-linked %d stopped agents with live tmux sessions", relinked)
 
             # Restore generating state from DB — the in-memory set is lost
-            # on restart, but status=EXECUTING persists.
+            # on restart, but status=EXECUTING persists.  Also fix any
+            # legacy agents that have generating_msg_id set but status IDLE
+            # (from before _start_generating wrote status to DB).
             generating = db.query(Agent).filter(
                 Agent.status == AgentStatus.EXECUTING,
             ).all()
+            legacy_generating = db.query(Agent).filter(
+                Agent.generating_msg_id.is_not(None),
+                Agent.status == AgentStatus.IDLE,
+            ).all()
+            for ag in legacy_generating:
+                ag.status = AgentStatus.EXECUTING
+                generating.append(ag)
             for ag in generating:
                 self._generating_agents.add(ag.id)
             if generating:
