@@ -32,6 +32,7 @@ class PermissionRequest:
     event: asyncio.Event = field(default_factory=asyncio.Event)
     decision: str | None = None   # "allow" / "deny"
     reason: str | None = None
+    updated_input: dict | None = None   # updatedInput payload for AskUserQuestion answers
 
 
 class PermissionManager:
@@ -92,23 +93,24 @@ class PermissionManager:
         )
         return req
 
-    async def wait_for_decision(self, request_id: str) -> tuple[str, str | None]:
-        """Block until the user responds. Returns (decision, reason)."""
+    async def wait_for_decision(self, request_id: str) -> tuple[str, str | None, dict | None]:
+        """Block until the user responds. Returns (decision, reason, updated_input)."""
         req = self._pending.get(request_id)
         if not req:
-            return ("deny", "Request not found")
+            return ("deny", "Request not found", None)
         await req.event.wait()
         # Clean up
         self._pending.pop(request_id, None)
-        return (req.decision or "deny", req.reason)
+        return (req.decision or "deny", req.reason, req.updated_input)
 
-    def respond(self, request_id: str, decision: str, reason: str | None = None) -> bool:
+    def respond(self, request_id: str, decision: str, reason: str | None = None, updated_input: dict | None = None) -> bool:
         """Resolve a pending request. Returns False if not found."""
         req = self._pending.get(request_id)
         if not req:
             return False
         req.decision = decision
         req.reason = reason
+        req.updated_input = updated_input
         req.event.set()
         logger.info(
             "permissions: resolved %s → %s (agent %s, tool=%s)",
@@ -137,3 +139,10 @@ class PermissionManager:
         if agent_id:
             return sum(1 for r in self._pending.values() if r.agent_id == agent_id)
         return len(self._pending)
+
+    def find_pending_by_tool(self, agent_id: str, tool_name: str) -> str | None:
+        """Find a pending request by agent_id and tool_name. Returns request_id or None."""
+        for req in self._pending.values():
+            if req.agent_id == agent_id and req.tool_name == tool_name:
+                return req.id
+        return None
