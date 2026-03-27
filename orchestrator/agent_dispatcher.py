@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from config import CC_MODEL, CLAUDE_HOME, MAX_CONCURRENT_WORKERS
+from plat import platform as _platform
 from utils import utcnow as _utcnow, truncate as _truncate
 from database import SessionLocal
 from log_config import save_worker_log
@@ -956,7 +957,7 @@ def _get_session_pid(session_id: str) -> int | None:
                     m = re.search(r"\(PID (\d+)\)", line)
                     if m:
                         pid = int(m.group(1))
-                        if os.path.exists(f"/proc/{pid}"):
+                        if _platform.pid_exists(pid):
                             return pid
                         # PID is dead — fall through to fallback patterns
                         # instead of returning None (the same PID may appear
@@ -974,9 +975,9 @@ def _get_session_pid(session_id: str) -> int | None:
                         if m:
                             broad_fallback_pid = int(m.group(1))
         # Use most specific fallback first
-        if fallback_pid is not None and os.path.exists(f"/proc/{fallback_pid}"):
+        if fallback_pid is not None and _platform.pid_exists(fallback_pid):
             return fallback_pid
-        if broad_fallback_pid is not None and os.path.exists(f"/proc/{broad_fallback_pid}"):
+        if broad_fallback_pid is not None and _platform.pid_exists(broad_fallback_pid):
             return broad_fallback_pid
     except OSError as e:
         logger.debug("_get_session_pid: failed to read debug file for session %s: %s", session_id, e)
@@ -1034,23 +1035,18 @@ def _get_session_cwd(jsonl_path: str) -> str | None:
 def _detect_pid_session_jsonl(claude_pid: int) -> str | None:
     """Find the session JSONL that a Claude process currently has open.
 
-    Scans ``/proc/{pid}/fd`` for file handles pointing to ``.jsonl``
-    files under the Claude projects directory.  Returns the session ID
-    (filename without extension) if found.
+    Scans open file handles for ``.jsonl`` files under the Claude
+    projects directory.  Returns the session ID (filename without
+    extension) if found.
     """
     try:
-        fd_dir = f"/proc/{claude_pid}/fd"
-        for entry in os.listdir(fd_dir):
-            try:
-                target = os.readlink(os.path.join(fd_dir, entry))
-                if target.endswith(".jsonl") and "/.claude/projects/" in target:
-                    sid = os.path.basename(target).replace(".jsonl", "")
-                    if len(sid) >= 32 and "-" in sid:
-                        return sid
-            except OSError:
-                continue
-    except OSError as e:
-        logger.debug("_detect_pid_session_jsonl: /proc/%d/fd scan failed: %s", claude_pid, e)
+        for target in _platform.get_open_files(claude_pid):
+            if target.endswith(".jsonl") and "/.claude/projects/" in target:
+                sid = os.path.basename(target).replace(".jsonl", "")
+                if len(sid) >= 32 and "-" in sid:
+                    return sid
+    except Exception as e:
+        logger.debug("_detect_pid_session_jsonl: open files scan failed for PID %d: %s", claude_pid, e)
     return None
 
 
@@ -1131,21 +1127,16 @@ def _pid_owns_session(pid: int, session_id: str) -> bool:
     Claude Code keeps ``~/.claude/tasks/{session_id}/`` open for the
     life of the session.  When ``/clear`` reuses the same process, the
     new session's debug log lacks the "Acquired PID lock" line, so
-    ``_get_session_pid`` returns None.  This fallback scans
-    ``/proc/{pid}/fd`` for symlinks pointing into the task directory.
+    ``_get_session_pid`` returns None.  This fallback scans the
+    process's open files for paths pointing into the task directory.
     """
     tasks_fragment = f"/tasks/{session_id}"
     try:
-        fd_dir = f"/proc/{pid}/fd"
-        for entry in os.listdir(fd_dir):
-            try:
-                target = os.readlink(os.path.join(fd_dir, entry))
-                if tasks_fragment in target:
-                    return True
-            except OSError:
-                continue
-    except OSError as e:
-        logger.debug("_pid_owns_session: /proc/%d/fd scan failed: %s", pid, e)
+        for target in _platform.get_open_files(pid):
+            if tasks_fragment in target:
+                return True
+    except Exception as e:
+        logger.debug("_pid_owns_session: open files scan failed for PID %d: %s", pid, e)
     return False
 
 
@@ -1157,19 +1148,13 @@ def _is_orchestrator_process(pid: int) -> bool:
     (tmux-launched from the web UI or started by the user on the CLI)
     never use ``-p``, even though they may use ``--output-format``.
 
-    We check /proc/{pid}/cmdline rather than the environment because the
-    systemd service sets AGENTHIVE_MANAGED=1 on the uvicorn server, and
-    that env var propagates to the tmux server and all panes, making
+    We check the process cmdline rather than the environment because the
+    service sets AGENTHIVE_MANAGED=1 on the uvicorn server, and that env
+    var propagates to the tmux server and all panes, making
     environment-based detection unreliable.
     """
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            raw = f.read()
-        # cmdline is NUL-separated; split into actual argv list
-        args = raw.decode("utf-8", errors="replace").split("\0")
-        return "-p" in args
-    except OSError:
-        return False
+    args = _platform.get_process_cmdline(pid)
+    return "-p" in args
 
 
 def _build_tmux_claude_map() -> dict[str, dict]:
@@ -1207,19 +1192,9 @@ def _build_tmux_claude_map() -> dict[str, dict]:
 
         # Find claude child process of this pane's shell
         try:
-            children = _sp.run(
-                ["ps", "--ppid", shell_pid, "-o", "pid=,comm="],
-                capture_output=True, text=True, timeout=5,
-            )
-            for cline in children.stdout.strip().splitlines():
-                cparts = cline.strip().split(None, 1)
-                if len(cparts) == 2 and cparts[1] == "claude":
-                    cpid = int(cparts[0])
-                    try:
-                        cwd = os.path.realpath(os.readlink(f"/proc/{cpid}/cwd"))
-                    except OSError as e:
-                        logger.debug("_build_tmux_claude_map: readlink cwd for PID %d failed: %s", cpid, e)
-                        cwd = ""
+            for cpid, comm in _platform.get_child_pids(int(shell_pid)):
+                if comm == "claude":
+                    cwd = _platform.get_process_cwd(cpid)
                     pane_map[pane_id] = {
                         "pid": cpid,
                         "cwd": cwd,
@@ -1227,7 +1202,7 @@ def _build_tmux_claude_map() -> dict[str, dict]:
                         "session_name": session_name,
                     }
                     break
-        except (_sp.TimeoutExpired, OSError, ValueError) as e:
+        except (OSError, ValueError) as e:
             logger.debug("_build_tmux_claude_map: inspecting pane %s failed: %s", pane_id, e)
             continue
 
@@ -1277,8 +1252,7 @@ def _detect_tmux_pane_for_session(session_id: str, project_path: str) -> str | N
                 if _is_orchestrator_process(pid):
                     continue
                 try:
-                    with open(f"/proc/{pid}/cmdline", "r") as f:
-                        cmdline = f.read()
+                    cmdline = "\0".join(_platform.get_process_cmdline(pid))
                     if session_id in cmdline:
                         # Found the exact process — resolve TTY to pane
                         tty_r = _sp.run(
@@ -1378,7 +1352,7 @@ def _is_cli_session_alive(project_path: str, tmux_pane: str | None = None) -> bo
                     pid = int(pid_str)
                     if _is_orchestrator_process(pid):
                         continue
-                    cwd = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
+                    cwd = _platform.get_process_cwd(pid)
                     if _cwd_matches_project(cwd, real_project):
                         return True
                 except (OSError, ValueError):

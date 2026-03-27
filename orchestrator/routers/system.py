@@ -12,6 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from config import BACKUP_DIR, CLAUDE_HOME, DB_PATH, LOG_DIR, UPLOADS_DIR
+from plat import platform as _platform
 from database import SessionLocal, get_db
 from models import Agent, AgentStatus, Message, Project, SystemConfig, Task, TaskStatus
 from schemas import HealthResponse
@@ -178,38 +179,11 @@ async def system_stats():
 
     stats = {}
 
-    # CPU usage (per-core load average / count → percentage)
-    try:
-        with open("/proc/loadavg") as f:
-            load1 = float(f.read().split()[0])
-        cpu_count = os.cpu_count() or 1
-        stats["cpu"] = {
-            "load_1m": round(load1, 2),
-            "cores": cpu_count,
-            "usage_pct": round(min(load1 / cpu_count * 100, 100), 1),
-        }
-    except (OSError, ValueError, IndexError) as e:
-        logger.warning("Failed to collect CPU stats: %s", e)
-        stats["cpu"] = None
+    # CPU usage
+    stats["cpu"] = _platform.get_cpu_load()
 
-    # Memory from /proc/meminfo
-    try:
-        meminfo = {}
-        with open("/proc/meminfo") as f:
-            for line in f:
-                parts = line.split()
-                meminfo[parts[0].rstrip(":")] = int(parts[1])  # kB
-        total = meminfo.get("MemTotal", 0)
-        avail = meminfo.get("MemAvailable", 0)
-        used = total - avail
-        stats["memory"] = {
-            "total_gb": round(total / 1048576, 1),
-            "used_gb": round(used / 1048576, 1),
-            "usage_pct": round(used / total * 100, 1) if total else 0,
-        }
-    except (OSError, ValueError, IndexError, ZeroDivisionError) as e:
-        logger.warning("Failed to collect memory stats: %s", e)
-        stats["memory"] = None
+    # Memory
+    stats["memory"] = _platform.get_memory_info()
 
     # Disk usage
     try:
@@ -223,35 +197,8 @@ async def system_stats():
         logger.warning("Failed to collect disk stats: %s", e)
         stats["disk"] = None
 
-    # GPU (nvidia-smi)
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            gpus = []
-            for line in result.stdout.strip().splitlines():
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 6:
-                    gpus.append({
-                        "index": int(parts[0]),
-                        "name": parts[1],
-                        "gpu_pct": int(parts[2]),
-                        "mem_used_mb": int(parts[3]),
-                        "mem_total_mb": int(parts[4]),
-                        "mem_pct": round(int(parts[3]) / int(parts[4]) * 100, 1) if int(parts[4]) else 0,
-                        "temp_c": int(parts[5]),
-                    })
-            stats["gpus"] = gpus
-        else:
-            stats["gpus"] = None
-    except FileNotFoundError:
-        stats["gpus"] = None  # nvidia-smi not installed
-    except (subprocess.TimeoutExpired, OSError, ValueError) as e:
-        logger.warning("Failed to collect GPU stats: %s", e)
-        stats["gpus"] = None
+    # GPU
+    stats["gpus"] = _platform.get_gpu_stats()
 
     # AgentHive own process usage (uvicorn + vite)
     try:
@@ -271,22 +218,9 @@ async def system_stats():
             "cpu_pct": round(cpu, 1),
         }
     except ImportError:
-        # Fallback without psutil — just read own process from /proc
-        try:
-            pid = os.getpid()
-            with open(f"/proc/{pid}/status") as f:
-                rss_kb = 0
-                for line in f:
-                    if line.startswith("VmRSS:"):
-                        rss_kb = int(line.split()[1])
-                        break
-            stats["agenthive"] = {
-                "mem_mb": round(rss_kb / 1024, 1),
-                "cpu_pct": 0,
-            }
-        except (OSError, ValueError) as e:
-            logger.warning("Failed to collect process stats from /proc: %s", e)
-            stats["agenthive"] = None
+        # Fallback: use platform layer for process memory
+        mem_mb = _platform.get_process_memory_mb(os.getpid())
+        stats["agenthive"] = {"mem_mb": round(mem_mb, 1), "cpu_pct": 0} if mem_mb else None
 
     return stats
 
@@ -609,35 +543,28 @@ async def system_restart():
         port = int(os.environ.get("PORT", 8080))
         frontend_port = int(os.environ.get("FRONTEND_PORT", 3000))
         log_path = os.path.join(project_root, "logs", "server.log")
-        # Kill both Vite (frontend) and uvicorn (backend), then re-run run.sh.
+
+        # Collect PIDs to kill using the platform layer (cross-platform)
+        kill_pids = set()
+        kill_pids.update(_platform.find_port_listeners(frontend_port))
+        kill_pids.update(_platform.find_port_listeners(port))
+        kill_pids.discard(0)
+
+        # Build a portable kill sequence
+        kill_cmds = " ".join(f'kill {p} 2>/dev/null;' for p in kill_pids)
         _sp.Popen(
             [
                 "bash", "-c",
-                # 1. Kill Vite dev server (kill process group to include npm parent)
-                f'for pid in $(lsof -ti :{frontend_port} -sTCP:LISTEN 2>/dev/null); do '
-                f'  kill "$pid" 2>/dev/null; '
-                f'  pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d " "); '
-                f'  [ -n "$pgid" ] && kill -- -"$pgid" 2>/dev/null; '
-                f'done; '
-                # 2. Kill uvicorn listeners
-                f'for pid in $(lsof -ti :{port} -sTCP:LISTEN 2>/dev/null); do '
-                f'  kill "$pid" 2>/dev/null; '
-                f'done; '
-                # 3. Also kill ourselves if still alive
+                # 1. Kill discovered listeners
+                f'{kill_cmds} '
+                # 2. Also kill ourselves if still alive
                 f'kill {my_pid} 2>/dev/null; '
-                # 4. Wait for both ports to be free
-                f'for i in $(seq 1 30); do '
-                f'  lsof -ti :{port} -sTCP:LISTEN >/dev/null 2>&1 || '
-                f'  lsof -ti :{frontend_port} -sTCP:LISTEN >/dev/null 2>&1 || break; '
-                f'  sleep 0.3; '
-                f'done; '
-                # 5. Force-kill any listener still clinging
-                f'for pid in $(lsof -ti :{port} -sTCP:LISTEN 2>/dev/null '
-                f'           $(lsof -ti :{frontend_port} -sTCP:LISTEN 2>/dev/null)); do '
-                f'  kill -9 "$pid" 2>/dev/null; '
-                f'done; '
+                # 3. Wait for ports to be free
+                f'sleep 1; '
+                # 4. Force-kill any stragglers
+                f'{" ".join(f"kill -9 {p} 2>/dev/null;" for p in kill_pids)} '
                 f'sleep 0.5; '
-                # 6. Start fresh (run.sh starts both Vite and uvicorn)
+                # 5. Start fresh (run.sh starts both Vite and uvicorn)
                 f'exec bash "{run_script}" >> "{log_path}" 2>&1',
             ],
             cwd=project_root,
