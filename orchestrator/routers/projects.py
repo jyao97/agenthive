@@ -356,6 +356,7 @@ STRICT RULES:
 6. Each insight must be self-contained — readable without context of the original conversation.
 7. Max 25 numbered items. Be concise but specific — include file names, function names, and concrete details.
 8. Do NOT output anything before the ## heading or after the last numbered item. If there are no new insights, output only the heading with a single item "No new insights today."
+9. CRITICAL — each insight must be PARALLEL and INDEPENDENT, not sequential. Do NOT write narrative steps like "First did X, then Y, finally Z". Each numbered item should be an atomic, standalone fact or lesson that can be retrieved individually. Bad: "Refactored auth module, then updated tests, then fixed CI". Good: separate items — "Auth module refactored to use middleware pattern (`auth.py`)" / "Auth test suite updated for new middleware API" / "CI config fixed: missing env var `AUTH_SECRET`".
 
 Here are today's conversations (with timestamps):
 
@@ -476,6 +477,7 @@ STRICT RULES:
 3. Omit routine/trivial activity. Only include things worth remembering for future work.
 4. Each insight must be self-contained — readable without the original conversation.
 5. Max 15 items. Be concise but specific — include file names, function names, concrete details.
+6. CRITICAL — each insight must be PARALLEL and INDEPENDENT, not sequential. Do NOT write narrative steps like "First did X, then Y, finally Z". Each numbered item should be an atomic, standalone fact or lesson that can be retrieved individually. Bad: "Refactored auth module, then updated tests, then fixed CI". Good: separate items — "Auth module refactored to use middleware pattern (`auth.py`)" / "Auth test suite updated for new middleware API" / "CI config fixed: missing env var `AUTH_SECRET`".
 
 Agent: {agent_name} | Task: {task_title}
 
