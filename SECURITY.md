@@ -14,10 +14,7 @@ If you discover a security vulnerability in AgentHive, please report it responsi
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Instead, use one of the following methods:
-
-- **Email:** [security@agenthive.dev](mailto:security@agenthive.dev)
-- **GitHub Security Advisory:** Open a [private security advisory](https://github.com/jyao97/AgentHive/security/advisories/new) on this repository
+Instead, please open a [private security advisory](https://github.com/jyao97/AgentHive/security/advisories/new) on this repository.
 
 ### What to Include
 
