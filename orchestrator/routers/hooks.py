@@ -983,7 +983,7 @@ async def hook_agent_permission(request: Request):
     # Block until user responds, with configurable timeout (default 2h)
     _perm_timeout = int(os.getenv("AHIVE_PERMISSION_TIMEOUT", "7200"))
     try:
-        decision, reason = await asyncio.wait_for(
+        decision, reason, _updated_input = await asyncio.wait_for(
             pm.wait_for_decision(req.id), timeout=_perm_timeout,
         )
     except asyncio.TimeoutError:
