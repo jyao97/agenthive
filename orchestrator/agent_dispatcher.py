@@ -4702,6 +4702,8 @@ Here are the day's conversations (with timestamps):
             for ag in legacy_generating:
                 ag.status = AgentStatus.EXECUTING
                 generating.append(ag)
+            if legacy_generating:
+                db.commit()
             for ag in generating:
                 self._generating_agents.add(ag.id)
             if generating:
