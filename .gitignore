@@ -50,6 +50,8 @@ Thumbs.db
 
 # Internal tracking
 PROGRESS.md
+PLAN-*.md
+filter-callbacks.py
 
 # Dev artifacts
 *.sqlite3
