@@ -3777,7 +3777,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               const attempts = taskData?.attempt_agents || [];
               const isRetryAgent = attempts.findIndex(a => a.agent_id === id) > 0;
               const retryFirstMsgId = isRetryAgent && taskData?.retry_context
-                ? visible.find(m => m.role === "USER")?.id
+                ? visible.find(m => m.role === "USER" && m.seq === 1)?.id
                 : null;
               console.log('[messages] rendering', visible.length, 'messages after filter');
               // Build tool groups: consecutive tool_use + tool_activity messages get merged
