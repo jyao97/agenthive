@@ -3346,6 +3346,22 @@ Here are the day's conversations (with timestamps):
             existing_meta["insights"] = insights_list
             msg.meta_json = json.dumps(existing_meta)
 
+        # 3b. For retry task's first message, store display_content so the
+        # display file shows the user's retry feedback instead of the
+        # full structured prompt sent to Claude.
+        if (source == "task" and task and task.retry_context
+                and (task.attempt_number or 0) > 1):
+            _meta = {}
+            if msg.meta_json:
+                try:
+                    _meta = json.loads(msg.meta_json)
+                except (json.JSONDecodeError, ValueError):
+                    _meta = {}
+            _meta["display_content"] = re.sub(
+                r'^User feedback:\s*', '', task.retry_context, flags=re.IGNORECASE,
+            )
+            msg.meta_json = json.dumps(_meta)
+
         # 4. Build prompt (optionally wrapped with project context)
         prompt = content
         if wrap_prompt:

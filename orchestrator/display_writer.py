@@ -63,12 +63,18 @@ def _serialize_message(msg: Message, seq: int, replace: bool = False) -> str:
                 tool_use_id = item["tool_use_id"]
                 break
 
+    # Use display_content from metadata if present (e.g. retry agents
+    # store the user's feedback here instead of the full task prompt).
+    content = msg.content
+    if isinstance(metadata, dict) and "display_content" in metadata:
+        content = metadata["display_content"]
+
     obj = {
         "id": msg.id,
         "seq": seq,
         "role": msg.role.value if msg.role else None,
         "kind": msg.kind if hasattr(msg, "kind") else "message",
-        "content": msg.content,
+        "content": content,
         "source": msg.source,
         "status": msg.status.value if msg.status else None,
         "metadata": metadata,

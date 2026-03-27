@@ -1901,6 +1901,20 @@ async def get_agent_messages(
     return PaginatedMessages(messages=messages, has_more=has_more)
 
 
+def _apply_display_content(msg: Message) -> MessageOut:
+    """Serialize a queued Message to MessageOut, applying display_content
+    override from metadata if present (e.g. retry task first message)."""
+    out = MessageOut.model_validate(msg)
+    if msg.meta_json:
+        try:
+            meta = json.loads(msg.meta_json)
+            if isinstance(meta, dict) and "display_content" in meta:
+                out.content = meta["display_content"]
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return out
+
+
 @router.get("/api/agents/{agent_id}/display", response_model=DisplayResponse)
 async def get_agent_display(
     agent_id: str,
@@ -1936,7 +1950,7 @@ async def get_agent_display(
             .order_by(Message.created_at.asc())
             .all()
         )
-        empty.queued = [MessageOut.model_validate(m) for m in queued]
+        empty.queued = [_apply_display_content(m) for m in queued]
         return empty
 
     has_earlier = False
@@ -1995,7 +2009,7 @@ async def get_agent_display(
     return DisplayResponse(
         messages=messages,
         next_offset=next_offset,
-        queued=[MessageOut.model_validate(m) for m in queued],
+        queued=[_apply_display_content(m) for m in queued],
         has_earlier=has_earlier,
     )
 
