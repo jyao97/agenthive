@@ -90,8 +90,21 @@ class TaskOut(BaseModel):
         return v
 
 
+class AttemptAgentOut(BaseModel):
+    agent_id: str
+    created_at: datetime
+    status: str | None = None
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def ensure_utc_attempt(cls, v):
+        if v is not None and isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
+
 class TaskDetailOut(TaskOut):
     conversation: list["MessageOut"] = []
+    attempt_agents: list[AttemptAgentOut] = []
 
 
 # --- Agent schemas ---

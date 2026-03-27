@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from config import CC_MODEL, OPENAI_API_KEY, VALID_MODELS
 from database import get_db
 from models import Agent, AgentMode, AgentStatus, Message, MessageRole, MessageStatus, Project, Task, TaskStatus
-from schemas import MessageOut, TaskCreate, TaskDetailOut, TaskOut, TaskUpdate
+from schemas import AttemptAgentOut, MessageOut, TaskCreate, TaskDetailOut, TaskOut, TaskUpdate
 from task_state_machine import can_transition, InvalidTransitionError
 from task_state import TaskStateMachine
 from websocket import emit_task_update, emit_agent_update
@@ -466,9 +466,21 @@ async def get_task_v2(task_id: str, db: Session = Depends(get_db)):
             .all()
         )
         conversation = [MessageOut.model_validate(m, from_attributes=True) for m in msgs]
+    # All agents that worked on this task, ordered by creation time
+    attempt_agents_rows = (
+        db.query(Agent)
+        .filter(Agent.task_id == task_id)
+        .order_by(Agent.created_at.asc())
+        .all()
+    )
+    attempt_agents = [
+        AttemptAgentOut(agent_id=a.id, created_at=a.created_at, status=a.status.value if a.status else None)
+        for a in attempt_agents_rows
+    ]
     return TaskDetailOut(
         **TaskOut.model_validate(task).model_dump(),
         conversation=conversation,
+        attempt_agents=attempt_agents,
     )
 
 
