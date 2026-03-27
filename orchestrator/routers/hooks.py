@@ -1045,6 +1045,49 @@ async def hook_agent_permission(request: Request):
     summary = _tool_input_summary(tool_name, tool_input) if tool_input else ""
     req = pm.create_request(agent_id, tool_name, tool_input, summary)
 
+    # Persist as interactive card in DB so it survives page refresh
+    _perm_tool_use_id = f"hookperm-{req.id}"
+    _perm_meta = {
+        "interactive": [{
+            "type": "permission_prompt",
+            "tool_use_id": _perm_tool_use_id,
+            "request_id": req.id,
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            "summary": summary,
+            "questions": [{
+                "header": "Permission",
+                "question": summary or f"{tool_name} requires permission",
+                "options": [
+                    {"label": "Allow", "description": "Allow this tool call once", "color": "emerald"},
+                    {"label": "Always allow", "description": "Don't ask again for this tool", "color": "amber"},
+                    {"label": "Deny", "description": "Block this tool call", "color": "red"},
+                ],
+            }],
+            "answer": None,
+        }],
+    }
+    _db_perm = SessionLocal()
+    try:
+        _perm_msg = Message(
+            agent_id=agent_id,
+            role=MessageRole.AGENT,
+            kind=None,
+            content="",
+            source="hook",
+            status=MessageStatus.COMPLETED,
+            meta_json=json.dumps(_perm_meta),
+            tool_use_id=_perm_tool_use_id,
+        )
+        _db_perm.add(_perm_msg)
+        _db_perm.commit()
+        from display_writer import flush_agent as _flush_perm
+        _flush_perm(agent_id)
+    except Exception:
+        logger.exception("hook_agent_permission: failed to persist permission card for agent %s", agent_id[:8])
+    finally:
+        _db_perm.close()
+
     from websocket import ws_manager
     await ws_manager.broadcast("permission_request", {
         "request_id": req.id,
@@ -1073,6 +1116,29 @@ async def hook_agent_permission(request: Request):
         )
     except asyncio.TimeoutError:
         pm.respond(req.id, "deny", "Permission timed out")
+        # Patch DB card as timed out
+        _db_to = SessionLocal()
+        try:
+            _m = _db_to.query(Message).filter(
+                Message.agent_id == agent_id,
+                Message.tool_use_id == f"hookperm-{req.id}",
+            ).first()
+            if _m:
+                _meta = json.loads(_m.meta_json or "{}")
+                for _item in _meta.get("interactive", []):
+                    if _item.get("request_id") == req.id:
+                        _item["answer"] = "Timed out"
+                        _item["selected_index"] = 2
+                        break
+                _m.meta_json = json.dumps(_meta)
+                _db_to.commit()
+                from display_writer import flush_agent as _flush_to, update_last as _update_to
+                _flush_to(agent_id)
+                _update_to(agent_id, _m.id)
+        except Exception:
+            logger.exception("hook_agent_permission: failed to patch timeout for agent %s", agent_id[:8])
+        finally:
+            _db_to.close()
         from notify import notify
         notify("permission", agent_id, "Permission timed out",
                f"{agent_name}: {tool_name} auto-denied after timeout",
@@ -1122,6 +1188,34 @@ async def respond_permission(
 
     if not pm.respond(request_id, actual_decision, reason, updated_input=updated_input):
         raise HTTPException(status_code=404, detail="Permission request not found or already resolved")
+
+    # Patch the persisted interactive card with the decision
+    _perm_msg = db.query(Message).filter(
+        Message.agent_id == agent_id,
+        Message.tool_use_id == f"hookperm-{request_id}",
+    ).first()
+    if _perm_msg:
+        try:
+            _meta = json.loads(_perm_msg.meta_json or "{}")
+            for _item in _meta.get("interactive", []):
+                if _item.get("request_id") == request_id:
+                    if decision == "allow_always":
+                        _item["selected_index"] = 1
+                        _item["answer"] = "Always allow"
+                    elif actual_decision == "allow":
+                        _item["selected_index"] = 0
+                        _item["answer"] = "Allow"
+                    else:
+                        _item["selected_index"] = 2
+                        _item["answer"] = "Deny"
+                    break
+            _perm_msg.meta_json = json.dumps(_meta)
+            db.commit()
+            from display_writer import flush_agent as _flush_resp, update_last as _update_resp
+            _flush_resp(agent_id)
+            _update_resp(agent_id, _perm_msg.id)
+        except Exception:
+            logger.exception("respond_permission: failed to patch card for request %s", request_id)
 
     # Broadcast resolution so all frontend clients update
     from websocket import ws_manager
