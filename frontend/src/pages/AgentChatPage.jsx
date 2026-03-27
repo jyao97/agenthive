@@ -3015,7 +3015,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const gid = event.data.generation_id;
       if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
       clearTimeout(streamTimeoutRef.current);
+      clearTimeout(hookGraceRef.current);
       setStreamingContent(null);
+      setActiveTool(null);
+      setToolStartTime(null);
+      setHookActive(false);
+      lastHookTimeRef.current = 0;
       return;
     }
 
