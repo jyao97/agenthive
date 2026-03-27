@@ -4291,14 +4291,6 @@ Here are the day's conversations (with timestamps):
             async with sync_lock:
                 result = await sync_import_new_turns(self, ctx)
 
-            # Deferred stop: the Stop hook sets stop_pending so the IDLE
-            # transition happens AFTER messages are synced to the display
-            # file, preventing a ~1s gap where UI shows IDLE with no message.
-            if ctx.stop_pending:
-                ctx.stop_pending = False
-                logger.info("Sync loop: executing deferred _stop_generating for %s", agent_id[:8])
-                self._stop_generating(agent_id)
-
             if result == "exit":
                 break
             if result == "compact":

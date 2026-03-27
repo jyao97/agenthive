@@ -72,7 +72,6 @@ class SyncContext:
     idle_polls: int = 0
     getsize_error_count: int = 0
     awaiting_rotation: bool = False     # set by SessionEnd, consumed by SessionStart
-    stop_pending: bool = False           # set by Stop hook, consumed by sync loop after import
 
 
 # ---------------------------------------------------------------------------
