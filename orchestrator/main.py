@@ -267,7 +267,15 @@ async def hook_request_logger(request: Request, call_next):
             "HOOK_HTTP_IN: %s agent=%s method=%s",
             hook_name, agent_id[:12] if agent_id != "<none>" else "<none>", request.method,
         )
-    return await call_next(request)
+    response = await call_next(request)
+    if request.url.path.startswith("/api/hooks/") and response.status_code >= 400:
+        agent_id = request.headers.get("X-Agent-Id", "<none>")
+        hook_name = request.url.path.split("/api/hooks/")[-1]
+        logger.error(
+            "HOOK_HTTP_ERR: %s agent=%s status=%d",
+            hook_name, agent_id[:12] if agent_id != "<none>" else "<none>", response.status_code,
+        )
+    return response
 
 
 _AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/test/", "/api/debug/", "/api/files/", "/api/uploads/", "/api/thumbs/", "/docs", "/openapi.json")
