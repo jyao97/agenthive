@@ -72,6 +72,7 @@ class SyncContext:
     idle_polls: int = 0
     getsize_error_count: int = 0
     awaiting_rotation: bool = False     # set by SessionEnd, consumed by SessionStart
+    stop_pending: bool = False           # set by Stop hook, consumed by sync loop after import
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +379,7 @@ def _handle_streaming_update(ad, ctx: SyncContext, turns, current_size) -> str:
     db = SessionLocal()
     try:
         agent = db.get(Agent, ctx.agent_id)
-        if not agent or agent.status != AgentStatus.IDLE:
+        if not agent or agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
             return "exit"
 
         last_msg = db.query(Message).filter(
@@ -485,7 +486,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
     db = SessionLocal()
     try:
         agent = db.get(Agent, ctx.agent_id)
-        if not agent or agent.status != AgentStatus.IDLE:
+        if not agent or agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
             return "exit"
 
         # Finalize previous turn if it grew (streaming → new turn arrived)
