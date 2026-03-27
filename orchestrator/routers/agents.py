@@ -1074,7 +1074,10 @@ async def _launch_tmux_background(
                 )
                 return
             agent.session_id = session_id
-            agent.status = AgentStatus.IDLE
+            # Only transition STARTING → IDLE; if UserPromptSubmit already
+            # set EXECUTING via _start_generating, don't overwrite it.
+            if agent.status != AgentStatus.EXECUTING:
+                agent.status = AgentStatus.IDLE
             _init_msg = (
                 db.query(Message)
                 .filter(

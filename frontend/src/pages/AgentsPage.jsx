@@ -8,7 +8,7 @@ import BotIcon from "../components/BotIcon";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
-import useWebSocket, { isAgentNotificationsEnabled, setAgentNotificationsEnabled } from "../hooks/useWebSocket";
+import useWebSocket, { useWsEvent, isAgentNotificationsEnabled, setAgentNotificationsEnabled } from "../hooks/useWebSocket";
 import usePageVisible from "../hooks/usePageVisible";
 import { useToast } from "../contexts/ToastContext";
 
@@ -228,6 +228,15 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     pollRef.current = setInterval(() => { load(); }, POLL_INTERVAL);
     return () => clearInterval(pollRef.current);
   }, [load, visible]);
+
+  // Real-time status updates via WebSocket (agent_update events)
+  useWsEvent(useCallback((event) => {
+    if (event.type !== "agent_update") return;
+    const { agent_id, status } = event.data;
+    setAgents((prev) =>
+      prev.map((a) => (a.id === agent_id ? { ...a, status } : a))
+    );
+  }, []));
 
   // Double-tap nav: scroll to first unread agent
   useEffect(() => {

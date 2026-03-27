@@ -528,6 +528,13 @@ async def hook_agent_tool_activity(request: Request):
     from websocket import emit_tool_activity, _tool_input_summary, _tool_output_summary
 
     ad = getattr(request.app.state, "agent_dispatcher", None)
+
+    # Heartbeat: tool activity proves the agent is executing.  If DB/in-memory
+    # state drifted to IDLE (launch race, server restart, etc.), correct it.
+    if ad and agent_id not in ad._generating_agents:
+        logger.info("hook_agent_tool_activity: heartbeat — restoring EXECUTING for %s", agent_id[:8])
+        ad._start_generating(agent_id)
+
     tool_name = phase = summary = output_summary = ""
     is_error = False
     kind = "tool"
