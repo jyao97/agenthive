@@ -3772,6 +3772,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
             {(() => {
               const visible = messages.filter((m) => !(m.role === "USER" && (m.status === "PENDING" || m.status === "QUEUED")));
+              // For retry agents, swap the first user bubble to show retry feedback
+              // instead of the full structured prompt (original description is in card above)
+              const attempts = taskData?.attempt_agents || [];
+              const isRetryAgent = attempts.findIndex(a => a.agent_id === id) > 0;
+              const retryFirstMsgId = isRetryAgent && taskData?.retry_context
+                ? visible.find(m => m.role === "USER")?.id
+                : null;
               console.log('[messages] rendering', visible.length, 'messages after filter');
               // Build tool groups: consecutive tool_use + tool_activity messages get merged
               const toolGroups = new Map(); // first msg id -> [entries]
@@ -3839,7 +3846,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                     );
                   }
                 }
-                return <div key={msg.id} data-msg-id={msg.id} data-msg-type={msg.role === "USER" ? "user" : msg.role === "SYSTEM" ? "system" : "agent_default"}><ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} /></div>;
+                return <div key={msg.id} data-msg-id={msg.id} data-msg-type={msg.role === "USER" ? "user" : msg.role === "SYSTEM" ? "system" : "agent_default"}><ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} contentOverride={msg.id === retryFirstMsgId ? stripAttachmentTags(taskData.retry_context.replace(/^User feedback:\s*/i, "")) : undefined} /></div>;
               });
             })()}
 
