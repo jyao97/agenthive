@@ -3727,6 +3727,28 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               <div className="text-center py-3 text-xs opacity-40">Beginning of conversation</div>
             )}
 
+            {/* Previous attempt summary for retry agents (only on the NEW agent, not the original) */}
+            {taskData && taskData.attempt_number > 1 && taskData.agent_id === id && (taskData.description || taskData.agent_summary) && (
+              <div className="mx-auto max-w-[85%] mb-3 rounded-xl bg-orange-500/8 border border-orange-500/20 px-4 py-3">
+                <p className="text-[11px] font-semibold text-orange-500 dark:text-orange-400 mb-1.5">
+                  Original task
+                </p>
+                {taskData.description && (
+                  <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.description.replace(/\[Attached file: [^\]]+\]/g, "").trim()}</p>
+                )}
+                {taskData.agent_summary && (
+                  <div className="mt-2">
+                    <p className="text-[10px] font-medium text-orange-500 dark:text-orange-400 mb-0.5">Previous agent summary</p>
+                    {taskData.agent_summary === ":::generating:::" ? (
+                      <p className="text-xs text-dim/50 italic">Generating summary...</p>
+                    ) : (
+                      <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.agent_summary}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {(() => {
               const visible = messages.filter((m) => !(m.role === "USER" && (m.status === "PENDING" || m.status === "QUEUED")));
               console.log('[messages] rendering', visible.length, 'messages after filter');
