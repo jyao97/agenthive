@@ -2390,10 +2390,55 @@ def _count_interactive_questions(db: Session, agent_id: str, tool_use_id: str) -
     return 1
 
 
+def _build_answers_from_metadata(db: Session, agent_id: str, tool_use_id: str) -> dict:
+    """Build {question_text: selected_label} from accumulated per-question answers."""
+    msgs = db.query(Message).filter(
+        Message.agent_id == agent_id,
+        Message.tool_use_id == tool_use_id,
+    ).order_by(Message.created_at.desc()).all()
+    for msg in msgs:
+        try:
+            meta = json.loads(msg.meta_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for item in meta.get("interactive", []):
+            if item.get("tool_use_id") != tool_use_id:
+                continue
+            answers = {}
+            questions = item.get("questions", [])
+            sel_indices = item.get("selected_indices", {})
+            for qi, q in enumerate(questions):
+                idx = sel_indices.get(str(qi))
+                if idx is not None:
+                    options = q.get("options", [])
+                    if idx < len(options):
+                        answers[q["question"]] = options[idx]["label"]
+            return answers
+    return {}
+
+
+def _get_questions_from_metadata(db: Session, agent_id: str, tool_use_id: str) -> list:
+    """Get the original questions array from interactive metadata."""
+    msgs = db.query(Message).filter(
+        Message.agent_id == agent_id,
+        Message.tool_use_id == tool_use_id,
+    ).order_by(Message.created_at.desc()).all()
+    for msg in msgs:
+        try:
+            meta = json.loads(msg.meta_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for item in meta.get("interactive", []):
+            if item.get("tool_use_id") == tool_use_id:
+                return item.get("questions", [])
+    return []
+
+
 @router.post("/api/agents/{agent_id}/answer")
 async def answer_agent_interactive(
     agent_id: str,
     body: AnswerPayload,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Answer an AskUserQuestion or approve/reject ExitPlanMode via tmux keys."""
@@ -2420,15 +2465,7 @@ async def answer_agent_interactive(
         if body.selected_index > MAX_INDEX:
             raise HTTPException(status_code=400, detail=f"selected_index too large (max {MAX_INDEX})")
 
-        if has_tmux:
-            # Send tmux keys FIRST — only patch DB on success (Bug 6 race fix)
-            keys = ["Down"] * body.selected_index + ["Enter"]
-            if not send_tmux_keys(pane_id, keys):
-                raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
-        else:
-            keys = []
-
-        # Patch DB after successful key delivery (or immediately if no tmux pane)
+        # Patch DB immediately for instant UI feedback
         patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, body.selected_index, body.type, body.question_index)
         if not patched:
             logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
@@ -2436,20 +2473,39 @@ async def answer_agent_interactive(
             from websocket import emit_metadata_update
             await emit_metadata_update(agent_id, patched["message_id"], patched["metadata"])
 
-        if has_tmux:
-            # Multi-question TUI: after the last question, Claude Code shows a
-            # "Review your answers → Submit" confirmation screen.  We need to
-            # detect when all questions have been answered and send an extra
-            # Enter to confirm submission.
-            total_questions = _count_interactive_questions(db, agent_id, body.tool_use_id)
-            if total_questions > 1 and body.question_index == total_questions - 1:
-                await asyncio.sleep(0.5)  # Wait for TUI to render submit screen
-                send_tmux_keys(pane_id, ["Enter"])
-                logger.info("Multi-Q submit: sent extra Enter for agent %s (Q%d/%d)",
-                            agent_id, body.question_index, total_questions)
-                return {"detail": "ok", "keys_sent": len(keys) + 1, "submitted": True}
+        # Multi-Q: accumulate answers until all questions are answered
+        total_questions = _count_interactive_questions(db, agent_id, body.tool_use_id)
+        if total_questions > 1 and body.question_index < total_questions - 1:
+            return {"detail": "ok", "partial": True, "question_index": body.question_index}
 
-        return {"detail": "ok", "keys_sent": len(keys), "auto_approved": not has_tmux}
+        # All questions answered — try updatedInput path (hook-based, no tmux keys)
+        from permissions import PermissionManager
+        pm: PermissionManager | None = getattr(request.app.state, "permission_manager", None)
+        pending_id = pm.find_pending_by_tool(agent_id, "AskUserQuestion") if pm else None
+
+        if pending_id:
+            # Build updatedInput payload: {questions: [...], answers: {q_text: label}}
+            answers = _build_answers_from_metadata(db, agent_id, body.tool_use_id)
+            questions = _get_questions_from_metadata(db, agent_id, body.tool_use_id)
+            updated_input = {"questions": questions, "answers": answers}
+            pm.respond(pending_id, "allow", reason="Answered from AgentHive", updated_input=updated_input)
+            logger.info("AskUserQuestion resolved via updatedInput for agent %s: %s", agent_id[:8], list(answers.keys()))
+            return {"detail": "ok", "method": "updatedInput"}
+        else:
+            # Fallback: tmux keys (no pending hook request — race condition or old CC)
+            logger.info("AskUserQuestion fallback to tmux keys for agent %s (no pending hook request)", agent_id[:8])
+            if has_tmux:
+                keys = ["Down"] * body.selected_index + ["Enter"]
+                if not send_tmux_keys(pane_id, keys):
+                    raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
+                # Multi-Q submit confirmation
+                if total_questions > 1 and body.question_index == total_questions - 1:
+                    await asyncio.sleep(0.5)
+                    send_tmux_keys(pane_id, ["Enter"])
+                    return {"detail": "ok", "method": "tmux", "keys_sent": body.selected_index + 2, "submitted": True}
+                return {"detail": "ok", "method": "tmux", "keys_sent": body.selected_index + 1}
+            else:
+                return {"detail": "ok", "method": "tmux", "keys_sent": 0, "auto_approved": True}
 
     elif body.type == "exit_plan_mode":
         # Claude Code TUI plan approval options (arrow-navigated):
@@ -2629,6 +2685,15 @@ async def send_escape_to_agent(agent_id: str, request: Request, db: Session = De
     if now - last < 2.0:
         raise HTTPException(status_code=429, detail="Escape rate limited (max 1 per 2s)")
     _last_escape[agent_id] = now
+
+    # Clear any pending AskUserQuestion hook request (dismiss via PermissionManager)
+    from permissions import PermissionManager
+    pm: PermissionManager | None = getattr(request.app.state, "permission_manager", None)
+    if pm:
+        pending_id = pm.find_pending_by_tool(agent_id, "AskUserQuestion")
+        if pending_id:
+            pm.respond(pending_id, "deny", reason="Dismissed by user")
+            logger.info("Dismissed pending AskUserQuestion for agent %s via escape", agent_id[:8])
 
     from agent_dispatcher import send_tmux_keys, verify_tmux_pane
     if not verify_tmux_pane(agent.tmux_pane):
