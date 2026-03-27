@@ -31,7 +31,7 @@ import {
 import ProjectFileModal from "../components/ProjectFileModal";
 import FloatingTaskCard from "../components/FloatingTaskCard";
 import ProjectBrowserModal from "../components/ProjectBrowserModal";
-import { relativeTime, renderMarkdown, extractFileAttachments } from "../lib/formatters";
+import { relativeTime, renderMarkdown, extractFileAttachments, stripAttachmentTags } from "../lib/formatters";
 import { serverNow } from "../lib/serverTime";
 
 // Mini error boundary that wraps individual markdown renders so a single
@@ -1170,10 +1170,12 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
 
   // Display content: use contentOverride for interleaved mode, otherwise
   // use message.content directly (backend handles attachment stripping).
+  // Fallback: strip tags for old display files without metadata.attachments.
   const displayContent = useMemo(() => {
     if (contentOverride != null) return contentOverride;
+    if (isUser && !message.metadata?.attachments) return stripAttachmentTags(message.content);
     return message.content;
-  }, [contentOverride, message.content]);
+  }, [contentOverride, isUser, message.content, message.metadata]);
 
   const scheduledTime = isScheduled
     ? new Date(message.scheduled_at).toLocaleTimeString([], TIME_SHORT)
