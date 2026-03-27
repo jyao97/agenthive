@@ -261,7 +261,7 @@ export default function TasksPage({ theme, onToggleTheme }) {
         onToggleTheme={onToggleTheme}
         showQueueButton
         hideMonitor
-        actions={!selecting && (counts?.INBOX ?? 0) > 0 ? (
+        actions={!selecting ? (
           <button
             type="button"
             onClick={() => handleBatchProcess()}
