@@ -962,6 +962,12 @@ async def hook_agent_permission(request: Request):
 
     from permissions import PermissionManager, SAFE_TOOLS
 
+    # Auto-allow safe read-only tools BEFORE any DB access.
+    # This avoids SQLite contention when the parallel tool_activity
+    # hook is writing at the same time (both fire for each PreToolUse).
+    if tool_name in SAFE_TOOLS:
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
+
     pm: PermissionManager | None = getattr(request.app.state, "permission_manager", None)
     if not pm:
         logger.warning("hook_agent_permission: no permission_manager on app.state for agent %s", agent_id[:8])
@@ -976,16 +982,15 @@ async def hook_agent_permission(request: Request):
             return {}
         agent_name = agent.name or ""
         agent_project = agent.project or ""
+    except Exception:
+        logger.exception("hook_agent_permission: DB error for agent %s", agent_id[:8])
+        return {}
     finally:
         db.close()
 
-    # Auto-allow safe read-only tools
-    if tool_name in SAFE_TOOLS:
-        return {"hookSpecificOutput": {"permissionDecision": "allow"}}
-
     # Check session "always allow" rules
     if pm.check_always_allow(agent_id, tool_name):
-        return {"hookSpecificOutput": {"permissionDecision": "allow"}}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
 
     # Create pending request and broadcast to frontend
     from websocket import _tool_input_summary
@@ -1035,9 +1040,10 @@ async def hook_agent_permission(request: Request):
         ad.wake_sync(agent_id)
 
     if decision == "allow":
-        return {"hookSpecificOutput": {"permissionDecision": "allow"}}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
     else:
         return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason or "Denied by user",
         }}
