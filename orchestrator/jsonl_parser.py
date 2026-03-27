@@ -123,6 +123,25 @@ def derive_selected_index(item: dict) -> None:
         # Backward compat: set selected_index from Q0
         if item.get("selected_index") is None and sel_indices.get("0") is not None:
             item["selected_index"] = sel_indices["0"]
+    elif item.get("type") == "permission_prompt":
+        if item.get("selected_index") is not None:
+            return  # Already set
+        # Simple exact-label match against question options
+        questions = item.get("questions", [])
+        if questions:
+            options = questions[0].get("options", [])
+            for oi, opt in enumerate(options):
+                if opt.get("label", "").lower() == answer.lower().strip():
+                    item["selected_index"] = oi
+                    return
+        # Keyword fallback
+        a = answer.lower().strip()
+        if a.startswith("yes") and "always" in a:
+            item["selected_index"] = 1
+        elif a.startswith("yes"):
+            item["selected_index"] = 0
+        elif a.startswith("no"):
+            item["selected_index"] = 2
     elif item.get("type") == "exit_plan_mode":
         if item.get("selected_index") is not None:
             return  # Already set

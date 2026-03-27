@@ -407,6 +407,155 @@ function QuestionBubble({ item, agentId, onAnswered }) {
   );
 }
 
+// --- Interactive: Native Permission Prompt ---
+
+const PERM_PROMPT_OPTIONS = [
+  { label: "Yes", description: "Allow this operation", color: "emerald" },
+  { label: "Yes, and always allow", description: "Don't ask again for this scope", color: "amber" },
+  { label: "No", description: "Block this operation", color: "red" },
+];
+
+function PermissionPromptBubble({ item, agentId, onAnswered }) {
+  const [chosenIdx, setChosenIdx] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const q = (item.questions || [])[0] || {};
+  const options = q.options || PERM_PROMPT_OPTIONS;
+  const isDismissed = item.answer != null && typeof item.answer === "string" &&
+    (item.answer.startsWith("The user doesn't want to proceed") ||
+     item.answer.startsWith("User declined") ||
+     item.answer.startsWith("Tool use rejected"));
+
+  // Resolve answered index
+  const resolveIdx = () => {
+    if (isDismissed) return null;
+    if (item.selected_index != null) return item.selected_index;
+    if (item.answer != null && typeof item.answer === "string") {
+      const idx = options.findIndex((o) => (o.label || o) === item.answer);
+      if (idx !== -1) return idx;
+    }
+    if (chosenIdx != null) return chosenIdx;
+    return null;
+  };
+
+  const answeredIdx = resolveIdx();
+  const isAnswered = answeredIdx != null || isDismissed || item.auto_approved;
+
+  const handleSelect = async (idx) => {
+    setChosenIdx(idx);
+    setSubmitting(true);
+    setError(null);
+    try {
+      await answerAgent(agentId, {
+        tool_use_id: item.tool_use_id,
+        type: "permission_prompt",
+        selected_index: idx,
+      });
+      onAnswered?.();
+    } catch (e) {
+      setError("Failed: " + (e.message || "Unknown error"));
+      setChosenIdx(null);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Badge
+  let badgeText = null;
+  let badgeClass = "";
+  if (isDismissed) {
+    badgeText = "Dismissed";
+    badgeClass = "bg-red-500/20 text-red-300";
+  } else if (item.auto_approved) {
+    badgeText = "Auto-approved";
+    badgeClass = "bg-amber-500/20 text-amber-300";
+  } else if (answeredIdx != null) {
+    const opt = options[answeredIdx];
+    const optLabel = (opt?.label || opt || "").toLowerCase();
+    if (optLabel.startsWith("no")) {
+      badgeText = "Denied"; badgeClass = "bg-red-500/20 text-red-300";
+    } else {
+      badgeText = "Allowed"; badgeClass = "bg-emerald-500/20 text-emerald-300";
+    }
+  }
+
+  const colorMap = {
+    emerald: { active: "bg-emerald-500/20 border-emerald-500/40 text-heading", dot: "border-emerald-400 bg-emerald-400" },
+    amber:   { active: "bg-amber-500/20 border-amber-500/40 text-heading", dot: "border-amber-400 bg-amber-400" },
+    red:     { active: "bg-red-500/20 border-red-500/40 text-heading", dot: "border-red-400 bg-red-400" },
+  };
+
+  return (
+    <div className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/20 p-3">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="inline-block px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-semibold uppercase tracking-wider">
+          Permission
+        </span>
+        {item.tool_name && (
+          <span className="text-xs text-dim font-mono">{item.tool_name}</span>
+        )}
+        {badgeText && (
+          <span className={`ml-auto px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${badgeClass}`}>
+            {badgeText}
+          </span>
+        )}
+      </div>
+      <p className="text-sm text-heading font-medium mb-2">{q.question || "Permission required"}</p>
+      <div className="space-y-1.5">
+        {options.map((opt, oi) => {
+          const label = opt.label || opt;
+          const desc = opt.description || "";
+          const clr = opt.color || (oi === 0 ? "emerald" : oi === options.length - 1 ? "red" : "amber");
+          const isChosen = answeredIdx === oi;
+          const dimmed = isAnswered && !isChosen;
+          const disabled = isAnswered || submitting;
+          const cs = colorMap[clr] || colorMap.amber;
+
+          return (
+            <button
+              key={oi}
+              type="button"
+              disabled={disabled}
+              onClick={() => { if (!isAnswered) handleSelect(oi); }}
+              className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-all border ${
+                isChosen
+                  ? cs.active
+                  : dimmed
+                    ? "bg-surface/30 border-divider/30 text-dim/50"
+                    : "bg-surface/50 border-divider hover:bg-hover hover:border-heading/20 text-body"
+              } ${disabled ? "cursor-default" : "cursor-pointer"}`}
+            >
+              <div className="flex items-start gap-2">
+                <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+                  isChosen ? cs.dot : "border-dim/40"
+                }`}>
+                  {isChosen && (
+                    <svg className="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                </span>
+                <div>
+                  <span className="font-medium">{label}</span>
+                  {desc && <p className={`text-xs mt-0.5 ${dimmed ? "text-dim/30" : "text-dim"}`}>{desc}</p>}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {submitting && (
+        <p className="text-xs text-dim mt-2 flex items-center gap-1.5">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          Sending response...
+        </p>
+      )}
+      {error && <p className="text-xs text-red-400 mt-2 px-1">{error}</p>}
+    </div>
+  );
+}
+
 // --- Interactive: ExitPlanMode ---
 
 // Must match the exact order Claude CLI shows in the ExitPlanMode TUI
@@ -807,6 +956,9 @@ function InteractiveBubbles({ metadata, agentId, onAnswered, messageContent, pro
     }
     if (item.type === "exit_plan_mode") {
       return <PlanBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} />;
+    }
+    if (item.type === "permission_prompt") {
+      return <PermissionPromptBubble key={item.tool_use_id} item={item} agentId={agentId} onAnswered={onAnswered} />;
     }
     // Unknown interactive type — render a generic informational card
     return (

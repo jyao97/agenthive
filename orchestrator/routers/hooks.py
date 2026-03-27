@@ -542,12 +542,15 @@ async def hook_agent_tool_activity(request: Request):
             logger.warning("hook_agent_tool_activity: no X-Agent-Id and no session match")
             return {}
 
-    # Guard: ignore hooks from subprocess sessions
+    # Guard: ignore hooks from subprocess sessions.
+    # Exception: permission_prompt notifications pass through so native
+    # Claude Code permission prompts surface in the web UI as interactive cards.
     hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
-    if _is_subprocess_session(agent_id, hook_sid, request):
-        return {}
-
     hook_event = body.get("hook_event_name", "")
+    if _is_subprocess_session(agent_id, hook_sid, request):
+        if not (hook_event == "Notification"
+                and body.get("notification_type") == "permission_prompt"):
+            return {}
 
     from websocket import emit_tool_activity, _tool_input_summary, _tool_output_summary
 
@@ -830,6 +833,45 @@ async def hook_agent_tool_activity(request: Request):
                 # but the display file is the durable source of truth.
                 from display_writer import flush_agent as _flush_ta
                 _flush_ta(agent_id)
+
+                # --- Native permission prompt: interactive card ---
+                # When Claude Code shows a permission prompt in the terminal
+                # (e.g. sensitive-file access), create an interactive card so
+                # the user can respond from the web UI via tmux keys.
+                if kind == "permission":
+                    _perm_id = f"perm-{uuid4().hex[:12]}"
+                    _perm_question = summary or f"{tool_name} requires permission"
+                    _perm_meta = {
+                        "interactive": [{
+                            "type": "permission_prompt",
+                            "tool_use_id": _perm_id,
+                            "tool_name": tool_name,
+                            "questions": [{
+                                "header": "Permission",
+                                "question": _perm_question,
+                                "options": [
+                                    {"label": "Yes", "description": "Allow this operation"},
+                                    {"label": "Yes, and always allow", "description": "Don't ask again for this scope"},
+                                    {"label": "No", "description": "Block this operation"},
+                                ],
+                            }],
+                            "answer": None,
+                        }],
+                    }
+                    _perm_msg = Message(
+                        agent_id=agent_id,
+                        role=MessageRole.AGENT,
+                        kind=None,
+                        content="",
+                        source="hook",
+                        status=MessageStatus.COMPLETED,
+                        meta_json=json.dumps(_perm_meta),
+                        tool_use_id=_perm_id,
+                    )
+                    _db2.add(_perm_msg)
+                    _db2.commit()
+                    _flush_ta(agent_id)
+
             elif phase == "end":
                 # Find the start message by tool UUID
                 _existing = (

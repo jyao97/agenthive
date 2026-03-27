@@ -2256,7 +2256,7 @@ async def update_message(
 
 class AnswerPayload(BaseModel):
     tool_use_id: str
-    type: str  # "ask_user_question" or "exit_plan_mode"
+    type: str  # "ask_user_question", "exit_plan_mode", or "permission_prompt"
     selected_index: int | None = None  # 0-based option index (AskUserQuestion)
     question_index: int = 0  # which question in multi-Q AskUserQuestion
     approved: bool | None = None  # (ExitPlanMode only)
@@ -2333,6 +2333,17 @@ def _patch_interactive_answer(
                     item["answer"] = existing + "\n" + part
                 else:
                     item["answer"] = part
+            elif answer_type == "permission_prompt":
+                if item.get("answer") is not None:
+                    return  # Already answered
+                questions = item.get("questions", [])
+                if questions:
+                    options = questions[0].get("options", [])
+                    label = options[selected_index]["label"] if selected_index < len(options) else str(selected_index)
+                else:
+                    label = str(selected_index)
+                item["selected_index"] = selected_index
+                item["answer"] = label
             elif answer_type == "exit_plan_mode":
                 if item.get("answer") is not None:
                     return  # Already answered
@@ -2556,6 +2567,29 @@ async def answer_agent_interactive(
                 await emit_metadata_update(agent_id, patched["message_id"], patched["metadata"])
 
         return {"detail": "ok", "keys_sent": len(keys) if has_tmux else 0, "prompt_type": prompt_type, "auto_approved": not has_tmux}
+
+    elif body.type == "permission_prompt":
+        # Native Claude Code permission prompt — same TUI nav as AskUserQuestion
+        if body.selected_index is None or body.selected_index < 0:
+            raise HTTPException(status_code=400, detail="selected_index required for permission_prompt")
+        if body.selected_index > MAX_INDEX:
+            raise HTTPException(status_code=400, detail=f"selected_index too large (max {MAX_INDEX})")
+
+        if has_tmux:
+            keys = ["Down"] * body.selected_index + ["Enter"]
+            if not send_tmux_keys(pane_id, keys):
+                raise HTTPException(status_code=500, detail="Failed to send keys to tmux")
+        else:
+            keys = []
+
+        patched = _patch_interactive_answer(db, agent_id, body.tool_use_id, body.selected_index, body.type)
+        if not patched:
+            logger.warning("Interactive patch missed: tool_use_id=%s agent=%s", body.tool_use_id, agent_id)
+        else:
+            from websocket import emit_metadata_update
+            await emit_metadata_update(agent_id, patched["message_id"], patched["metadata"])
+
+        return {"detail": "ok", "keys_sent": len(keys), "auto_approved": not has_tmux}
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown type: {body.type}")
