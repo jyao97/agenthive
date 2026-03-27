@@ -2144,22 +2144,6 @@ async def send_agent_message(
                 # Flush to display file so queued message appears immediately
                 from display_writer import flush_agent as _msg_flush
                 _msg_flush(agent.id)
-
-                # Transition to EXECUTING and schedule sync wake.
-                # UserPromptSubmit does NOT fire for tmux send-keys input,
-                # so we must do here what that hook would have done: mark
-                # the agent as generating and wake the sync loop so it
-                # picks up the response as Claude processes the message.
-                if ad:
-                    ad._start_generating(agent.id, msg_id=msg.id)
-
-                    async def _post_send_sync(_aid):
-                        from config import JSONL_FLUSH_DELAY
-                        await asyncio.sleep(JSONL_FLUSH_DELAY)
-                        ad.wake_sync(_aid)
-
-                    asyncio.ensure_future(_post_send_sync(agent.id))
-
                 logger.info("Message %s queued to agent %s via tmux pane %s", msg.id, agent.id, agent.tmux_pane)
                 return msg
 
