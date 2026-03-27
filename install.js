@@ -206,7 +206,7 @@ async function main() {
     let envContent = fs.readFileSync(envExample, 'utf8');
 
     // Projects directory
-    const defaultProjectsDir = path.join(os.homedir(), 'agenthive-projects');
+    const defaultProjectsDir = path.join(os.homedir(), 'ah-projects');
     const projectsDir = await ask('Where should project repos live?', defaultProjectsDir);
     envContent = envContent.replace(/^HOST_PROJECTS_DIR=.*$/m, `HOST_PROJECTS_DIR=${projectsDir}`);
     fs.mkdirSync(projectsDir, { recursive: true });
@@ -370,6 +370,15 @@ async function main() {
   if (await confirm('Start AgentHive now?')) {
     process.chdir(ROOT);
     run(`bash "${path.join(ROOT, 'run.sh')}" start`);
+
+    // Auto-start on boot
+    console.log();
+    if (await confirm('Enable auto-start on boot? (pm2 startup)')) {
+      run('pm2 save', { allowFail: true });
+      console.log();
+      run('pm2 startup', { allowFail: true });
+      console.log(`\n  ${DIM}If pm2 printed a sudo command above, copy and run it to complete setup.${R}`);
+    }
   } else {
     console.log(`
   To start later:
