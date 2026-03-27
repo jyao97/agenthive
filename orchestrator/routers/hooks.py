@@ -892,6 +892,77 @@ async def hook_agent_tool_activity(request: Request):
     return {}
 
 
+async def _handle_ask_user_question(request, agent_id: str, tool_input: dict):
+    """Block until user answers AskUserQuestion from web UI, return updatedInput.
+
+    Called from hook_agent_permission for ALL agents (both skip_permissions and
+    supervised).  The activity hook fires in parallel and handles tool_activity
+    tracking + sync wake — this handler only does the blocking + updatedInput.
+    """
+    from permissions import PermissionManager
+
+    pm: PermissionManager | None = getattr(request.app.state, "permission_manager", None)
+    if not pm:
+        logger.warning("_handle_ask_user_question: no permission_manager for agent %s", agent_id[:8])
+        return {}  # fallback: let TUI handle it
+
+    questions = tool_input.get("questions", [])
+    q_summary = questions[0].get("question", "Question") if questions else "Question"
+
+    req = pm.create_request(agent_id, "AskUserQuestion", tool_input, q_summary)
+
+    # Broadcast to frontend so notification badge updates
+    from websocket import ws_manager
+    # DB lookup for agent name
+    from database import SessionLocal
+    _db = SessionLocal()
+    try:
+        _ag = _db.get(Agent, agent_id)
+        _agent_name = _ag.name if _ag else ""
+        _agent_project = _ag.project if _ag else ""
+    finally:
+        _db.close()
+
+    await ws_manager.broadcast("permission_request", {
+        "request_id": req.id,
+        "agent_id": agent_id,
+        "agent_name": _agent_name,
+        "project": _agent_project,
+        "tool_name": "AskUserQuestion",
+        "tool_input": tool_input,
+        "summary": q_summary,
+    })
+
+    # Block until user answers (reuse permission timeout)
+    _perm_timeout = int(os.getenv("AHIVE_PERMISSION_TIMEOUT", "7200"))
+    try:
+        decision, reason, updated_input = await asyncio.wait_for(
+            pm.wait_for_decision(req.id), timeout=_perm_timeout,
+        )
+    except asyncio.TimeoutError:
+        pm.respond(req.id, "deny", "Question timed out")
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "AskUserQuestion timed out",
+        }}
+
+    if decision == "allow" and updated_input:
+        logger.info("AskUserQuestion answered for agent %s: %s", agent_id[:8], list(updated_input.get("answers", {}).keys()))
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": reason or "Answered from AgentHive web UI",
+            "updatedInput": updated_input,
+        }}
+    else:
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason or "Dismissed by user",
+        }}
+
+
 @router.post("/api/hooks/agent-permission")
 async def hook_agent_permission(request: Request):
     """PreToolUse hook for non-skip-permissions agents.
@@ -922,6 +993,12 @@ async def hook_agent_permission(request: Request):
 
     tool_name = body.get("tool_name", "")
     tool_input = body.get("tool_input") or {}
+
+    # AskUserQuestion: block and return updatedInput for ALL agents (both
+    # skip_permissions and supervised).  Must intercept BEFORE skip_permissions
+    # check, since skip_permissions agents would otherwise pass through.
+    if tool_name == "AskUserQuestion":
+        return await _handle_ask_user_question(request, agent_id, tool_input)
 
     from permissions import PermissionManager, SAFE_TOOLS
 
@@ -1021,6 +1098,7 @@ async def respond_permission(
     body = await request.json()
     decision = body.get("decision")  # "allow" | "deny" | "allow_always"
     reason = body.get("reason", "")
+    updated_input = body.get("updated_input")  # AskUserQuestion answers
 
     from permissions import PermissionManager
     pm: PermissionManager | None = getattr(request.app.state, "permission_manager", None)
@@ -1034,7 +1112,7 @@ async def respond_permission(
         if tool_name:
             pm.add_always_allow(agent_id, tool_name)
 
-    if not pm.respond(request_id, actual_decision, reason):
+    if not pm.respond(request_id, actual_decision, reason, updated_input=updated_input):
         raise HTTPException(status_code=404, detail="Permission request not found or already resolved")
 
     # Broadcast resolution so all frontend clients update
@@ -1046,6 +1124,45 @@ async def respond_permission(
     })
 
     return {"detail": "ok"}
+
+
+@router.post("/api/hooks/agent-permission-request")
+async def hook_agent_permission_request(request: Request):
+    """PermissionRequest hook — auto-allow native CC permission prompts.
+
+    For supervised agents, the user already approved the tool via our PreToolUse
+    permission hook.  When CC's own ask rules still trigger a native permission
+    prompt, this hook auto-allows it to avoid a "double prompt".
+
+    For skip_permissions agents, this hook never fires (they use
+    --dangerously-skip-permissions which bypasses all CC permission checks).
+    """
+    agent_id = request.headers.get("X-Agent-Id", "").strip()
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        body = {}
+    if not agent_id:
+        agent_id = _resolve_agent_id_from_body(body)
+        if not agent_id:
+            logger.warning("hook_agent_permission_request: no agent_id")
+            return {}
+
+    # Guard: ignore hooks from subprocess sessions
+    hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
+    if _is_subprocess_session(agent_id, hook_sid, request):
+        return {}
+
+    tool_name = body.get("tool_name", "")
+    logger.info(
+        "PermissionRequest auto-allow for agent %s: %s",
+        agent_id[:8], tool_name,
+    )
+
+    return {"hookSpecificOutput": {
+        "hookEventName": "PermissionRequest",
+        "decision": {"behavior": "allow"},
+    }}
 
 
 @router.get("/api/agents/{agent_id}/permissions/pending")
