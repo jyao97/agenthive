@@ -2385,6 +2385,18 @@ Here are the day's conversations (with timestamps):
             project = db.get(Project, agent.project) if agent.project else None
             if not project:
                 return False
+            # Recover ERROR agents so the sync loop doesn't immediately exit
+            # (sync_import_new_turns returns "exit" for ERROR status).
+            if agent.status == AgentStatus.ERROR:
+                agent.status = AgentStatus.IDLE
+                agent.error_message = None
+                db.commit()
+                logger.info(
+                    "_ensure_sync_running: recovered agent %s from ERROR → IDLE",
+                    agent_id[:8],
+                )
+                from websocket import emit_agent_update
+                self._emit(emit_agent_update(agent.id, "IDLE", agent.project))
             self.start_session_sync(agent_id, agent.session_id, project.path)
             logger.info("_ensure_sync_running: restarted sync for agent %s", agent_id[:8])
             return True

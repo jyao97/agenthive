@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import or_ as _or
-from sqlalchemy.exc import DatabaseError, IntegrityError
+from sqlalchemy.exc import DatabaseError, IntegrityError, PendingRollbackError
 
 from database import SessionLocal
 from models import (
@@ -463,7 +463,10 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         if not agent or agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
             return "exit"
 
-        # Finalize previous turn if it grew (streaming → new turn arrived)
+        # Finalize previous turn if it grew (streaming → new turn arrived).
+        # Wrapped in a savepoint so a UNIQUE constraint violation on jsonl_uuid
+        # (e.g. tool_use_id shared between assistant turn and tool_result turn)
+        # doesn't poison the outer transaction in SQLite.
         if ctx.last_turn_count > 0:
             prev_role, prev_content, *prev_rest = turns[ctx.last_turn_count - 1]
             prev_uuid = prev_rest[1] if len(prev_rest) > 1 else None
@@ -483,6 +486,24 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         last_agent_msg.meta_json = _merge_interactive_meta(
                             last_agent_msg.meta_json, prev_meta,
                         )
+                    try:
+                        with db.begin_nested():
+                            db.flush()
+                    except IntegrityError:
+                        logger.warning(
+                            "Finalize: UNIQUE conflict on jsonl_uuid %s for agent %s, "
+                            "clearing uuid to avoid poisoning transaction",
+                            prev_uuid, ctx.agent_id[:8],
+                        )
+                        # Savepoint rolled back the UPDATE; re-apply without the
+                        # conflicting jsonl_uuid so content/meta still get saved.
+                        db.expire(last_agent_msg)
+                        last_agent_msg.content = prev_content
+                        last_agent_msg.completed_at = _utcnow()
+                        if prev_meta is not None:
+                            last_agent_msg.meta_json = _merge_interactive_meta(
+                                last_agent_msg.meta_json, prev_meta,
+                            )
 
         _actually_inserted = 0
         for i, (role, content, *rest) in enumerate(new_turns):
@@ -546,7 +567,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
 
         try:
             db.commit()
-        except (DatabaseError, IntegrityError) as exc:
+        except (DatabaseError, IntegrityError, PendingRollbackError) as exc:
             db.rollback()
             logger.warning(
                 "Commit failed for agent %s, will retry next cycle: %s",
