@@ -797,6 +797,18 @@ async def hook_agent_tool_activity(request: Request):
                 _db2.commit()
                 from display_writer import flush_agent as _flush_ta
                 _flush_ta(agent_id)
+                # Push notification for permission card (in-use suppressed)
+                _ag = _db2.get(Agent, agent_id)
+                if _ag and not (_ag.is_subagent or _ag.parent_id):
+                    if not (ad and ad._is_agent_in_use(_ag.id, _ag.tmux_pane)):
+                        from notify import notify as _notify_perm
+                        _notify_perm(
+                            "message", agent_id,
+                            _ag.name or f"Agent {agent_id[:8]}",
+                            _perm_question,
+                            f"/agents/{agent_id}",
+                            muted=_ag.muted, in_use=False,
+                        )
             finally:
                 _db2.close()
 
@@ -991,6 +1003,19 @@ async def hook_agent_permission(request: Request):
         _db_perm.commit()
         from display_writer import flush_agent as _flush_perm
         _flush_perm(agent_id)
+        # Push notification for permission card (in-use suppressed)
+        _ag_perm = _db_perm.get(Agent, agent_id)
+        _ad = getattr(request.app.state, "agent_dispatcher", None)
+        if _ag_perm and not (_ag_perm.is_subagent or _ag_perm.parent_id):
+            _in_use = bool(_ad and _ad._is_agent_in_use(agent_id, _ag_perm.tmux_pane))
+            from notify import notify as _notify_perm
+            _notify_perm(
+                "message", agent_id,
+                agent_name or f"Agent {agent_id[:8]}",
+                summary or f"Permission needed — {tool_name}",
+                f"/agents/{agent_id}",
+                muted=_ag_perm.muted, in_use=_in_use,
+            )
     except Exception:
         logger.exception("hook_agent_permission: failed to persist permission card for agent %s", agent_id[:8])
     finally:
@@ -1006,15 +1031,6 @@ async def hook_agent_permission(request: Request):
         "tool_input": tool_input,
         "summary": summary,
     })
-
-    # Send push notification
-    from notify import notify
-    notify(
-        "permission", agent_id,
-        f"Permission: {tool_name}",
-        f"{agent_name}: {summary[:100]}" if summary else f"{agent_name} wants to use {tool_name}",
-        url=f"/agents/{agent_id}",
-    )
 
     # Block until user responds, with configurable timeout (default 2h)
     _perm_timeout = int(os.getenv("AHIVE_PERMISSION_TIMEOUT", "7200"))
