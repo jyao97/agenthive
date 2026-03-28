@@ -5,7 +5,7 @@
 [![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
 
-> [**Getting Started**](#getting-started) · [**The Loop**](#the-loop) · [**Features**](#features) · [**Configuration**](#configuration) · [**Development**](#development) · [**Contributing**](CONTRIBUTING.md) · [**Roadmap**](#roadmap)
+> [**Getting Started**](#getting-started) · [**The Loop**](#the-loop) · [**Features**](#features) · [**Development**](#development) · [**Contributing**](CONTRIBUTING.md)
 
 **A web-based task management system for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — capture tasks, dispatch them to AI agents, and check back when they're done.**
 
@@ -187,29 +187,6 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 
 </details>
 
-## Configuration
-
-All settings live in `.env` (copy from `.env.example`):
-
-| Variable | Default | Description |
-|---|---|---|
-| `HOST_PROJECTS_DIR` | _(required)_ | Absolute path to your projects directory |
-| `MAX_CONCURRENT_WORKERS` | `5` | Max simultaneous agent processes |
-| `MAX_IDLE_AGENTS` | `20` | Max idle agents kept alive |
-| `TASK_TIMEOUT_SECONDS` | `1800` | Default agent timeout (30 min) |
-| `CC_MODEL` | `claude-opus-4-6` | Default Claude model |
-| `OPENAI_API_KEY` | — | OpenAI key for voice input _(optional)_ |
-| `PORT` | `8080` | Backend API port |
-| `FRONTEND_PORT` | `3000` | Frontend HTTPS port |
-| `VAPID_PRIVATE_KEY` | — | Web Push private key _(optional)_ |
-| `VAPID_PUBLIC_KEY` | — | Web Push public key _(optional)_ |
-| `BACKUP_INTERVAL_HOURS` | `24` | Database backup interval |
-| `MAX_BACKUPS` | `48` | Number of backups to retain |
-| `AUTH_TIMEOUT_MINUTES` | `30` | Inactivity lock timeout |
-| `DISABLE_AUTH` | — | Set to `1` to disable auth (dev/trusted networks only) |
-| `TELEGRAM_BOT_TOKEN` | — | Telegram bot token for notifications _(optional)_ |
-| `TELEGRAM_CHAT_ID` | — | Telegram chat ID for notifications _(optional)_ |
-
 ## Remote Access with Tailscale
 
 The easiest way to access AgentHive from your phone outside your LAN:
@@ -383,16 +360,6 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines 
 - Reporting bugs and suggesting features
 - Setting up a development environment
 - Running tests and submitting pull requests
-
-## Roadmap
-
-Planned improvements (contributions welcome):
-
-- [ ] **Docker deployment** — one-command setup via Docker Compose
-- [ ] **Multi-user support** — role-based access for teams
-- [ ] **Additional LLM providers** — support for non-Anthropic models
-- [ ] **Plugin system** — extensible agent capabilities
-- [ ] **Improved mobile experience** — native-feeling gestures and offline support
 
 ## License
 
