@@ -74,6 +74,7 @@ export default function SendLaterPicker({ onSelect, onClose, onClear }) {
   const picker = (
     <div
       ref={pickerRef}
+      data-card
       className="w-56 bg-surface border border-divider rounded-xl shadow-lg overflow-hidden z-[9999]"
       style={pos ? { position: "fixed", bottom: pos.bottom, right: pos.right } : { visibility: "hidden", position: "fixed" }}
     >
