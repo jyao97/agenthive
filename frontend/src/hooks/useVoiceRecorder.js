@@ -118,7 +118,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
       if (window.location.protocol === "http:" && window.location.hostname !== "localhost") {
         setMicError("Microphone requires HTTPS. Open this page via https:// or localhost.");
       } else {
-        setMicError("Your browser does not support microphone access.");
+        setMicError("cert_needed");
       }
       return;
     }
@@ -129,13 +129,13 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     } catch (err) {
       startingRef.current = false;
       if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-        setMicError("Microphone blocked — click the lock icon in your browser's address bar to allow access.");
+        setMicError("cert_needed");
       } else if (err.name === "NotFoundError" || err.name === "NotReadableError") {
         setMicError("No microphone detected — plug one in or check your system audio settings.");
       } else if (err.name === "AbortError") {
         setMicError("Microphone access was interrupted — try again.");
       } else {
-        setMicError("Could not access microphone — check browser permissions and ensure HTTPS.");
+        setMicError("cert_needed");
       }
       return;
     }
