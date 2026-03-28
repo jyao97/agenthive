@@ -23,6 +23,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
 
 
+# ---- Certificate download (for mobile trust setup) ----
+
+@router.get("/api/cert")
+async def download_cert():
+    """Serve the self-signed certificate for mobile installation."""
+    cert_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "certs", "selfsigned.crt")
+    cert_path = os.path.normpath(cert_path)
+    if not os.path.isfile(cert_path):
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    return FileResponse(
+        cert_path,
+        media_type="application/x-x509-ca-cert",
+        filename="agenthive.crt",
+    )
+
+
 # ---- Health ----
 
 @router.get("/api/health", response_model=HealthResponse)
