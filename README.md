@@ -5,54 +5,90 @@
 [![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
 
-> [**Getting Started**](#getting-started) · [**Features**](#features) · [**Configuration**](#configuration) · [**Development**](#development) · [**Contributing**](CONTRIBUTING.md) · [**Roadmap**](#roadmap)
+> [**Getting Started**](#getting-started) · [**The Loop**](#the-loop) · [**Features**](#features) · [**Configuration**](#configuration) · [**Development**](#development) · [**Contributing**](CONTRIBUTING.md) · [**Roadmap**](#roadmap)
 
-**A self-hosted command center for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — run multiple agents, monitor everything, and manage your projects from your phone.**
+**A web-based task management system for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — capture tasks, dispatch them to AI agents, and check back when they're done.**
 
-AgentHive is not a replacement for the Claude Code CLI. It's a companion. Keep using `claude` in your terminal the way you always have. AgentHive adds a layer on top: sync your CLI sessions to the web, run multiple agents in parallel, and manage everything from a single dashboard — including from your phone while you're away from your desk.
+AgentHive is not a replacement for the Claude Code CLI. It's the layer that turns it from a synchronous terminal tool into an asynchronous, agentic workflow. You keep using `claude` the way you always have — AgentHive adds the ability to capture ideas on your phone, dispatch them to agents, monitor multiple agents in parallel, and review results when you're ready. Your existing CLAUDE.md files, project setup, and CLI sessions all carry over.
+
+## The Loop
+
+Traditional task management tracks what **you** need to do. AgentHive tracks what your **agents** are doing.
+
+### 1. Capture
+
+Get ideas out of your head and into the system — fast, from anywhere.
+
+- **Inbox** — a persistent queue for tasks across all your projects. Tasks wait here until you're ready to dispatch them.
+- **Voice input** — dictate tasks using speech-to-text. Great for quick ideas on your phone while walking the dog.
+- **Lightning input** — rapid task creation with minimal friction. Title, project, go.
+- **Draft persistence** — edits are cached locally as you type. Close the app, lose connection, or switch tasks — your unsaved work is still there when you come back.
+
+### 2. Dispatch
+
+Assign tasks to AI agents and let them work.
+
+- **Task → Agent** — turn any task into an autonomous agent with one click. Pick a model (Opus/Sonnet/Haiku), set permissions, and let the agent do the work while you move on.
+- **Parallel execution** — run 5, 10, or more agents in parallel across different projects. Each agent gets its own isolated git worktree so they never step on each other's code.
+- **AI batch processing** — got a pile of tasks in your inbox? One click to let AI triage and dispatch them in bulk, instead of handling each one manually.
+- **RAG-powered context** — when dispatching a task, AgentHive automatically retrieves relevant history from past agent sessions. Your new agent starts with the lessons learned, not from scratch.
+
+### 3. Monitor
+
+Watch everything happen in real time — from your desk or your phone.
+
+- **Mobile-first web UI** — a full PWA you can add to your Home Screen. Works on any device, any screen size.
+- **Split screen** — monitor 2, 3, or 4 agents side by side (2-column, 3-column, 2x2 grid on desktop; stacked on mobile). Each pane navigates independently.
+- **Rich chat interface** — markdown rendering, inline image and media preview, interactive cards for tool approvals and plan review. Approve, deny, or respond to agents directly in the conversation.
+- **Dual-directional CLI sync** — CLI sessions appear in the web app, web app sessions are resumable from the CLI. One conversation history, two interfaces.
+- **Smart notifications** — Web Push and Telegram with dual-channel in-use detection: if you're viewing an agent in the browser (WebSocket presence) or attached to its tmux pane, notifications are suppressed. Permission requests always cut through.
+- **System & usage monitoring** — disk, memory, GPU status, and token usage at a glance.
+
+### 4. Review
+
+Check results, give feedback, and keep the knowledge growing.
+
+- **Mark done** — review agent output, approve the work, mark the task complete.
+- **Try → Summarize → Retry** — agent didn't nail it? Stop the agent, add your feedback, and AgentHive auto-generates a summary of what was tried. Re-dispatch with full context — the next agent picks up where the last one left off. Iterate until it's right.
+- **Git operations** — view diffs, commit history, and branch status per project. One-click cleanup and push when you're satisfied.
+- **Growing intelligence** — each project carries its own CLAUDE.md context that agents read on every task. As you work, the context accumulates — coding conventions, past decisions, known gotchas. New agents inherit everything previous agents learned.
+
+### 5. Maintain
+
+Your conversations with agents are valuable. Don't lose them.
+
+- **Automatic backups** — database, session history, and project configs are backed up on a configurable schedule. Crash recovery salvages partial output.
+- **Session archive** — every agent conversation is persisted and searchable. Star important sessions for quick access. Browse history across projects.
+- **Resume anytime** — pick up any agent conversation right where it left off, whether it finished yesterday or last month.
+- **Full-text search** — find any task, message, or agent session across your entire history.
+- **Progress tracking** — weekly completion stats show how much your agents are getting done. See the trend, not just the backlog.
+- **Project memory** — accumulated insights live in per-project CLAUDE.md files that survive across agents, sessions, and time.
 
 ## Why AgentHive?
 
 ### Zero Migration Cost
 
-Already using Claude Code? AgentHive plugs right in. It wraps the same `claude` CLI you already know — launched inside tmux sessions on your machine, managed through a web UI. Your existing workflow, CLAUDE.md files, and project setup all carry over. The only new dependencies are **tmux** (for session management) and optionally **Tailscale** (for secure remote access). No new APIs, no vendor lock-in, no relearning.
+Already using Claude Code? AgentHive plugs right in. It wraps the same `claude` CLI you already know — launched inside tmux sessions on your machine, managed through a web UI. Your existing CLAUDE.md files, project setup, and workflow all carry over. The only new dependencies are **tmux** and optionally **Tailscale** for remote access. No new APIs, no vendor lock-in, no relearning.
 
-### Capture Ideas Anywhere
+### Built for Reliability
 
-Walking your dog and had a breakthrough? Open AgentHive on your phone — dictate a task with voice input, type a quick note, or queue up a batch of ideas. Tasks land in your inbox and wait until you're ready to dispatch them. Stop losing ideas to "I'll remember it later."
-
-### Global Monitoring
-
-All your agents, all your projects, one screen. See which agents are running, which are waiting for input, and which just finished — in real time. WebSocket-powered live streaming shows agent output as it generates. Push notifications alert you when agents need attention, finish a task, or hit an error. A system monitor tracks disk, memory, and GPU usage. You always know what's happening.
-
-### Multi-Agent Concurrency
-
-Run 5, 10, or more Claude agents in parallel across different projects. Each agent gets its own isolated git worktree, so they never step on each other's code. The dispatcher manages global concurrency limits, queues messages when agents are busy, and handles timeouts and crash recovery automatically. Think of it as tabs for your AI workforce — switch between conversations, monitor progress, and keep everything moving.
-
-### Session Management
-
-Every agent conversation is persisted and resumable. Star important sessions for quick access. Browse session history across projects. AgentHive automatically backs up the SQLite database and caches session JSONL files incrementally. If an agent crashes mid-conversation, it recovers partial output and picks up where it left off. Your work is never lost.
-
-### Project Memory
-
-Each project carries its own CLAUDE.md context that agents read on every task. As you work, the context grows — coding conventions, past decisions, known gotchas. New agents inherit everything previous agents learned. AgentHive also syncs your existing CLI sessions, so conversations you had in the terminal are visible and searchable in the web UI.
+AgentHive hooks into Claude Code's native event system — not polling, not heuristics. Notifications, message delivery, and session sync are all event-driven. Messages reach agents through stop-hook dispatch with guaranteed ordering. Session lifecycle is tracked via SessionStart/SessionEnd hooks. Each agent runs in its own tmux session with a dedicated git worktree, with configurable timeouts and automatic crash recovery.
 
 ## Features
 
 | Category | What you get |
 |---|---|
-| **Agent Control** | Start, stop, resume agents. Choose model per agent (Opus/Sonnet/Haiku). Set timeouts and permission modes (supervised or autonomous). |
-| **Chat Interface** | Rich markdown rendering (code blocks, tables, images). Plan mode with approve/reject. Interactive cards for tool confirmations. |
-| **Mobile PWA** | Add to Home Screen on iOS/Android. Full functionality on mobile — voice input, push notifications, task management. |
-| **CLI Session Sync** | Import and live-tail your terminal Claude Code sessions. Read-only — never interferes with the CLI process. |
-| **Voice Input** | Dictate tasks using speech-to-text (OpenAI Whisper). Great for quick ideas on mobile. |
-| **Task Inbox** | Capture tasks as they come, organize by project, dispatch when ready. Drag to reorder priorities. |
-| **Push Notifications** | Get notified when agents finish, need input, or error out. Supports Web Push and Telegram. Per-agent mute, global toggles, smart suppression. |
-| **Git Integration** | View commit history, diffs, and branch status per project. Agents work in isolated worktrees. |
-| **System Monitor** | Disk, memory, and GPU usage at a glance. Health checks for the backend and Claude CLI. |
-| **Security** | Password auth with exponential-backoff rate limiting. Inactivity-based lock. HTTPS encryption. |
-| **Backups** | Automatic database backups with configurable intervals. Session JSONL caching. Crash recovery with partial output salvage. |
-| **Dark/Light Theme** | System-aware theme toggle. |
+| **Task Management** | Inbox with drag-to-reorder. Voice input. Lightning capture. Draft persistence. Per-project organization. Retry with auto-summarization. |
+| **Agent Control** | Start, stop, resume agents. Per-agent model selection (Opus/Sonnet/Haiku). Configurable timeouts and permission modes. AI batch dispatch. RAG-powered context from past sessions. |
+| **Chat Interface** | Rich markdown rendering (code blocks, tables, images). Inline media preview. Plan mode with approve/reject. Interactive tool confirmation cards. |
+| **Monitoring** | Split screen (up to 4 panes). Real-time WebSocket streaming. System monitor (disk, memory, GPU, tokens). Weekly progress stats. |
+| **Mobile PWA** | Add to Home Screen on iOS/Android. Full functionality — voice input, push notifications, task management. |
+| **CLI Session Sync** | Dual-directional: CLI sessions in the web app, web app sessions resumable from CLI. |
+| **Push Notifications** | Web Push (VAPID) and Telegram. Per-agent mute, global toggles. Dual-channel in-use detection for smart suppression. |
+| **Git Integration** | Commit history, diffs, branch status per project. Agents work in isolated worktrees. One-click cleanup and push. |
+| **Session History** | Every conversation persisted and searchable. Star sessions. Resume any agent anytime. Full-text search. |
+| **Security** | Password auth with exponential-backoff rate limiting. Inactivity lock. HTTPS encryption. |
+| **Backups** | Automatic database backups. Session JSONL caching. Crash recovery with partial output salvage. |
 
 ## How It Works
 
@@ -80,7 +116,7 @@ Your Phone / Browser
           +-- SQLite Database + Automatic Backups
 ```
 
-AgentHive runs on your Linux machine (or any machine reachable over the network). It launches Claude Code CLI instances inside tmux sessions, streams their output to the web UI via WebSocket, and manages their lifecycle. You interact through the browser — from the same machine, from your laptop, or from your phone over Tailscale.
+AgentHive runs on your machine and launches Claude Code CLI instances inside tmux sessions. It streams their output to the web UI via WebSocket and manages their lifecycle. You interact through the browser — from the same machine, from your laptop, or from your phone over Tailscale.
 
 ## Getting Started
 
@@ -98,7 +134,7 @@ AgentHive runs on your Linux machine (or any machine reachable over the network)
 
 ```bash
 # 1. Clone
-git clone https://github.com/jyao97/AgentHive.git && cd AgentHive
+git clone https://github.com/jyao97/agenthive.git && cd agenthive
 
 # 2. Run automated setup (installs deps, creates venv, generates SSL certs)
 chmod +x setup.sh && ./setup.sh
@@ -188,7 +224,7 @@ No port forwarding, no public exposure. Tailscale creates a secure WireGuard tun
 
 ```
 ~/
-├── AgentHive/                      <- This repo
+├── agenthive/                      <- This repo
 │   ├── run.sh                      <- Launch script (systemd services)
 │   ├── setup.sh                    <- First-time setup script
 │   ├── orchestrator/               <- FastAPI backend
@@ -210,7 +246,7 @@ No port forwarding, no public exposure. Tailscale creates a secure WireGuard tun
 
 ```bash
 # Clone and setup
-git clone https://github.com/jyao97/AgentHive.git && cd AgentHive
+git clone https://github.com/jyao97/agenthive.git && cd agenthive
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r orchestrator/requirements.txt
 cd frontend && npm install && cd ..
@@ -247,7 +283,7 @@ cd frontend && npx vite build
 ## Updating
 
 ```bash
-cd AgentHive
+cd agenthive
 git pull origin main
 source .venv/bin/activate
 pip install -r orchestrator/requirements.txt   # Update backend deps
@@ -280,7 +316,7 @@ AgentHive uses a self-signed SSL certificate. Your server trusts it after setup,
 
 **Download the cert** from another machine:
 ```bash
-scp user@server-ip:~/AgentHive/certs/selfsigned.crt ~/agenthive.crt
+scp user@server-ip:~/agenthive/certs/selfsigned.crt ~/agenthive.crt
 ```
 
 <details>
