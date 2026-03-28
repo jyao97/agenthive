@@ -1199,7 +1199,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     : null;
 
   // Editing UI for scheduled/pending messages
-  const editDateRef = useRef(null);
+  const [showEditPicker, setShowEditPicker] = useState(false);
 
   if (editing && isScheduled) {
     const scheduleLabel = editSchedule
@@ -1217,25 +1217,25 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
               rows={2}
               className="w-full rounded-lg bg-black/20 border border-amber-400/40 px-2 py-1.5 text-sm text-white placeholder-amber-200/50 resize-none focus:border-amber-300 focus:outline-none"
             />
-            <input
-              ref={editDateRef}
-              type="datetime-local"
-              value={editSchedule}
-              onChange={(e) => setEditSchedule(e.target.value)}
-              min={(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })()}
-              className="sr-only"
-              tabIndex={-1}
-            />
-            <button
-              type="button"
-              onClick={() => editDateRef.current?.showPicker?.() || editDateRef.current?.click()}
-              className="w-full rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-sm py-1.5 font-medium transition-colors flex items-center justify-center gap-2"
-            >
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-              {scheduleLabel}
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowEditPicker(v => !v)}
+                className="w-full rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-sm py-1.5 font-medium transition-colors flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                {scheduleLabel}
+              </button>
+              {showEditPicker && (
+                <SendLaterPicker
+                  onSelect={(iso) => { setEditSchedule(new Date(iso).toISOString().slice(0, 16)); setShowEditPicker(false); }}
+                  onClose={() => setShowEditPicker(false)}
+                  onClear={editSchedule ? () => { setEditSchedule(""); setShowEditPicker(false); } : undefined}
+                />
+              )}
+            </div>
             <div className="flex gap-2">
               <button
                 type="button"

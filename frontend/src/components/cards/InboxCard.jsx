@@ -8,6 +8,7 @@ import useProjects from "../../hooks/useProjects";
 import CardShell, { cardPadding } from "./CardShell";
 import TagPicker from "./TagPicker";
 import ImageLightbox from "../ImageLightbox";
+import SendLaterPicker from "../SendLaterPicker";
 
 const MODEL_PICKER = MODEL_OPTIONS.map(m => ({ value: m.value, label: m.label }));
 const EFFORT_PICKER = [
@@ -278,13 +279,17 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   }, [task.id, buildFullDesc, onRefresh]);
 
   // --- notify_at ---
+  const [showRemindPicker, setShowRemindPicker] = useState(false);
 
-  const handleDateChange = async (e) => {
-    const val = e.target.value;
-    if (val) {
-      await updateTaskV2(task.id, { notify_at: new Date(val).toISOString() });
-      onRefresh?.();
-    }
+  const handleRemindSelect = async (iso) => {
+    setShowRemindPicker(false);
+    await updateTaskV2(task.id, { notify_at: iso });
+    onRefresh?.();
+  };
+  const handleRemindClear = async () => {
+    setShowRemindPicker(false);
+    await updateTaskV2(task.id, { notify_at: null });
+    onRefresh?.();
   };
 
   // --- dispatch (launch agent) ---
@@ -627,13 +632,8 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                     )}
                   </button>
 
-                  <div className="relative w-8 h-8">
-                    <input type="datetime-local" className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
-                      style={{ zIndex: 1 }}
-                      value={task.notify_at ? new Date(task.notify_at).toISOString().slice(0, 16) : ""}
-                      onChange={handleDateChange}
-                      onClick={(e) => e.stopPropagation()} />
-                    <div
+                  <div className="relative">
+                    <button type="button" onClick={(e) => { e.stopPropagation(); setShowRemindPicker(v => !v); }}
                       className={`w-8 h-8 rounded-full flex items-center justify-center transition-all active:scale-90 ${
                         task.notify_at ? "bg-amber-500 text-white" : "bg-elevated text-dim hover:text-heading"
                       }`}
@@ -641,7 +641,14 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
                       </svg>
-                    </div>
+                    </button>
+                    {showRemindPicker && (
+                      <SendLaterPicker
+                        onSelect={handleRemindSelect}
+                        onClose={() => setShowRemindPicker(false)}
+                        onClear={task.notify_at ? handleRemindClear : undefined}
+                      />
+                    )}
                   </div>
 
                   <button type="button" onClick={handleDispatch}

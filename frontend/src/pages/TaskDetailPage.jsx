@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { fetchTaskV2, updateTaskV2, dispatchTask, cancelTask } from "../lib/api";
 import { TASK_STATUS_COLORS, TASK_STATUS_TEXT_COLORS, projectBadgeColor, modelDisplayName, POLL_INTERVAL } from "../lib/constants";
-import { relativeTime, renderMarkdown, durationDisplay, elapsedDisplay } from "../lib/formatters";
+import { relativeTime, renderMarkdown, durationDisplay, elapsedDisplay, DATE_SHORT } from "../lib/formatters";
 import { serverNow } from "../lib/serverTime";
 import ProjectSelector from "../components/ProjectSelector";
+import SendLaterPicker from "../components/SendLaterPicker";
 import usePageVisible from "../hooks/usePageVisible";
 import useWebSocket, { useWsEvent, registerViewingTasks, unregisterViewingTasks } from "../hooks/useWebSocket";
 import { useToast } from "../contexts/ToastContext";
@@ -22,6 +23,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
   const [editDesc, setEditDesc, clearDescDraft] = useDraft(`task-edit:${id}:desc`);
   const [editProject, setEditProject, clearProjectDraft] = useDraft(`task-edit:${id}:project`);
   const [editNotifyAt, setEditNotifyAt, clearNotifyDraft] = useDraft(`task-edit:${id}:notifyAt`);
+  const [showRemindPicker, setShowRemindPicker] = useState(false);
 
   const clearAllDrafts = () => {
     clearTitleDraft(); clearDescDraft(); clearProjectDraft(); clearNotifyDraft();
@@ -261,12 +263,24 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               </div>
               <div>
                 <label className="block text-xs font-medium text-label mb-1">Remind At</label>
-                <input
-                  type="datetime-local"
-                  value={editNotifyAt}
-                  onChange={(e) => setEditNotifyAt(e.target.value)}
-                  className="w-full rounded-lg bg-input border border-edge px-3 py-2 text-heading text-sm focus:border-cyan-500 focus:outline-none"
-                />
+                <div className="relative">
+                  <button type="button" onClick={() => setShowRemindPicker(v => !v)}
+                    className={`w-full flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                      editNotifyAt ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "bg-input border-edge text-dim hover:text-heading"
+                    }`}>
+                    <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {editNotifyAt ? new Date(editNotifyAt).toLocaleString([], DATE_SHORT) : "Set reminder"}
+                  </button>
+                  {showRemindPicker && (
+                    <SendLaterPicker
+                      onSelect={(iso) => { setEditNotifyAt(new Date(iso).toISOString().slice(0, 16)); setShowRemindPicker(false); }}
+                      onClose={() => setShowRemindPicker(false)}
+                      onClear={editNotifyAt ? () => { setEditNotifyAt(""); setShowRemindPicker(false); } : undefined}
+                    />
+                  )}
+                </div>
               </div>
               <div className="flex gap-2">
                 <button

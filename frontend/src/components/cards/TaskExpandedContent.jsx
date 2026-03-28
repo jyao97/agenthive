@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { updateTaskV2, dispatchTask, cancelTask } from "../../lib/api";
-import { relativeTime, renderMarkdown } from "../../lib/formatters";
+import { relativeTime, renderMarkdown, DATE_SHORT } from "../../lib/formatters";
 import ProjectSelector from "../ProjectSelector";
+import SendLaterPicker from "../SendLaterPicker";
 import { useToast } from "../../contexts/ToastContext";
 import useDraft from "../../hooks/useDraft";
 
@@ -12,6 +13,7 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
   const [actionLoading, setActionLoading] = useState(false);
 
   const canEdit = task.status === "INBOX" || task.status === "PLANNING";
+  const [showRemindPicker, setShowRemindPicker] = useState(false);
 
   // Editable fields — persisted to localStorage via useDraft for crash recovery
   const [editTitle, setEditTitle, clearTitleDraft] = useDraft(`task-edit:${task.id}:title`, task.title);
@@ -107,17 +109,24 @@ export default function TaskExpandedContent({ task, onRefresh, onCollapse }) {
             {/* Project — no label, compact selector */}
             <ProjectSelector value={editProject} onChange={setEditProject} />
 
-            {/* Remind At — compact row with clock icon */}
-            <div className="flex items-center gap-1.5 rounded-lg bg-input border border-edge px-2.5 py-1.5">
-              <svg className="w-3.5 h-3.5 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <input
-                type="datetime-local"
-                value={editNotifyAt}
-                onChange={(e) => setEditNotifyAt(e.target.value)}
-                className="flex-1 min-w-0 text-sm text-heading bg-transparent border-0 focus:outline-none"
-              />
+            {/* Remind At */}
+            <div className="relative">
+              <button type="button" onClick={() => setShowRemindPicker(v => !v)}
+                className={`w-full flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm transition-colors ${
+                  editNotifyAt ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "bg-input border-edge text-dim hover:text-heading"
+                }`}>
+                <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                {editNotifyAt ? new Date(editNotifyAt).toLocaleString([], DATE_SHORT) : "Set reminder"}
+              </button>
+              {showRemindPicker && (
+                <SendLaterPicker
+                  onSelect={(iso) => { setEditNotifyAt(new Date(iso).toISOString().slice(0, 16)); setShowRemindPicker(false); }}
+                  onClose={() => setShowRemindPicker(false)}
+                  onClear={editNotifyAt ? () => { setEditNotifyAt(""); setShowRemindPicker(false); } : undefined}
+                />
+              )}
             </div>
           </div>
 
