@@ -1007,15 +1007,15 @@ async def hook_agent_permission(request: Request):
         _ag_perm = _db_perm.get(Agent, agent_id)
         _ad = getattr(request.app.state, "agent_dispatcher", None)
         if _ag_perm and not (_ag_perm.is_subagent or _ag_perm.parent_id):
-            _in_use = bool(_ad and _ad._is_agent_in_use(agent_id, _ag_perm.tmux_pane))
-            from notify import notify as _notify_perm
-            _notify_perm(
-                "message", agent_id,
-                agent_name or f"Agent {agent_id[:8]}",
-                summary or f"Permission needed — {tool_name}",
-                f"/agents/{agent_id}",
-                muted=_ag_perm.muted, in_use=_in_use,
-            )
+            if not (_ad and _ad._is_agent_in_use(agent_id, _ag_perm.tmux_pane)):
+                from notify import notify as _notify_perm
+                _notify_perm(
+                    "message", agent_id,
+                    agent_name or f"Agent {agent_id[:8]}",
+                    summary or f"Permission needed — {tool_name}",
+                    f"/agents/{agent_id}",
+                    muted=_ag_perm.muted, in_use=False,
+                )
     except Exception:
         logger.exception("hook_agent_permission: failed to persist permission card for agent %s", agent_id[:8])
     finally:
