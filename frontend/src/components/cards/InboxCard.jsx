@@ -278,12 +278,6 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
   }, [task.id, buildFullDesc, onRefresh]);
 
   // --- notify_at ---
-  const dateRef = useRef(null);
-
-  const handleCalendar = (e) => {
-    e.stopPropagation();
-    requestAnimationFrame(() => dateRef.current?.showPicker?.());
-  };
 
   const handleDateChange = async (e) => {
     const val = e.target.value;
@@ -633,11 +627,13 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                     )}
                   </button>
 
-                  <div className="relative overflow-hidden">
-                    <input ref={dateRef} type="datetime-local" className="absolute opacity-0 w-0 h-0 pointer-events-none"
+                  <div className="relative w-8 h-8">
+                    <input type="datetime-local" className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                      style={{ zIndex: 1 }}
                       value={task.notify_at ? new Date(task.notify_at).toISOString().slice(0, 16) : ""}
-                      onChange={handleDateChange} />
-                    <button type="button" onClick={handleCalendar}
+                      onChange={handleDateChange}
+                      onClick={(e) => e.stopPropagation()} />
+                    <div
                       className={`w-8 h-8 rounded-full flex items-center justify-center transition-all active:scale-90 ${
                         task.notify_at ? "bg-amber-500 text-white" : "bg-elevated text-dim hover:text-heading"
                       }`}
@@ -645,7 +641,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
                       </svg>
-                    </button>
+                    </div>
                   </div>
 
                   <button type="button" onClick={handleDispatch}
