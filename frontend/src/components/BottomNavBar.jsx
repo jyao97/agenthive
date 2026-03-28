@@ -55,7 +55,7 @@ export const navTabs = [
   },
 ];
 
-function CenterFab({ tab }) {
+function CenterFab({ tab, compact }) {
   const navigate = useNavigate();
   const location = useLocation();
   const isActive = location.pathname === tab.to;
@@ -79,13 +79,15 @@ function CenterFab({ tab }) {
     <button
       type="button"
       {...handlers}
-      className={`flex items-center justify-center mx-auto -mt-4 w-13 h-13 rounded-full transition-colors shadow-lg shadow-cyan-500/20 select-none touch-none ${
+      className={`flex items-center justify-center mx-auto ${
+        compact ? "-mt-2 w-9 h-9" : "-mt-4 w-13 h-13"
+      } rounded-full transition-colors shadow-lg shadow-cyan-500/20 select-none touch-none ${
         isActive
           ? "bg-cyan-500 text-white"
           : "bg-cyan-600 text-white hover:bg-cyan-500"
       }`}
     >
-      {tab.icon}
+      {compact ? <span className="[&_svg]:w-5 [&_svg]:h-5">{tab.icon}</span> : tab.icon}
     </button>
   );
 }
@@ -99,18 +101,18 @@ function CenterFab({ tab }) {
  *   onProjectsTap — optional (event) => void  (custom Projects nav logic)
  *   className     — extra classes on the outer wrapper
  */
-export default function BottomNavBar({ badges, onDoubleTap, onProjectsTap, className = "" }) {
+export default function BottomNavBar({ badges, onDoubleTap, onProjectsTap, className = "", compact = false }) {
   const location = useLocation();
 
   return (
     <div className={className}>
       <div
-        className="glass-bar-nav rounded-[28px] grid grid-cols-5 items-center w-full"
-        style={{ maxWidth: "24rem" }}
+        className={`glass-bar-nav ${compact ? "nav-compact rounded-[20px]" : "rounded-[28px]"} grid grid-cols-5 items-center w-full`}
+        style={{ maxWidth: compact ? "20rem" : "24rem" }}
       >
         {navTabs.map((tab) =>
           tab.isCenter ? (
-            <CenterFab key={tab.to} tab={tab} />
+            <CenterFab key={tab.to} tab={tab} compact={compact} />
           ) : (
             <NavLink
               key={tab.to}
@@ -125,13 +127,15 @@ export default function BottomNavBar({ badges, onDoubleTap, onProjectsTap, class
               }
               className={({ isActive }) => {
                 const active = tab.key === "projects" ? location.pathname.startsWith("/projects") : isActive;
-                return `relative flex flex-col items-center justify-center min-h-[58px] py-2.5 transition-colors ${
+                return `relative flex flex-col items-center justify-center ${
+                  compact ? "min-h-[38px] py-1" : "min-h-[58px] py-2.5"
+                } transition-colors ${
                   active ? "text-cyan-400" : "text-dim hover:text-body"
                 }`;
               }}
             >
-              {tab.icon}
-              <span className="text-[10px] mt-0.5">{tab.label}</span>
+              {compact ? <span className="[&_svg]:w-[18px] [&_svg]:h-[18px]">{tab.icon}</span> : tab.icon}
+              <span className={`${compact ? "text-[8px]" : "text-[10px]"} mt-0.5`}>{tab.label}</span>
               {tab.key === "agents" && badges?.agents > 0 && (
                 <span className="absolute top-1.5 left-[calc(50%+6px)] inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold leading-none">
                   {badges.agents > 99 ? "99+" : badges.agents}

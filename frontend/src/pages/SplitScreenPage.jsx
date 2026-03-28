@@ -146,9 +146,9 @@ function PaneShell({ theme, onToggleTheme, onPathChange }) {
         </Suspense>
       </main>
 
-      {/* Pane bottom nav — reuses shared BottomNavBar component */}
+      {/* Pane bottom nav — reuses shared BottomNavBar component (compact in split) */}
       {!hideNav && (
-        <BottomNavBar className="shrink-0 flex justify-center px-3 pb-1.5 -mt-1" />
+        <BottomNavBar compact className="shrink-0 flex justify-center px-2 pb-1" />
       )}
     </div>
   );
@@ -281,12 +281,12 @@ export default function SplitScreenPage() {
     navigate("/projects", { replace: true });
   }, [navigate]);
   const exitBtnDefault = useMemo(() => () => ({
-    x: window.innerWidth - 64,
-    y: window.innerHeight - 140,
+    x: window.innerWidth - 48,
+    y: Math.floor(window.innerHeight / 2) - 16,
   }), []);
 
   return (
-    <div className="flex flex-col h-screen bg-surface">
+    <div className="flex flex-col h-dvh bg-surface">
       {/* Top toolbar — desktop only */}
       {isWide && (
         <div className="shrink-0 flex items-center gap-2 px-3 py-1 bg-surface/80 border-b border-divider">
@@ -342,7 +342,7 @@ export default function SplitScreenPage() {
       {/* Mobile floating exit button — draggable */}
       {!isWide && (
         <DraggableFab
-          storageKey="ah:fab-pos-split-v3"
+          storageKey="ah:fab-pos-split-v4"
           defaultPosition={exitBtnDefault}
           onClick={handleExit}
           onLongPress={handleForceExit}
@@ -355,7 +355,10 @@ export default function SplitScreenPage() {
       )}
 
       {/* Panes grid */}
-      <div className={`flex-1 grid ${layoutDef.gridClass} gap-1.5 p-1.5 min-h-0 ${!isWide ? "safe-area-pt" : ""}`}>
+      <div
+        className={`flex-1 grid ${layoutDef.gridClass} gap-1.5 p-1.5 min-h-0 ${!isWide ? "safe-area-pt" : ""}`}
+        style={!isWide ? { paddingBottom: "max(0.375rem, env(safe-area-inset-bottom, 0.375rem))" } : undefined}
+      >
         {panes.map((pane, idx) => (
           <div
             key={pane.id}
