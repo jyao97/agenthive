@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time as _time
 from datetime import datetime, timedelta, timezone
 
@@ -1707,6 +1708,25 @@ class AgentDispatcher:
         )
         return in_use
 
+    def _send_agent_notification(self, agent, body: str) -> str | None:
+        """Check subagent + in-use, then send 'message' push notification.
+
+        Shared by stop-hook, interactive-card, and permission-card paths.
+        Returns the notify decision string, or None if skipped.
+        """
+        if agent.is_subagent or agent.parent_id:
+            return None
+        if self._is_agent_in_use(agent.id, agent.tmux_pane):
+            return None
+        from notify import notify
+        return notify(
+            "message", agent.id,
+            agent.name or f"Agent {agent.id[:8]}",
+            body,
+            f"/agents/{agent.id}",
+            muted=agent.muted, in_use=False,
+        )
+
     def _maybe_notify_message(self, agent) -> str | None:
         """Send 'message' push when unread transitions from 0 → >0.
 
@@ -1716,16 +1736,8 @@ class AgentDispatcher:
         """
         if agent.unread_count <= 0:
             return None  # defensive — shouldn't happen after an increment
-        from notify import notify
         body = (agent.last_message_preview or "Response ready")[:120]
-        return notify(
-            "message", agent.id,
-            agent.name or f"Agent {agent.id[:8]}",
-            body,
-            f"/agents/{agent.id}",
-            muted=agent.muted,
-            in_use=False,  # caller already verified not in-use
-        )
+        return self._send_agent_notification(agent, body)
 
     def get_active_sessions(self) -> list[tuple[str, str]]:
         """Return (session_id, project_path) for all agents with sessions.
@@ -2192,7 +2204,7 @@ Here are the day's conversations (with timestamps):
             self._known_subagents.pop(agent.id, None)
             # Clean up hook signal files
             try:
-                os.unlink(f"/tmp/ahive-{agent.id}.newsession")
+                os.unlink(os.path.join(tempfile.gettempdir(), f"ahive-{agent.id}.newsession"))
             except FileNotFoundError:
                 pass
 
@@ -3519,7 +3531,7 @@ Here are the day's conversations (with timestamps):
             agent_sid = named_agent.session_id
             if not agent_sid:
                 # No session_id — check signal file from SessionStart hook
-                signal_path = f"/tmp/ahive-{named_agent.id}.newsession"
+                signal_path = os.path.join(tempfile.gettempdir(), f"ahive-{named_agent.id}.newsession")
                 try:
                     with open(signal_path, "r") as f:
                         agent_sid = f.read().strip()
@@ -3844,7 +3856,7 @@ Here are the day's conversations (with timestamps):
         """
         sdir = session_source_dir(project_path)
 
-        signal_path = f"/tmp/ahive-{agent_id}.newsession"
+        signal_path = os.path.join(tempfile.gettempdir(), f"ahive-{agent_id}.newsession")
         try:
             with open(signal_path) as f:
                 hook_sid = f.read().strip()
@@ -4617,7 +4629,7 @@ Here are the day's conversations (with timestamps):
                 ).all()
                 for m in executing_msgs:
                     # Try to recover partial output from the predictable file
-                    partial_file = f"/tmp/claude-output-{m.id}.log"
+                    partial_file = os.path.join(tempfile.gettempdir(), f"claude-output-{m.id}.log")
                     if os.path.exists(partial_file):
                         try:
                             with open(partial_file, "r", errors="replace") as f:

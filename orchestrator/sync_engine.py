@@ -136,26 +136,11 @@ def _notify_interactive(ad, agent, new_turns):
 
     if not _interactive_types:
         return
-    if ad._is_agent_in_use(agent.id, agent.tmux_pane):
-        return
 
-    from notify import notify as _notify
     if "exit_plan_mode" in _interactive_types:
-        _notify(
-            "message", agent.id,
-            agent.name or f"Agent {agent.id[:8]}",
-            "Plan approval needed",
-            f"/agents/{agent.id}",
-            muted=agent.muted, in_use=False,
-        )
+        ad._send_agent_notification(agent, "Plan approval needed")
     elif "ask_user_question" in _interactive_types:
-        _notify(
-            "message", agent.id,
-            agent.name or f"Agent {agent.id[:8]}",
-            "Question — waiting for your answer",
-            f"/agents/{agent.id}",
-            muted=agent.muted, in_use=False,
-        )
+        ad._send_agent_notification(agent, "Question — waiting for your answer")
 
 
 # ---------------------------------------------------------------------------

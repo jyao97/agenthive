@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -60,7 +61,7 @@ def _is_subprocess_session(agent_id: str, hook_session_id: str, request: Request
 
 # Stop hook signal file directory.  The dispatcher reads (and deletes)
 # these when harvesting task completions.
-_HOOK_SIGNAL_DIR = "/tmp/ahive-hooks"
+_HOOK_SIGNAL_DIR = os.path.join(tempfile.gettempdir(), "ahive-hooks")
 
 
 
@@ -797,18 +798,11 @@ async def hook_agent_tool_activity(request: Request):
                 _db2.commit()
                 from display_writer import flush_agent as _flush_ta
                 _flush_ta(agent_id)
-                # Push notification for permission card (in-use suppressed)
-                _ag = _db2.get(Agent, agent_id)
-                if _ag and not (_ag.is_subagent or _ag.parent_id):
-                    if not (ad and ad._is_agent_in_use(_ag.id, _ag.tmux_pane)):
-                        from notify import notify as _notify_perm
-                        _notify_perm(
-                            "message", agent_id,
-                            _ag.name or f"Agent {agent_id[:8]}",
-                            _perm_question,
-                            f"/agents/{agent_id}",
-                            muted=_ag.muted, in_use=False,
-                        )
+                # Push notification for permission card
+                if ad:
+                    _ag = _db2.get(Agent, agent_id)
+                    if _ag:
+                        ad._send_agent_notification(_ag, _perm_question)
             finally:
                 _db2.close()
 
@@ -1003,18 +997,13 @@ async def hook_agent_permission(request: Request):
         _db_perm.commit()
         from display_writer import flush_agent as _flush_perm
         _flush_perm(agent_id)
-        # Push notification for permission card (in-use suppressed)
-        _ag_perm = _db_perm.get(Agent, agent_id)
+        # Push notification for permission card
         _ad = getattr(request.app.state, "agent_dispatcher", None)
-        if _ag_perm and not (_ag_perm.is_subagent or _ag_perm.parent_id):
-            if not (_ad and _ad._is_agent_in_use(agent_id, _ag_perm.tmux_pane)):
-                from notify import notify as _notify_perm
-                _notify_perm(
-                    "message", agent_id,
-                    agent_name or f"Agent {agent_id[:8]}",
-                    summary or f"Permission needed — {tool_name}",
-                    f"/agents/{agent_id}",
-                    muted=_ag_perm.muted, in_use=False,
+        if _ad:
+            _ag_perm = _db_perm.get(Agent, agent_id)
+            if _ag_perm:
+                _ad._send_agent_notification(
+                    _ag_perm, summary or f"Permission needed — {tool_name}",
                 )
     except Exception:
         logger.exception("hook_agent_permission: failed to persist permission card for agent %s", agent_id[:8])
@@ -1288,7 +1277,7 @@ async def hook_agent_session_start(request: Request):
                         )
                 else:
                     # Fallback: write signal file for poll-based detection
-                    signal_path = f"/tmp/ahive-{agent_id}.newsession"
+                    signal_path = os.path.join(tempfile.gettempdir(), f"ahive-{agent_id}.newsession")
                     try:
                         with open(signal_path, "w") as f:
                             f.write(session_id)
@@ -1326,7 +1315,7 @@ async def hook_agent_session_start(request: Request):
                         ctx.awaiting_rotation = False
 
         # Managed agent — session rotation signal
-        signal_path = f"/tmp/ahive-{agent_id}.newsession"
+        signal_path = os.path.join(tempfile.gettempdir(), f"ahive-{agent_id}.newsession")
         try:
             with open(signal_path, "w") as f:
                 f.write(session_id)
