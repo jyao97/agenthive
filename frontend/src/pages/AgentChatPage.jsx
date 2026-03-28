@@ -696,29 +696,34 @@ function ProgressSuggestionsCard({ agentId, onDone }) {
             />
             <div className="flex-1 min-w-0">
               {editingId === s.id ? (
-                <input
-                  type="text"
+                <textarea
                   autoFocus
+                  rows={3}
                   value={edits[s.id] ?? s.content}
                   onChange={(e) => setEdits((prev) => ({ ...prev, [s.id]: e.target.value }))}
                   onBlur={() => setEditingId(null)}
-                  onKeyDown={(e) => { if (e.key === "Enter") setEditingId(null); }}
-                  className="w-full bg-input border border-divider rounded px-2 py-1 text-sm text-body focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); setEditingId(null); } }}
+                  className="w-full bg-input border border-divider rounded px-2 py-1 text-sm text-body focus:outline-none focus:ring-1 focus:ring-amber-500/50 resize-y"
                 />
               ) : (
-                <p className="text-sm text-body leading-relaxed">
-                  {edits[s.id] ?? s.content}
+                <div className="flex items-start gap-1">
+                  <p
+                    className="text-sm text-body leading-relaxed flex-1 min-w-0 cursor-pointer select-none"
+                    onDoubleClick={() => setEditingId(s.id)}
+                  >
+                    {edits[s.id] ?? s.content}
+                  </p>
                   <button
                     type="button"
                     onClick={() => setEditingId(s.id)}
-                    className="ml-1.5 text-dim hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity inline-flex"
+                    className="text-dim hover:text-amber-400 transition-colors shrink-0 mt-0.5 p-0.5"
                     title="Edit"
                   >
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                     </svg>
                   </button>
-                </p>
+                </div>
               )}
             </div>
           </div>
