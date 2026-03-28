@@ -2230,6 +2230,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [showBrowser, setShowBrowser] = useState(false);
   const [fileExists, setFileExists] = useState({ "CLAUDE.md": null, "PROGRESS.md": null });
   const [headerExpanded, setHeaderExpanded] = useState(false);
+  const [syncRefreshing, setSyncRefreshing] = useState(false);
   const messagesEndRef = useRef(null);
   const health = useHealthStatus();
 
@@ -3336,17 +3337,19 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                 <button
                   type="button"
                   onClick={async () => {
+                    if (syncRefreshing) return;
+                    setSyncRefreshing(true);
                     try {
                       await wakeSync(id);
                       setTimeout(() => refreshMessages(), 800);
                     } catch {}
+                    setTimeout(() => setSyncRefreshing(false), 400);
                   }}
                   title="Refresh (incremental sync)"
-                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 hover:text-cyan-400 hover:bg-input transition-colors"
+                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-label hover:bg-input transition-colors"
                 >
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M20.49 9A9 9 0 005.64 5.64L4 4m16 16l-1.64-1.64A9 9 0 014.51 15" />
+                  <svg className={`w-4 h-4 ${syncRefreshing ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
                 </button>
                 <button
