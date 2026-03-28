@@ -464,18 +464,26 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             return "exit"
 
         # Finalize previous turn if it grew (streaming → new turn arrived).
-        # Wrapped in a savepoint so a UNIQUE constraint violation on jsonl_uuid
-        # (e.g. tool_use_id shared between assistant turn and tool_result turn)
-        # doesn't poison the outer transaction in SQLite.
+        # Match by jsonl_uuid when available so we update the correct DB
+        # message — falling back to "latest AGENT by created_at" only when
+        # the turn has no UUID.
         if ctx.last_turn_count > 0:
             prev_role, prev_content, *prev_rest = turns[ctx.last_turn_count - 1]
             prev_uuid = prev_rest[1] if len(prev_rest) > 1 else None
             prev_meta = prev_rest[0] if prev_rest else None
             if prev_role == "assistant":
-                last_agent_msg = db.query(Message).filter(
-                    Message.agent_id == ctx.agent_id,
-                    Message.role == MessageRole.AGENT,
-                ).order_by(Message.created_at.desc()).first()
+                # Prefer exact UUID match to avoid updating the wrong message.
+                last_agent_msg = None
+                if prev_uuid:
+                    last_agent_msg = db.query(Message).filter(
+                        Message.agent_id == ctx.agent_id,
+                        Message.jsonl_uuid == prev_uuid,
+                    ).first()
+                if last_agent_msg is None:
+                    last_agent_msg = db.query(Message).filter(
+                        Message.agent_id == ctx.agent_id,
+                        Message.role == MessageRole.AGENT,
+                    ).order_by(Message.created_at.desc()).first()
                 if (last_agent_msg
                         and len(last_agent_msg.content or "") < len(prev_content)):
                     last_agent_msg.content = prev_content
@@ -486,24 +494,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                         last_agent_msg.meta_json = _merge_interactive_meta(
                             last_agent_msg.meta_json, prev_meta,
                         )
-                    try:
-                        with db.begin_nested():
-                            db.flush()
-                    except IntegrityError:
-                        logger.warning(
-                            "Finalize: UNIQUE conflict on jsonl_uuid %s for agent %s, "
-                            "clearing uuid to avoid poisoning transaction",
-                            prev_uuid, ctx.agent_id[:8],
-                        )
-                        # Savepoint rolled back the UPDATE; re-apply without the
-                        # conflicting jsonl_uuid so content/meta still get saved.
-                        db.expire(last_agent_msg)
-                        last_agent_msg.content = prev_content
-                        last_agent_msg.completed_at = _utcnow()
-                        if prev_meta is not None:
-                            last_agent_msg.meta_json = _merge_interactive_meta(
-                                last_agent_msg.meta_json, prev_meta,
-                            )
 
         _actually_inserted = 0
         for i, (role, content, *rest) in enumerate(new_turns):
