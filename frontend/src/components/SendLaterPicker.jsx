@@ -1,9 +1,23 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { DATE_SHORT } from "../lib/formatters";
 
 export default function SendLaterPicker({ onSelect, onClose, onClear }) {
   const [customValue, setCustomValue] = useState("");
+  const anchorRef = useRef(null);
   const pickerRef = useRef(null);
+  const [pos, setPos] = useState(null);
+
+  // Measure anchor position and place the picker above it
+  useLayoutEffect(() => {
+    if (!anchorRef.current) return;
+    const rect = anchorRef.current.getBoundingClientRect();
+    const pickerW = 224; // w-56 = 14rem = 224px
+    let right = window.innerWidth - rect.right;
+    // Prevent overflowing left edge
+    if (rect.right - pickerW < 8) right = window.innerWidth - pickerW - 8;
+    setPos({ bottom: window.innerHeight - rect.top + 4, right });
+  }, []);
 
   // Close on outside click
   useEffect(() => {
@@ -57,10 +71,11 @@ export default function SendLaterPicker({ onSelect, onClose, onClear }) {
     ? new Date(customValue).toLocaleString([], DATE_SHORT)
     : null;
 
-  return (
+  const picker = (
     <div
       ref={pickerRef}
-      className="absolute bottom-12 right-0 w-56 bg-surface border border-divider rounded-xl shadow-lg overflow-hidden z-50"
+      className="w-56 bg-surface border border-divider rounded-xl shadow-lg overflow-hidden z-[9999]"
+      style={pos ? { position: "fixed", bottom: pos.bottom, right: pos.right } : { visibility: "hidden", position: "fixed" }}
     >
       <div className="px-3 py-2 border-b border-divider flex items-center justify-between">
         <span className="text-xs font-semibold text-heading">Remind At</span>
@@ -117,5 +132,12 @@ export default function SendLaterPicker({ onSelect, onClose, onClear }) {
         </div>
       </div>
     </div>
+  );
+
+  return (
+    <>
+      <span ref={anchorRef} className="absolute bottom-0 right-0 w-0 h-0 pointer-events-none" />
+      {createPortal(picker, document.body)}
+    </>
   );
 }
