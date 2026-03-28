@@ -100,7 +100,12 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
         deliverTranscript(text);
       }
     } catch (err) {
-      onErrorRef.current?.("Transcription failed — try again.");
+      const msg = err?.message || "";
+      if (msg.includes("503") || msg.toLowerCase().includes("api key")) {
+        onErrorRef.current?.("Voice input unavailable — OpenAI API key not configured. Add OPENAI_API_KEY to .env");
+      } else {
+        onErrorRef.current?.("Transcription failed — try again.");
+      }
     } finally {
       setVoiceLoading(false);
     }
