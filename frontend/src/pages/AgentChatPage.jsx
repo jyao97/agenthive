@@ -86,7 +86,7 @@ function SystemBubble({ message }) {
       <button
         type="button"
         onClick={() => isLong && setExpanded((v) => !v)}
-        className={`inline-block max-w-[90%] px-3 py-1 rounded-lg bg-elevated text-xs text-dim text-left ${isLong ? "cursor-pointer hover:bg-hover transition-colors" : "cursor-default"}`}
+        className={`inline-block max-w-[80%] px-3 py-1 rounded-lg bg-elevated text-xs text-dim text-left ${isLong ? "cursor-pointer hover:bg-hover transition-colors" : "cursor-default"}`}
       >
         <div className="flex items-center gap-1.5">
           <span className="shrink-0 opacity-60">sys</span>
@@ -149,7 +149,7 @@ function SubAgentBubble({ message, project }) {
 
   return (
     <div className="flex justify-start my-2">
-      <div className="max-w-[85%]">
+      <div className="max-w-[70%]">
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
@@ -1021,9 +1021,9 @@ function splitMessageSegments(content) {
 function AgentTextSegment({ text, project }) {
   return (
     <div className="flex justify-start my-2">
-      <div className="max-w-[85%] min-w-0">
+      <div className="max-w-[70%] min-w-0">
         <div className="rounded-2xl px-4 py-2.5 bg-surface shadow-card text-body rounded-bl-md overflow-hidden">
-          <div className="text-sm break-words overflow-hidden">
+          <div className="text-sm break-words overflow-hidden chat-bubble-content">
             <SafeMarkdown fallback={text}>
               {renderMarkdown(text, project)}
             </SafeMarkdown>
@@ -1203,7 +1203,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
 
     return (
       <div className="flex justify-end my-2">
-        <div className="max-w-[85%] min-w-0">
+        <div className="max-w-[70%] min-w-0">
           <div className="rounded-2xl px-4 py-2.5 bg-amber-600/60 text-white rounded-br-md space-y-2 overflow-hidden">
             <textarea
               ref={editTextareaRef}
@@ -1257,7 +1257,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-2`}>
-      <div className={`max-w-[85%] min-w-0 relative ${isUser ? "flex flex-col items-end" : ""}`}>
+      <div className={`max-w-[70%] min-w-0 relative ${isUser ? "flex flex-col items-end" : ""}`}>
         <div className={isUser ? "flex items-center gap-2" : undefined}>
         {isUndeliveredTimedOut && (
           <div className="flex-shrink-0 text-red-400" title="Message not delivered — Claude may not have received this">
@@ -1314,7 +1314,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
               </div>
             ) : (
               displayContent && (
-                <div className="text-sm user-md break-words overflow-hidden">
+                <div className="text-sm user-md break-words overflow-hidden chat-bubble-content">
                   <SafeMarkdown fallback={displayContent}>
                     {renderMarkdown(displayContent, project)}
                   </SafeMarkdown>
@@ -1322,7 +1322,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
               )
             )
           ) : (
-            <div className="text-sm break-words overflow-hidden" ref={markdownRef} onClick={handleMarkdownClick}>
+            <div className="text-sm break-words overflow-hidden chat-bubble-content" ref={markdownRef} onClick={handleMarkdownClick}>
               <SafeMarkdown fallback={displayContent}>
                 {renderMarkdown(displayContent, project)}
               </SafeMarkdown>
@@ -1504,7 +1504,7 @@ function ToolLogBubble({ entries }) {
 
   return (
     <div className="flex justify-start my-2">
-      <div className="max-w-[85%] rounded-2xl px-4 py-2.5 bg-surface shadow-card rounded-bl-md">
+      <div className="max-w-[70%] rounded-2xl px-4 py-2.5 bg-surface shadow-card rounded-bl-md">
         <div className="space-y-0.5 text-xs font-mono">
           {shouldCollapse && !expanded ? (
             <button type="button" onClick={() => setExpanded(true)} className="flex items-center gap-1.5 text-dim hover:text-cyan-300">
@@ -1579,7 +1579,7 @@ function ToolActivityBubble({ message }) {
 
   return (
     <div className="flex justify-start my-1">
-      <div className="max-w-[85%] rounded-2xl px-3 py-1.5 bg-surface shadow-card rounded-bl-md">
+      <div className="max-w-[70%] rounded-2xl px-3 py-1.5 bg-surface shadow-card rounded-bl-md">
         <div className={`flex items-center gap-1.5 text-xs font-mono ${isError ? "text-red-400" : "text-dim"}`}>
           <span className="shrink-0">{icon()}</span>
           <span className={nameColor()}>{toolName}</span>
@@ -1661,9 +1661,9 @@ function SyncPrompt({ agentId, onSync }) {
 function StreamingBubble({ content, project, activeTool }) {
   return (
     <div className="flex justify-start my-2">
-      <div className="max-w-[85%] min-w-0">
+      <div className="max-w-[70%] min-w-0">
         <div className="rounded-2xl px-4 py-2.5 bg-surface shadow-card text-body rounded-bl-md overflow-hidden">
-          <div className="text-sm break-words overflow-hidden">
+          <div className="text-sm break-words overflow-hidden chat-bubble-content">
             <SafeMarkdown fallback={content}>
               {renderMarkdown(content, project)}
             </SafeMarkdown>
@@ -3587,7 +3587,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               // Only show on retry agents (not the first attempt)
               if (myIdx < 1) return null;
               return (
-                <div className="mx-auto max-w-[85%] mb-3 rounded-xl bg-orange-500/8 border border-orange-500/20 px-4 py-3">
+                <div className="mx-auto max-w-[70%] mb-3 rounded-xl bg-orange-500/8 border border-orange-500/20 px-4 py-3">
                   {/* Attempt navigation pills */}
                   <div className="flex items-center gap-1.5 mb-2 flex-wrap">
                     <span className="text-[10px] font-semibold text-orange-500 dark:text-orange-400 mr-1">Attempts</span>

@@ -135,6 +135,20 @@ body::after {
   height: 1px;
 }
 
+/* ── Chat bubble content: force long words / inline code to wrap ── */
+.chat-bubble-content {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.chat-bubble-content code {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.chat-bubble-content pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 /* ── User bubble markdown overrides (white-on-cyan) ── */
 .user-md h2, .user-md h3, .user-md h4 { color: inherit; }
 .user-md p { color: inherit; }
