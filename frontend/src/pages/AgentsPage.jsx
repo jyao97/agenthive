@@ -99,6 +99,16 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
               insights
             </span>
           )}
+          {agent.insight_status === "failed" && !agent.has_pending_suggestions && (
+            <span className="shrink-0 inline-flex items-center justify-center h-5 px-1.5 rounded-full bg-red-500 text-white text-[10px] font-bold">
+              failed
+            </span>
+          )}
+          {agent.insight_status === "generating" && !agent.has_pending_suggestions && (
+            <span className="shrink-0 inline-flex items-center justify-center h-5 px-1.5 rounded-full bg-blue-500 text-white text-[10px] font-bold animate-pulse">
+              generating
+            </span>
+          )}
           {agent.unread_count > 0 && (
             <span className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-cyan-500 text-white text-xs font-bold">
               {agent.unread_count}
@@ -258,7 +268,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
       : filter === "ACTIVE"
         ? agents.filter((a) => a.status !== "STOPPED")
         : filter === "INSIGHTS"
-          ? agents.filter((a) => a.has_pending_suggestions)
+          ? agents.filter((a) => a.has_pending_suggestions || a.insight_status === "failed" || a.insight_status === "generating")
           : agents.filter((a) => a.status === "STOPPED"),
     [agents, filter]);
 
@@ -309,7 +319,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     ALL: agents.length,
     ACTIVE: agents.filter(a => a.status !== "STOPPED").length,
     STOPPED: agents.filter(a => a.status === "STOPPED").length,
-    INSIGHTS: agents.filter(a => a.has_pending_suggestions).length,
+    INSIGHTS: agents.filter(a => a.has_pending_suggestions || a.insight_status === "failed" || a.insight_status === "generating").length,
   }), [agents]);
 
   // Count how many selected agents are stoppable (not already stopped)
