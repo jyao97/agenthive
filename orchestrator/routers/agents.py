@@ -2085,6 +2085,10 @@ async def wake_agent_sync(agent_id: str, request: Request, db: Session = Depends
         ad._emit(emit_agent_update(agent.id, "IDLE", agent.project))
         logger.info("wake-sync: recovered agent %s from ERROR → IDLE", agent_id[:8])
     if ad.wake_sync(agent_id):
+        # Also dispatch any stuck PENDING messages (e.g., after an interrupt
+        # where the stop hook never fired).  Small delay so the sync loop
+        # processes any new JSONL data first.
+        asyncio.ensure_future(ad.dispatch_pending_message(agent_id, delay=1.0))
         return {"status": "ok", "detail": "Sync woken"}
     raise HTTPException(status_code=409, detail="No active sync loop for this agent")
 
@@ -2841,6 +2845,11 @@ async def send_escape_to_agent(agent_id: str, request: Request, db: Session = De
             logger.info("escape: interrupt confirmed in JSONL for %s", agent_id[:8])
         else:
             logger.info("escape: no JSONL entry for %s (CC may have been idle), cleared generating", agent_id[:8])
+        # Dispatch any PENDING messages — the stop hook won't fire after an
+        # interrupt, so we must dispatch here.  Delay lets the sync loop
+        # import the agent's last response first (correct display_seq ordering).
+        from config import JSONL_FLUSH_DELAY
+        asyncio.ensure_future(ad.dispatch_pending_message(agent_id, delay=JSONL_FLUSH_DELAY + 0.5))
 
     logger.info("Sent Escape to agent %s pane %s", agent_id, agent.tmux_pane)
     return {"detail": "ok", "interrupted": interrupted}

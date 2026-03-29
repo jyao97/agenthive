@@ -2431,6 +2431,66 @@ Here are the day's conversations (with timestamps):
         finally:
             db.close()
 
+    async def dispatch_pending_message(self, agent_id: str, delay: float = 0):
+        """Dispatch the first PENDING user message to the agent's tmux pane.
+
+        Called after interrupt/escape or manual wake-sync — paths where
+        the stop hook doesn't fire but PENDING messages need to be sent.
+        Safe to call even when the stop hook also dispatches: the first
+        dispatch PENDING→QUEUED prevents the second from doing anything.
+        """
+        if delay > 0:
+            await asyncio.sleep(delay)
+        db = SessionLocal()
+        try:
+            pending_msg = (
+                db.query(Message)
+                .filter(
+                    Message.agent_id == agent_id,
+                    Message.role == MessageRole.USER,
+                    Message.status == MessageStatus.PENDING,
+                    Message.scheduled_at.is_(None),
+                )
+                .order_by(Message.created_at.asc())
+                .first()
+            )
+            if not pending_msg:
+                return
+
+            agent = db.get(Agent, agent_id)
+            if not agent or not agent.tmux_pane:
+                return
+
+            if not verify_tmux_pane(agent.tmux_pane):
+                logger.warning(
+                    "dispatch_pending: tmux pane gone for agent %s, skipping",
+                    agent_id[:8],
+                )
+                return
+
+            ok = send_tmux_message(agent.tmux_pane, pending_msg.content)
+            if ok:
+                pending_msg.status = MessageStatus.QUEUED
+                pending_msg.dispatch_seq = self.next_dispatch_seq(db, agent_id)
+                db.commit()
+
+                from websocket import emit_message_update
+                asyncio.ensure_future(emit_message_update(agent_id, pending_msg.id, "QUEUED"))
+
+                logger.info(
+                    "dispatch_pending: dispatched message %s to agent %s",
+                    pending_msg.id[:8], agent_id[:8],
+                )
+            else:
+                logger.warning(
+                    "dispatch_pending: send_tmux_message failed for agent %s",
+                    agent_id[:8],
+                )
+        except Exception:
+            logger.exception("dispatch_pending: error for agent %s", agent_id[:8])
+        finally:
+            db.close()
+
     async def trigger_sync(self, agent_id: str):
         """Trigger an immediate sync for an agent (called from hooks)."""
         from sync_engine import trigger_sync
