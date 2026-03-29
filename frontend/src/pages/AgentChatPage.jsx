@@ -3627,7 +3627,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         data-chat-container
         onScroll={handleScroll}
         className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOpen ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
-        style={{ overflowAnchor: "auto", overscrollBehavior: "contain" }}
+        style={{ overflowAnchor: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}
       >
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
