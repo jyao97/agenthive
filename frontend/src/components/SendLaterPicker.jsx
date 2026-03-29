@@ -1,9 +1,29 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 
-const DAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const MONTHS = ["January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December"];
+
+function Stepper({ value, onUp, onDown, width = "w-6" }) {
+  return (
+    <div className="flex flex-col items-center">
+      <button type="button" onClick={onUp}
+        className="w-7 h-5 rounded-t-md bg-input hover:bg-hover flex items-center justify-center text-dim hover:text-heading transition-colors active:scale-95">
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
+      <span className={`text-sm font-semibold text-heading ${width} text-center leading-6`}>{value}</span>
+      <button type="button" onClick={onDown}
+        className="w-7 h-5 rounded-b-md bg-input hover:bg-hover flex items-center justify-center text-dim hover:text-heading transition-colors active:scale-95">
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+    </div>
+  );
+}
 
 export default function SendLaterPicker({ onSelect, onClose, onClear, title = "Remind At" }) {
   const anchorRef = useRef(null);
@@ -14,18 +34,26 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [viewMonth, setViewMonth] = useState(now.getMonth());
   const [selectedDay, setSelectedDay] = useState(null); // { year, month, day }
-  const [hour, setHour] = useState(9);
+  // Store time in 12h format
+  const [hour12, setHour12] = useState(9);
   const [minute, setMinute] = useState(0);
+  const [ampm, setAmpm] = useState("AM");
+
+  // Convert 12h → 24h for final output
+  const to24h = () => {
+    if (ampm === "AM") return hour12 === 12 ? 0 : hour12;
+    return hour12 === 12 ? 12 : hour12 + 12;
+  };
 
   // Position picker above anchor, respecting screen edges
   useLayoutEffect(() => {
     if (!anchorRef.current) return;
     const rect = anchorRef.current.getBoundingClientRect();
     const pickerW = 280;
-    const pickerH = 420;
+    const pickerH = 440;
     let right = window.innerWidth - rect.right;
     if (rect.right - pickerW < 8) right = window.innerWidth - pickerW - 8;
-    // If not enough space above, show below
+    if (right < 8) right = 8;
     const spaceAbove = rect.top;
     if (spaceAbove < pickerH + 8) {
       setPos({ top: rect.bottom + 4, right });
@@ -81,29 +109,27 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
     else setViewMonth(m => m + 1);
   };
 
-  const selectPreset = (date) => {
-    onSelect(date.toISOString());
-  };
+  const handlePreset = (date) => onSelect(date.toISOString());
 
   const handleToday = () => {
     const d = new Date();
-    d.setHours(hour, minute, 0, 0);
+    d.setHours(to24h(), minute, 0, 0);
     if (d <= new Date()) d.setHours(d.getHours() + 1, 0, 0, 0);
-    selectPreset(d);
+    handlePreset(d);
   };
 
   const handleEvening = () => {
     const d = new Date();
     d.setHours(20, 0, 0, 0);
-    if (d <= new Date()) { d.setDate(d.getDate() + 1); }
-    selectPreset(d);
+    if (d <= new Date()) d.setDate(d.getDate() + 1);
+    handlePreset(d);
   };
 
   const handleTomorrow = () => {
     const d = new Date();
     d.setDate(d.getDate() + 1);
     d.setHours(9, 0, 0, 0);
-    selectPreset(d);
+    handlePreset(d);
   };
 
   const handleDayClick = (day) => {
@@ -113,12 +139,12 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
 
   const handleConfirm = () => {
     if (!selectedDay) return;
-    const d = new Date(selectedDay.year, selectedDay.month, selectedDay.day, hour, minute, 0, 0);
+    const d = new Date(selectedDay.year, selectedDay.month, selectedDay.day, to24h(), minute, 0, 0);
     if (d <= new Date()) return;
     onSelect(d.toISOString());
   };
 
-  const cycleHour = (delta) => setHour(h => ((h + delta - 1 + 24) % 24) + 1);
+  const cycleHour = (delta) => setHour12(h => ((h - 1 + delta + 12) % 12) + 1);
   const cycleMinute = (delta) => setMinute(m => (m + delta + 60) % 60);
 
   const posStyle = pos
@@ -138,12 +164,12 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
         <div className="flex items-center gap-2">
           {onClear && (
             <button type="button" onClick={() => { onClear(); onClose(); }}
-              className="text-xs text-red-400 hover:text-red-300 font-medium">
+              className="text-xs text-red-400 hover:text-red-300 font-medium transition-colors">
               Clear
             </button>
           )}
           <button type="button" onClick={onClose}
-            className="w-6 h-6 rounded-full bg-elevated flex items-center justify-center text-dim hover:text-heading">
+            className="w-6 h-6 rounded-full bg-elevated flex items-center justify-center text-dim hover:text-heading transition-colors">
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -201,7 +227,7 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
 
         {/* Day headers */}
         <div className="grid grid-cols-7 mb-1">
-          {DAYS.map(d => (
+          {DAY_LABELS.map(d => (
             <div key={d} className="text-center text-[10px] font-medium text-faint py-0.5">{d}</div>
           ))}
         </div>
@@ -229,20 +255,24 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
       </div>
 
       {/* Time + Confirm */}
-      <div className="border-t border-divider px-4 py-2.5 flex items-center justify-between">
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-dim mr-1">Time</span>
-          <button type="button" onClick={() => cycleHour(-1)}
-            className="w-5 h-5 rounded bg-input text-dim hover:text-heading flex items-center justify-center text-[10px] font-bold">-</button>
-          <span className="text-sm font-semibold text-heading w-5 text-center">{hour}</span>
-          <button type="button" onClick={() => cycleHour(1)}
-            className="w-5 h-5 rounded bg-input text-dim hover:text-heading flex items-center justify-center text-[10px] font-bold">+</button>
-          <span className="text-sm text-dim">:</span>
-          <button type="button" onClick={() => cycleMinute(-5)}
-            className="w-5 h-5 rounded bg-input text-dim hover:text-heading flex items-center justify-center text-[10px] font-bold">-</button>
-          <span className="text-sm font-semibold text-heading w-5 text-center">{String(minute).padStart(2, "0")}</span>
-          <button type="button" onClick={() => cycleMinute(5)}
-            className="w-5 h-5 rounded bg-input text-dim hover:text-heading flex items-center justify-center text-[10px] font-bold">+</button>
+      <div className="border-t border-divider px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium text-label mr-0.5">Time</span>
+          <Stepper
+            value={hour12}
+            onUp={() => cycleHour(1)}
+            onDown={() => cycleHour(-1)}
+          />
+          <span className="text-sm font-semibold text-dim leading-6">:</span>
+          <Stepper
+            value={String(minute).padStart(2, "0")}
+            onUp={() => cycleMinute(5)}
+            onDown={() => cycleMinute(-5)}
+          />
+          <button type="button" onClick={() => setAmpm(v => v === "AM" ? "PM" : "AM")}
+            className="ml-1 px-2 py-1 rounded-md bg-input hover:bg-hover text-xs font-semibold text-heading transition-colors active:scale-95">
+            {ampm}
+          </button>
         </div>
         <button
           type="button"
