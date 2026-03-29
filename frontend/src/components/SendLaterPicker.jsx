@@ -111,23 +111,21 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
 
   const handlePreset = (date) => onSelect(date.toISOString());
 
-  const handleToday = () => {
-    const d = new Date();
-    d.setHours(to24h(), minute, 0, 0);
-    if (d <= new Date()) d.setHours(d.getHours() + 1, 0, 0, 0);
-    handlePreset(d);
-  };
-
-  const handleEvening = () => {
-    const d = new Date();
-    d.setHours(20, 0, 0, 0);
-    if (d <= new Date()) d.setDate(d.getDate() + 1);
-    handlePreset(d);
+  const handle3Hours = () => {
+    handlePreset(new Date(Date.now() + 3 * 3600000));
   };
 
   const handleTomorrow = () => {
     const d = new Date();
     d.setDate(d.getDate() + 1);
+    d.setHours(9, 0, 0, 0);
+    handlePreset(d);
+  };
+
+  const handleNextWeek = () => {
+    const d = new Date();
+    const daysUntilMon = (8 - d.getDay()) % 7 || 7;
+    d.setDate(d.getDate() + daysUntilMon);
     d.setHours(9, 0, 0, 0);
     handlePreset(d);
   };
@@ -179,26 +177,26 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
 
       {/* Presets */}
       <div className="py-1 border-b border-divider">
-        <button type="button" onClick={handleToday}
+        <button type="button" onClick={handle3Hours}
           className="w-full text-left px-4 py-2 text-sm text-body hover:bg-input transition-colors flex items-center gap-2.5">
           <svg className="w-4 h-4 text-amber-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
           </svg>
-          Today
-        </button>
-        <button type="button" onClick={handleEvening}
-          className="w-full text-left px-4 py-2 text-sm text-body hover:bg-input transition-colors flex items-center gap-2.5">
-          <svg className="w-4 h-4 text-indigo-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-          </svg>
-          This Evening
+          3 Hours
         </button>
         <button type="button" onClick={handleTomorrow}
           className="w-full text-left px-4 py-2 text-sm text-body hover:bg-input transition-colors flex items-center gap-2.5">
           <svg className="w-4 h-4 text-orange-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
           </svg>
-          Tomorrow 9 AM
+          Tomorrow
+        </button>
+        <button type="button" onClick={handleNextWeek}
+          className="w-full text-left px-4 py-2 text-sm text-body hover:bg-input transition-colors flex items-center gap-2.5">
+          <svg className="w-4 h-4 text-cyan-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+          Next Week
         </button>
       </div>
 
