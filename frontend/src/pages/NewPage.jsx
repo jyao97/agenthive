@@ -588,6 +588,7 @@ function NewAgentForm({ showToast, navigate }) {
               </button>
               {showSchedulePicker && (
                 <SendLaterPicker
+                  title="Schedule At"
                   onSelect={handleSchedule}
                   onClose={() => setShowSchedulePicker(false)}
                 />
