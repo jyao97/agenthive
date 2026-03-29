@@ -5,7 +5,7 @@
 [![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
 
-> [**Getting Started**](#getting-started) · [**The Loop**](#the-loop) · [**Features**](#features) · [**Development**](#development) · [**Contributing**](CONTRIBUTING.md)
+> [**Getting Started**](#getting-started) · [**The Loop**](#the-loop) · [**Features**](#features) · [**Contributing**](CONTRIBUTING.md)
 
 **A web-based task management system for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — capture tasks, dispatch them to AI agents, and check back when they're done.**
 
@@ -218,46 +218,6 @@ No port forwarding, no public exposure. Tailscale creates a secure WireGuard tun
     ├── ml-pipeline/
     └── ...
 ```
-
-## Development
-
-```bash
-# Clone and setup
-git clone https://github.com/jyao97/agenthive.git && cd agenthive
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r orchestrator/requirements.txt
-cd frontend && npm install && cd ..
-cp .env.example .env
-
-# Start in development mode
-./run.sh start          # Backend (FastAPI) + Frontend (Vite dev server)
-
-# Run tests
-cd frontend && npx vitest run                          # Frontend tests
-cd orchestrator && python3 -m pytest tests/            # Backend tests
-
-# Verify backend modules
-cd orchestrator && python3 -c "from models import *; print('OK')"
-
-# Build frontend for production
-cd frontend && npx vite build
-
-# View logs
-./run.sh logs
-```
-
-## Updating
-
-```bash
-cd agenthive
-git pull origin main
-source .venv/bin/activate
-pip install -r orchestrator/requirements.txt   # Update backend deps
-cd frontend && npm install && cd ..            # Update frontend deps
-./run.sh restart
-```
-
-AgentHive uses SQLite — database migrations are handled automatically on startup when the schema changes. Your data and configuration are preserved across updates.
 
 ## Installing the CA Certificate
 
