@@ -1075,7 +1075,7 @@ function AgentTextSegment({ text, project }) {
   return (
     <div className="flex justify-start my-2">
       <div className="max-w-[85%] min-w-0">
-        <div className="rounded-2xl px-4 py-2.5 bg-surface shadow-card text-body rounded-bl-md overflow-hidden">
+        <div className="rounded-2xl px-4 py-2.5 bg-surface shadow-card text-body rounded-bl-md overflow-hidden select-none">
           <div className="text-sm break-words overflow-hidden chat-bubble-content">
             <SafeMarkdown fallback={text}>
               {renderMarkdown(text, project)}
@@ -1333,7 +1333,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
                       ? "bg-cyan-600/70 text-white/80 rounded-br-md"
                       : "bg-cyan-600 text-white rounded-br-md"
               : "bg-surface shadow-card text-body rounded-bl-md"
-          } ${canModify ? "select-none" : ""} overflow-hidden`}
+          } select-none overflow-hidden`}
           onDoubleClick={handleDoubleClick}
           onTouchStart={handleLongPressStart}
           onTouchEnd={handleLongPressEnd}
@@ -1716,7 +1716,7 @@ function StreamingBubble({ content, project, activeTool }) {
   return (
     <div className="flex justify-start my-2">
       <div className="max-w-[85%] min-w-0">
-        <div className="rounded-2xl px-4 py-2.5 bg-surface shadow-card text-body rounded-bl-md overflow-hidden">
+        <div className="rounded-2xl px-4 py-2.5 bg-surface shadow-card text-body rounded-bl-md overflow-hidden select-none">
           <div className="text-sm break-words overflow-hidden chat-bubble-content">
             <SafeMarkdown fallback={content}>
               {renderMarkdown(content, project)}
