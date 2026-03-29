@@ -2719,7 +2719,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         document.body.style.position = 'fixed';
         document.body.style.width = '100%';
         document.body.style.top = '0';
-        document.body.style.touchAction = 'none';
         window.scrollTo(0, 0);
         // Block touchmove outside scroll container to prevent iOS
         // visual-viewport scroll via touch gestures on the input bar.
@@ -2735,7 +2734,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         document.body.style.position = '';
         document.body.style.width = '';
         document.body.style.top = '';
-        document.body.style.touchAction = '';
         document.removeEventListener('touchmove', blockTouchOutsideScroll);
         setKbOpen(false);
         const sc = scrollContainerRef.current;
@@ -2774,7 +2772,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (stopTimer) clearTimeout(stopTimer);
       clearTimeout(padTimer);
       document.removeEventListener('touchmove', blockTouchOutsideScroll);
-      document.body.style.touchAction = '';
       kbFlush(); // flush remaining samples
     };
   }, []);
