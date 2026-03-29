@@ -556,7 +556,15 @@ def parse_session_turns_from_lines(
 
         elif entry_type == "system":
             subtype = entry.get("subtype", "")
-            if subtype in ("turn_duration", "stop_hook_summary"):
+            if subtype == "turn_duration":
+                continue
+            if subtype == "stop_hook_summary":
+                flush_all()
+                _stop_meta = {
+                    "hook_errors": entry.get("hookErrors", []),
+                    "stop_reason": entry.get("stopReason", ""),
+                }
+                turns.append(("system", "", _stop_meta, entry_uuid, "stop_hook", entry_ts))
                 continue
             flush_all()
             content = entry.get("content", "")

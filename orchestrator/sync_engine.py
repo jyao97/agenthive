@@ -28,7 +28,7 @@ from models import (
     MessageRole,
     MessageStatus,
 )
-from utils import utcnow as _utcnow
+from utils import utcnow as _utcnow, is_interrupt_message
 
 
 def _parse_jsonl_ts(ts: str | None) -> datetime | None:
@@ -472,6 +472,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     )
 
         _actually_inserted = 0
+        _saw_interrupt = False
+        _saw_stop_hook = False
         for i, (role, content, *rest) in enumerate(new_turns):
             seq = ctx.last_turn_count + i
             meta = rest[0] if rest else None
@@ -485,11 +487,12 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
 
             if role == "user":
                 # Detect user interrupt
-                if "[Request interrupted by user" in (content or ""):
+                if is_interrupt_message(content):
                     if ctx.agent_id in ad._generating_agents or (
                         agent and agent.generating_msg_id is not None
                     ):
                         ad._stop_generating(ctx.agent_id)
+                    _saw_interrupt = True
 
                 msg = _promote_or_create_user_msg(
                     db, ctx, content, jsonl_uuid, seq, meta, kind, jsonl_ts,
@@ -505,6 +508,11 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     continue
 
             elif role == "system":
+                # stop_hook_summary: signal only, don't create a visible message
+                if kind == "stop_hook":
+                    _saw_stop_hook = True
+                    continue
+
                 msg = _create_system_msg(
                     db, ctx, content, jsonl_uuid, seq, kind, jsonl_ts,
                 )
@@ -553,6 +561,48 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         # Flush new messages to display file
         from display_writer import flush_agent as _flush_display
         _flush_display(ctx.agent_id)
+
+        # Interrupt detected in JSONL: dispatch any PENDING messages immediately
+        # (no delay — the agent's last response is already imported above).
+        if _saw_interrupt:
+            asyncio.ensure_future(ad.dispatch_pending_message(ctx.agent_id, delay=0))
+
+        # stop_hook_summary detected in JSONL: if the agent is still EXECUTING
+        # (i.e. the HTTP stop hook never arrived — e.g. ECONNREFUSED), perform
+        # the same state transition the stop hook handler would have done.
+        # Idempotent: if the HTTP handler already ran, agent is IDLE and this
+        # is a no-op.
+        if _saw_stop_hook:
+            _still_executing = (
+                ctx.agent_id in ad._generating_agents
+                or (agent and agent.generating_msg_id is not None)
+            )
+            if _still_executing:
+                logger.info(
+                    "sync: stop_hook_summary detected for agent %s but still "
+                    "EXECUTING — running fallback stop_generating",
+                    ctx.agent_id[:8],
+                )
+                ad._stop_generating(ctx.agent_id)
+                # unread + notify (mirrors hook_agent_stop logic)
+                _fb_db = SessionLocal()
+                try:
+                    _fb_agent = _fb_db.get(Agent, ctx.agent_id)
+                    if _fb_agent:
+                        _is_sub = _fb_agent.is_subagent or _fb_agent.parent_id
+                        if not _is_sub and not ad._is_agent_in_use(
+                            _fb_agent.id, _fb_agent.tmux_pane
+                        ):
+                            _fb_agent.unread_count += 1
+                        _fb_db.commit()
+                        if not _is_sub:
+                            ad._maybe_notify_message(_fb_agent)
+                finally:
+                    _fb_db.close()
+                # dispatch pending (no delay — response already imported above)
+                asyncio.ensure_future(
+                    ad.dispatch_pending_message(ctx.agent_id, delay=0)
+                )
 
         logger.debug("Agent %s: sync_import result=%s, inserted=%d, pointer now=%d",
                      ctx.agent_id[:8], "new_turns", _actually_inserted, ctx.last_turn_count)
