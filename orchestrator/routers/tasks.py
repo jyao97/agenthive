@@ -615,6 +615,8 @@ async def update_task_v2(task_id: str, body: TaskUpdate, db: Session = Depends(g
     # Time fields: allow explicit null to clear
     if "notify_at" in body.model_fields_set:
         task.notify_at = body.notify_at
+    if "deferred_to" in body.model_fields_set:
+        task.deferred_to = body.deferred_to
     db.commit()
     db.refresh(task)
     asyncio.ensure_future(emit_task_update(

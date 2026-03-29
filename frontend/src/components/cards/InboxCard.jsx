@@ -292,6 +292,20 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
     onRefresh?.();
   };
 
+  // --- deferred_to ---
+  const [showDeferPicker, setShowDeferPicker] = useState(false);
+
+  const handleDeferSelect = async (iso) => {
+    setShowDeferPicker(false);
+    await updateTaskV2(task.id, { deferred_to: iso });
+    onRefresh?.();
+  };
+  const handleDeferClear = async () => {
+    setShowDeferPicker(false);
+    await updateTaskV2(task.id, { deferred_to: null });
+    onRefresh?.();
+  };
+
   // --- dispatch (launch agent) ---
   const handleDispatch = async (e) => {
     e.stopPropagation();
@@ -451,6 +465,14 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                       {relativeTime(task.notify_at)}
                     </span>
                   )}
+                  {task.deferred_to && (
+                    <span className="text-[10px] text-indigo-400 flex items-center gap-0.5">
+                      <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                      </svg>
+                      {relativeTime(task.deferred_to)}
+                    </span>
+                  )}
                 </div>
               </>
             )}
@@ -577,6 +599,14 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                       {relativeTime(task.notify_at)}
                     </span>
                   )}
+                  {task.deferred_to && (
+                    <span className="text-[11px] text-indigo-400 flex items-center gap-0.5">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                      </svg>
+                      {relativeTime(task.deferred_to)}
+                    </span>
+                  )}
                 </div>
 
                 {/* Action toolbar */}
@@ -647,6 +677,26 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                         onSelect={handleRemindSelect}
                         onClose={() => setShowRemindPicker(false)}
                         onClear={task.notify_at ? handleRemindClear : undefined}
+                      />
+                    )}
+                  </div>
+
+                  <div className="relative">
+                    <button type="button" onClick={(e) => { e.stopPropagation(); setShowDeferPicker(v => !v); }}
+                      className={`w-8 h-8 rounded-full flex items-center justify-center transition-all active:scale-90 ${
+                        task.deferred_to ? "bg-indigo-500 text-white" : "bg-elevated text-dim hover:text-heading"
+                      }`}
+                      title="Defer task">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                      </svg>
+                    </button>
+                    {showDeferPicker && (
+                      <SendLaterPicker
+                        title="Defer Until"
+                        onSelect={handleDeferSelect}
+                        onClose={() => setShowDeferPicker(false)}
+                        onClear={task.deferred_to ? handleDeferClear : undefined}
                       />
                     )}
                   </div>

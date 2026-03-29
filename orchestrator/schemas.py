@@ -26,6 +26,7 @@ class TaskCreate(BaseModel):
     use_worktree: bool = True
     use_tmux: bool = True
     notify_at: datetime | None = None
+    deferred_to: datetime | None = None
     auto_dispatch: bool = False
 
     @field_validator("model", mode="before")
@@ -47,6 +48,7 @@ class TaskUpdate(BaseModel):
     effort: str | None = None
     status: str | None = None
     notify_at: datetime | None = None
+    deferred_to: datetime | None = None
     skip_permissions: bool | None = None
     use_worktree: bool | None = None
     use_tmux: bool | None = None
@@ -75,6 +77,7 @@ class TaskOut(BaseModel):
     retry_context: str | None = None
     sort_order: int = 0
     notify_at: datetime | None = None
+    deferred_to: datetime | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -82,7 +85,7 @@ class TaskOut(BaseModel):
     elapsed_seconds: int | None = None
     model_config = {"from_attributes": True}
 
-    @field_validator("created_at", "started_at", "completed_at", "notify_at", mode="before")
+    @field_validator("created_at", "started_at", "completed_at", "notify_at", "deferred_to", mode="before")
     @classmethod
     def ensure_utc_task(cls, v):
         if v is not None and isinstance(v, datetime) and v.tzinfo is None:

@@ -306,6 +306,11 @@ def init_db():
             conn.execute(text("ALTER TABLE tasks DROP COLUMN scheduled_at"))
             conn.commit()
 
+        # Add deferred_to column to tasks if missing
+        if "deferred_to" not in _table_columns(conn, "tasks"):
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN deferred_to DATETIME"))
+            conn.commit()
+
         # Add task_id column to agents if missing
         agent_cols = _table_columns(conn, "agents")
         if "task_id" not in agent_cols:

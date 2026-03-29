@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { DATE_SHORT } from "../lib/formatters";
 
-export default function SendLaterPicker({ onSelect, onClose, onClear }) {
+export default function SendLaterPicker({ onSelect, onClose, onClear, title = "Remind At" }) {
   const [customValue, setCustomValue] = useState("");
   const anchorRef = useRef(null);
   const pickerRef = useRef(null);
@@ -79,7 +79,7 @@ export default function SendLaterPicker({ onSelect, onClose, onClear }) {
       style={pos ? { position: "fixed", bottom: pos.bottom, right: pos.right } : { visibility: "hidden", position: "fixed" }}
     >
       <div className="px-3 py-2 border-b border-divider flex items-center justify-between">
-        <span className="text-xs font-semibold text-heading">Remind At</span>
+        <span className="text-xs font-semibold text-heading">{title}</span>
         {onClear && (
           <button type="button" onClick={() => { onClear(); onClose(); }}
             className="text-[10px] text-red-400 hover:text-red-300 font-medium">
