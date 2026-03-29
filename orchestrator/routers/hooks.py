@@ -229,129 +229,30 @@ async def hook_agent_stop(request: Request):
                     hook_sid[:12], agent_id[:8])
         return {}
 
-    # Transition to IDLE immediately — hooks are the authoritative signal.
-    # The sync loop (woken below) imports messages independently.
+    # All stop-hook operations (_stop_generating, unread, notify, dispatch
+    # pending, slash-command completion) are handled by the sync engine when
+    # it imports the stop_hook_summary entry from JSONL.  This handler only
+    # needs to wake the sync loop so it picks up the new JSONL content.
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if ad:
-        logger.info("hook_agent_stop: stop generating for %s", agent_id[:8])
-        ad._stop_generating(agent_id)
-
-        # Increment unread + push notification (without creating a Message —
-        # the sync loop imports the full content from JSONL after wake).
-        _stop_db = SessionLocal()
-        try:
-            _agent = _stop_db.get(Agent, agent_id)
-            if _agent:
-                _is_sub = _agent.is_subagent or _agent.parent_id
-                if not _is_sub and not ad._is_agent_in_use(_agent.id, _agent.tmux_pane):
-                    _agent.unread_count += 1
-                _stop_db.commit()
-                if not _is_sub:
-                    ad._maybe_notify_message(_agent)
-        finally:
-            _stop_db.close()
-
+        logger.info("hook_agent_stop: waking sync for %s", agent_id[:8])
         ctx = ad._sync_contexts.get(agent_id)
         if ctx:
             if ctx.compact_notified:
-                logger.info(
-                    "hook_agent_stop: compact in progress for %s, "
-                    "deferring sync to loop",
-                    agent_id[:8],
-                )
                 ad.wake_sync(agent_id)
             else:
-                # Wait for JSONL flush then wake sync
                 async def _post_stop_sync(_aid):
                     from config import JSONL_FLUSH_DELAY
                     await asyncio.sleep(JSONL_FLUSH_DELAY)
                     ad.wake_sync(_aid)
                 asyncio.ensure_future(_post_stop_sync(agent_id))
-
-                # Mark any EXECUTING slash commands as completed + delivered.
-                import slash_commands as _sc
-                _sc.mark_completed(agent_id)
         else:
-            # Edge case: no sync context for agent (e.g., dispatcher not yet
-            # initialized or agent registered before sync started).
             logger.debug(
-                "hook_agent_stop: no sync context for %s (dispatcher may not be initialized)",
+                "hook_agent_stop: no sync context for %s",
                 agent_id[:8],
             )
     else:
         logger.warning("hook_agent_stop: no agent_dispatcher on app.state")
-
-    logger.info("hook_agent_stop: agent=%s done", agent_id[:8])
-
-    # --- Dispatch next queued message (stop-hook-driven queue drain) ---
-    # Messages sent while agent was busy are stored as PENDING.
-    # Now that the agent has stopped generating, send the first one.
-    if ad:
-        async def _dispatch_pending(_aid):
-            # Wait for the sync cycle (triggered by _post_stop_sync above)
-            # to finish importing the agent's last response from JSONL into
-            # the display file.  Without this, the queued user message would
-            # be flushed (via UserPromptSubmit → update_last) before the
-            # preceding agent response, giving it a lower display_seq and
-            # making it appear above the response in the chat.
-            from config import JSONL_FLUSH_DELAY
-            await asyncio.sleep(JSONL_FLUSH_DELAY + 0.35)
-            _dispatch_db = SessionLocal()
-            try:
-                pending_msg = (
-                    _dispatch_db.query(Message)
-                    .filter(
-                        Message.agent_id == _aid,
-                        Message.role == MessageRole.USER,
-                        Message.status == MessageStatus.PENDING,
-                        Message.scheduled_at.is_(None),
-                    )
-                    .order_by(Message.created_at.asc())
-                    .first()
-                )
-                if not pending_msg:
-                    return
-
-                _agent = _dispatch_db.get(Agent, _aid)
-                if not _agent or not _agent.tmux_pane:
-                    return
-
-                from agent_dispatcher import send_tmux_message, verify_tmux_pane
-                if not verify_tmux_pane(_agent.tmux_pane):
-                    logger.warning(
-                        "hook_agent_stop: tmux pane gone for agent %s, skipping dispatch",
-                        _aid[:8],
-                    )
-                    return
-
-                ok = send_tmux_message(_agent.tmux_pane, pending_msg.content)
-                if ok:
-                    pending_msg.status = MessageStatus.QUEUED
-                    pending_msg.dispatch_seq = ad.next_dispatch_seq(_dispatch_db, _aid)
-                    _dispatch_db.commit()
-
-                    from websocket import emit_message_update
-                    asyncio.ensure_future(emit_message_update(_aid, pending_msg.id, "QUEUED"))
-
-                    # No flush_agent here — the message has no delivered_at
-                    # yet, so display_writer skips it.  It enters the display
-                    # file when UserPromptSubmit sets delivered_at.
-                    logger.info(
-                        "hook_agent_stop: dispatched pending message %s to agent %s",
-                        pending_msg.id[:8], _aid[:8],
-                    )
-                else:
-                    logger.warning(
-                        "hook_agent_stop: send_tmux_message failed for agent %s, "
-                        "will retry on next stop hook",
-                        _aid[:8],
-                    )
-            except Exception:
-                logger.exception("hook_agent_stop: error dispatching pending message for %s", _aid[:8])
-            finally:
-                _dispatch_db.close()
-
-        asyncio.ensure_future(_dispatch_pending(agent_id))
 
     return {}
 
