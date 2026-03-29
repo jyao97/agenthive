@@ -124,8 +124,7 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
 
   const handleNextWeek = () => {
     const d = new Date();
-    const daysUntilMon = (8 - d.getDay()) % 7 || 7;
-    d.setDate(d.getDate() + daysUntilMon);
+    d.setDate(d.getDate() + 7);
     d.setHours(9, 0, 0, 0);
     handlePreset(d);
   };
