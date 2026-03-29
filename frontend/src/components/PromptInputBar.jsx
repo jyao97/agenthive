@@ -125,6 +125,7 @@ export default function PromptInputBar({
             </button>
             {showSchedule && (
               <SendLaterPicker
+                title="Schedule At"
                 onSelect={onScheduleSelect}
                 onClose={onScheduleToggle}
               />
