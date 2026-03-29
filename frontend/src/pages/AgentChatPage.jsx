@@ -2635,45 +2635,37 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
     // --- Manual touch-scroll for message list when keyboard is open ---
     // body has touch-action:none which kills native scroll at CSS level.
-    // We intercept touch events and manually drive scrollTop + momentum.
+    // We attach handlers directly to the scroll container element (not
+    // document) so iOS Safari reliably delivers the events. A separate
+    // document-level handler blocks touchmove on everything else.
     let touchLastY = 0;
-    let touchActive = false;
     let momentumRaf = null;
     const touchSamples = [];
 
-    const handleScrollTouchStart = (e) => {
-      const sc = scrollContainerRef.current;
-      if (!sc) return;
-      if (sc.contains(e.target)) {
-        touchActive = true;
-        if (momentumRaf) { cancelAnimationFrame(momentumRaf); momentumRaf = null; }
-        touchLastY = e.touches[0].clientY;
-        touchSamples.length = 0;
-        touchSamples.push({ y: e.touches[0].clientY, t: Date.now() });
-      } else {
-        touchActive = false;
-      }
-    };
-
     const blockTouchOutsideScroll = (e) => {
-      const sc = scrollContainerRef.current;
-      if (touchActive && sc) {
-        const touch = e.touches[0];
-        const deltaY = touchLastY - touch.clientY;
-        sc.scrollTop += deltaY;
-        touchLastY = touch.clientY;
-        const now = Date.now();
-        touchSamples.push({ y: touch.clientY, t: now });
-        if (touchSamples.length > 5) touchSamples.shift();
-        e.preventDefault();
-        return;
-      }
       e.preventDefault();
     };
 
-    const handleScrollTouchEnd = () => {
-      if (!touchActive) return;
-      touchActive = false;
+    const onContainerTouchStart = (e) => {
+      if (momentumRaf) { cancelAnimationFrame(momentumRaf); momentumRaf = null; }
+      touchLastY = e.touches[0].clientY;
+      touchSamples.length = 0;
+      touchSamples.push({ y: e.touches[0].clientY, t: Date.now() });
+    };
+
+    const onContainerTouchMove = (e) => {
+      const sc = scrollContainerRef.current;
+      if (!sc) return;
+      const touch = e.touches[0];
+      const deltaY = touchLastY - touch.clientY;
+      sc.scrollTop += deltaY;
+      touchLastY = touch.clientY;
+      const now = Date.now();
+      touchSamples.push({ y: touch.clientY, t: now });
+      if (touchSamples.length > 5) touchSamples.shift();
+    };
+
+    const onContainerTouchEnd = () => {
       const sc = scrollContainerRef.current;
       if (!sc || touchSamples.length < 2) return;
       const first = touchSamples[0];
@@ -2774,11 +2766,14 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         window.scrollTo(0, 0);
         // Block touchmove outside scroll container to prevent iOS
         // visual-viewport scroll via touch gestures on the input bar.
-        document.addEventListener('touchstart', handleScrollTouchStart, { passive: true });
         document.addEventListener('touchmove', blockTouchOutsideScroll, { passive: false });
-        document.addEventListener('touchend', handleScrollTouchEnd, { passive: true });
         setKbOpen(true);
         const sc = scrollContainerRef.current;
+        if (sc) {
+          sc.addEventListener('touchstart', onContainerTouchStart, { passive: true });
+          sc.addEventListener('touchmove', onContainerTouchMove, { passive: true });
+          sc.addEventListener('touchend', onContainerTouchEnd, { passive: true });
+        }
         if (sc && !userScrolledUp.current) {
           requestAnimationFrame(() => { sc.scrollTop = sc.scrollHeight; });
         }
@@ -2789,12 +2784,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         document.body.style.width = '';
         document.body.style.top = '';
         document.body.style.touchAction = '';
-        document.removeEventListener('touchstart', handleScrollTouchStart);
         document.removeEventListener('touchmove', blockTouchOutsideScroll);
-        document.removeEventListener('touchend', handleScrollTouchEnd);
+        const sc = scrollContainerRef.current;
+        if (sc) {
+          sc.removeEventListener('touchstart', onContainerTouchStart);
+          sc.removeEventListener('touchmove', onContainerTouchMove);
+          sc.removeEventListener('touchend', onContainerTouchEnd);
+        }
         if (momentumRaf) { cancelAnimationFrame(momentumRaf); momentumRaf = null; }
         setKbOpen(false);
-        const sc = scrollContainerRef.current;
         if (sc && !userScrolledUp.current) {
           requestAnimationFrame(() => { sc.scrollTop = sc.scrollHeight; });
         }
@@ -2829,9 +2827,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (rafId) cancelAnimationFrame(rafId);
       if (stopTimer) clearTimeout(stopTimer);
       clearTimeout(padTimer);
-      document.removeEventListener('touchstart', handleScrollTouchStart);
       document.removeEventListener('touchmove', blockTouchOutsideScroll);
-      document.removeEventListener('touchend', handleScrollTouchEnd);
+      const sc = scrollContainerRef.current;
+      if (sc) {
+        sc.removeEventListener('touchstart', onContainerTouchStart);
+        sc.removeEventListener('touchmove', onContainerTouchMove);
+        sc.removeEventListener('touchend', onContainerTouchEnd);
+      }
       if (momentumRaf) { cancelAnimationFrame(momentumRaf); momentumRaf = null; }
       document.body.style.touchAction = '';
       kbFlush(); // flush remaining samples
