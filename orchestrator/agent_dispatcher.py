@@ -133,6 +133,45 @@ def _read_session_owner(session_dir: str, sid: str) -> dict | None:
         return None
 
 
+def _write_unlinked_entry(
+    session_id: str,
+    cwd: str,
+    transcript_path: str = "",
+    tmux_pane: str | None = None,
+    tmux_session: str | None = None,
+    project_name: str | None = None,
+):
+    """Write an unlinked session entry for user confirmation in the UI.
+
+    Creates a JSON file in the unlinked-sessions directory (under BACKUP_DIR)
+    so that the frontend can display it and the user can confirm (adopt) it.
+    Keyed by session_id when known, or tmux pane (sanitised) as fallback.
+    Idempotent — won't overwrite existing entry.
+    """
+    import time as _time
+    from config import BACKUP_DIR
+    udir = os.path.join(BACKUP_DIR, "unlinked-sessions")
+    os.makedirs(udir, exist_ok=True)
+    # Use session_id as filename key when available, pane as fallback
+    file_key = session_id if session_id else f"pane-{(tmux_pane or 'unknown').replace('%', '').replace('/', '_')}"
+    entry_path = os.path.join(udir, f"{file_key}.json")
+    if os.path.isfile(entry_path):
+        return  # Already registered — don't overwrite
+    try:
+        with open(entry_path, "w") as f:
+            json.dump({
+                "session_id": session_id,
+                "cwd": cwd,
+                "transcript_path": transcript_path,
+                "tmux_pane": tmux_pane,
+                "tmux_session": tmux_session,
+                "project_name": project_name,
+                "timestamp": _time.time(),
+            }, f)
+    except OSError as e:
+        logger.warning("_write_unlinked_entry: failed to write %s: %s", entry_path, e)
+
+
 # Image metadata injected by Claude Code's Read tool — internal only, hide from UI
 
 
@@ -3583,10 +3622,8 @@ Here are the day's conversations (with timestamps):
     def _auto_detect_cli_sessions(self, db: Session):
         """Revive managed agents (ah-* tmux sessions) whose process restarted.
 
-        Unmanaged sessions are detected exclusively via SessionStart hook
-        (push-based, with local file fallback when orchestrator is offline).
-        This function only handles Tier 0: deterministic agent revive by
-        tmux session name.
+        Also scans non-ah-* tmux sessions running claude in project directories
+        and writes unlinked entries for user confirmation in the UI.
         """
         from websocket import emit_agent_update
 
@@ -3615,8 +3652,6 @@ Here are the day's conversations (with timestamps):
                 continue
 
             session_name = info.get("session_name", "")
-            if not session_name.startswith("ah-"):
-                continue  # Non-managed — handled by SessionStart hook
 
             # Match CWD to a registered project
             cwd = info["cwd"]
@@ -3631,6 +3666,17 @@ Here are the day's conversations (with timestamps):
             if not proj_path:
                 continue
             proj = proj_by_path[proj_path]
+
+            if not session_name.startswith("ah-"):
+                # Non-managed tmux session in a project dir → unlinked entry
+                _write_unlinked_entry(
+                    session_id="",  # unknown until user confirms
+                    cwd=cwd,
+                    tmux_pane=pane_id,
+                    tmux_session=session_name,
+                    project_name=proj.name,
+                )
+                continue
 
             # Tier 0: ah-{prefix} → find stopped agent by ID prefix
             agent_prefix = session_name[3:]
