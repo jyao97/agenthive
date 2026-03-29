@@ -1432,6 +1432,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
               </button>
               {showSchedulePicker && (
                 <SendLaterPicker
+                  title="Schedule At"
                   onSelect={handleSchedule}
                   onClose={() => setShowSchedulePicker(false)}
                 />

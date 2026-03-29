@@ -1278,6 +1278,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
               </button>
               {showEditPicker && (
                 <SendLaterPicker
+                  title="Schedule At"
                   onSelect={(iso) => { setEditSchedule(new Date(iso).toISOString().slice(0, 16)); setShowEditPicker(false); }}
                   onClose={() => setShowEditPicker(false)}
                   onClear={editSchedule ? () => { setEditSchedule(""); setShowEditPicker(false); } : undefined}
@@ -2143,6 +2144,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
             </button>
             {showPicker && (
               <SendLaterPicker
+                title="Schedule At"
                 onSelect={handleSchedule}
                 onClose={() => setShowPicker(false)}
               />
