@@ -2013,7 +2013,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
     >
       {scrollButton}
       <div
-        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
+        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto touch-none`}
         style={{ maxWidth: "24rem" }}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
@@ -2714,23 +2714,21 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       if (open && !isOpen) {
         isOpen = true;
-        // Lock body to prevent iOS viewport scroll — CSS lock is
-        // applied once (no per-frame fight), so no shake.
+        // Lock body to prevent iOS viewport scroll — position:fixed
+        // stops body scrolling; blockTouchOutsideScroll handler prevents
+        // visual-viewport drift for touches outside the message list.
+        // NOTE: do NOT set touch-action:none on body — iOS Safari
+        // propagates it into descendant scroll containers and kills
+        // touch scrolling in the message list.
         document.body.style.position = 'fixed';
         document.body.style.width = '100%';
         document.body.style.top = '0';
-        document.body.style.touchAction = 'none';
         window.scrollTo(0, 0);
-        // Allow pan-y on the message scroll container.  Per Pointer Events
-        // spec, touch-action intersection stops at the nearest ancestor with
-        // a default touch behavior (the overflow-y:auto scroll container),
-        // so body's touch-action:none only locks non-scrollable areas.
-        const sc = scrollContainerRef.current;
-        if (sc) sc.style.touchAction = 'pan-y';
         // Block touchmove outside scroll container to prevent iOS
         // visual-viewport scroll via touch gestures on the input bar.
         document.addEventListener('touchmove', blockTouchOutsideScroll, { passive: false });
         setKbOpen(true);
+        const sc = scrollContainerRef.current;
         if (sc && !userScrolledUp.current) {
           requestAnimationFrame(() => { sc.scrollTop = sc.scrollHeight; });
         }
@@ -2740,11 +2738,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         document.body.style.position = '';
         document.body.style.width = '';
         document.body.style.top = '';
-        document.body.style.touchAction = '';
         document.removeEventListener('touchmove', blockTouchOutsideScroll);
         setKbOpen(false);
         const sc = scrollContainerRef.current;
-        if (sc) sc.style.touchAction = '';
         if (sc && !userScrolledUp.current) {
           requestAnimationFrame(() => { sc.scrollTop = sc.scrollHeight; });
         }
@@ -2780,9 +2776,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (stopTimer) clearTimeout(stopTimer);
       clearTimeout(padTimer);
       document.removeEventListener('touchmove', blockTouchOutsideScroll);
-      document.body.style.touchAction = '';
-      const sc = scrollContainerRef.current;
-      if (sc) sc.style.touchAction = '';
       kbFlush(); // flush remaining samples
     };
   }, []);
@@ -3332,7 +3325,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     <div ref={kbContainerRef} className="flex flex-col h-full relative">
 
       {/* Header */}
-      <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10`}>
+      <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10 touch-none`}>
         <div className={`${embedded ? "" : "max-w-2xl"} mx-auto ${compactHeader ? "" : "space-y-1.5"}`}>
           {/* Row 1: Back + name | project + icon buttons */}
           <div className="flex items-center gap-2">
@@ -3579,7 +3572,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       </div>
 
       {/* Agent ID + session size + parent link */}
-      {!compactHeader && <div className="shrink-0 bg-surface border-b border-divider px-4 py-1">
+      {!compactHeader && <div className="shrink-0 bg-surface border-b border-divider px-4 py-1 touch-none">
         <div className={`${embedded ? "" : "max-w-2xl"} mx-auto flex items-center gap-2 pl-2.5`}>
           {agent.parent_id && (
             <button
