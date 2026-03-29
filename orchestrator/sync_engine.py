@@ -508,10 +508,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     continue
 
             elif role == "system":
-                # stop_hook_summary: signal only, don't create a visible message
                 if kind == "stop_hook":
                     _saw_stop_hook = True
-                    continue
 
                 msg = _create_system_msg(
                     db, ctx, content, jsonl_uuid, seq, kind, jsonl_ts,
@@ -567,42 +565,40 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         if _saw_interrupt:
             asyncio.ensure_future(ad.dispatch_pending_message(ctx.agent_id, delay=0))
 
-        # stop_hook_summary detected in JSONL: if the agent is still EXECUTING
-        # (i.e. the HTTP stop hook never arrived — e.g. ECONNREFUSED), perform
-        # the same state transition the stop hook handler would have done.
-        # Idempotent: if the HTTP handler already ran, agent is IDLE and this
-        # is a no-op.
+        # stop_hook_summary in JSONL: this is the authoritative signal that
+        # the agent finished a turn.  Perform all stop-hook operations here
+        # (the HTTP handler only wakes sync; this is the sole executor).
+        # _stop_generating is idempotent; unread/notify/dispatch run once
+        # because the HTTP handler no longer does them.
         if _saw_stop_hook:
-            _still_executing = (
-                ctx.agent_id in ad._generating_agents
-                or (agent and agent.generating_msg_id is not None)
+            logger.info(
+                "sync: stop_hook_summary detected for agent %s — "
+                "executing stop-hook operations",
+                ctx.agent_id[:8],
             )
-            if _still_executing:
-                logger.info(
-                    "sync: stop_hook_summary detected for agent %s but still "
-                    "EXECUTING — running fallback stop_generating",
-                    ctx.agent_id[:8],
-                )
-                ad._stop_generating(ctx.agent_id)
-                # unread + notify (mirrors hook_agent_stop logic)
-                _fb_db = SessionLocal()
-                try:
-                    _fb_agent = _fb_db.get(Agent, ctx.agent_id)
-                    if _fb_agent:
-                        _is_sub = _fb_agent.is_subagent or _fb_agent.parent_id
-                        if not _is_sub and not ad._is_agent_in_use(
-                            _fb_agent.id, _fb_agent.tmux_pane
-                        ):
-                            _fb_agent.unread_count += 1
-                        _fb_db.commit()
-                        if not _is_sub:
-                            ad._maybe_notify_message(_fb_agent)
-                finally:
-                    _fb_db.close()
-                # dispatch pending (no delay — response already imported above)
-                asyncio.ensure_future(
-                    ad.dispatch_pending_message(ctx.agent_id, delay=0)
-                )
+            ad._stop_generating(ctx.agent_id)
+            # unread + notify
+            _sh_db = SessionLocal()
+            try:
+                _sh_agent = _sh_db.get(Agent, ctx.agent_id)
+                if _sh_agent:
+                    _is_sub = _sh_agent.is_subagent or _sh_agent.parent_id
+                    if not _is_sub and not ad._is_agent_in_use(
+                        _sh_agent.id, _sh_agent.tmux_pane
+                    ):
+                        _sh_agent.unread_count += 1
+                    _sh_db.commit()
+                    if not _is_sub:
+                        ad._maybe_notify_message(_sh_agent)
+            finally:
+                _sh_db.close()
+            # mark slash commands completed
+            import slash_commands as _sc
+            _sc.mark_completed(ctx.agent_id)
+            # dispatch pending (no delay — response already imported above)
+            asyncio.ensure_future(
+                ad.dispatch_pending_message(ctx.agent_id, delay=0)
+            )
 
         logger.debug("Agent %s: sync_import result=%s, inserted=%d, pointer now=%d",
                      ctx.agent_id[:8], "new_turns", _actually_inserted, ctx.last_turn_count)

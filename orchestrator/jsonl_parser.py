@@ -558,20 +558,15 @@ def parse_session_turns_from_lines(
             subtype = entry.get("subtype", "")
             if subtype == "turn_duration":
                 continue
-            if subtype == "stop_hook_summary":
-                flush_all()
-                _stop_meta = {
-                    "hook_errors": entry.get("hookErrors", []),
-                    "stop_reason": entry.get("stopReason", ""),
-                }
-                turns.append(("system", "", _stop_meta, entry_uuid, "stop_hook", entry_ts))
-                continue
             flush_all()
             content = entry.get("content", "")
             if subtype or content:
                 label = content or subtype.replace("_", " ")
-                _sys_uuid = f"sys-{hashlib.md5(label.encode()).hexdigest()[:16]}"
-                turns.append(("system", label, None, _sys_uuid, None, entry_ts))
+                _kind = "stop_hook" if subtype == "stop_hook_summary" else None
+                # Use entry uuid when available (stop_hook_summary has one);
+                # fall back to content-derived hash for other system entries.
+                _sys_uuid = entry_uuid or f"sys-{hashlib.md5(label.encode()).hexdigest()[:16]}"
+                turns.append(("system", label, None, _sys_uuid, _kind, entry_ts))
 
     # Flush remaining
     flush_all()
