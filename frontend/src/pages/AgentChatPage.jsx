@@ -2714,15 +2714,17 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       if (open && !isOpen) {
         isOpen = true;
-        // Lock body to prevent iOS viewport scroll — position:fixed
-        // stops body scrolling; blockTouchOutsideScroll handler prevents
-        // visual-viewport drift for touches outside the message list.
+        // Lock body to prevent iOS viewport scroll.  Use overflow:hidden
+        // instead of position:fixed — fixed positioning breaks nested
+        // overflow-y:auto momentum scrolling on iOS Safari, making the
+        // message list unscrollable while the keyboard is open.
+        // blockTouchOutsideScroll handler prevents visual-viewport drift
+        // from touch gestures on the input bar / header.
         // NOTE: do NOT set touch-action:none on body — iOS Safari
         // propagates it into descendant scroll containers and kills
         // touch scrolling in the message list.
-        document.body.style.position = 'fixed';
-        document.body.style.width = '100%';
-        document.body.style.top = '0';
+        document.documentElement.style.overflow = 'hidden';
+        document.body.style.overflow = 'hidden';
         window.scrollTo(0, 0);
         // Block touchmove outside scroll container to prevent iOS
         // visual-viewport scroll via touch gestures on the input bar.
@@ -2735,9 +2737,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       } else if (!open && isOpen) {
         isOpen = false;
         // Unlock body
-        document.body.style.position = '';
-        document.body.style.width = '';
-        document.body.style.top = '';
+        document.documentElement.style.overflow = '';
+        document.body.style.overflow = '';
+        // Trigger viewport reflow — the App-level microScroll may have
+        // fired while overflow:hidden was still set (keyboard closing
+        // animation), so repeat the 1→0 trick here after unlocking.
+        requestAnimationFrame(() => {
+          window.scrollTo({ top: 1, behavior: "instant" });
+          window.scrollTo({ top: 0, behavior: "instant" });
+        });
         document.removeEventListener('touchmove', blockTouchOutsideScroll);
         setKbOpen(false);
         const sc = scrollContainerRef.current;
@@ -2776,6 +2784,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       if (stopTimer) clearTimeout(stopTimer);
       clearTimeout(padTimer);
       document.removeEventListener('touchmove', blockTouchOutsideScroll);
+      document.documentElement.style.overflow = '';
+      document.body.style.overflow = '';
       kbFlush(); // flush remaining samples
     };
   }, []);
