@@ -147,6 +147,7 @@ class Agent(Base):
     generating_msg_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     has_pending_suggestions: Mapped[bool] = mapped_column(Boolean, default=False)
     insight_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    sync_stale: Mapped[bool] = mapped_column(Boolean, default=False)
 
     @property
     def is_generating(self) -> bool:

@@ -3018,6 +3018,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         if ("insight_status" in event.data) {
           patch.insight_status = event.data.insight_status || null;
         }
+        if ("sync_stale" in event.data) {
+          patch.sync_stale = event.data.sync_stale;
+        }
         setAgent((prev) => prev ? { ...prev, ...patch } : prev);
       }
       if (status !== "EXECUTING" && status !== "IDLE") {
@@ -3809,6 +3812,28 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Sync stale banner */}
+      {agent.sync_stale && (
+        <div className="shrink-0 flex items-center justify-center gap-2 px-4 py-2 bg-yellow-500/10 border-t border-yellow-500/20 text-yellow-400 text-xs">
+          <span>No new messages for 10+ minutes</span>
+          <button
+            type="button"
+            onClick={async () => {
+              if (syncRefreshing) return;
+              setSyncRefreshing(true);
+              try {
+                await wakeSync(id);
+                setTimeout(() => refreshMessages(), 800);
+              } catch {}
+              setTimeout(() => setSyncRefreshing(false), 400);
+            }}
+            className="px-2 py-0.5 rounded bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-300 transition-colors"
+          >
+            {syncRefreshing ? "Syncing…" : "Wake Sync"}
+          </button>
+        </div>
+      )}
 
       {/* Input bar */}
       <ChatInput

@@ -1542,6 +1542,7 @@ class AgentDispatcher:
         self._generating_agents: set[str] = set()
         # Per-agent events to wake sync loops immediately on stop hook
         self._sync_wake: dict[str, asyncio.Event] = {}
+        self._sync_manual_wake: set[str] = set()  # track manual wake-sync triggers
         # Per-agent sync locks — serialise sync_import_new_turns calls
         # between the sync loop and Stop hook to prevent stale-state races
         self._sync_locks: dict[str, asyncio.Lock] = {}
@@ -2379,7 +2380,9 @@ Here are the day's conversations (with timestamps):
         """
         ev = self._sync_wake.get(agent_id)
         if ev:
+            self._sync_manual_wake.add(agent_id)
             ev.set()
+            logger.info("wake_sync: woke sync loop for agent %s", agent_id[:8])
             return True
         # No wake event → sync loop is dead.  Restart if possible.
         return self._ensure_sync_running(agent_id)
@@ -2617,6 +2620,9 @@ Here are the day's conversations (with timestamps):
 
         # 2. Check exec timeouts
         self._check_exec_timeouts(db)
+
+        # 2b. Check sync stale (EXECUTING agents with no new messages for 10 min)
+        self._check_sync_stale(db)
 
         # 3. Start new agents
         self._start_new_agents(db)
@@ -3119,6 +3125,54 @@ Here are the day's conversations (with timestamps):
                 project = db.get(Project, agent.project)
                 if project:
                     self.start_session_sync(agent_id, agent.session_id, project.path)
+
+    # ---- Step 2b: Check sync stale ----
+
+    _SYNC_STALE_SECONDS = 600  # 10 minutes
+
+    def _check_sync_stale(self, db: Session):
+        """Flag EXECUTING agents whose last DB message is older than 10 min.
+
+        Also clears the flag for agents that are no longer EXECUTING.
+        """
+        now = _utcnow()
+        from websocket import emit_agent_update
+
+        # Clear stale flag for agents no longer EXECUTING
+        stale_agents = db.query(Agent).filter(
+            Agent.sync_stale == True,
+            Agent.status != AgentStatus.EXECUTING,
+        ).all()
+        for agent in stale_agents:
+            agent.sync_stale = False
+            self._emit(emit_agent_update(
+                agent.id, agent.status.value, agent.project,
+                sync_stale=False,
+            ))
+
+        # Flag EXECUTING agents idle for > 10 min
+        for agent_id in list(self._active_execs):
+            agent = db.get(Agent, agent_id)
+            if not agent or agent.status != AgentStatus.EXECUTING:
+                continue
+            if agent.sync_stale:
+                continue  # already flagged
+            if not agent.last_message_at:
+                continue
+            last = agent.last_message_at
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            idle = (now - last).total_seconds()
+            if idle > self._SYNC_STALE_SECONDS:
+                agent.sync_stale = True
+                logger.info(
+                    "Agent %s sync stale: no new messages for %ds",
+                    agent_id[:8], int(idle),
+                )
+                self._emit(emit_agent_update(
+                    agent.id, agent.status.value, agent.project,
+                    sync_stale=True,
+                ))
 
     # ---- Step 4: Start new agents ----
 
@@ -4194,6 +4248,13 @@ Here are the day's conversations (with timestamps):
 
             # File hasn't grown — idle polling
             if current_size <= ctx.last_offset:
+                if agent_id in self._sync_manual_wake:
+                    self._sync_manual_wake.discard(agent_id)
+                    logger.info(
+                        "Sync loop: manual wake for agent %s but file unchanged "
+                        "(size=%d, last_offset=%d)",
+                        agent_id[:8], current_size, ctx.last_offset,
+                    )
                 ctx.idle_polls += 1
                 # Heartbeat log every 5 idle polls (~5min)
                 if ctx.idle_polls % 5 == 0 and ctx.idle_polls > 0:
@@ -4284,8 +4345,22 @@ Here are the day's conversations (with timestamps):
                 continue
 
             # Hook-triggered — do incremental sync (sole write path)
+            _manual = agent_id in self._sync_manual_wake
+            if _manual:
+                self._sync_manual_wake.discard(agent_id)
+            _wake_src = "manual" if _manual else "hook"
+            logger.info(
+                "Sync loop: running sync for agent %s (wake=%s, "
+                "file_size=%d, last_offset=%d, delta=%d)",
+                agent_id[:8], _wake_src, current_size, ctx.last_offset,
+                current_size - ctx.last_offset,
+            )
             async with sync_lock:
                 result = await sync_import_new_turns(self, ctx)
+            logger.info(
+                "Sync loop: sync result for agent %s: %s (wake=%s)",
+                agent_id[:8], result, _wake_src,
+            )
 
             if result == "exit":
                 break

@@ -448,11 +448,11 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         if not agent or agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
             return "exit"
 
-        # Finalize previous turn if it grew (streaming → new turn arrived)
+        # Sanity check: previous turn content should not grow between syncs.
+        # Claude Code buffers responses and flushes to JSONL on completion,
+        # so content should be final when hook-driven sync imports it.
         if ctx.last_turn_count > 0:
             prev_role, prev_content, *prev_rest = turns[ctx.last_turn_count - 1]
-            prev_uuid = prev_rest[1] if len(prev_rest) > 1 else None
-            prev_meta = prev_rest[0] if prev_rest else None
             if prev_role == "assistant":
                 last_agent_msg = db.query(Message).filter(
                     Message.agent_id == ctx.agent_id,
@@ -460,14 +460,16 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                 ).order_by(Message.created_at.desc()).first()
                 if (last_agent_msg
                         and len(last_agent_msg.content or "") < len(prev_content)):
-                    last_agent_msg.content = prev_content
-                    last_agent_msg.completed_at = _utcnow()
-                    if prev_uuid and not last_agent_msg.jsonl_uuid:
-                        last_agent_msg.jsonl_uuid = prev_uuid
-                    if prev_meta is not None:
-                        last_agent_msg.meta_json = _merge_interactive_meta(
-                            last_agent_msg.meta_json, prev_meta,
-                        )
+                    logger.error(
+                        "Agent %s: previous turn content grew between syncs "
+                        "(db_len=%d, jsonl_len=%d, msg_id=%s, jsonl_uuid=%s). "
+                        "DB message may have stale content.",
+                        ctx.agent_id[:8],
+                        len(last_agent_msg.content or ""),
+                        len(prev_content),
+                        last_agent_msg.id,
+                        last_agent_msg.jsonl_uuid,
+                    )
 
         _actually_inserted = 0
         for i, (role, content, *rest) in enumerate(new_turns):
@@ -528,6 +530,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         if _actually_inserted:
             agent.last_message_preview = (new_turns[-1][1] or "")[:200]
             agent.last_message_at = _utcnow()
+            if agent.sync_stale:
+                agent.sync_stale = False
 
         try:
             db.commit()
