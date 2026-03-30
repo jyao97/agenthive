@@ -72,6 +72,8 @@ def _discover_session_id_from_pane(tmux_pane: str, project_path: str) -> str:
     1. Check /tmp/ahive-pending-sessions/ for an entry matching this pane
     2. Scan /proc/*/fd for open JSONL files belonging to the pane's process tree
     3. Read Claude Code's session_id from its tasks dir (latest lock file)
+    4. Scan JSONL files in session dir — find most recent CLI session not
+       owned by any active agent (fallback when Claude doesn't keep files open)
     """
     if not tmux_pane:
         return ""
@@ -157,6 +159,60 @@ def _discover_session_id_from_pane(tmux_pane: str, project_path: str) -> str:
                     continue
         except OSError:
             continue
+
+    # Strategy 4: find most-recently-modified CLI JSONL not owned by any agent.
+    # Claude Code doesn't keep JSONL files open, so proc/fd scans fail.
+    # Instead, scan the session dir for unowned CLI sessions.
+    import time as _t4
+    from database import SessionLocal as _SL4
+    _db4 = _SL4()
+    try:
+        owned_sids: set[str] = {
+            r[0] for r in _db4.query(Agent.session_id).filter(
+                Agent.session_id.is_not(None),
+                Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
+            ).all()
+        }
+    finally:
+        _db4.close()
+
+    if os.path.isdir(sdir):
+        candidates: list[tuple[float, str, str]] = []  # (mtime, sid, path)
+        now = _t4.time()
+        for fname in os.listdir(sdir):
+            if not fname.endswith(".jsonl"):
+                continue
+            sid = fname[:-6]
+            if sid in owned_sids:
+                continue
+            fpath = os.path.join(sdir, fname)
+            try:
+                mtime = os.path.getmtime(fpath)
+                # Only consider recently active sessions (last 10 min)
+                if now - mtime < 600:
+                    candidates.append((mtime, sid, fpath))
+            except OSError:
+                continue
+
+        # Sort by mtime descending (most recent first)
+        candidates.sort(reverse=True)
+        for _mtime, sid, fpath in candidates:
+            # Read second line to check entrypoint=cli
+            try:
+                with open(fpath) as f:
+                    f.readline()  # skip first line (file-history-snapshot)
+                    second = f.readline().strip()
+                    if second:
+                        entry = json.loads(second)
+                        if entry.get("entrypoint") == "cli":
+                            logger.info(
+                                "_discover_session_id_from_pane: Strategy 4 matched "
+                                "CLI session %s for pane %s",
+                                sid[:12], tmux_pane,
+                            )
+                            return sid
+            except (OSError, json.JSONDecodeError):
+                continue
 
     return ""
 

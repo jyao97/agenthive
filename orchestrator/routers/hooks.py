@@ -1255,13 +1255,13 @@ async def hook_agent_session_start(request: Request):
     tmux_pane = request.headers.get("X-Tmux-Pane", "").strip()
 
     if not cwd:
-        logger.debug("SessionStart hook: unmanaged session %s has no CWD header", session_id[:12])
+        logger.info("SessionStart hook: unmanaged session %s has no CWD header — skipping", session_id[:12])
         return {}
 
     # Only offer tmux-based sessions for adoption — bare CLI sessions
     # (no tmux pane) are not managed by the orchestrator.
     if not tmux_pane:
-        logger.debug("SessionStart hook: unmanaged session %s has no tmux pane, skipping", session_id[:12])
+        logger.info("SessionStart hook: unmanaged session %s has no tmux pane — skipping", session_id[:12])
         return {}
 
     # If this tmux pane is already owned by an active agent, treat this as
