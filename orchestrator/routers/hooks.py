@@ -26,13 +26,28 @@ router = APIRouter(tags=["hooks"])
 def _resolve_agent_id_from_body(body: dict) -> str:
     """Resolve agent_id from hook body when X-Agent-Id header is empty.
 
-    All agents are now tmux-managed with AHIVE_AGENT_ID set in their
-    environment. Sessions without this header are from non-managed
-    ``claude -p`` processes and must be ignored.
+    For adopted CLI sessions (cli_sync=True) that lack AHIVE_AGENT_ID in
+    their environment, look up the session_id in the agents table to find
+    the owning agent.  This allows Stop/PreToolUse/PostToolUse hooks to
+    wake the sync engine for these sessions.
     """
     sid = body.get("session_id", "").strip()
-    if sid:
-        logger.debug("_resolve_agent_id_from_body: ignoring non-managed session %s (no AHIVE_AGENT_ID)", sid[:12])
+    if not sid:
+        return ""
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        agent = db.query(Agent).filter(
+            Agent.session_id == sid,
+            Agent.cli_sync == True,
+            Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
+        ).first()
+        if agent:
+            logger.debug("_resolve_agent_id_from_body: session %s → adopted agent %s", sid[:12], agent.id[:8])
+            return agent.id
+    finally:
+        db.close()
+    logger.debug("_resolve_agent_id_from_body: session %s has no adopted agent", sid[:12])
     return ""
 
 
