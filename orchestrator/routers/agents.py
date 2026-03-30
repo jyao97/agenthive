@@ -40,7 +40,7 @@ from route_helpers import (
     MAX_STARTING_AGENTS, MAX_SEND_ATTEMPTS, JSONL_POLL_PER_ATTEMPT,
     IMPORT_CHECK_TIMEOUT, SUBPROCESS_STRIP_VARS,
 )
-from utils import utcnow as _utcnow
+from utils import utcnow as _utcnow, is_interrupt_message
 from task_state_machine import can_transition, InvalidTransitionError
 from task_state import TaskStateMachine
 from websocket import emit_task_update, emit_agent_update
@@ -1423,7 +1423,7 @@ async def adopt_unlinked_session(
         agent.session_id = session_id
         agent.tmux_pane = info.get("tmux_pane")
         if agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
-            agent.status = AgentStatus.SYNCING
+            agent.status = AgentStatus.IDLE
         agent.cli_sync = True
     else:
         # Create new agent
@@ -1443,7 +1443,7 @@ async def adopt_unlinked_session(
                 else f"Manual: {os.path.basename(info.get('cwd', 'session'))}"
             )[:80],
             mode=AgentMode.AUTO,
-            status=AgentStatus.SYNCING,
+            status=AgentStatus.IDLE,
             model=proj.default_model or CC_MODEL,
             cli_sync=True,
             session_id=session_id,
@@ -2416,6 +2416,10 @@ async def wake_agent_sync(agent_id: str, request: Request, db: Session = Depends
         from websocket import emit_agent_update
         ad._emit(emit_agent_update(agent.id, "IDLE", agent.project))
         logger.info("wake-sync: recovered agent %s from ERROR → IDLE", agent_id[:8])
+    # Re-dispatch stuck QUEUED messages (sent to tmux but never confirmed in JSONL)
+    asyncio.ensure_future(ad.redispatch_stuck_queued(agent_id))
+    # Also dispatch any PENDING messages if agent is idle
+    asyncio.ensure_future(ad.dispatch_pending_message(agent_id, delay=0))
     if ad.wake_sync(agent_id):
         return {"status": "ok", "detail": "Sync woken"}
     raise HTTPException(status_code=409, detail="No active sync loop for this agent")
@@ -2484,7 +2488,7 @@ async def send_agent_message(
                 has_tmux = False
 
         if has_tmux:
-            agent_is_busy = bool(agent.generating_msg_id)
+            agent_is_busy = bool(agent.generating_msg_id) or agent.status == AgentStatus.EXECUTING
 
             if not agent_is_busy:
                 # --- IDLE: send via tmux immediately ---
@@ -3156,7 +3160,7 @@ async def send_escape_to_agent(agent_id: str, request: Request, db: Session = De
                 with open(jsonl_path, "rb") as f:
                     f.seek(read_from)
                     new_data = f.read().decode("utf-8", errors="replace")
-                if "[Request interrupted by user" in new_data:
+                if is_interrupt_message(new_data):
                     interrupted = True
             except OSError:
                 pass
