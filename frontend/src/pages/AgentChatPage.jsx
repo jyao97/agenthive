@@ -3674,14 +3674,19 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                     <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.description.replace(/\[Attached file: [^\]]+\]/g, "").trim()}</p>
                   )}
                   {taskData.agent_summary && (
-                    <div className="mt-2">
-                      <p className="text-[10px] font-medium text-orange-500 dark:text-orange-400 mb-0.5">Previous agent summary</p>
-                      {taskData.agent_summary === ":::generating:::" ? (
-                        <p className="text-xs text-dim/50 italic">Generating summary...</p>
-                      ) : (
-                        <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.agent_summary}</p>
-                      )}
-                    </div>
+                    <details className="mt-2">
+                      <summary className="text-[10px] font-medium text-orange-500 dark:text-orange-400 cursor-pointer select-none list-none flex items-center gap-1">
+                        <span className="transition-transform duration-200 text-[8px] [details[open]>&]:rotate-90">▶</span>
+                        Previous agent summary
+                      </summary>
+                      <div className="mt-1">
+                        {taskData.agent_summary === ":::generating:::" ? (
+                          <p className="text-xs text-dim/50 italic">Generating summary...</p>
+                        ) : (
+                          <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.agent_summary}</p>
+                        )}
+                      </div>
+                    </details>
                   )}
                 </div>
               );
