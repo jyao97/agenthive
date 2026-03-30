@@ -1249,24 +1249,16 @@ async def hook_agent_session_start(request: Request):
 
         return {}
 
-    # --- Unmanaged session: push-based detection ---
-    # Extract CWD and tmux pane from headers (set via allowedEnvVars).
+    # --- Unmanaged session: create unlinked entry for user confirmation ---
     cwd = request.headers.get("X-Session-Cwd", "").strip()
     tmux_pane = request.headers.get("X-Tmux-Pane", "").strip()
 
-    if not cwd:
-        logger.info("SessionStart hook: unmanaged session %s has no CWD header — skipping", session_id[:12])
+    if not cwd or not tmux_pane:
+        logger.info("SessionStart hook: unmanaged session %s missing cwd=%r pane=%r — skipping",
+                     session_id[:12], bool(cwd), bool(tmux_pane))
         return {}
 
-    # Only offer tmux-based sessions for adoption — bare CLI sessions
-    # (no tmux pane) are not managed by the orchestrator.
-    if not tmux_pane:
-        logger.info("SessionStart hook: unmanaged session %s has no tmux pane — skipping", session_id[:12])
-        return {}
-
-    # If this tmux pane is already owned by an active agent, treat this as
-    # a session rotation (e.g. /clear) — write a signal file for the sync
-    # engine to pick up.
+    # If pane already owned by active agent → rotation signal
     from database import SessionLocal as _SL
     _db = _SL()
     try:
@@ -1279,49 +1271,56 @@ async def hook_agent_session_start(request: Request):
             try:
                 with open(signal_path, "w") as f:
                     f.write(session_id)
-                logger.info(
-                    "SessionStart hook: pane %s owned by agent %s — "
-                    "wrote rotation signal for session %s",
-                    tmux_pane, pane_owner.id[:8], session_id[:12],
-                )
+                logger.info("SessionStart hook: pane %s owned by %s — rotation signal for %s",
+                            tmux_pane, pane_owner.id[:8], session_id[:12])
             except OSError as e:
-                logger.warning("SessionStart hook: failed to write pane-owner signal %s: %s", signal_path, e)
+                logger.warning("SessionStart hook: rotation signal failed: %s", e)
+            return {}
     finally:
         _db.close()
 
-    # Update the existing poll-created unlinked entry (pane-X.json) with the
-    # session_id so the adopt endpoint can use it directly — no discovery needed.
-    # Also write a pending-session signal as fallback for _discover_session_id_from_pane().
-    from config import BACKUP_DIR
-    udir = os.path.join(BACKUP_DIR, "unlinked-sessions")
-    pane_key = f"pane-{tmux_pane.replace('%', '').replace('/', '_')}"
-    pane_entry_path = os.path.join(udir, f"{pane_key}.json")
-    if os.path.isfile(pane_entry_path):
-        try:
-            with open(pane_entry_path) as f:
-                entry = json.load(f)
-            entry["session_id"] = session_id
-            with open(pane_entry_path, "w") as f:
-                json.dump(entry, f)
-            logger.info(
-                "SessionStart hook: updated unlinked entry %s with session %s",
-                pane_key, session_id[:12],
-            )
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning("SessionStart hook: failed to update %s: %s", pane_entry_path, e)
-
-    # Also write pending-session signal as fallback
-    pending_dir = os.path.join(tempfile.gettempdir(), "ahive-pending-sessions")
-    os.makedirs(pending_dir, exist_ok=True)
-    pending_path = os.path.join(pending_dir, f"{session_id}.json")
+    # Match CWD to a registered project
+    _db2 = _SL()
     try:
-        with open(pending_path, "w") as f:
-            json.dump({"session_id": session_id, "tmux_pane": tmux_pane, "cwd": cwd}, f)
-        logger.info(
-            "SessionStart hook: unmanaged session %s (pane=%s) — "
-            "wrote pending signal for adopt discovery",
-            session_id[:12], tmux_pane,
-        )
-    except OSError as e:
-        logger.warning("SessionStart hook: failed to write pending signal %s: %s", pending_path, e)
+        cwd_real = os.path.realpath(cwd)
+        projects = _db2.query(Project).filter(Project.archived == False).all()
+        matched_proj = None
+        for p in projects:
+            proj_real = os.path.realpath(p.path)
+            if cwd_real == proj_real or cwd_real.startswith(proj_real + "/"):
+                matched_proj = p
+                break
+        if not matched_proj:
+            logger.info("SessionStart hook: session %s cwd %s doesn't match any project", session_id[:12], cwd)
+            return {}
+
+        # Guard: don't create entry if session already owned
+        existing = _db2.query(Agent).filter(Agent.session_id == session_id).first()
+        if existing:
+            logger.info("SessionStart hook: session %s already owned by agent %s", session_id[:12], existing.id[:8])
+            return {}
+    finally:
+        _db2.close()
+
+    # Resolve tmux session name
+    tmux_session_name = None
+    try:
+        tmux_session_name = subprocess.check_output(
+            ["tmux", "display-message", "-t", tmux_pane, "-p", "#{session_name}"],
+            timeout=2, text=True,
+        ).strip() or None
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        pass
+
+    # Create unlinked entry with session_id — adopt uses it directly
+    from agent_dispatcher import _write_unlinked_entry
+    _write_unlinked_entry(
+        session_id=session_id,
+        cwd=cwd_real,
+        tmux_pane=tmux_pane or None,
+        tmux_session=tmux_session_name,
+        project_name=matched_proj.name,
+    )
+    logger.info("SessionStart hook: unmanaged session %s → unlinked entry (project=%s, pane=%s)",
+                session_id[:12], matched_proj.name, tmux_pane)
     return {}

@@ -29,25 +29,9 @@ HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
 
 [ "$HTTP_CODE" = "200" ] && exit 0
 
-# Orchestrator offline — persist locally for later pickup
+# Orchestrator offline — persist signal file for later pickup
 
 # Managed agent: write signal file for session rotation detection
 if [ -n "$AGENT_ID" ]; then
   echo "$SESSION_ID" > "/tmp/ahive-${AGENT_ID}.newsession" 2>/dev/null
 fi
-
-# Write pending-session entry (orchestrator scans on startup)
-export AHIVE_PENDING_DIR="/tmp/ahive-pending-sessions"
-mkdir -p "$AHIVE_PENDING_DIR" 2>/dev/null
-python3 -c "
-import json, os, time
-d = os.environ['AHIVE_PENDING_DIR']
-s = os.environ['SESSION_ID']
-json.dump({
-    'session_id': s,
-    'cwd': os.getcwd(),
-    'tmux_pane': os.environ.get('TMUX_PANE', ''),
-    'agent_id': os.environ.get('AHIVE_AGENT_ID', ''),
-    'timestamp': int(time.time()),
-}, open(os.path.join(d, s + '.json'), 'w'))
-"

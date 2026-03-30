@@ -65,153 +65,6 @@ _generate_worktree_name_local = generate_worktree_name_local
 _enrich_agent_briefs = enrich_agent_briefs
 
 
-def _discover_session_id_from_pane(tmux_pane: str, project_path: str) -> str:
-    """Discover the active session_id for a tmux pane.
-
-    Strategy (in order):
-    1. Check /tmp/ahive-pending-sessions/ for an entry matching this pane
-    2. Scan /proc/*/fd for open JSONL files belonging to the pane's process tree
-    3. Read Claude Code's session_id from its tasks dir (latest lock file)
-    4. Scan JSONL files in session dir — find most recent CLI session not
-       owned by any active agent (fallback when Claude doesn't keep files open)
-    """
-    if not tmux_pane:
-        return ""
-
-    # Strategy 1: pending session files written by the SessionStart hook
-    pending_dir = "/tmp/ahive-pending-sessions"
-    if os.path.isdir(pending_dir):
-        for fname in os.listdir(pending_dir):
-            if not fname.endswith(".json"):
-                continue
-            try:
-                with open(os.path.join(pending_dir, fname)) as f:
-                    info = json.load(f)
-                if info.get("tmux_pane") == tmux_pane and info.get("session_id"):
-                    return info["session_id"]
-            except (OSError, json.JSONDecodeError):
-                continue
-
-    # Strategy 2: scan process tree's open files
-    from session_cache import session_source_dir
-    try:
-        r = subprocess.run(
-            ["tmux", "display-message", "-t", tmux_pane, "-p", "#{pane_pid}"],
-            capture_output=True, text=True, timeout=3,
-        )
-        if r.returncode != 0:
-            return ""
-        pane_pid = int(r.stdout.strip())
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        return ""
-
-    # Collect descendant PIDs
-    desc_pids = {pane_pid}
-    try:
-        r2 = subprocess.run(
-            ["pgrep", "-P", str(pane_pid), "--list-full"],
-            capture_output=True, text=True, timeout=3,
-        )
-        for line in r2.stdout.strip().splitlines():
-            parts = line.strip().split(None, 1)
-            if parts:
-                try:
-                    desc_pids.add(int(parts[0]))
-                except ValueError:
-                    pass
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-
-    sdir = session_source_dir(project_path)
-    if os.path.isdir(sdir):
-        for pid in desc_pids:
-            fd_dir = f"/proc/{pid}/fd"
-            try:
-                for fd in os.listdir(fd_dir):
-                    try:
-                        target = os.readlink(os.path.join(fd_dir, fd))
-                        if target.startswith(sdir) and target.endswith(".jsonl"):
-                            basename = os.path.basename(target)
-                            return basename.rsplit(".jsonl", 1)[0]
-                    except OSError:
-                        continue
-            except OSError:
-                continue
-
-    # Strategy 3: check Claude Code's tasks directory for the active session
-    # The tasks dir under ~/.claude has a session-specific subdir with a lock
-    for pid in desc_pids:
-        fd_dir = f"/proc/{pid}/fd"
-        try:
-            for fd in os.listdir(fd_dir):
-                try:
-                    target = os.readlink(os.path.join(fd_dir, fd))
-                    # Claude Code keeps tasks/<session_id>/... open
-                    if "/tasks/" in target:
-                        # Extract session_id from path component
-                        parts = target.split("/tasks/")
-                        if len(parts) > 1:
-                            sid_part = parts[1].split("/")[0]
-                            # Validate it looks like a UUID
-                            if len(sid_part) >= 32 and "-" in sid_part:
-                                return sid_part
-                except OSError:
-                    continue
-        except OSError:
-            continue
-
-    # Strategy 4: find most-recently-modified CLI JSONL not owned by any agent.
-    # Claude Code doesn't keep JSONL files open, so proc/fd scans fail.
-    # Instead, scan the session dir for unowned CLI sessions.
-    import time as _t4
-    from database import SessionLocal as _SL4
-    _db4 = _SL4()
-    try:
-        owned_sids: set[str] = {
-            r[0] for r in _db4.query(Agent.session_id).filter(
-                Agent.session_id.is_not(None),
-                Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
-            ).all()
-        }
-    finally:
-        _db4.close()
-
-    if os.path.isdir(sdir):
-        candidates: list[tuple[float, str, str]] = []  # (mtime, sid, path)
-        for fname in os.listdir(sdir):
-            if not fname.endswith(".jsonl"):
-                continue
-            sid = fname[:-6]
-            if sid in owned_sids:
-                continue
-            fpath = os.path.join(sdir, fname)
-            try:
-                mtime = os.path.getmtime(fpath)
-                candidates.append((mtime, sid, fpath))
-            except OSError:
-                continue
-
-        # Sort by mtime descending (most recent first)
-        candidates.sort(reverse=True)
-        for _mtime, sid, fpath in candidates:
-            # Read second line to check entrypoint=cli
-            try:
-                with open(fpath) as f:
-                    f.readline()  # skip first line (file-history-snapshot)
-                    second = f.readline().strip()
-                    if second:
-                        entry = json.loads(second)
-                        if entry.get("entrypoint") == "cli":
-                            logger.info(
-                                "_discover_session_id_from_pane: Strategy 4 matched "
-                                "CLI session %s for pane %s",
-                                sid[:12], tmux_pane,
-                            )
-                            return sid
-            except (OSError, json.JSONDecodeError):
-                continue
-
-    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1433,17 +1286,13 @@ async def adopt_unlinked_session(
     if not proj:
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
 
-    # Resolve session_id — may be empty for poll-detected sessions.
-    # Discover from the most recent JSONL in the project's session dir.
+    # session_id is populated by the SessionStart hook when creating the entry
     session_id = info.get("session_id", "")
     if not session_id:
-        tmux_pane = info.get("tmux_pane", "")
-        session_id = _discover_session_id_from_pane(tmux_pane, proj.path)
-        if not session_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Could not determine session ID for this pane. Is Claude Code running?",
-            )
+        raise HTTPException(
+            status_code=400,
+            detail="Session ID not available. Is Claude Code running? Try restarting it.",
+        )
 
     # Check if session is already bound to an agent
     existing = db.query(Agent).filter(Agent.session_id == session_id).first()
@@ -1513,16 +1362,9 @@ async def adopt_unlinked_session(
     ad.start_session_sync(agent.id, session_id, proj.path)
     ad.wake_sync(agent.id)
 
-    # Remove the unlinked entry and pending session signal
+    # Remove the unlinked entry
     try:
         os.unlink(info_path)
-    except OSError:
-        pass
-    pending_signal = os.path.join(
-        tempfile.gettempdir(), "ahive-pending-sessions", f"{session_id}.json"
-    )
-    try:
-        os.unlink(pending_signal)
     except OSError:
         pass
 

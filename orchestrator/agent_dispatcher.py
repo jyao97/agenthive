@@ -144,19 +144,15 @@ def _write_unlinked_entry(
     """Write an unlinked session entry for user confirmation in the UI.
 
     Creates a JSON file in the unlinked-sessions directory (under BACKUP_DIR)
-    so that the frontend can display it and the user can confirm (adopt) it.
-    Keyed by session_id when known, or tmux pane (sanitised) as fallback.
-    Idempotent — won't overwrite existing entry.
+    keyed by tmux pane. Overwrites existing entry for the same pane (session
+    rotation updates the session_id).
     """
     import time as _time
     from config import BACKUP_DIR
     udir = os.path.join(BACKUP_DIR, "unlinked-sessions")
     os.makedirs(udir, exist_ok=True)
-    # Use session_id as filename key when available, pane as fallback
-    file_key = session_id if session_id else f"pane-{(tmux_pane or 'unknown').replace('%', '').replace('/', '_')}"
+    file_key = f"pane-{(tmux_pane or 'unknown').replace('%', '').replace('/', '_')}"
     entry_path = os.path.join(udir, f"{file_key}.json")
-    if os.path.isfile(entry_path):
-        return  # Already registered — don't overwrite
     try:
         with open(entry_path, "w") as f:
             json.dump({
@@ -3728,14 +3724,7 @@ Here are the day's conversations (with timestamps):
             proj = proj_by_path[proj_path]
 
             if not session_name.startswith("ah-"):
-                # Non-managed tmux session in a project dir → unlinked entry
-                _write_unlinked_entry(
-                    session_id="",  # unknown until user confirms
-                    cwd=cwd,
-                    tmux_pane=pane_id,
-                    tmux_session=session_name,
-                    project_name=proj.name,
-                )
+                # Non-managed tmux session — detected via SessionStart hook
                 continue
 
             # Tier 0: ah-{prefix} → find stopped agent by ID prefix
