@@ -146,7 +146,9 @@ def _write_unlinked_entry(
     Creates a JSON file in the unlinked-sessions directory (under BACKUP_DIR)
     so that the frontend can display it and the user can confirm (adopt) it.
     Keyed by session_id when known, or tmux pane (sanitised) as fallback.
-    Idempotent — won't overwrite existing entry.
+    Deduplicated by tmux_pane: if an entry for the same pane already exists,
+    a session_id-bearing entry upgrades a pane-keyed stub, but a pane-keyed
+    stub won't duplicate a session_id-bearing entry.
     """
     import time as _time
     from config import BACKUP_DIR
@@ -157,6 +159,38 @@ def _write_unlinked_entry(
     entry_path = os.path.join(udir, f"{file_key}.json")
     if os.path.isfile(entry_path):
         return  # Already registered — don't overwrite
+
+    # Deduplicate by tmux_pane across different file keys.
+    # Push-based (session_id key) and pull-based (pane key) detection can
+    # race, creating two entries for the same pane.
+    if tmux_pane:
+        try:
+            for fname in os.listdir(udir):
+                if not fname.endswith(".json"):
+                    continue
+                fpath = os.path.join(udir, fname)
+                try:
+                    with open(fpath) as f:
+                        existing = json.load(f)
+                    if existing.get("tmux_pane") == tmux_pane:
+                        existing_sid = existing.get("session_id", "")
+                        if session_id and not existing_sid:
+                            # We have session_id, existing stub doesn't —
+                            # upgrade: remove stub, we'll write the richer entry.
+                            os.unlink(fpath)
+                            logger.debug(
+                                "_write_unlinked_entry: upgraded pane-stub %s → %s",
+                                fname, file_key,
+                            )
+                        else:
+                            # Existing entry already has session_id (or both
+                            # lack it) — skip to avoid duplicates.
+                            return
+                except (OSError, json.JSONDecodeError):
+                    continue
+        except OSError:
+            pass
+
     try:
         with open(entry_path, "w") as f:
             json.dump({
