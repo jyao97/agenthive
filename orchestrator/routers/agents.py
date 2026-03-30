@@ -178,7 +178,6 @@ def _discover_session_id_from_pane(tmux_pane: str, project_path: str) -> str:
 
     if os.path.isdir(sdir):
         candidates: list[tuple[float, str, str]] = []  # (mtime, sid, path)
-        now = _t4.time()
         for fname in os.listdir(sdir):
             if not fname.endswith(".jsonl"):
                 continue
@@ -188,9 +187,7 @@ def _discover_session_id_from_pane(tmux_pane: str, project_path: str) -> str:
             fpath = os.path.join(sdir, fname)
             try:
                 mtime = os.path.getmtime(fpath)
-                # Only consider recently active sessions (last 10 min)
-                if now - mtime < 600:
-                    candidates.append((mtime, sid, fpath))
+                candidates.append((mtime, sid, fpath))
             except OSError:
                 continue
 
