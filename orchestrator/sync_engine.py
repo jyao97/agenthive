@@ -488,10 +488,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             if role == "user":
                 # Detect user interrupt
                 if is_interrupt_message(content):
-                    if ctx.agent_id in ad._generating_agents or (
-                        agent and agent.generating_msg_id is not None
-                    ):
-                        ad._stop_generating(ctx.agent_id)
                     _saw_interrupt = True
 
                 msg = _promote_or_create_user_msg(
@@ -565,9 +561,14 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         from display_writer import flush_agent as _flush_display
         _flush_display(ctx.agent_id)
 
-        # Interrupt detected in JSONL: dispatch any PENDING messages immediately
-        # (no delay — the agent's last response is already imported above).
+        # Interrupt detected in JSONL: stop generating and dispatch PENDING
+        # messages.  _stop_generating is called HERE (after db.commit) rather
+        # than inside the turn loop to avoid a self-deadlock: the loop holds
+        # uncommitted SAVEPOINTs on one connection while _stop_generating
+        # opens a second connection that tries to write — same async task,
+        # two connections, SQLite single-writer lock → 5s timeout → crash.
         if _saw_interrupt:
+            ad._stop_generating(ctx.agent_id)
             asyncio.ensure_future(ad.dispatch_pending_message(ctx.agent_id, delay=0))
 
         # stop_hook_summary in JSONL: this is the authoritative signal that
