@@ -187,8 +187,6 @@ def flush_agent(agent_id: str):
                     (Message.role == MessageRole.USER)
                     & (Message.delivered_at.is_(None))
                 ),
-                # stop_hook_summary is a sync signal, not a chat message
-                Message.kind != "stop_hook",
             )
             .all()
         )

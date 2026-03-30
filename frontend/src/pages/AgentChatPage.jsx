@@ -3688,7 +3688,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
             })()}
 
             {(() => {
-              const visible = messages.filter((m) => !(m.role === "USER" && (m.status === "PENDING" || m.status === "QUEUED")));
+              const visible = messages.filter((m) => !(m.role === "USER" && (m.status === "PENDING" || m.status === "QUEUED")) && m.kind !== "stop_hook");
               console.log('[messages] rendering', visible.length, 'messages after filter');
               // Build tool groups: consecutive tool_use + tool_activity messages get merged
               const toolGroups = new Map(); // first msg id -> [entries]
