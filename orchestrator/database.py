@@ -495,6 +495,13 @@ def init_db():
             ))
             conn.commit()
 
+        # --- Add sync_stale column to agents if missing ---
+        if "sync_stale" not in agent_cols_suggestions:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN sync_stale BOOLEAN NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+
         # --- progress_insights FTS5 ---
         tables = [r[0] for r in conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table'"

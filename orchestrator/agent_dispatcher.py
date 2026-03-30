@@ -2450,8 +2450,9 @@ Here are the day's conversations (with timestamps):
     def _stop_generating(self, agent_id: str):
         """Mark agent as no longer generating: in-memory set, DB status, and WS events.
 
-        Also schedules dispatch of any PENDING messages after a short delay,
-        covering all paths (stop hook, interrupt, sync cleanup) uniformly.
+        Only clears state — does NOT dispatch PENDING messages.  Dispatch is
+        the caller's responsibility (sync engine does it after commit+flush
+        when it detects stop_hook_summary or interrupt in JSONL).
         """
         gid = self._generation_ids.get(agent_id)
         self._generating_agents.discard(agent_id)
@@ -2473,11 +2474,6 @@ Here are the day's conversations (with timestamps):
                     db.commit()
         finally:
             db.close()
-
-        # Dispatch any PENDING messages now that the agent is idle.
-        # 2s delay lets the sync loop import the last response first
-        # so display_seq ordering stays correct.
-        asyncio.ensure_future(self.dispatch_pending_message(agent_id, delay=2.0))
 
     async def dispatch_pending_message(self, agent_id: str, delay: float = 0):
         """Dispatch the first PENDING user message to the agent's tmux pane.
@@ -2536,6 +2532,70 @@ Here are the day's conversations (with timestamps):
                 )
         except Exception:
             logger.exception("dispatch_pending: error for agent %s", agent_id[:8])
+        finally:
+            db.close()
+
+    async def redispatch_stuck_queued(self, agent_id: str):
+        """Re-dispatch QUEUED messages that were never confirmed via JSONL.
+
+        Called from wake-sync when the user manually triggers a sync.
+        Handles the case where send_tmux_message succeeded but the agent
+        didn't actually process the message (e.g., sent while agent was
+        mid-generation but generating_msg_id was briefly None).
+        """
+        db = SessionLocal()
+        try:
+            import datetime
+            cutoff = datetime.datetime.utcnow() - datetime.timedelta(seconds=10)
+            stuck = (
+                db.query(Message)
+                .filter(
+                    Message.agent_id == agent_id,
+                    Message.role == MessageRole.USER,
+                    Message.status == MessageStatus.QUEUED,
+                    Message.jsonl_uuid.is_(None),
+                    Message.created_at < cutoff,
+                )
+                .order_by(Message.created_at.asc())
+                .all()
+            )
+            if not stuck:
+                return
+
+            agent = db.get(Agent, agent_id)
+            if not agent or not agent.tmux_pane:
+                return
+
+            # Don't re-dispatch if agent is busy generating
+            if agent.generating_msg_id:
+                logger.info(
+                    "redispatch_stuck_queued: agent %s is generating, skipping",
+                    agent_id[:8],
+                )
+                return
+
+            if not verify_tmux_pane(agent.tmux_pane):
+                logger.warning(
+                    "redispatch_stuck_queued: tmux pane gone for agent %s",
+                    agent_id[:8],
+                )
+                return
+
+            for msg in stuck:
+                ok = send_tmux_message(agent.tmux_pane, msg.content)
+                if ok:
+                    logger.info(
+                        "redispatch_stuck_queued: re-sent message %s to agent %s",
+                        msg.id[:8], agent_id[:8],
+                    )
+                else:
+                    logger.warning(
+                        "redispatch_stuck_queued: send_tmux_message failed for agent %s",
+                        agent_id[:8],
+                    )
+                    break
+        except Exception:
+            logger.exception("redispatch_stuck_queued: error for agent %s", agent_id[:8])
         finally:
             db.close()
 

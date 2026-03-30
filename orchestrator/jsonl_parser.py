@@ -21,6 +21,8 @@ import json
 import logging
 import re
 
+from utils import is_interrupt_message
+
 logger = logging.getLogger("orchestrator.jsonl_parser")
 
 
@@ -461,10 +463,12 @@ def parse_session_turns_from_lines(
             content = msg.get("content", "")
             # Check for tool_result in list-type content
             if isinstance(content, list):
+                has_tool_result = False
                 for block in content:
                     if not isinstance(block, dict):
                         continue
                     if block.get("type") == "tool_result":
+                        has_tool_result = True
                         tool_use_id = block.get("tool_use_id", "")
                         if tool_use_id in interactive_by_id:
                             result_content = block.get("content", "")
@@ -480,7 +484,15 @@ def parse_session_turns_from_lines(
                             # Flush so each interactive Q&A becomes its
                             # own message bubble.
                             flush_all()
-                continue
+                if has_tool_result:
+                    continue
+                # Extract text from list content blocks (e.g. interrupt messages)
+                content = "\n".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ).strip()
+                if not content:
+                    continue
             # Real user message = string content (not tool_result list)
             if isinstance(content, str) and content.strip():
                 stripped = content.strip()
@@ -492,6 +504,11 @@ def parse_session_turns_from_lines(
                     or stripped.startswith("<system-reminder>")
                     or stripped.startswith("<task-notification>")
                 ):
+                    continue
+                # Interrupt marker → system message with kind="interrupt"
+                if is_interrupt_message(stripped):
+                    flush_all()
+                    turns.append(("system", stripped, None, entry_uuid, "interrupt", entry_ts))
                     continue
                 # Compact summary → system message instead of user
                 if stripped.startswith(

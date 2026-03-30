@@ -36,7 +36,7 @@ from route_helpers import (
     BROWSE_MAX_FILE_SIZE, API_REQUEST_TIMEOUT, SUBPROCESS_STRIP_VARS,
     subprocess_clean_env, graceful_kill_tmux,
 )
-from utils import utcnow as _utcnow
+from utils import utcnow as _utcnow, is_interrupt_message
 
 logger = logging.getLogger("orchestrator")
 
@@ -1462,7 +1462,7 @@ async def list_project_sessions(name: str, db: Session = Depends(get_db)):
         first_msg = entries[0].get("display", "")
 
         # Skip sessions that were interrupted before producing useful output
-        if "[Request interrupted by user]" in (first_msg or ""):
+        if is_interrupt_message(first_msg):
             continue
 
         created = entries[0].get("timestamp", 0)

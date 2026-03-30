@@ -486,10 +486,6 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                          ctx.agent_id[:8], seq, role, kind, jsonl_uuid, len(content or ""))
 
             if role == "user":
-                # Detect user interrupt
-                if is_interrupt_message(content):
-                    _saw_interrupt = True
-
                 msg = _promote_or_create_user_msg(
                     db, ctx, content, jsonl_uuid, seq, meta, kind, jsonl_ts,
                 )
@@ -506,6 +502,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             elif role == "system":
                 if kind == "stop_hook":
                     _saw_stop_hook = True
+                if kind == "interrupt":
+                    _saw_interrupt = True
 
                 msg = _create_system_msg(
                     db, ctx, content, jsonl_uuid, seq, kind, jsonl_ts,
