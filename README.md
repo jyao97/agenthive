@@ -126,7 +126,7 @@ AgentHive runs on your machine and launches Claude Code CLI instances inside tmu
 
 ### Prerequisites
 
-- **Linux** or **macOS** host (Ubuntu 22.04+ / macOS 13+ recommended)
+- **Linux** host (Ubuntu 22.04+ recommended). macOS support is in progress — see the `mac-compatibility` branch
 - **Node.js** 18+ and npm
 - **Python** 3.11+
 - **tmux** (usually pre-installed; `sudo apt install tmux` if not)
