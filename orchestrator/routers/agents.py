@@ -1456,8 +1456,9 @@ async def adopt_unlinked_session(
     db.commit()
     db.refresh(agent)
 
-    # Write .owner and start sync
+    # Write .owner, start sync, and immediately wake for first import
     ad.start_session_sync(agent.id, session_id, proj.path)
+    ad.wake_sync(agent.id)
 
     # Remove the unlinked entry
     try:
@@ -3139,44 +3140,14 @@ async def send_escape_to_agent(agent_id: str, request: Request, db: Session = De
     # Clear it so stale text doesn't linger or get accidentally re-submitted.
     send_tmux_keys(agent.tmux_pane, ["C-u"])
 
-    # Wait briefly for Claude Code to write "[Request interrupted by user]"
-    # to JSONL, then verify the interrupt actually happened before clearing state.
-    interrupted = False
+    # Interrupt confirmation and dispatch are handled by the sync engine:
+    # CC writes "[Request interrupted by user]" to JSONL → sync imports it
+    # → _stop_generating clears state → dispatch_pending_message fires.
+    # We just need to clear generating state (immediate UI update) and wake sync.
     ad = getattr(request.app.state, "agent_dispatcher", None)
-    if ad and agent.session_id:
-        from config import JSONL_FLUSH_DELAY
-        await asyncio.sleep(JSONL_FLUSH_DELAY)
-        # Read only new JSONL data since last sync offset
-        ctx = ad._sync_contexts.get(agent_id)
-        jsonl_path = ctx.jsonl_path if ctx else None
-        read_from = ctx.last_offset if ctx else 0
-        if not jsonl_path:
-            from agent_dispatcher import _resolve_session_jsonl
-            project_obj = db.query(Project).filter(Project.name == agent.project).first()
-            proj_path = project_obj.path if project_obj else ""
-            jsonl_path = _resolve_session_jsonl(agent.session_id, proj_path, agent.worktree)
-        if jsonl_path:
-            try:
-                with open(jsonl_path, "rb") as f:
-                    f.seek(read_from)
-                    new_data = f.read().decode("utf-8", errors="replace")
-                if is_interrupt_message(new_data):
-                    interrupted = True
-            except OSError:
-                pass
-
-    # Always clear generating state when the user explicitly requests interrupt.
-    # Two scenarios:
-    #   1. CC was generating → C-c aborts, JSONL entry written, sync will import it
-    #   2. CC was already idle (Stop hook arrived but sync hadn't processed it yet)
-    #      → no JSONL entry, but UI still shows EXECUTING — must clear it here
     if ad:
         ad._stop_generating(agent_id)
         ad.wake_sync(agent_id)
-        if interrupted:
-            logger.info("escape: interrupt confirmed in JSONL for %s", agent_id[:8])
-        else:
-            logger.info("escape: no JSONL entry for %s (CC may have been idle), cleared generating", agent_id[:8])
 
-    logger.info("Sent Escape to agent %s pane %s", agent_id, agent.tmux_pane)
-    return {"detail": "ok", "interrupted": interrupted}
+    logger.info("escape: sent C-c to agent %s pane %s, woke sync", agent_id[:8], agent.tmux_pane)
+    return {"detail": "ok"}
