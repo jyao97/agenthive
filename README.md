@@ -289,6 +289,8 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines 
 - Setting up a development environment
 - Running tests and submitting pull requests
 
+If you find AgentHive useful, a star helps others discover it.
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE) for details.
