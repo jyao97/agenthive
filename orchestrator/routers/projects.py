@@ -1182,6 +1182,7 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
     db.execute(update(StarredSession).where(StarredSession.project == name).values(project=new_name))
     from models import Task
     db.execute(update(Task).where(Task.project == name).values(project=new_name))
+    db.execute(update(Task).where(Task.project_name == name).values(project_name=new_name))
 
     ghost = db.execute(text("SELECT name FROM projects WHERE name = :old"), {"old": name}).fetchone()
     if ghost:
