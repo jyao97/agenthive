@@ -28,11 +28,15 @@ backups/
 # Logs
 logs/
 
-# TLS certificates (self-signed, regenerate with: openssl req -x509 ...)
+# TLS / SSL certificates and keys
 certs/
-
-# VAPID keys
 *.pem
+*.crt
+*.key
+*.cer
+*.der
+*.p12
+*.pfx
 
 # Docker
 .docker/
