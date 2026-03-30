@@ -322,7 +322,7 @@ export default function FileAttachments({ attachments, compact }) {
   if (compact) {
     return (
       <div className="mt-1.5">
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 justify-end">
           {allAtts.map((att, idx) => {
             const filename = att.path.split("/").pop();
             const isMedia = att.type === "image" || att.type === "video";

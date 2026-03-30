@@ -3698,10 +3698,16 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               let replacedFirstTask = false;
               const visible = messages.filter((m) => !(m.role === "USER" && (m.status === "PENDING" || m.status === "QUEUED")) && m.kind !== "stop_hook")
                 .map((m) => {
-                  // For retry agents, replace first source=task user message with retry_context
+                  // For retry agents, replace first source=task user message text with retry_context,
+                  // but keep all [Attached file: ...] tags from both original and retry_context
                   if (isRetryAgent && retryContext && !replacedFirstTask && m.role === "USER" && m.source === "task") {
                     replacedFirstTask = true;
-                    return { ...m, content: retryContext.replace(/^User feedback:\s*/i, "") };
+                    const origAttachments = (m.content || "").match(/\[Attached file: [^\]]+\]/g) || [];
+                    const retryText = retryContext.replace(/^User feedback:\s*/i, "");
+                    const retryAttachments = retryText.match(/\[Attached file: [^\]]+\]/g) || [];
+                    const cleanText = retryText.replace(/\[Attached file: [^\]]+\]/g, "").trim();
+                    const allAttachments = [...new Set([...retryAttachments, ...origAttachments])];
+                    return { ...m, content: cleanText + (allAttachments.length ? "\n" + allAttachments.join("\n") : "") };
                   }
                   return m;
                 });
