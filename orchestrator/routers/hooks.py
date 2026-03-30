@@ -1274,13 +1274,21 @@ async def hook_agent_session_start(request: Request):
     finally:
         _db.close()
 
-    # Unmanaged sessions without a pane owner are detected exclusively by
-    # the polling scan (_auto_detect_cli_sessions) to avoid duplicate
-    # unlinked entries — the hook and the poll used different file keys
-    # (session_id vs pane) for the same pane.
-    logger.debug(
-        "SessionStart hook: unmanaged session %s (pane=%s) — "
-        "skipping unlinked entry, polling scan will detect it",
-        session_id[:12], tmux_pane,
-    )
+    # Write a pending-session signal so that _discover_session_id_from_pane()
+    # can resolve session_id when the user confirms (adopts) this session.
+    # Unlinked entry creation is left to the polling scan exclusively to
+    # avoid duplicates (the hook and poll used different file keys).
+    pending_dir = os.path.join(tempfile.gettempdir(), "ahive-pending-sessions")
+    os.makedirs(pending_dir, exist_ok=True)
+    pending_path = os.path.join(pending_dir, f"{session_id}.json")
+    try:
+        with open(pending_path, "w") as f:
+            json.dump({"session_id": session_id, "tmux_pane": tmux_pane, "cwd": cwd}, f)
+        logger.info(
+            "SessionStart hook: unmanaged session %s (pane=%s) — "
+            "wrote pending signal for adopt discovery",
+            session_id[:12], tmux_pane,
+        )
+    except OSError as e:
+        logger.warning("SessionStart hook: failed to write pending signal %s: %s", pending_path, e)
     return {}

@@ -1460,9 +1460,16 @@ async def adopt_unlinked_session(
     ad.start_session_sync(agent.id, session_id, proj.path)
     ad.wake_sync(agent.id)
 
-    # Remove the unlinked entry
+    # Remove the unlinked entry and pending session signal
     try:
         os.unlink(info_path)
+    except OSError:
+        pass
+    pending_signal = os.path.join(
+        tempfile.gettempdir(), "ahive-pending-sessions", f"{session_id}.json"
+    )
+    try:
+        os.unlink(pending_signal)
     except OSError:
         pass
 
