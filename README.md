@@ -5,7 +5,7 @@
 [![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
 
-> [**Getting Started**](#getting-started) · [**The Loop**](#the-loop) · [**Features**](#features) · [**Contributing**](CONTRIBUTING.md)
+> [**Getting Started**](#getting-started) · [**The Loop**](#the-loop) · [**Features**](#features) · [**Roadmap**](#roadmap) · [**Contributing**](CONTRIBUTING.md)
 
 <p align="center">
   <img src="docs/hero.png" alt="AgentHive — Orchestrate AI Agents from Anywhere" width="820">
@@ -275,6 +275,11 @@ sudo update-ca-certificates
 </details>
 
 After installing, restart your browser.
+
+## Roadmap
+
+- **macOS support** — in progress on the `mac-compatibility` branch. Currently Linux-only.
+- **Backup & restore** — automatic backups run on schedule, but the restore flow has not been fully validated. Use with caution.
 
 ## Contributing
 
