@@ -3670,8 +3670,19 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                       </button>
                     ))}
                   </div>
+                  {taskData.retry_context && (
+                    <p className="text-xs text-dim/90 whitespace-pre-wrap">{taskData.retry_context.replace(/^User feedback:\s*/i, "").replace(/\[Attached file: [^\]]+\]/g, "").trim()}</p>
+                  )}
                   {taskData.description && (
-                    <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.description.replace(/\[Attached file: [^\]]+\]/g, "").trim()}</p>
+                    <details className="mt-2">
+                      <summary className="text-[10px] font-medium text-orange-500 dark:text-orange-400 cursor-pointer select-none list-none flex items-center gap-1">
+                        <span className="transition-transform duration-200 text-[8px] [details[open]>&]:rotate-90">▶</span>
+                        Original task
+                      </summary>
+                      <div className="mt-1">
+                        <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.description.replace(/\[Attached file: [^\]]+\]/g, "").trim()}</p>
+                      </div>
+                    </details>
                   )}
                   {taskData.agent_summary && (
                     <details className="mt-2">
@@ -3693,7 +3704,18 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
             })()}
 
             {(() => {
-              const visible = messages.filter((m) => !(m.role === "USER" && (m.status === "PENDING" || m.status === "QUEUED")) && m.kind !== "stop_hook");
+              const isRetryAgent = (taskData?.attempt_agents || []).findIndex(a => a.agent_id === id) >= 1;
+              let skippedFirstTask = false;
+              const visible = messages.filter((m) => {
+                if (m.role === "USER" && (m.status === "PENDING" || m.status === "QUEUED")) return false;
+                if (m.kind === "stop_hook") return false;
+                // For retry agents, hide the first source=task user message (retry card already shows it)
+                if (isRetryAgent && !skippedFirstTask && m.role === "USER" && m.source === "task") {
+                  skippedFirstTask = true;
+                  return false;
+                }
+                return true;
+              });
               console.log('[messages] rendering', visible.length, 'messages after filter');
               // Build tool groups: consecutive tool_use + tool_activity messages get merged
               const toolGroups = new Map(); // first msg id -> [entries]
