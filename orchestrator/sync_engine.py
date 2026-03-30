@@ -534,7 +534,12 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                 continue
 
         if _actually_inserted:
-            agent.last_message_preview = (new_turns[-1][1] or "")[:200]
+            # Skip stop_hook turns for preview (they're signals, not content)
+            _preview_turn = next(
+                (t for t in reversed(new_turns) if not (len(t) > 4 and t[4] == "stop_hook")),
+                new_turns[-1],
+            )
+            agent.last_message_preview = (_preview_turn[1] or "")[:200]
             agent.last_message_at = _utcnow()
             if agent.sync_stale:
                 agent.sync_stale = False
