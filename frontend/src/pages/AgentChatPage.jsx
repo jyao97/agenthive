@@ -3651,7 +3651,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               // Only show on retry agents (not the first attempt)
               if (myIdx < 1) return null;
               return (
-                <div className="mx-auto max-w-[70%] mb-3 rounded-xl bg-orange-500/8 border border-orange-500/20 px-4 py-3 relative max-h-[320px] overflow-hidden">
+                <div className="mx-auto max-w-[70%] mb-3 rounded-xl bg-orange-500/8 border border-orange-500/20 px-4 py-3 relative max-h-[160px] overflow-hidden">
                   {/* Attempt navigation pills */}
                   <div className="flex items-center gap-1.5 mb-2 flex-wrap">
                     <span className="text-[10px] font-semibold text-orange-500 dark:text-orange-400 mr-1">Attempts</span>
