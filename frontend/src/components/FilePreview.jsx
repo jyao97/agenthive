@@ -290,7 +290,7 @@ function DocGroupCard({ docs }) {
 
 // --- Main component ---
 
-export default function FileAttachments({ attachments }) {
+export default function FileAttachments({ attachments, compact }) {
   const [lightbox, setLightbox] = useState(null); // { media, initialIndex } or null
 
   if (!attachments || attachments.length === 0) return null;
@@ -306,6 +306,7 @@ export default function FileAttachments({ attachments }) {
   }
 
   // Unified media gallery: images and videos in one swipeable lightbox
+  const allAtts = [...mediaAtts, ...docs, ...other];
   const galleryMedia = mediaAtts.map((att) => ({
     type: att.type,
     src: att.resolvedUrl,
@@ -316,6 +317,44 @@ export default function FileAttachments({ attachments }) {
   const openLightbox = (mediaIndex) => {
     setLightbox({ media: galleryMedia, initialIndex: mediaIndex });
   };
+
+  // Compact pill layout — like the compose bar attachment chips
+  if (compact) {
+    return (
+      <div className="mt-1.5">
+        <div className="flex flex-wrap gap-1.5">
+          {allAtts.map((att, idx) => {
+            const filename = att.path.split("/").pop();
+            const isMedia = att.type === "image" || att.type === "video";
+            const mediaIdx = isMedia ? mediaAtts.indexOf(att) : -1;
+            return (
+              <div
+                key={att.path}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[180px] cursor-pointer"
+                onClick={() => isMedia ? openLightbox(mediaIdx) : null}
+              >
+                {isMedia ? (
+                  <img src={att.thumbUrl || att.resolvedUrl} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
+                ) : (
+                  <svg className="w-4 h-4 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                  </svg>
+                )}
+                <span className="truncate text-label flex-1 min-w-0">{filename}</span>
+              </div>
+            );
+          })}
+        </div>
+        {lightbox && (
+          <ImageLightbox
+            media={lightbox.media}
+            initialIndex={lightbox.initialIndex}
+            onClose={() => setLightbox(null)}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2 mt-1.5">

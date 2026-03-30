@@ -1462,10 +1462,10 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
             </div>
           </div>
         )}
-        {attachments.length > 0 && <FileAttachments attachments={attachments} />}
         {userInsights && userInsights.length > 0 && (
           <InsightsBubble insights={userInsights} />
         )}
+        {attachments.length > 0 && <FileAttachments attachments={attachments} compact={message.role === "USER"} />}
         {inlineLightbox && (
           <ImageLightbox
             media={inlineLightbox.media}
