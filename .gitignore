@@ -28,6 +28,13 @@ backups/
 # Logs
 logs/
 
+# Credentials
+.credential
+.credentials
+*.credential
+secrets.yaml
+secrets.json
+
 # TLS / SSL certificates and keys
 certs/
 *.pem
