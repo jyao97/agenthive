@@ -496,6 +496,11 @@ async def batch_process_tasks(request: Request, db: Session = Depends(get_db)):
     query = db.query(Task).filter(Task.status == TaskStatus.INBOX)
     if task_ids:
         query = query.filter(Task.id.in_(task_ids))
+    # Exclude deferred tasks (deferred_to in the future)
+    now = datetime.utcnow()
+    query = query.filter(
+        (Task.deferred_to == None) | (Task.deferred_to <= now)  # noqa: E711
+    )
     inbox_tasks = query.order_by(Task.sort_order, Task.created_at.desc()).all()
     if not inbox_tasks:
         raise HTTPException(400, "No inbox tasks to process")
