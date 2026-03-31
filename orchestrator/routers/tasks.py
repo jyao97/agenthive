@@ -510,8 +510,21 @@ async def batch_process_tasks(request: Request, db: Session = Depends(get_db)):
     project_list = [{"name": p.name, "display_name": getattr(p, "display_name", None) or p.name,
                      "description": getattr(p, "description", None) or ""} for p in projects]
 
-    tasks_data = [{"id": t.id, "title": t.title or "", "description": t.description or "",
-                   "project_name": t.project_name or None} for t in inbox_tasks]
+    # Derive config fields dynamically from TaskUpdate schema so future fields are auto-included.
+    # Exclude fields the triage is meant to change (title, description, project_name) and status.
+    _triage_managed = {"title", "description", "project_name", "status"}
+    _config_fields = [f for f in TaskUpdate.model_fields if f not in _triage_managed]
+
+    tasks_data = []
+    for t in inbox_tasks:
+        task_dict = {
+            "id": t.id,
+            "title": t.title or "",
+            "description": t.description or "",
+            "project_name": t.project_name or None,
+            "config": {field: getattr(t, field, None) for field in _config_fields},
+        }
+        tasks_data.append(task_dict)
 
     # Pick first available project as agent host (prefer cc-orchestrator)
     host_project = "cc-orchestrator"
@@ -536,7 +549,8 @@ INBOX TASKS:
 {json.dumps(tasks_data, ensure_ascii=False, indent=2)}
 
 HOW TO UPDATE:
-- Update a task: curl -s -X PUT {api_base}/api/v2/tasks/TASK_ID -H "Content-Type: application/json" -d '{{"title":"...","description":"...","project_name":"...","skip_permissions":true}}'
+- Update a task: curl -s -X PUT {api_base}/api/v2/tasks/TASK_ID -H "Content-Type: application/json" -d '<JSON>'
+  The JSON body MUST include: title, description, project_name (your changes) + ALL fields from the task's `config` object merged in verbatim. Never drop or override any config field — the task owner already configured them.
 - Dispatch for execution: curl -s -X POST {api_base}/api/v2/tasks/TASK_ID/dispatch
 
 SAFETY RULES:
