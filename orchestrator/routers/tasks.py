@@ -536,7 +536,7 @@ INBOX TASKS:
 {json.dumps(tasks_data, ensure_ascii=False, indent=2)}
 
 HOW TO UPDATE:
-- Update a task: curl -s -X PUT {api_base}/api/v2/tasks/TASK_ID -H "Content-Type: application/json" -d '{{"title":"...","description":"...","project_name":"..."}}'
+- Update a task: curl -s -X PUT {api_base}/api/v2/tasks/TASK_ID -H "Content-Type: application/json" -d '{{"title":"...","description":"...","project_name":"...","skip_permissions":true}}'
 - Dispatch for execution: curl -s -X POST {api_base}/api/v2/tasks/TASK_ID/dispatch
 
 SAFETY RULES:
