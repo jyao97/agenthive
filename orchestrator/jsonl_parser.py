@@ -529,6 +529,16 @@ def parse_session_turns_from_lines(
             # Skip subagent messages
             if entry.get("parent_tool_use_id"):
                 continue
+            # Rate limit error → system message with kind="rate_limit"
+            if entry.get("isApiErrorMessage") and entry.get("error") == "rate_limit":
+                flush_all()
+                _rl_texts = [
+                    b.get("text", "") for b in msg.get("content", [])
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                _rl_display = " ".join(t.strip() for t in _rl_texts if t.strip()) or "Rate limit reached"
+                turns.append(("system", _rl_display, None, entry_uuid, "rate_limit", entry_ts))
+                continue
             for block in msg.get("content", []):
                 if not isinstance(block, dict):
                     continue

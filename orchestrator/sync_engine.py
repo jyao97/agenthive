@@ -474,6 +474,7 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         _actually_inserted = 0
         _saw_interrupt = False
         _saw_stop_hook = False
+        _saw_rate_limit = False
         for i, (role, content, *rest) in enumerate(new_turns):
             seq = ctx.last_turn_count + i
             meta = rest[0] if rest else None
@@ -504,6 +505,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                     _saw_stop_hook = True
                 if kind == "interrupt":
                     _saw_interrupt = True
+                if kind == "rate_limit":
+                    _saw_rate_limit = True
 
                 msg = _create_system_msg(
                     db, ctx, content, jsonl_uuid, seq, kind, jsonl_ts,
@@ -559,6 +562,16 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         from display_writer import flush_agent as _flush_display
         _flush_display(ctx.agent_id)
 
+        # Rate limit detected: transition to IDLE but do NOT dispatch queued
+        # messages — the agent cannot process them while rate-limited.
+        if _saw_rate_limit:
+            logger.info(
+                "sync: rate_limit detected for agent %s — "
+                "transitioning to IDLE (no dispatch)",
+                ctx.agent_id[:8],
+            )
+            ad._stop_generating(ctx.agent_id)
+
         # Interrupt detected in JSONL: stop generating and dispatch PENDING
         # messages.  _stop_generating is called HERE (after db.commit) rather
         # than inside the turn loop to avoid a self-deadlock: the loop holds
@@ -567,7 +580,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         # two connections, SQLite single-writer lock → 5s timeout → crash.
         if _saw_interrupt:
             ad._stop_generating(ctx.agent_id)
-            asyncio.ensure_future(ad.dispatch_pending_message(ctx.agent_id, delay=0))
+            if not _saw_rate_limit:
+                asyncio.ensure_future(ad.dispatch_pending_message(ctx.agent_id, delay=0))
 
         # stop_hook_summary in JSONL: this is the authoritative signal that
         # the agent finished a turn.  Perform all stop-hook operations here
@@ -600,9 +614,11 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             import slash_commands as _sc
             _sc.mark_completed(ctx.agent_id)
             # dispatch pending (no delay — response already imported above)
-            asyncio.ensure_future(
-                ad.dispatch_pending_message(ctx.agent_id, delay=0)
-            )
+            # Skip dispatch if rate-limited — agent can't process messages
+            if not _saw_rate_limit:
+                asyncio.ensure_future(
+                    ad.dispatch_pending_message(ctx.agent_id, delay=0)
+                )
 
         logger.debug("Agent %s: sync_import result=%s, inserted=%d, pointer now=%d",
                      ctx.agent_id[:8], "new_turns", _actually_inserted, ctx.last_turn_count)
