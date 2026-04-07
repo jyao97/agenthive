@@ -608,21 +608,34 @@ async def system_restart():
     logger.warning("Restart requested via API — spawning new instance and exiting")
 
     log_path = os.path.join(project_root, "logs", "server.log")
-
-    # Single bash command in a new session — survives our own death.
-    # Uses flock to prevent concurrent restart scripts from racing.
     lock_path = os.path.join(project_root, "logs", ".restart.lock")
+
+    # PM2 treekill walks the PPID chain and kills ALL descendants of the
+    # managed process, including Popen children (even with start_new_session).
+    # To survive, we write a restart script to a temp file and double-fork:
+    # outer bash backgrounds setsid, then exits immediately — the inner
+    # process is reparented to init (PPID=1) before pm2 delete runs.
+    import tempfile
+    script = (
+        f'#!/bin/bash\n'
+        f'exec 9>"{lock_path}"\n'
+        f'flock -n 9 || exit 0\n'
+        f'sleep 1\n'                              # let HTTP response flush
+        f'pm2 delete all 2>/dev/null\n'
+        f'sleep 2\n'                              # let PM2 daemon settle
+        f'bash "{run_script}" >> "{log_path}" 2>&1\n'
+        f'rm -f "{lock_path}" "$0"\n'             # clean up lock + script
+    )
+    fd, script_path = tempfile.mkstemp(suffix='.sh', dir=os.path.join(project_root, 'logs'))
+    os.write(fd, script.encode())
+    os.close(fd)
+    os.chmod(script_path, 0o755)
+
+    # Double-fork: outer bash starts setsid in background, then exits.
+    # The setsid process is immediately reparented to init — PM2 treekill
+    # cannot reach it when it kills the uvicorn process tree.
     _sp.Popen(
-        [
-            "bash", "-c",
-            f'exec 9>"{lock_path}"; '
-            f'flock -n 9 || exit 0; '           # another restart already running — bail
-            f'sleep 0.5; '                       # let HTTP response flush
-            f'pm2 delete all 2>/dev/null; '
-            f'sleep 2; '                         # let PM2 daemon settle
-            f'bash "{run_script}" >> "{log_path}" 2>&1; '
-            f'rm -f "{lock_path}"',
-        ],
+        ["bash", "-c", f'setsid bash "{script_path}" &'],
         cwd=project_root,
         start_new_session=True,
         stdout=_sp.DEVNULL,
