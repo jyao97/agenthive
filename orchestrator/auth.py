@@ -1,7 +1,7 @@
 """Authentication utilities — password hashing and token management.
 
-Uses only Python stdlib: hashlib, hmac, secrets, base64, json, time.
-No external dependencies needed for single-password auth.
+Uses Python stdlib for tokens + bcrypt for password hashing.
+Supports transparent migration from legacy SHA-256 hashes on login.
 """
 
 import base64
@@ -11,23 +11,31 @@ import json
 import secrets
 import time
 
+import bcrypt
+
 from config import AUTH_TIMEOUT_MINUTES
 
 
-def hash_password(password: str) -> str:
-    """Hash a password with a random salt using SHA-256.
+# ---------------------------------------------------------------------------
+# Password hashing (bcrypt with transparent SHA-256 migration)
+# ---------------------------------------------------------------------------
 
-    NOTE: SHA-256 is not ideal for password hashing (no key-stretching).
-    A purpose-built KDF like bcrypt/scrypt/argon2 would be stronger.
-    Kept as-is to avoid breaking existing stored hashes.
-    """
-    salt = secrets.token_hex(16)
-    h = hashlib.sha256((salt + password).encode()).hexdigest()
-    return f"{salt}:{h}"
+def hash_password(password: str) -> str:
+    """Hash a password with bcrypt (cost factor 12)."""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    """Verify a password against a stored salt:hash."""
+    """Verify a password against a stored hash.
+
+    Supports two formats:
+    - bcrypt: starts with "$2b$"
+    - legacy SHA-256: "salt:hex_digest" (auto-migrated on successful verify)
+    """
+    if stored_hash.startswith("$2b$"):
+        return bcrypt.checkpw(password.encode(), stored_hash.encode())
+
+    # Legacy SHA-256 format: "salt:sha256hex"
     if ":" not in stored_hash:
         return False
     salt, h = stored_hash.split(":", 1)
@@ -35,6 +43,15 @@ def verify_password(password: str, stored_hash: str) -> bool:
         hashlib.sha256((salt + password).encode()).hexdigest(), h
     )
 
+
+def needs_rehash(stored_hash: str) -> bool:
+    """Return True if the stored hash uses a legacy algorithm."""
+    return not stored_hash.startswith("$2b$")
+
+
+# ---------------------------------------------------------------------------
+# Token management (custom signed payload — stdlib only)
+# ---------------------------------------------------------------------------
 
 def create_token(jwt_secret: str, expires_minutes: int | None = None) -> str:
     """Create a signed token with expiry.
@@ -94,6 +111,10 @@ def verify_token(token: str, jwt_secret: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
 class LoginRateLimiter:
     """In-memory rate limiter with exponential backoff.
 
@@ -146,6 +167,10 @@ class LoginRateLimiter:
 login_limiter = LoginRateLimiter()
 
 
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+
 def get_jwt_secret(db_session) -> str:
     """Get the JWT secret from SystemConfig, creating if missing."""
     from models import SystemConfig
@@ -168,7 +193,7 @@ def get_password_hash(db_session) -> str | None:
 
 
 def set_password_hash(db_session, password: str) -> None:
-    """Store a new password hash."""
+    """Store a new password hash (bcrypt)."""
     from models import SystemConfig
 
     h = hash_password(password)

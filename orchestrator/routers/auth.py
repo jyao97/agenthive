@@ -11,6 +11,7 @@ from auth import (
     get_jwt_secret,
     get_password_hash,
     login_limiter,
+    needs_rehash,
     set_password_hash,
     verify_password,
     verify_token,
@@ -90,6 +91,12 @@ async def auth_login(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail=detail)
 
     login_limiter.record_success(ip)
+
+    # Transparent rehash: migrate legacy SHA-256 to bcrypt on successful login
+    if needs_rehash(pw_hash):
+        set_password_hash(db, password)
+        logger.info("Migrated password hash from SHA-256 to bcrypt")
+
     jwt_secret = get_jwt_secret(db)
     token = create_token(jwt_secret)
     return {"token": token, "expires_minutes": AUTH_TIMEOUT_MINUTES}
@@ -97,7 +104,17 @@ async def auth_login(request: Request, db: Session = Depends(get_db)):
 
 @router.post("/change-password")
 async def auth_change_password(request: Request, db: Session = Depends(get_db)):
-    """Change password. Requires current password for verification."""
+    """Change password. Requires current password for verification. Rate-limited."""
+    ip = request.client.host if request.client else "unknown"
+
+    # Rate limit — same as login to prevent brute-force via this endpoint
+    locked, remaining = login_limiter.check(ip)
+    if locked:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed attempts. Try again in {remaining}s.",
+        )
+
     pw_hash = get_password_hash(db)
     if pw_hash is None:
         raise HTTPException(status_code=400, detail="No password set")
@@ -107,10 +124,17 @@ async def auth_change_password(request: Request, db: Session = Depends(get_db)):
     new_pw = body.get("new_password", "")
 
     if not verify_password(current, pw_hash):
-        raise HTTPException(status_code=401, detail="Current password is wrong")
+        now_locked, lock_secs = login_limiter.record_failure(ip)
+        detail = "Current password is wrong"
+        if now_locked:
+            detail += f". Locked out for {lock_secs}s."
+            logger.warning("Change-password locked for %s after repeated failures (%ds)", ip, lock_secs)
+        raise HTTPException(status_code=401, detail=detail)
+
     if len(new_pw) < 4:
         raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
 
+    login_limiter.record_success(ip)
     set_password_hash(db, new_pw)
     jwt_secret = get_jwt_secret(db)
     token = create_token(jwt_secret)
