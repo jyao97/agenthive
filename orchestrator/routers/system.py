@@ -571,7 +571,6 @@ async def system_restart():
 
     Then spawns a new instance via run.sh and exits.
     """
-    import signal
     import subprocess as _sp
     import sys
 
