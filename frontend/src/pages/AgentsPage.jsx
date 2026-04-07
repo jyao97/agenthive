@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
 import { Bell, BellOff, Link2, ChevronDown, ChevronUp } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { fetchAgents, stopAgent, deleteAgent, scanAgents, searchMessages, markAgentRead, updateNotificationSettings, fetchUnlinkedSessions, adoptUnlinkedSession } from "../lib/api";
+import { fetchAgents, stopAgent, deleteAgent, scanAgents, wakeSyncAll, searchMessages, markAgentRead, updateNotificationSettings, fetchUnlinkedSessions, adoptUnlinkedSession } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import { AGENT_STATUS_COLORS, AGENT_STATUS_TEXT_COLORS, POLL_INTERVAL, modelDisplayName, agentBotState } from "../lib/constants";
 import BotIcon from "../components/BotIcon";
@@ -259,6 +259,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     scanAgents().catch((err) => console.error('scanAgents failed:', err));
+    wakeSyncAll().catch((err) => console.error('wakeSyncAll failed:', err));
     await load();
     // Minimum 400ms spinner display to prevent jarring sub-frame flicker
     setTimeout(() => setRefreshing(false), 400);

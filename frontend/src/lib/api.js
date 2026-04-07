@@ -182,6 +182,8 @@ export const launchTmuxAgent = (data) =>
   request("/api/agents/launch-tmux", { method: "POST", body: JSON.stringify(data) });
 export const scanAgents = () =>
   request("/api/agents/scan", { method: "POST" });
+export const wakeSyncAll = () =>
+  request("/api/agents/wake-sync-all", { method: "POST" });
 export const fetchUnlinkedSessions = () =>
   request("/api/unlinked-sessions");
 export const adoptUnlinkedSession = (sessionId, body) =>

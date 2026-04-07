@@ -1144,6 +1144,20 @@ async def scan_agents(request: Request, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+@router.post("/api/agents/wake-sync-all")
+async def wake_all_agent_syncs(request: Request, db: Session = Depends(get_db)):
+    """Wake sync loops for all active (non-STOPPED) agents."""
+    ad = getattr(request.app.state, "agent_dispatcher", None)
+    if not ad:
+        raise HTTPException(status_code=503, detail="Dispatcher not ready")
+    active = db.query(Agent).filter(Agent.status != AgentStatus.STOPPED).all()
+    woken = 0
+    for agent in active:
+        if ad.wake_sync(agent.id):
+            woken += 1
+    return {"ok": True, "woken": woken, "total": len(active)}
+
+
 # ---- Unlinked (detected) sessions ----
 
 _UNLINKED_DIR: str | None = None
