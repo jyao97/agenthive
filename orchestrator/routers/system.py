@@ -608,40 +608,27 @@ async def system_restart():
 
     logger.warning("Restart requested via API — spawning new instance and exiting")
 
-    async def _delayed_restart():
-        await asyncio.sleep(0.5)
-        my_pid = os.getpid()
-        port = int(os.environ.get("PORT", 8080))
-        frontend_port = int(os.environ.get("FRONTEND_PORT", 3000))
-        log_path = os.path.join(project_root, "logs", "server.log")
+    log_path = os.path.join(project_root, "logs", "server.log")
 
-        # Stop PM2-managed processes cleanly so PM2 state stays consistent.
-        # Direct-killing PM2 children corrupts its process table and causes
-        # crash loops on the next `pm2 restart`.
-        _sp.Popen(
-            [
-                "bash", "-c",
-                # 1. Stop and remove PM2 processes cleanly
-                f'pm2 delete all 2>/dev/null; '
-                # 2. Kill ourselves if still alive
-                f'kill {my_pid} 2>/dev/null; '
-                # 3. Wait for ports to be free
-                f'sleep 1; '
-                # 4. Kill any stragglers not managed by PM2
-                f'{" ".join(f"kill -9 {p} 2>/dev/null;" for p in set(_platform.find_port_listeners(port) + _platform.find_port_listeners(frontend_port)) - {0})} '
-                f'sleep 0.5; '
-                # 5. Start fresh (run.sh starts both Vite and uvicorn)
-                f'exec bash "{run_script}" >> "{log_path}" 2>&1',
-            ],
-            cwd=project_root,
-            start_new_session=True,
-            stdout=_sp.DEVNULL,
-            stderr=_sp.DEVNULL,
-        )
-        await asyncio.sleep(0.2)
-        os.kill(my_pid, signal.SIGTERM)
-
-    asyncio.create_task(_delayed_restart())
+    # Single bash command in a new session — survives our own death.
+    # Uses flock to prevent concurrent restart scripts from racing.
+    lock_path = os.path.join(project_root, "logs", ".restart.lock")
+    _sp.Popen(
+        [
+            "bash", "-c",
+            f'exec 9>"{lock_path}"; '
+            f'flock -n 9 || exit 0; '           # another restart already running — bail
+            f'sleep 0.5; '                       # let HTTP response flush
+            f'pm2 delete all 2>/dev/null; '
+            f'sleep 2; '                         # let PM2 daemon settle
+            f'bash "{run_script}" >> "{log_path}" 2>&1; '
+            f'rm -f "{lock_path}"',
+        ],
+        cwd=project_root,
+        start_new_session=True,
+        stdout=_sp.DEVNULL,
+        stderr=_sp.DEVNULL,
+    )
     return {"status": "restarting"}
 
 
