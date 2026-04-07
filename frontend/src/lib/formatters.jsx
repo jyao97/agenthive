@@ -57,7 +57,7 @@ export function renderMarkdown(text, project) {
       elements.push(
         <pre
           key={elements.length}
-          className="my-2 p-3 rounded-lg bg-inset text-sm text-body overflow-x-auto font-mono"
+          className="my-2 p-3 rounded-lg bg-inset text-sm text-body overflow-auto max-h-80 font-mono bubble-scroll"
         >
           <code>{codeLines.join("\n")}</code>
         </pre>
@@ -130,7 +130,7 @@ export function renderMarkdown(text, project) {
         const bodyStart = isSep(tableRows[1]) ? 2 : 1;
         const bodyRows = tableRows.slice(bodyStart).filter((r) => !isSep(r));
         elements.push(
-          <div key={elements.length} className="my-2 overflow-x-auto rounded-lg border border-divider">
+          <div key={elements.length} className="my-2 overflow-auto max-h-80 rounded-lg border border-divider bubble-scroll">
             <table className="min-w-full text-xs text-body">
               <thead>
                 <tr className="bg-inset">

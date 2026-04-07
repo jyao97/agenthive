@@ -146,7 +146,21 @@ body::after {
 }
 .chat-bubble-content pre {
   max-width: 100%;
-  overflow-x: auto;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* Visible thin scrollbars for code blocks & tables inside bubbles */
+.chat-bubble-content pre::-webkit-scrollbar,
+.chat-bubble-content .bubble-scroll::-webkit-scrollbar {
+  height: 6px; width: 6px;
+}
+.chat-bubble-content pre::-webkit-scrollbar-thumb,
+.chat-bubble-content .bubble-scroll::-webkit-scrollbar-thumb {
+  background: rgba(128,128,128,0.35); border-radius: 3px;
+}
+.user-md pre::-webkit-scrollbar-thumb,
+.user-md .bubble-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.3);
 }
 
 /* ── User bubble markdown overrides (white-on-cyan) ── */
