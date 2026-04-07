@@ -3325,7 +3325,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       {/* Header */}
       <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10`}>
-        <div className={`${embedded ? "" : "max-w-2xl"} mx-auto ${compactHeader ? "" : "space-y-1.5"}`}>
+        <div className={`max-w-2xl mx-auto ${compactHeader ? "" : "space-y-1.5"}`}>
           {/* Row 1: Back + name | project + icon buttons */}
           <div className="flex items-center gap-2">
             <button
@@ -3572,7 +3572,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
       {/* Agent ID + session size + parent link */}
       {!compactHeader && <div className="shrink-0 bg-surface border-b border-divider px-4 py-1">
-        <div className={`${embedded ? "" : "max-w-2xl"} mx-auto flex items-center gap-2 pl-2.5`}>
+        <div className={`max-w-2xl mx-auto flex items-center gap-2 pl-2.5`}>
           {agent.parent_id && (
             <button
               type="button"
@@ -3626,7 +3626,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         ref={scrollContainerRef}
         data-chat-container
         onScroll={handleScroll}
-        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOpen ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
+        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOpen ? "" : "pb-36"} max-w-2xl mx-auto w-full flex flex-col`}
         style={{ overflowAnchor: "auto", overscrollBehavior: "contain" }}
       >
         <div className="mt-auto" />
