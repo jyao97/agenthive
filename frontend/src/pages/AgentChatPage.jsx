@@ -1312,8 +1312,8 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-2`}>
-      <div className={`max-w-[min(85%,30rem)] min-w-0 relative ${isUser ? "flex flex-col items-end" : ""}`}>
-        <div className={isUser ? "flex items-center gap-2" : undefined}>
+      <div className={`max-w-[min(85%,30rem)] min-w-0 relative overflow-hidden ${isUser ? "flex flex-col items-end" : ""}`}>
+        <div className={isUser ? "flex items-center gap-2 max-w-full" : undefined}>
         {isUndeliveredTimedOut && (
           <div className="flex-shrink-0 text-red-400" title="Message not delivered — Claude may not have received this">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
