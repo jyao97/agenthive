@@ -12,6 +12,7 @@ import ImageLightbox from "../components/ImageLightbox";
 import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import { useToast } from "../contexts/ToastContext";
+import { uploadUrl } from "../lib/urls";
 
 function deriveTitle(description) {
   if (!description) return "";
@@ -107,7 +108,7 @@ export default function NewTaskPage({ embedded = false }) {
       const toCache = completed.map((a) => ({
         id: a.id, uploadedPath: a.uploadedPath, originalName: a.originalName,
         size: a.size, mimeType: a.mimeType || null,
-        thumbnailUrl: (a.mimeType || "").startsWith("image/") ? `/api/uploads/${a.uploadedPath.split("/").pop()}` : null,
+        thumbnailUrl: (a.mimeType || "").startsWith("image/") ? uploadUrl(a.uploadedPath.split("/").pop()) : null,
       }));
       try { localStorage.setItem(attachmentCacheKey, JSON.stringify(toCache)); } catch { /* quota */ }
     } else {
@@ -585,7 +586,7 @@ export default function NewTaskPage({ embedded = false }) {
       {previewIndex != null && attachments.length > 0 && (
         <ImageLightbox
           media={attachments.filter(a => !a.uploading).map(a => ({
-            src: a.previewUrl || `/api/uploads/${a.uploadedPath?.split("/").pop()}`,
+            src: a.previewUrl || uploadUrl(a.uploadedPath?.split("/").pop()),
             filename: a.originalName,
             type: "image",
           }))}

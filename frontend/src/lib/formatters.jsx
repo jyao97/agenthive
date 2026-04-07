@@ -1,4 +1,5 @@
 import { serverNow } from "./serverTime";
+import { uploadUrl, fileUrl, fileUrlToThumbUrl, API_FILES_PREFIX, RE_UPLOADS_PATH, RE_PROJECTS_PATH, PROJECTS_DIR_SEGMENT } from "./urls";
 
 /** Shared date format options for toLocaleString / toLocaleTimeString. */
 export const DATE_SHORT = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" };
@@ -352,26 +353,26 @@ function resolveFileUrl(rawPath, defaultProject) {
   if (apiMatch) {
     const proj = apiMatch[1];
     const rest = apiMatch[2];
-    return `/api/files/${encodeURIComponent(proj)}/${rest.split("/").map(encodeURIComponent).join("/")}`;
+    return fileUrl(proj, rest);
   }
 
   // User-uploaded file path (.agenthive/uploads/) — route to /api/uploads/
-  const uploadMatch = rawPath.match(/\.agenthive\/uploads\/([^/]+)$/);
+  const uploadMatch = rawPath.match(RE_UPLOADS_PATH);
   if (uploadMatch) {
-    return `/api/uploads/${encodeURIComponent(uploadMatch[1])}`;
+    return uploadUrl(uploadMatch[1]);
   }
 
   // Absolute path with agenthive-projects — extract true project
-  const absMatch = rawPath.match(/agenthive-projects\/([^/]+)\/(.+)/);
+  const absMatch = rawPath.match(RE_PROJECTS_PATH);
   if (absMatch) {
     const proj = absMatch[1];
     const rest = absMatch[2];
-    return `/api/files/${encodeURIComponent(proj)}/${rest.split("/").map(encodeURIComponent).join("/")}`;
+    return fileUrl(proj, rest);
   }
 
   // Default: use the agent's project
   const clean = cleanProjectPath(rawPath, defaultProject);
-  return `/api/files/${encodeURIComponent(defaultProject)}/${clean.split("/").map(encodeURIComponent).join("/")}`;
+  return fileUrl(defaultProject, clean);
 }
 
 // File extension groups
@@ -431,7 +432,7 @@ export function extractFileAttachments(text, project, role, metadata) {
     if (metadata?.attachments?.length) {
       return metadata.attachments.map(filePath => {
         const filename = filePath.split("/").pop();
-        const resolvedUrl = `/api/uploads/${encodeURIComponent(filename)}`;
+        const resolvedUrl = uploadUrl(filename);
         const ext = filename.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
         const type = classifyExt(filename);
         return { path: filename, resolvedUrl, type, ext, originalPath: filePath };
@@ -447,7 +448,7 @@ export function extractFileAttachments(text, project, role, metadata) {
       if (seen.has(filename)) continue;
       seen.add(filename);
 
-      const resolvedUrl = `/api/uploads/${encodeURIComponent(filename)}`;
+      const resolvedUrl = uploadUrl(filename);
       const ext = filename.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
       const type = classifyExt(filename);
       results.push({ path: filename, resolvedUrl, type, ext, originalPath: filePath });
@@ -478,7 +479,7 @@ export function extractFileAttachments(text, project, role, metadata) {
     if (rawPath.endsWith(".thumb.jpg")) return;
     // Skip absolute paths that can't be resolved to a project file
     // (e.g. remote server paths like /home/eegrad/.../output.mp4)
-    if (rawPath.startsWith("/") && !rawPath.includes("agenthive-projects/")
+    if (rawPath.startsWith("/") && !rawPath.includes(PROJECTS_DIR_SEGMENT)
         && !rawPath.startsWith("/projects/")
         && !(project && rawPath.includes("/" + project + "/"))) return;
     let path = cleanProjectPath(rawPath, project);
@@ -490,8 +491,8 @@ export function extractFileAttachments(text, project, role, metadata) {
     const ext = path.match(/\.(\w+)$/)?.[1]?.toLowerCase() || "";
     const type = classifyExt(path);
     // Only generate thumbUrl for /api/files/ URLs (not /api/uploads/ or http)
-    const thumbCandidate = type === "image" && resolvedUrl.startsWith("/api/files/")
-      ? resolvedUrl.replace(/^\/api\/files\//, "/api/thumbs/")
+    const thumbCandidate = type === "image" && resolvedUrl.startsWith(API_FILES_PREFIX)
+      ? fileUrlToThumbUrl(resolvedUrl)
       : undefined;
     const thumbUrl = thumbCandidate !== resolvedUrl ? thumbCandidate : undefined;
     results.push({ path, resolvedUrl, type, ext, originalPath: rawPath, thumbUrl });

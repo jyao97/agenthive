@@ -13,6 +13,7 @@ import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import PageHeader from "../components/PageHeader";
 import { useToast } from "../contexts/ToastContext";
+import { uploadUrl } from "../lib/urls";
 
 const CARDS = [
   {
@@ -315,7 +316,7 @@ function NewAgentForm({ showToast, navigate }) {
         mimeType: a.mimeType || a.file?.type || null,
         thumbnailUrl: a.thumbnailUrl || (
           (a.mimeType || a.file?.type || "").startsWith("image/")
-            ? `/api/uploads/${a.uploadedPath.split("/").pop()}`
+            ? uploadUrl(a.uploadedPath.split("/").pop())
             : null
         ),
       }));
@@ -662,7 +663,7 @@ function NewAgentForm({ showToast, navigate }) {
       {attPreviewIndex != null && attachments.length > 0 && (
         <ImageLightbox
           media={attachments.filter(a => !a.uploading).map(a => ({
-            src: a.previewUrl || `/api/uploads/${a.uploadedPath?.split("/").pop()}`,
+            src: a.previewUrl || uploadUrl(a.uploadedPath?.split("/").pop()),
             filename: a.originalName,
             type: "image",
           }))}

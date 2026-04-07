@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { fetchProjectTree, browseProjectFile, downloadFile as dlFile } from "../lib/api";
 import { renderMarkdown } from "../lib/formatters";
+import { fileUrl } from "../lib/urls";
 
 /* ---- tiny helpers ---- */
 
@@ -23,7 +24,7 @@ function langFromExt(ext) {
 }
 
 function downloadFile(project, path, filename) {
-  const url = `/api/files/${encodeURIComponent(project)}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const url = fileUrl(project, path);
   dlFile(url, filename);
 }
 

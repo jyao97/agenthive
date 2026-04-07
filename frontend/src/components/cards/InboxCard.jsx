@@ -9,6 +9,7 @@ import CardShell, { cardPadding } from "./CardShell";
 import TagPicker from "./TagPicker";
 import ImageLightbox from "../ImageLightbox";
 import SendLaterPicker from "../SendLaterPicker";
+import { uploadUrl } from "../../lib/urls";
 
 const MODEL_PICKER = MODEL_OPTIONS.map(m => ({ value: m.value, label: m.label }));
 const EFFORT_PICKER = [
@@ -522,7 +523,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
                       <div key={f} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[160px] cursor-pointer"
                         onClick={(e) => { e.stopPropagation(); setPreviewIndex(i); }}>
                         {isImagePath(f) ? (
-                          <img src={`/api/uploads/${fileName(f)}`} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
+                          <img src={uploadUrl(fileName(f))} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
                         ) : (
                           <svg className="w-3.5 h-3.5 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
@@ -720,7 +721,7 @@ export default memo(function InboxCard({ task, selecting, selected, onToggle, ex
       {previewIndex != null && parsed.files.length > 0 && (
         <ImageLightbox
           media={parsed.files.map(f => ({
-            src: `/api/uploads/${fileName(f)}`,
+            src: uploadUrl(fileName(f)),
             filename: fileName(f),
             type: isImagePath(f) ? "image" : "file",
           }))}

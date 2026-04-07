@@ -43,6 +43,7 @@ import ProjectBrowserModal from "../components/ProjectBrowserModal";
 import ClaudeMdDiffModal from "../components/ClaudeMdDiffModal";
 import usePageVisible from "../hooks/usePageVisible";
 import { useToast } from "../contexts/ToastContext";
+import { uploadUrl } from "../lib/urls";
 
 const AGENT_TABS = [
   { key: "starred", label: "Starred" },
@@ -987,7 +988,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         mimeType: a.mimeType || a.file?.type || null,
         thumbnailUrl: a.thumbnailUrl || (
           (a.mimeType || a.file?.type || "").startsWith("image/")
-            ? `/api/uploads/${a.uploadedPath.split("/").pop()}`
+            ? uploadUrl(a.uploadedPath.split("/").pop())
             : null
         ),
       }));
