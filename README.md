@@ -191,6 +191,29 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 
 </details>
 
+## Auto-Start on Reboot (PM2)
+
+AgentHive uses PM2 to manage its processes. By default, PM2 does **not** auto-start after a system reboot. To enable it:
+
+```bash
+# 1. Make sure AgentHive is running
+./run.sh start
+
+# 2. Save the current process list
+pm2 save
+
+# 3. Install the systemd startup hook (one-time, requires sudo)
+pm2 startup systemd
+# PM2 will print a command starting with `sudo env PATH=...` — copy and run it exactly as shown.
+```
+
+After this, AgentHive will automatically start when the machine boots.
+
+To disable auto-start later:
+```bash
+pm2 unstartup systemd
+```
+
 ## Remote Access with Tailscale
 
 The easiest way to access AgentHive from your phone outside your LAN:

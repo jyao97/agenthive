@@ -292,7 +292,7 @@ async def hook_request_logger(request: Request, call_next):
     return response
 
 
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/hooks/", "/api/files/", "/api/uploads/", "/api/thumbs/")
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/hooks/")
 
 
 @app.middleware("http")
@@ -317,12 +317,16 @@ async def auth_middleware(request: Request, call_next):
         if pw_hash is None:
             return await call_next(request)
 
-        # Verify bearer token
+        # Verify bearer token (header) or query param (for <img src="..."> etc.)
         auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        else:
+            token = request.query_params.get("token", "")
+
+        if not token:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
 
-        token = auth_header[7:]
         jwt_secret = get_jwt_secret(db)
         if not verify_token(token, jwt_secret):
             return JSONResponse({"detail": "Token expired or invalid"}, status_code=401)

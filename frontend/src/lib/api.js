@@ -68,8 +68,19 @@ async function request(url, opts = {}) {
 // --- Auth ---
 export const authCheck = () =>
   request("/api/auth/check", { method: "POST" });
-export const authLogin = (password) =>
-  request("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+export const authLogin = async (password) => {
+  const res = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const detail = body?.detail;
+    throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status}`);
+  }
+  return res.json();
+};
 export const authSetPassword = (password) =>
   request("/api/auth/set-password", { method: "POST", body: JSON.stringify({ password }) });
 export const authChangePassword = (current_password, new_password) =>
