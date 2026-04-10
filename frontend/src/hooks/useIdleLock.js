@@ -1,5 +1,5 @@
 import { useEffect, useCallback } from "react";
-import { clearAuthToken } from "../lib/api";
+import { clearAuthToken, getLoginTs } from "../lib/api";
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const CHECK_INTERVAL_MS = 30 * 1000; // check every 30s
@@ -10,9 +10,17 @@ function touch() {
   localStorage.setItem(ACTIVITY_KEY, String(Date.now()));
 }
 
-/** Get milliseconds since last recorded activity. */
+/**
+ * Get milliseconds since last recorded activity.
+ * Uses Math.max(lastActivity, lastLogin) so that a recent login always
+ * counts as activity — prevents immediate idle-lock after iOS PWA page
+ * reloads where the activity key has a stale timestamp but the user just
+ * logged in.
+ */
 function idleMs() {
-  const last = Number(localStorage.getItem(ACTIVITY_KEY) || 0);
+  const lastActivity = Number(localStorage.getItem(ACTIVITY_KEY) || 0);
+  const lastLogin = getLoginTs();
+  const last = Math.max(lastActivity, lastLogin);
   return last ? Date.now() - last : 0;
 }
 
@@ -29,16 +37,18 @@ function idleMs() {
  */
 export default function useIdleLock(navigate) {
   const lock = useCallback(() => {
-    clearAuthToken("idle-lock");
+    if (!clearAuthToken("idle-lock")) return; // grace period blocked clear
     localStorage.removeItem(ACTIVITY_KEY);
     navigate("/login", { replace: true });
   }, [navigate]);
 
   useEffect(() => {
-    // On mount, check if already idle too long
+    // On mount, check if already idle too long.
+    // If lock() returns early (grace period blocked), fall through to
+    // normal setup so touch() and event listeners are registered.
     if (idleMs() > IDLE_TIMEOUT_MS) {
       lock();
-      return;
+      if (!localStorage.getItem("cc-auth-token")) return; // actually locked out
     }
 
     // Initial touch

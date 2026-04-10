@@ -4,35 +4,52 @@ import { calibrate } from "./serverTime";
 
 const BASE = "";
 const TOKEN_KEY = "cc-auth-token";
+const LOGIN_TS_KEY = "cc-login-ts";
 
 // Timestamp of the most recent setAuthToken() call — used to protect the fresh
 // token from being nuked by stale callbacks during the first few seconds after
 // login (e.g. idle-lock visibilitychange handlers racing with React renders).
-let _lastLoginTs = 0;
+// Persisted in localStorage so the grace period survives iOS PWA page reloads.
+let _lastLoginTs = Number(localStorage.getItem(LOGIN_TS_KEY) || 0);
 const _LOGIN_GRACE_MS = 3000; // 3-second grace window after login
 
 export function getAuthToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+/** Returns the persisted login timestamp (epoch ms), or 0 if never set. */
+export function getLoginTs() {
+  return _lastLoginTs || Number(localStorage.getItem(LOGIN_TS_KEY) || 0);
+}
+
 export function setAuthToken(token) {
   _lastLoginTs = Date.now();
   localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(LOGIN_TS_KEY, String(_lastLoginTs));
 }
 
+/**
+ * Clear the auth token.  Returns true if the token was actually removed,
+ * false if the call was blocked by the post-login grace window.
+ */
 export function clearAuthToken(reason) {
   // During the post-login grace window, refuse to clear the token.
   // This prevents stale visibilitychange handlers, frozen timers, and
   // in-flight 401 responses from racing with a fresh login.
-  const sinceLogin = Date.now() - _lastLoginTs;
-  if (_lastLoginTs && sinceLogin < _LOGIN_GRACE_MS) {
+  // Check both in-memory AND persisted timestamp (survives iOS PWA reloads).
+  const loginTs = _lastLoginTs || Number(localStorage.getItem(LOGIN_TS_KEY) || 0);
+  const sinceLogin = Date.now() - loginTs;
+  if (loginTs && sinceLogin < _LOGIN_GRACE_MS) {
     console.warn("[auth] clearAuthToken BLOCKED during login grace period (%dms since login, reason=%s)", sinceLogin, reason || "unknown");
     _sendAuthDiag("clear_blocked", reason || "unknown", sinceLogin);
-    return;
+    return false;
   }
   console.warn("[auth] clearAuthToken called (reason=%s)", reason || "unknown");
   _sendAuthDiag("clear", reason || "unknown", sinceLogin);
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(LOGIN_TS_KEY);
+  _lastLoginTs = 0;
+  return true;
 }
 
 /** Fire-and-forget diagnostic event to the server for post-mortem debugging. */
