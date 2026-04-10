@@ -15,16 +15,16 @@ function CodeBlock({ code }) {
   }, [code]);
   return (
     <div className="group/code relative my-2">
-      <pre className="p-3 rounded-lg bg-inset text-sm text-body overflow-auto max-h-80 font-mono bubble-scroll">
+      <pre className="p-3 pr-9 rounded-lg bg-inset text-sm text-body overflow-auto max-h-80 font-mono bubble-scroll">
         <code>{code}</code>
       </pre>
       <button
         type="button"
         onClick={handleCopy}
-        className="absolute top-1.5 right-1.5 p-1 rounded-md bg-inset text-dim opacity-100 sm:opacity-0 sm:group-hover/code:opacity-100 hover:text-body transition-opacity cursor-pointer"
+        className="absolute top-2 right-2 p-1 rounded border border-divider text-dim opacity-100 sm:opacity-0 sm:group-hover/code:opacity-100 hover:text-body active:scale-95 transition-all cursor-pointer"
         title="Copy code"
       >
-        {copied ? <Check size={14} /> : <Copy size={14} />}
+        {copied ? <Check size={13} strokeWidth={2.5} className="text-emerald-500" /> : <Copy size={13} />}
       </button>
     </div>
   );
