@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { createTaskV2, dispatchTask, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
@@ -48,6 +48,7 @@ export default function NewTaskPage({ embedded = false }) {
   const [notifyAt, setNotifyAt] = useState(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+  const sheetBodyRef = useRef(null);
 
   // Sheet animation state
   const [mounted, setMounted] = useState(false);
@@ -327,12 +328,21 @@ export default function NewTaskPage({ embedded = false }) {
   const sheetTranslate = isClosing ? "translateY(100%)" : `translateY(${sheetY}px)`;
   const sheetTransition = isDragging ? "none" : "transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)";
 
+  // Block touches on backdrop / drag-handle from reaching the page below
+  const blockBgTouch = useCallback((e) => {
+    if (sheetBodyRef.current?.contains(e.target)) return;
+    e.preventDefault();
+  }, []);
+
   return (
-    <div className={`${embedded ? "absolute" : "fixed"} inset-0 z-50 flex flex-col justify-end items-center`}>
+    <div
+      className={`${embedded ? "absolute" : "fixed"} inset-0 z-50 flex flex-col justify-end items-center`}
+      onTouchMove={blockBgTouch}
+    >
       {/* Backdrop */}
       <div
         className="absolute inset-0 transition-opacity duration-300"
-        style={{ backgroundColor: "rgba(0,0,0,0.4)", opacity: mounted && !isClosing ? 1 : 0 }}
+        style={{ backgroundColor: "rgba(0,0,0,0.4)", opacity: mounted && !isClosing ? 1 : 0, touchAction: "none" }}
         onClick={() => dismiss()}
       />
 
@@ -343,11 +353,13 @@ export default function NewTaskPage({ embedded = false }) {
           maxHeight: "92vh",
           transform: mounted ? sheetTranslate : "translateY(100%)",
           transition: sheetTransition,
+          willChange: "transform",
         }}
       >
         {/* Drag handle */}
         <div
           className="flex justify-center pt-3 pb-1 cursor-grab active:cursor-grabbing shrink-0"
+          style={{ touchAction: "none" }}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
@@ -356,7 +368,7 @@ export default function NewTaskPage({ embedded = false }) {
         </div>
 
         {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 pb-6">
+        <div ref={sheetBodyRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 pb-6" style={{ overscrollBehavior: "none" }}>
           <h2 className="text-lg font-bold text-heading mb-3">New Task</h2>
 
           <div className="space-y-3">
