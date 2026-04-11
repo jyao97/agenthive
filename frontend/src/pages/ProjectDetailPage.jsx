@@ -26,6 +26,8 @@ import {
   updateProjectSettings,
   rebuildInsights,
   fetchTaskCounts,
+  createTaskV2,
+  dispatchTask,
 } from "../lib/api";
 import BotIcon from "../components/BotIcon";
 import EffortSelector from "../components/EffortSelector";
@@ -560,6 +562,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   const [skipPermissions, setSkipPermissions] = useState(() => {
     try { return localStorage.getItem(`pref:project-agent:${name}:skipPermissions`) !== "false"; } catch { return true; }
   });
+  const [linkTask, setLinkTask] = useState(false);
   const clearAllDrafts = () => { clearPrompt(); };
   const [submitting, setSubmitting] = useState(false);
   const [showSchedulePicker, setShowSchedulePicker] = useState(false);
@@ -1071,10 +1074,29 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     const fullPrompt = buildPromptText(prompt.trim(), uploaded);
     setSubmitting(true);
     try {
-      const agent = await launchTmuxAgent({ project: name, prompt: fullPrompt, model, effort, worktree, skip_permissions: skipPermissions });
+      let agentId;
+      if (linkTask) {
+        const taskTitle = (prompt.trim() || "Agent task").slice(0, 120);
+        const task = await createTaskV2({
+          title: taskTitle,
+          description: fullPrompt,
+          project_name: name,
+          model: model || undefined,
+          effort: effort || undefined,
+          skip_permissions: skipPermissions,
+          use_worktree: !!worktree,
+          use_tmux: true,
+          auto_dispatch: false,
+        });
+        const dispatched = await dispatchTask(task.id);
+        agentId = dispatched.agent_id;
+      } else {
+        const agent = await launchTmuxAgent({ project: name, prompt: fullPrompt, model, effort, worktree, skip_permissions: skipPermissions });
+        agentId = agent.id;
+      }
       clearAllDrafts();
       clearAttachments();
-      navigate(`/agents/${agent.id}`);
+      navigate(`/agents/${agentId}`);
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     } finally {
@@ -1502,7 +1524,17 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
               />
             )}
           </div>
-          <div />
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <div
+              role="switch"
+              aria-checked={linkTask}
+              onClick={() => setLinkTask(!linkTask)}
+              className={`relative w-9 h-[20px] rounded-full transition-colors ${linkTask ? "bg-cyan-500" : "bg-elevated"}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${linkTask ? "translate-x-[16px]" : ""}`} />
+            </div>
+            <span className="text-sm text-label">Task</span>
+          </label>
         </div>
       </form>
       )}
