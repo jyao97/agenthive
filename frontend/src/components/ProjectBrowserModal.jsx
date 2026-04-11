@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from "react";
 import { fetchProjectTree, browseProjectFile, downloadFile as dlFile } from "../lib/api";
 import { renderMarkdown } from "../lib/formatters";
 import { fileUrl } from "../lib/urls";
+import { SCROLL_SAVE_DEBOUNCE } from "../lib/constants";
 
 /* ---- tiny helpers ---- */
 
@@ -173,6 +174,8 @@ export default function ProjectBrowserModal({ project, onClose }) {
   const [error, setError] = useState(null);
   const [expandedDirs, setExpandedDirs] = useState(new Set());
   const [viewingFile, setViewingFile] = useState(null);
+  const scrollRef = useRef(null);
+  const scrollSaveTimer = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -180,9 +183,18 @@ export default function ProjectBrowserModal({ project, onClose }) {
     try {
       const res = await fetchProjectTree(project, 3);
       setTree(res.tree || []);
-      // auto-expand the root level dirs
-      const rootDirs = (res.tree || []).filter((n) => n.type === "dir").map((n) => n.path);
-      setExpandedDirs(new Set(rootDirs));
+      // restore cached state or auto-expand root dirs
+      let restored = false;
+      try {
+        const savedExp = localStorage.getItem(`filebrowser:${project}:expanded`);
+        if (savedExp) { setExpandedDirs(new Set(JSON.parse(savedExp))); restored = true; }
+        const savedView = localStorage.getItem(`filebrowser:${project}:viewing`);
+        if (savedView) setViewingFile(JSON.parse(savedView));
+      } catch { /* ignore */ }
+      if (!restored) {
+        const rootDirs = (res.tree || []).filter((n) => n.type === "dir").map((n) => n.path);
+        setExpandedDirs(new Set(rootDirs));
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -219,6 +231,54 @@ export default function ProjectBrowserModal({ project, onClose }) {
     });
   }, []);
 
+  // Save tree scroll before switching to file viewer
+  const openFile = useCallback((node) => {
+    const el = scrollRef.current;
+    if (el) {
+      clearTimeout(scrollSaveTimer.current);
+      try { localStorage.setItem(`filebrowser:${project}:scroll`, String(el.scrollTop)); } catch { /* ignore */ }
+    }
+    setViewingFile(node);
+  }, [project]);
+
+  // Persist expandedDirs
+  useEffect(() => {
+    if (loading) return;
+    try { localStorage.setItem(`filebrowser:${project}:expanded`, JSON.stringify([...expandedDirs])); } catch { /* ignore */ }
+  }, [expandedDirs, project, loading]);
+
+  // Persist viewingFile
+  useEffect(() => {
+    if (loading) return;
+    try {
+      if (viewingFile) localStorage.setItem(`filebrowser:${project}:viewing`, JSON.stringify({ path: viewingFile.path, name: viewingFile.name, type: viewingFile.type }));
+      else localStorage.removeItem(`filebrowser:${project}:viewing`);
+    } catch { /* ignore */ }
+  }, [viewingFile, project, loading]);
+
+  // Debounced scroll save for tree view
+  const handleTreeScroll = useCallback(() => {
+    if (viewingFile) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    clearTimeout(scrollSaveTimer.current);
+    scrollSaveTimer.current = setTimeout(() => {
+      try { localStorage.setItem(`filebrowser:${project}:scroll`, String(el.scrollTop)); } catch { /* ignore */ }
+    }, SCROLL_SAVE_DEBOUNCE);
+  }, [project, viewingFile]);
+
+  // Restore tree scroll after render
+  useLayoutEffect(() => {
+    if (loading || viewingFile) return;
+    try {
+      const saved = localStorage.getItem(`filebrowser:${project}:scroll`);
+      if (saved) {
+        const el = scrollRef.current;
+        if (el) el.scrollTop = Number(saved);
+      }
+    } catch { /* ignore */ }
+  }, [loading, viewingFile, project]);
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-page">
       {/* Header */}
@@ -238,7 +298,7 @@ export default function ProjectBrowserModal({ project, onClose }) {
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} onScroll={handleTreeScroll} className="flex-1 overflow-y-auto">
         {viewingFile ? (
           <FileViewer
             project={project}
@@ -259,7 +319,7 @@ export default function ProjectBrowserModal({ project, onClose }) {
                 node={node}
                 depth={0}
                 project={project}
-                onFileClick={setViewingFile}
+                onFileClick={openFile}
                 expandedDirs={expandedDirs}
                 toggleDir={toggleDir}
               />
