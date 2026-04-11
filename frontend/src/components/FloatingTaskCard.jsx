@@ -170,19 +170,23 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
               </div>
             )}
 
-            {/* Previous attempt context: agent summary + user feedback */}
-            {task.attempt_number > 1 && (task.agent_summary || task.retry_context) && (
-              <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 p-3 space-y-2">
-                <p className="text-xs font-semibold text-amber-400">Previous Attempt Context</p>
-                {task.agent_summary && task.agent_summary !== ":::generating:::" && (
+            {/* Agent Summary — summary of the previous agent's work */}
+            {task.attempt_number > 1 && task.agent_summary && (
+              <div className="rounded-lg bg-input p-3 space-y-1">
+                <p className="text-xs font-semibold text-dim">Agent Summary</p>
+                {task.agent_summary === ":::generating:::" ? (
+                  <p className="text-xs text-dim/50 italic">Generating summary...</p>
+                ) : (
                   <p className="text-xs text-body whitespace-pre-wrap">{task.agent_summary}</p>
                 )}
-                {task.agent_summary === ":::generating:::" && (
-                  <p className="text-xs text-dim/50 italic">Generating summary...</p>
-                )}
-                {task.retry_context && (
-                  <p className="text-xs text-body whitespace-pre-wrap">{task.retry_context}</p>
-                )}
+              </div>
+            )}
+
+            {/* Previous Attempt Context — user feedback for the current retry */}
+            {task.attempt_number > 1 && task.retry_context && (
+              <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 p-3 space-y-1">
+                <p className="text-xs font-semibold text-amber-400">Previous Attempt Context</p>
+                <p className="text-xs text-body whitespace-pre-wrap">{task.retry_context}</p>
               </div>
             )}
 
