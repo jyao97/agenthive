@@ -707,22 +707,13 @@ export default function GitPage({ theme, onToggleTheme }) {
                 <span className="text-xs text-dim ml-1">on {status.branch}</span>
               </div>
 
-              {/* Sync status line */}
-              {status.ahead != null && (
+              {/* Sync status line — only when ahead */}
+              {status.ahead != null && status.ahead > 0 && (
                 <div className="flex items-center gap-2">
-                  {status.ahead > 0 ? (
-                    <>
-                      <span className="inline-block w-2 h-2 rounded-full bg-cyan-500" />
-                      <span className="text-sm text-cyan-400">
-                        {status.ahead} {status.ahead === 1 ? "commit" : "commits"} ahead of origin
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="inline-block w-2 h-2 rounded-full bg-green-500/60" />
-                      <span className="text-sm text-green-400/60">In sync with origin</span>
-                    </>
-                  )}
+                  <span className="inline-block w-2 h-2 rounded-full bg-cyan-500" />
+                  <span className="text-sm text-cyan-400">
+                    {status.ahead} {status.ahead === 1 ? "commit" : "commits"} ahead of origin
+                  </span>
                 </div>
               )}
 
