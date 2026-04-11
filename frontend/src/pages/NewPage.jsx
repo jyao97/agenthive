@@ -258,6 +258,7 @@ function NewAgentForm({ showToast, navigate }) {
   const [model, setModel, clearModel] = useDraft("create-agent:model", MODEL_OPTIONS[0].value);
   const [effort, setEffort, clearEffort] = useDraft("create-agent:effort", "high");
   const [worktree, setWorktree] = useState(null);
+  const [linkTask, setLinkTask] = useState(false);
   // syncMode removed — all agents use tmux now
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -438,7 +439,19 @@ function NewAgentForm({ showToast, navigate }) {
     const fullPrompt = buildPromptText(prompt.trim(), uploaded);
     setSubmitting(true);
     try {
-      const agent = await launchTmuxAgent({ project, prompt: fullPrompt, model, effort, worktree, skip_permissions: skipPermissions });
+      let taskId = undefined;
+      if (linkTask) {
+        const taskTitle = (prompt.trim() || "Agent task").slice(0, 120);
+        const task = await createTaskV2({
+          title: taskTitle,
+          description: fullPrompt,
+          project_name: project,
+          model: model || undefined,
+          effort: effort || undefined,
+        });
+        taskId = task.id;
+      }
+      const agent = await launchTmuxAgent({ project, prompt: fullPrompt, model, effort, worktree, skip_permissions: skipPermissions, task_id: taskId });
       clearAllDrafts();
       clearAttachments();
       navigate(`/agents/${agent.id}`);
@@ -657,6 +670,17 @@ function NewAgentForm({ showToast, navigate }) {
               />
             )}
           </div>
+          <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
+            <div
+              role="switch"
+              aria-checked={linkTask}
+              onClick={() => setLinkTask(!linkTask)}
+              className={`relative w-9 h-[20px] rounded-full transition-colors ${linkTask ? "bg-cyan-500" : "bg-elevated"}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${linkTask ? "translate-x-[16px]" : ""}`} />
+            </div>
+            <span className="text-sm text-label">Task</span>
+          </label>
         </div>
       </div>
 
