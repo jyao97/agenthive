@@ -154,7 +154,10 @@ export default function ProjectBrowserModal({ project, onClose }) {
     requestAnimationFrame(() => requestAnimationFrame(() => setMounted(true)));
   }, []);
 
+  const dismissing = useRef(false);
   const dismiss = useCallback(() => {
+    if (dismissing.current) return;
+    dismissing.current = true;
     setIsClosing(true);
     setTimeout(() => onClose(), 300);
   }, [onClose]);
@@ -282,12 +285,21 @@ export default function ProjectBrowserModal({ project, onClose }) {
   const sheetTranslate = isClosing ? "translateY(100%)" : `translateY(${sheetY}px)`;
   const sheetTransition = isDragging ? "none" : "transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)";
 
+  // Block touches on backdrop / drag-handle from reaching the page below
+  const blockBgTouch = useCallback((e) => {
+    if (scrollRef.current?.contains(e.target)) return;
+    e.preventDefault();
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end items-center">
+    <div
+      className="fixed inset-0 z-50 flex flex-col justify-end items-center"
+      onTouchMove={blockBgTouch}
+    >
       {/* Backdrop */}
       <div
         className="absolute inset-0 transition-opacity duration-300"
-        style={{ backgroundColor: "rgba(0,0,0,0.4)", opacity: mounted && !isClosing ? 1 : 0 }}
+        style={{ backgroundColor: "rgba(0,0,0,0.4)", opacity: mounted && !isClosing ? 1 : 0, touchAction: "none" }}
         onClick={dismiss}
       />
 
@@ -298,11 +310,13 @@ export default function ProjectBrowserModal({ project, onClose }) {
           maxHeight: "92vh",
           transform: mounted ? sheetTranslate : "translateY(100%)",
           transition: sheetTransition,
+          willChange: "transform",
         }}
       >
         {/* Drag handle */}
         <div
           className="flex justify-center pt-3 pb-1 cursor-grab active:cursor-grabbing shrink-0"
+          style={{ touchAction: "none" }}
           onTouchStart={handleDragStart}
           onTouchMove={handleDragMove}
           onTouchEnd={handleDragEnd}
