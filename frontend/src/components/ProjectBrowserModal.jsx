@@ -142,6 +142,7 @@ export default function ProjectBrowserModal({ project, onClose }) {
   const [viewingFile, setViewingFile] = useState(null);
   const scrollRef = useRef(null);
   const scrollSaveTimer = useRef(null);
+  const containerRef = useRef(null);
 
   // Bottom sheet animation state
   const [mounted, setMounted] = useState(false);
@@ -201,10 +202,17 @@ export default function ProjectBrowserModal({ project, onClose }) {
     return () => window.removeEventListener("keydown", handler);
   }, [dismiss, viewingFile]);
 
-  // Lock body scroll
+  // Block scroll on areas outside the sheet body (native listener so
+  // preventDefault works — React 18 registers touchmove as passive).
   useEffect(() => {
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = ""; };
+    const el = containerRef.current;
+    if (!el) return;
+    const block = (e) => {
+      if (scrollRef.current?.contains(e.target)) return;
+      e.preventDefault();
+    };
+    el.addEventListener("touchmove", block, { passive: false });
+    return () => el.removeEventListener("touchmove", block);
   }, []);
 
   const toggleDir = useCallback((path) => {
@@ -285,16 +293,11 @@ export default function ProjectBrowserModal({ project, onClose }) {
   const sheetTranslate = isClosing ? "translateY(100%)" : `translateY(${sheetY}px)`;
   const sheetTransition = isDragging ? "none" : "transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)";
 
-  // Block touches on backdrop / drag-handle from reaching the page below
-  const blockBgTouch = useCallback((e) => {
-    if (scrollRef.current?.contains(e.target)) return;
-    e.preventDefault();
-  }, []);
-
   return (
     <div
+      ref={containerRef}
+      data-overlay
       className="fixed inset-0 z-50 flex flex-col justify-end items-center"
-      onTouchMove={blockBgTouch}
     >
       {/* Backdrop */}
       <div
@@ -325,7 +328,7 @@ export default function ProjectBrowserModal({ project, onClose }) {
         </div>
 
         {/* Header */}
-        <div className="shrink-0 flex items-center gap-2 px-4 pb-3 border-b border-divider">
+        <div className="shrink-0 flex items-center gap-2 px-4 pb-3 border-b border-divider" style={{ touchAction: "none" }}>
           {viewingFile ? (
             <button
               type="button"

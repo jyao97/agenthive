@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { createTaskV2, dispatchTask, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
@@ -49,6 +49,7 @@ export default function NewTaskPage({ embedded = false }) {
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const sheetBodyRef = useRef(null);
+  const containerRef = useRef(null);
 
   // Sheet animation state
   const [mounted, setMounted] = useState(false);
@@ -59,6 +60,19 @@ export default function NewTaskPage({ embedded = false }) {
 
   useEffect(() => {
     requestAnimationFrame(() => requestAnimationFrame(() => setMounted(true)));
+  }, []);
+
+  // Block scroll on areas outside the sheet body (native listener so
+  // preventDefault works — React 18 registers touchmove as passive).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const block = (e) => {
+      if (sheetBodyRef.current?.contains(e.target)) return;
+      e.preventDefault();
+    };
+    el.addEventListener("touchmove", block, { passive: false });
+    return () => el.removeEventListener("touchmove", block);
   }, []);
 
   const [previewIndex, setPreviewIndex] = useState(null);
@@ -328,16 +342,11 @@ export default function NewTaskPage({ embedded = false }) {
   const sheetTranslate = isClosing ? "translateY(100%)" : `translateY(${sheetY}px)`;
   const sheetTransition = isDragging ? "none" : "transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)";
 
-  // Block touches on backdrop / drag-handle from reaching the page below
-  const blockBgTouch = useCallback((e) => {
-    if (sheetBodyRef.current?.contains(e.target)) return;
-    e.preventDefault();
-  }, []);
-
   return (
     <div
+      ref={containerRef}
+      data-overlay
       className={`${embedded ? "absolute" : "fixed"} inset-0 z-50 flex flex-col justify-end items-center`}
-      onTouchMove={blockBgTouch}
     >
       {/* Backdrop */}
       <div

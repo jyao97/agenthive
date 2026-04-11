@@ -2639,6 +2639,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const blockTouchOutsideScroll = (e) => {
       const sc = scrollContainerRef.current;
       if (sc && sc.contains(e.target)) return; // allow message list scroll
+      // Don't interfere with overlay sheets (file browser, new task, etc.)
+      if (e.target.closest('[data-overlay]')) return;
       e.preventDefault();
     };
 
