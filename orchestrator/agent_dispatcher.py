@@ -3752,15 +3752,6 @@ Here are the day's conversations (with timestamps):
                 Agent.status == AgentStatus.STOPPED,
             ).first()
             if not named_agent:
-                # ah-{prefix} doesn't match any stopped agent — treat as
-                # unlinked (user-created tmux session with ah- prefix).
-                _write_unlinked_entry(
-                    session_id="",
-                    cwd=cwd,
-                    tmux_pane=pane_id,
-                    tmux_session=session_name,
-                    project_name=proj.name,
-                )
                 continue
 
             agent_sid = named_agent.session_id

@@ -346,6 +346,7 @@ After installing, restart your browser.
 ## Troubleshooting
 
 - **Conversation appears stuck or not updating?** — Try clicking the **refresh button** at the top of the chat view. This manually re-syncs the agent's session data from the CLI and often resolves display issues without restarting the agent.
+- **Don't name tmux sessions with the `ah-` prefix** — AgentHive uses `ah-{id}` as its internal naming convention for managed agent sessions. User-created tmux sessions starting with `ah-` will not be detected or synced by the orchestrator.
 
 ## Roadmap
 
