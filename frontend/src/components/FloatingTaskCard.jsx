@@ -142,9 +142,9 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
               </p>
             )}
 
-            {/* Attempt agents */}
+            {/* Attempt agents + previous agent summary */}
             {task.attempt_agents?.length > 0 && (
-              <div className="rounded-lg bg-input p-3 space-y-1.5">
+              <div className="rounded-lg bg-input p-3 space-y-2">
                 <p className="text-xs font-semibold text-dim">
                   {task.attempt_agents.length === 1 ? "Agent" : `Agents (${task.attempt_agents.length} trials)`}
                 </p>
@@ -167,17 +167,15 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
                     );
                   })}
                 </div>
-              </div>
-            )}
-
-            {/* Agent Summary — summary of the previous agent's work */}
-            {task.attempt_number > 1 && task.agent_summary && (
-              <div className="rounded-lg bg-input p-3 space-y-1">
-                <p className="text-xs font-semibold text-dim">Agent Summary</p>
-                {task.agent_summary === ":::generating:::" ? (
-                  <p className="text-xs text-dim/50 italic">Generating summary...</p>
-                ) : (
-                  <p className="text-xs text-body whitespace-pre-wrap">{task.agent_summary}</p>
+                {task.attempt_number > 1 && task.agent_summary && (
+                  <div className="border-t border-edge/30 pt-2 space-y-1">
+                    <p className="text-[10px] font-semibold text-dim">Agent Summary</p>
+                    {task.agent_summary === ":::generating:::" ? (
+                      <p className="text-xs text-dim/50 italic">Generating summary...</p>
+                    ) : (
+                      <p className="text-xs text-body whitespace-pre-wrap">{task.agent_summary}</p>
+                    )}
+                  </div>
                 )}
               </div>
             )}
