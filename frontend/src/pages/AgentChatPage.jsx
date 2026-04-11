@@ -2209,6 +2209,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     onError: (msg) => console.warn("Feedback voice error:", msg),
   });
   const [showTaskCard, setShowTaskCard] = useState(false);
+  const [selectedAttempt, setSelectedAttempt] = useState(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   // Sync generateSummary with per-project localStorage preference
   const generateSummaryInitialized = useRef(false);
@@ -3651,36 +3652,53 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
             {(() => {
               const attempts = taskData?.attempt_agents || [];
               const myIdx = attempts.findIndex(a => a.agent_id === id);
-              // Only show on retry agents (not the first attempt)
               if (myIdx < 1) return null;
+              const total = attempts.length;
+              const sel = selectedAttempt ?? myIdx;
+              const selAgent = attempts[sel];
+              const isSelCurrent = selAgent?.agent_id === id;
+              // agent_summary describes attempt (total-2); retry_context is feedback about (total-2)
+              const showSummary = sel < total - 1 && sel === total - 2 && taskData.agent_summary;
+              const showUserFeedback = sel < total - 1 && sel === total - 2 && taskData.retry_context;
               return (
                 <div className="mx-auto max-w-[min(85%,30rem)] mb-3 rounded-xl bg-orange-500/8 border border-orange-500/20 px-4 py-3">
-                  {/* Attempt navigation pills */}
-                  <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+                  {/* Attempt pills + Enter Chat */}
+                  <div className="flex items-center gap-1.5 mb-2">
                     <span className="text-[10px] font-semibold text-orange-500 dark:text-orange-400 mr-1">Attempts</span>
-                    {attempts.map((a, i) => (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {attempts.map((a, i) => (
+                        <button
+                          key={a.agent_id}
+                          type="button"
+                          onClick={() => setSelectedAttempt(i)}
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors ${
+                            i === sel
+                              ? "bg-orange-500 text-white"
+                              : "bg-transparent border border-orange-500/40 text-orange-500 dark:text-orange-400 hover:bg-orange-500/15"
+                          }`}
+                        >
+                          #{i + 1}
+                        </button>
+                      ))}
+                    </div>
+                    {!isSelCurrent && (
                       <button
-                        key={a.agent_id}
                         type="button"
-                        onClick={() => a.agent_id !== id && (embedded && onNavigateAgent ? onNavigateAgent(a.agent_id) : navigate(`/agents/${a.agent_id}`))}
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors ${
-                          a.agent_id === id
-                            ? "bg-orange-500 text-white"
-                            : "bg-orange-500/15 text-orange-500 dark:text-orange-400 hover:bg-orange-500/25"
-                        }`}
+                        onClick={() => embedded && onNavigateAgent ? onNavigateAgent(selAgent.agent_id) : navigate(`/agents/${selAgent.agent_id}`)}
+                        className="ml-auto text-[10px] text-orange-500 dark:text-orange-400 hover:underline"
                       >
-                        #{i + 1}
+                        Enter Chat →
                       </button>
-                    ))}
+                    )}
                   </div>
                   {taskData.description && (
                     <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.description.replace(/\[Attached file: [^\]]+\]/g, "").trim()}</p>
                   )}
-                  {taskData.agent_summary && (
+                  {showSummary && (
                     <details className="mt-2">
                       <summary className="text-[10px] font-medium text-orange-500 dark:text-orange-400 cursor-pointer select-none list-none flex items-center gap-1">
                         <span className="transition-transform duration-200 text-[8px] [details[open]>&]:rotate-90">▶</span>
-                        Previous agent summary
+                        Agent Summary
                       </summary>
                       <div className="mt-1">
                         {taskData.agent_summary === ":::generating:::" ? (
@@ -3688,6 +3706,17 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                         ) : (
                           <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.agent_summary}</p>
                         )}
+                      </div>
+                    </details>
+                  )}
+                  {showUserFeedback && (
+                    <details className="mt-2">
+                      <summary className="text-[10px] font-medium text-orange-500 dark:text-orange-400 cursor-pointer select-none list-none flex items-center gap-1">
+                        <span className="transition-transform duration-200 text-[8px] [details[open]>&]:rotate-90">▶</span>
+                        User Feedback
+                      </summary>
+                      <div className="mt-1">
+                        <p className="text-xs text-dim/80 whitespace-pre-wrap">{taskData.retry_context}</p>
                       </div>
                     </details>
                   )}

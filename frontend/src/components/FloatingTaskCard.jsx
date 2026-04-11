@@ -158,18 +158,14 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
 
               return (
                 <div className="rounded-lg bg-orange-500/10 border border-orange-500/20 p-3 space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2">
                     <span className="text-xs font-semibold text-orange-500 dark:text-orange-400">Attempts</span>
-                    {task.attempt_agents.map((a, i) => {
-                      const isLastPill = i === total - 1;
-                      return (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {task.attempt_agents.map((a, i) => (
                         <button
                           key={a.agent_id}
                           type="button"
-                          onClick={() => {
-                            if (isLastPill) { onClose(); navigate(`/agents/${a.agent_id}`); }
-                            else setSelectedPill(i);
-                          }}
+                          onClick={() => setSelectedPill(i)}
                           className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold transition-colors ${
                             i === sel
                               ? "bg-orange-500 text-white"
@@ -178,8 +174,15 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
                         >
                           #{i + 1}
                         </button>
-                      );
-                    })}
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { onClose(); navigate(`/agents/${task.attempt_agents[sel].agent_id}`); }}
+                      className="ml-auto text-[10px] text-orange-500 dark:text-orange-400 hover:underline"
+                    >
+                      Enter Chat →
+                    </button>
                   </div>
 
                   {/* Agent Summary — what this attempt did */}
