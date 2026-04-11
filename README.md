@@ -137,7 +137,7 @@ AgentHive runs on your machine and launches Claude Code CLI instances inside tmu
 
 ### Quick Start
 
-> **Tip:** Already have Claude Code installed? Just clone the repo and run `claude` — it will read `CLAUDE.md` and help you set up everything interactively.
+> **Tip:** Already have Claude Code? Clone the repo, run `claude`, and tell it to set up AgentHive for you. It will handle deps, certs, config — everything.
 
 ```bash
 # 1. Clone
