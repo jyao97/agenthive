@@ -348,7 +348,7 @@ sudo update-ca-certificates
 
 After installing, restart your browser.
 
-## Tips
+## Gestures & Shortcuts
 
 - **Double-tap an agent's session ID** to quickly copy it to the clipboard.
 - **Double-tap a message** in the chat view to quickly copy its content.
