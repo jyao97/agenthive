@@ -356,7 +356,7 @@ export default function ProjectBrowserModal({ project, onClose }) {
       <div
         ref={sheetRef}
         className="relative z-10 bg-page rounded-t-[20px] shadow-2xl flex flex-col w-full"
-        style={{ maxHeight: "92vh" }}
+        style={{ height: "92vh" }}
       >
         {/* Drag handle */}
         <div
@@ -421,11 +421,11 @@ export default function ProjectBrowserModal({ project, onClose }) {
           {viewingFile ? (
             <FileViewer project={project} node={viewingFile} />
           ) : loading ? (
-            <div className="flex items-center justify-center h-40 text-label text-sm">Loading...</div>
+            <div className="p-4 text-label text-sm">Loading...</div>
           ) : error ? (
             <div className="p-4 text-red-400 text-sm">{error}</div>
           ) : tree.length === 0 ? (
-            <div className="flex items-center justify-center h-40 text-label text-sm">No files found</div>
+            <div className="p-4 text-label text-sm">No files found</div>
           ) : (
             <div className="p-2">
               {tree.map((node) => (
