@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import { fetchTaskV2, updateTaskV2 } from "../lib/api";
 import useDraft from "../hooks/useDraft";
 
@@ -14,11 +13,11 @@ const STATUS_COLORS = {
 };
 
 export default function FloatingTaskCard({ taskId, onClose, onAction }) {
-  const navigate = useNavigate();
   const [task, setTask] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editingTitle, setEditingTitle] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
+  const [selectedPill, setSelectedPill] = useState(null);
   const [titleDraft, setTitleDraft, clearTitleDraft] = useDraft(taskId ? `task-edit:${taskId}:title` : null);
   const [descDraft, setDescDraft, clearDescDraft] = useDraft(taskId ? `task-edit:${taskId}:desc` : null);
   const cardRef = useRef(null);
@@ -29,6 +28,8 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
     fetchTaskV2(taskId)
       .then((t) => {
         setTask(t);
+        // Default selected pill to last attempt
+        if (t.attempt_agents?.length) setSelectedPill(t.attempt_agents.length - 1);
         // Only initialize from server if no draft exists (preserve crash recovery drafts)
         if (localStorage.getItem(`draft:task-edit:${taskId}:title`) === null) setTitleDraft(t.title || "");
         if (localStorage.getItem(`draft:task-edit:${taskId}:desc`) === null) setDescDraft(t.description || "");
@@ -142,51 +143,61 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
               </p>
             )}
 
-            {/* Attempt agents + previous agent summary */}
-            {task.attempt_agents?.length > 0 && (
-              <div className="rounded-lg bg-input p-3 space-y-2">
-                <p className="text-xs font-semibold text-dim">
-                  {task.attempt_agents.length === 1 ? "Agent" : `Agents (${task.attempt_agents.length} trials)`}
-                </p>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {task.attempt_agents.map((a, i) => {
-                    const isCurrent = a.agent_id === task.agent_id;
-                    return (
+            {/* Attempt agents — pill toggles summary/context inline */}
+            {task.attempt_agents?.length > 0 && (() => {
+              const total = task.attempt_agents.length;
+              const sel = selectedPill ?? total - 1;
+              const isFirst = sel === 0;
+              const isLast = sel === total - 1;
+
+              // agent_summary describes attempt (total-2); retry_context describes attempt (total-1)
+              const showPrevContext = !isFirst && isLast && task.retry_context;
+              const showSummary = !isLast && sel === total - 2 && task.agent_summary;
+
+              return (
+                <div className="rounded-lg bg-input p-3 space-y-2">
+                  <p className="text-xs font-semibold text-dim">
+                    {total === 1 ? "Agent" : `Agents (${total} trials)`}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {task.attempt_agents.map((a, i) => (
                       <button
                         key={a.agent_id}
                         type="button"
-                        onClick={() => { onClose(); navigate(`/agents/${a.agent_id}`); }}
+                        onClick={() => setSelectedPill(i)}
                         className={`px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors ${
-                          isCurrent
+                          i === sel
                             ? "bg-orange-500 text-white"
                             : "bg-orange-500/15 text-orange-500 dark:text-orange-400 hover:bg-orange-500/25"
                         }`}
                       >
                         #{i + 1}
                       </button>
-                    );
-                  })}
-                </div>
-                {task.attempt_number > 1 && task.agent_summary && (
-                  <div className="border-t border-edge/30 pt-2 space-y-1">
-                    <p className="text-[10px] font-semibold text-dim">Agent Summary</p>
-                    {task.agent_summary === ":::generating:::" ? (
-                      <p className="text-xs text-dim/50 italic">Generating summary...</p>
-                    ) : (
-                      <p className="text-xs text-body whitespace-pre-wrap">{task.agent_summary}</p>
-                    )}
+                    ))}
                   </div>
-                )}
-              </div>
-            )}
 
-            {/* Previous Attempt Context — user feedback for the current retry */}
-            {task.attempt_number > 1 && task.retry_context && (
-              <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 p-3 space-y-1">
-                <p className="text-xs font-semibold text-amber-400">Previous Attempt Context</p>
-                <p className="text-xs text-body whitespace-pre-wrap">{task.retry_context}</p>
-              </div>
-            )}
+                  {/* Previous Attempt Context — first, for the current/last attempt */}
+                  {showPrevContext && (
+                    <div className="border-t border-edge/30 pt-2 space-y-1">
+                      <p className="text-[10px] font-semibold text-amber-400">Previous Attempt Context</p>
+                      <p className="text-xs text-body whitespace-pre-wrap">{task.retry_context}</p>
+                    </div>
+                  )}
+
+                  {/* Agent Summary — second, for the previous attempt */}
+                  {showSummary && (
+                    <div className="border-t border-edge/30 pt-2 space-y-1">
+                      <p className="text-[10px] font-semibold text-dim">Agent Summary</p>
+                      {task.agent_summary === ":::generating:::" ? (
+                        <p className="text-xs text-dim/50 italic">Generating summary...</p>
+                      ) : (
+                        <p className="text-xs text-body whitespace-pre-wrap">{task.agent_summary}</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Actions */}
             {task.status === "executing" && onAction && (
