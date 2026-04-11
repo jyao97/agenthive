@@ -59,6 +59,29 @@ class DarwinPlatform(PlatformBase):
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             return []
 
+    def find_pids_by_name(self, name: str) -> list[int]:
+        pids = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                info = proc.info
+                # Check process name
+                if info['name'] == name:
+                    pids.append(info['pid'])
+                    continue
+                # Check cmdline[0] basename (handles versioned binaries)
+                cmdline = info.get('cmdline')
+                if cmdline and os.path.basename(cmdline[0]) == name:
+                    pids.append(info['pid'])
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        return pids
+
+    def get_process_tty(self, pid: int) -> str:
+        try:
+            return psutil.Process(pid).terminal() or ""
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return ""
+
     # ── System stats ─────────────────────────────────────────────────
 
     def get_cpu_load(self) -> dict | None:

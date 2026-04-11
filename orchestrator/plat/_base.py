@@ -27,6 +27,14 @@ class PlatformBase(ABC):
     def get_child_pids(self, ppid: int) -> list[tuple[int, str]]:
         """Return [(pid, comm), ...] for direct children of *ppid*."""
 
+    @abstractmethod
+    def find_pids_by_name(self, name: str) -> list[int]:
+        """Return PIDs of all processes whose command matches *name*."""
+
+    @abstractmethod
+    def get_process_tty(self, pid: int) -> str:
+        """Return the TTY device path for *pid*, or '' if unknown."""
+
     # ── System stats ─────────────────────────────────────────────────
 
     @abstractmethod

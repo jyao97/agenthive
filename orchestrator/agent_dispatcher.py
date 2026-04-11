@@ -1309,40 +1309,27 @@ def _detect_tmux_pane_for_session(session_id: str, project_path: str) -> str | N
 
     # ---- Tier 1: session_id in cmdline (rare but highest confidence) ----
     try:
-        result = _sp.run(
-            ["pgrep", "-f", "claude"], capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            for pid_str in result.stdout.strip().splitlines():
-                pid = int(pid_str)
-                if _is_orchestrator_process(pid):
-                    continue
-                try:
-                    cmdline = "\0".join(_platform.get_process_cmdline(pid))
-                    if session_id in cmdline:
-                        # Found the exact process — resolve TTY to pane
-                        tty_r = _sp.run(
-                            ["ps", "-o", "tty=", "-p", str(pid)],
+        for pid in _platform.find_pids_by_name("claude"):
+            if _is_orchestrator_process(pid):
+                continue
+            try:
+                cmdline = "\0".join(_platform.get_process_cmdline(pid))
+                if session_id in cmdline:
+                    # Found the exact process — resolve TTY to pane
+                    tty = _platform.get_process_tty(pid)
+                    if tty:
+                        panes_r = _sp.run(
+                            ["tmux", "list-panes", "-a", "-F", "#{pane_tty} #{pane_id}"],
                             capture_output=True, text=True, timeout=5,
                         )
-                        tty = tty_r.stdout.strip()
-                        if tty and tty != "?":
-                            if not tty.startswith("/"):
-                                tty = "/dev/" + tty
-                            panes_r = _sp.run(
-                                ["tmux", "list-panes", "-a", "-F", "#{pane_tty} #{pane_id}"],
-                                capture_output=True, text=True, timeout=5,
-                            )
-                            for pline in panes_r.stdout.strip().splitlines():
-                                pp = pline.split(None, 1)
-                                if len(pp) == 2 and pp[0] == tty:
-                                    return pp[1]
-                except (OSError, ValueError) as e:
-                    logger.debug("Tier 1 pane detect: PID %d inspect failed: %s", pid, e)
-                    continue
-    except _sp.TimeoutExpired as e:
-        logger.debug("Tier 1 pane detection timed out for session %s: %s", session_id, e)
-    except (FileNotFoundError, OSError, ValueError) as e:
+                        for pline in panes_r.stdout.strip().splitlines():
+                            pp = pline.split(None, 1)
+                            if len(pp) == 2 and pp[0] == tty:
+                                return pp[1]
+            except (OSError, ValueError) as e:
+                logger.debug("Tier 1 pane detect: PID %d inspect failed: %s", pid, e)
+                continue
+    except (OSError, ValueError) as e:
         logger.warning("Tier 1 pane detection failed for session %s: %s", session_id, e)
 
     # ---- Tier 2: pane-first process tree walk ----
@@ -1409,22 +1396,16 @@ def _is_cli_session_alive(project_path: str, tmux_pane: str | None = None) -> bo
 
     # Check claude processes not associated with a tmux pane
     try:
-        result = _sp.run(
-            ["pgrep", "-f", "claude"], capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            for pid_str in result.stdout.strip().splitlines():
-                try:
-                    pid = int(pid_str)
-                    if _is_orchestrator_process(pid):
-                        continue
-                    cwd = _platform.get_process_cwd(pid)
-                    if _cwd_matches_project(cwd, real_project):
-                        return True
-                except (OSError, ValueError):
-                    logger.debug("Skipped PID %s during alive check: parse/access error", pid_str)
+        for pid in _platform.find_pids_by_name("claude"):
+            try:
+                if _is_orchestrator_process(pid):
                     continue
-    except (_sp.TimeoutExpired, FileNotFoundError, OSError) as e:
+                cwd = _platform.get_process_cwd(pid)
+                if _cwd_matches_project(cwd, real_project):
+                    return True
+            except (OSError, ValueError):
+                continue
+    except (OSError, ValueError) as e:
         logger.debug("Non-tmux alive check failed for project %s: %s", project_path, e)
 
     return False

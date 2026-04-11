@@ -74,6 +74,31 @@ class LinuxPlatform(PlatformBase):
         except (subprocess.TimeoutExpired, OSError, ValueError):
             return []
 
+    def find_pids_by_name(self, name: str) -> list[int]:
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", name],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                return [int(p) for p in result.stdout.strip().splitlines() if p.strip()]
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError, ValueError):
+            pass
+        return []
+
+    def get_process_tty(self, pid: int) -> str:
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "tty=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=5,
+            )
+            tty = result.stdout.strip()
+            if tty and tty != "?":
+                return tty if tty.startswith("/") else f"/dev/{tty}"
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+        return ""
+
     # ── System stats ─────────────────────────────────────────────────
 
     def get_cpu_load(self) -> dict | None:
