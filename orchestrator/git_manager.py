@@ -108,13 +108,34 @@ class GitManager:
                     unstaged.append({"status": y, "path": path})
 
         clean = len(staged) == 0 and len(unstaged) == 0 and len(untracked) == 0
+
+        # Ahead of upstream (None if no upstream configured)
+        ahead = None
+        ahead_raw = self._run_git(project_path, ["rev-list", "--count", "@{upstream}..HEAD"])
+        if not ahead_raw.startswith("ERROR:"):
+            try:
+                ahead = int(ahead_raw.strip())
+            except ValueError:
+                pass
+
         return {
             "branch": branch,
             "clean": clean,
             "staged": staged,
             "unstaged": unstaged,
             "untracked": untracked,
+            "ahead": ahead,
         }
+
+    def push(self, project_path: str, branch: str | None = None) -> dict:
+        """Push current branch to origin."""
+        args = ["push", "origin"]
+        if branch:
+            args.append(branch)
+        result = self._run_git(project_path, args, timeout=60)
+        if result.startswith("ERROR:"):
+            return {"success": False, "error": result}
+        return {"success": True, "message": result or "Push successful"}
 
     def get_worktrees(self, project_path: str) -> list[dict]:
         """List git worktrees for a project."""

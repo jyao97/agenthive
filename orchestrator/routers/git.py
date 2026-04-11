@@ -57,6 +57,22 @@ async def git_worktrees(project: str, request: Request, db: Session = Depends(ge
     return gm.get_worktrees(proj.path)
 
 
+@router.post("/{project}/push")
+async def git_push(project: str, request: Request, db: Session = Depends(get_db)):
+    """Push current branch to origin."""
+    proj = db.get(Project, project)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project '{project}' not found")
+    gm = getattr(request.app.state, "git_manager", None)
+    if not gm:
+        raise HTTPException(status_code=503, detail="Git manager not available")
+    branch = gm.get_current_branch(proj.path)
+    result = gm.push(proj.path, branch)
+    if not result.get("success"):
+        raise HTTPException(status_code=409, detail=result.get("error", "Push failed"))
+    return result
+
+
 @router.post("/{project}/merge/{branch:path}")
 async def git_merge(project: str, branch: str, request: Request, db: Session = Depends(get_db)):
     """Merge a branch into the current branch for a project."""

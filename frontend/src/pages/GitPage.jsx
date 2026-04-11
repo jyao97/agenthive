@@ -10,6 +10,7 @@ import {
   fetchGitStatus,
   fetchGitWorktrees,
   checkoutBranch,
+  gitPush,
   launchTmuxAgent,
 } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
@@ -247,7 +248,7 @@ export default function GitPage({ theme, onToggleTheme }) {
   );
 
   // --- Stage, commit & push handler (spawns an agent) ---
-  const handlePush = useCallback(async () => {
+  const handleCommitAndPush = useCallback(async () => {
     if (!selectedProject || pushing) return;
     const currentBranch = branches.find((b) => b.current)?.name || "current branch";
     setPushing(true);
@@ -271,6 +272,26 @@ export default function GitPage({ theme, onToggleTheme }) {
       setPushing(false);
     }
   }, [selectedProject, pushing, branches, addToast, navigate]);
+
+  // --- Direct push handler (no agent needed) ---
+  const handleDirectPush = useCallback(async () => {
+    if (!selectedProject || pushing) return;
+    setPushing(true);
+    try {
+      await gitPush(selectedProject);
+      addToast("Pushed to origin", "success");
+      const [statusRes, commitRes] = await Promise.allSettled([
+        fetchGitStatus(selectedProject).catch(() => null),
+        fetchGitLog(selectedProject).catch(() => []),
+      ]);
+      setStatus(statusRes.status === "fulfilled" ? statusRes.value : null);
+      setCommits(commitRes.status === "fulfilled" ? commitRes.value : []);
+    } catch (err) {
+      addToast(`Push error: ${err.message}`, "error");
+    } finally {
+      setPushing(false);
+    }
+  }, [selectedProject, pushing, addToast]);
 
   // --- Merge All worktrees handler ---
   const handleMergeAll = useCallback(async () => {
@@ -643,9 +664,9 @@ export default function GitPage({ theme, onToggleTheme }) {
             <h2 className="text-sm font-semibold text-body uppercase tracking-wide">
               Status
             </h2>
-            {!loadingStatus && status && !status.clean && (
+            {!loadingStatus && status && (!status.clean || (status.ahead != null && status.ahead > 0)) && (
               <button
-                onClick={handlePush}
+                onClick={!status.clean ? handleCommitAndPush : handleDirectPush}
                 disabled={pushing}
                 className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors flex items-center gap-1.5 ${
                   pushing
@@ -663,7 +684,11 @@ export default function GitPage({ theme, onToggleTheme }) {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0-12l-4 4m4-4l4 4" />
                   </svg>
                 )}
-                {pushing ? "Creating..." : "Commit & Push"}
+                {pushing
+                  ? (status.clean ? "Pushing..." : "Creating...")
+                  : (!status.clean
+                    ? "Commit & Push"
+                    : `Push \u2191${status.ahead}`)}
               </button>
             )}
           </div>
@@ -671,68 +696,87 @@ export default function GitPage({ theme, onToggleTheme }) {
             <div className="h-6 w-40 bg-skel rounded animate-pulse" />
           ) : !status ? (
             <p className="text-sm text-dim">Could not fetch status.</p>
-          ) : status.clean ? (
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
-              <span className="text-sm text-green-400">
-                Working tree clean
-              </span>
-              <span className="text-xs text-dim ml-1">on {status.branch}</span>
-            </div>
           ) : (
             <div className="space-y-2">
+              {/* Working tree line */}
               <div className="flex items-center gap-2">
-                <span className="inline-block w-2 h-2 rounded-full bg-amber-500" />
-                <span className="text-sm text-amber-400">Uncommitted changes</span>
+                <span className={`inline-block w-2 h-2 rounded-full ${status.clean ? "bg-green-500" : "bg-amber-500"}`} />
+                <span className={`text-sm ${status.clean ? "text-green-400" : "text-amber-400"}`}>
+                  {status.clean ? "Working tree clean" : "Uncommitted changes"}
+                </span>
                 <span className="text-xs text-dim ml-1">on {status.branch}</span>
               </div>
 
-              {status.staged.length > 0 && (
-                <div>
-                  <p className="text-xs font-medium text-green-400 mb-1">
-                    Staged ({status.staged.length})
-                  </p>
-                  <div className="space-y-0.5">
-                    {status.staged.map((f, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs">
-                        <span className="shrink-0 w-4 text-center font-mono text-green-400">{f.status}</span>
-                        <span className="font-mono text-heading truncate">{f.path}</span>
-                      </div>
-                    ))}
-                  </div>
+              {/* Sync status line */}
+              {status.ahead != null && (
+                <div className="flex items-center gap-2">
+                  {status.ahead > 0 ? (
+                    <>
+                      <span className="inline-block w-2 h-2 rounded-full bg-cyan-500" />
+                      <span className="text-sm text-cyan-400">
+                        {status.ahead} {status.ahead === 1 ? "commit" : "commits"} ahead of origin
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="inline-block w-2 h-2 rounded-full bg-green-500/60" />
+                      <span className="text-sm text-green-400/60">In sync with origin</span>
+                    </>
+                  )}
                 </div>
               )}
 
-              {status.unstaged.length > 0 && (
-                <div>
-                  <p className="text-xs font-medium text-red-400 mb-1">
-                    Modified ({status.unstaged.length})
-                  </p>
-                  <div className="space-y-0.5">
-                    {status.unstaged.map((f, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs">
-                        <span className="shrink-0 w-4 text-center font-mono text-red-400">{f.status}</span>
-                        <span className="font-mono text-heading truncate">{f.path}</span>
+              {/* File lists (when dirty) */}
+              {!status.clean && (
+                <>
+                  {status.staged.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-green-400 mb-1">
+                        Staged ({status.staged.length})
+                      </p>
+                      <div className="space-y-0.5">
+                        {status.staged.map((f, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <span className="shrink-0 w-4 text-center font-mono text-green-400">{f.status}</span>
+                            <span className="font-mono text-heading truncate">{f.path}</span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                    </div>
+                  )}
 
-              {status.untracked.length > 0 && (
-                <div>
-                  <p className="text-xs font-medium text-dim mb-1">
-                    Untracked ({status.untracked.length})
-                  </p>
-                  <div className="space-y-0.5">
-                    {status.untracked.map((f, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs">
-                        <span className="shrink-0 w-4 text-center font-mono text-dim">?</span>
-                        <span className="font-mono text-label truncate">{f}</span>
+                  {status.unstaged.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-red-400 mb-1">
+                        Modified ({status.unstaged.length})
+                      </p>
+                      <div className="space-y-0.5">
+                        {status.unstaged.map((f, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <span className="shrink-0 w-4 text-center font-mono text-red-400">{f.status}</span>
+                            <span className="font-mono text-heading truncate">{f.path}</span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </div>
+                    </div>
+                  )}
+
+                  {status.untracked.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-dim mb-1">
+                        Untracked ({status.untracked.length})
+                      </p>
+                      <div className="space-y-0.5">
+                        {status.untracked.map((f, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <span className="shrink-0 w-4 text-center font-mono text-dim">?</span>
+                            <span className="font-mono text-label truncate">{f}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
