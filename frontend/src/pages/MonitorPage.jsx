@@ -690,24 +690,6 @@ export default function MonitorPage({ theme, onToggleTheme }) {
           </p>
         )}
 
-        {/* Summary Stats */}
-        <section className="grid grid-cols-2 gap-3">
-          <div className="rounded-xl bg-surface shadow-card p-4">
-            <p className="text-xs text-dim uppercase tracking-wider">Claude Processes</p>
-            <div className="mt-1 flex items-baseline gap-1">
-              <span className={`text-2xl font-bold ${processes.length > 0 ? "text-cyan-400" : "text-dim"}`}>{processes.length}</span>
-              <span className="text-sm text-dim">running</span>
-            </div>
-          </div>
-          <div className="rounded-xl bg-surface shadow-card p-4">
-            <p className="text-xs text-dim uppercase tracking-wider">Agents</p>
-            <div className="mt-1 flex items-baseline gap-1">
-              <span className="text-2xl font-bold text-heading">{agents.length}</span>
-              <span className="text-sm text-dim">total</span>
-            </div>
-          </div>
-        </section>
-
         {/* Running Processes */}
         {processes.length > 0 && (
           <section>
