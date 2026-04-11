@@ -55,7 +55,7 @@ Check results, give feedback, and keep the knowledge growing.
 - **Mark done** — review agent output, approve the work, mark the task complete.
 - **Try → Summarize → Retry** — agent didn't nail it? Stop the agent, add your feedback, and AgentHive auto-generates a summary of what was tried. Re-dispatch with full context — the next agent picks up where the last one left off. Iterate until it's right.
 - **Git operations** — view diffs, commit history, and branch status per project. One-click cleanup and push when you're satisfied.
-- **Growing intelligence** — each project carries a PROGRESS.md that accumulates lessons learned — what worked, what failed, and why. Agents read it on every task, so new agents inherit everything previous agents learned. A separate CLAUDE.md holds static project rules and conventions.
+- **Growing intelligence** — each project carries a PROGRESS.md where lessons accumulate across sessions. You control which agent conversations generate summaries, review and cherry-pick which insights to keep, and relevant lessons are automatically retrieved (top-k) when dispatching new agents — more control over project memory than Claude Code's native auto-memory.
 
 ### 5. Maintain
 
@@ -66,7 +66,7 @@ Your conversations with agents are valuable. Don't lose them.
 - **Resume anytime** — pick up any agent conversation right where it left off, whether it finished yesterday or last month.
 - **Full-text search** — find any task, message, or agent session across your entire history.
 - **Progress tracking** — weekly completion stats show how much your agents are getting done. See the trend, not just the backlog.
-- **Project memory** — accumulated insights live in per-project PROGRESS.md files that survive across agents, sessions, and time.
+- **Project memory** — per-project PROGRESS.md managed through the UI. Choose which sessions to summarize, accept or reject individual insights, and edit the file directly. Survives across agents, sessions, and time.
 
 ## Why AgentHive?
 
