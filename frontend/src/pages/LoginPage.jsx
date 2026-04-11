@@ -176,6 +176,17 @@ export default function LoginPage() {
             </button>
           </form>
         </div>
+
+        {/* Cert install hint for mobile */}
+        <p className="text-center text-xs text-dim mt-4">
+          First time on this device?{" "}
+          <a
+            href="/cert-guide"
+            className="text-cyan-400 hover:underline"
+          >
+            Install CA certificate
+          </a>
+        </p>
       </div>
     </div>
   );

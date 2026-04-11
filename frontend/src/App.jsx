@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import LoginPage from "./pages/LoginPage";
+import CertGuidePage from "./pages/CertGuidePage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchUnreadCount, fetchClaudeMdPending, getAuthToken } from "./lib/api";
@@ -349,6 +350,7 @@ export default function App() {
       <main className="flex-1 min-h-0 overflow-hidden">
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/cert-guide" element={<CertGuidePage />} />
           <Route
             path="/*"
             element={

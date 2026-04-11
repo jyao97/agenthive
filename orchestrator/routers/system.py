@@ -6,8 +6,11 @@ import logging
 import os
 from datetime import datetime, timezone
 
+import base64
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -27,7 +30,26 @@ router = APIRouter(tags=["system"])
 
 @router.get("/api/cert")
 async def download_cert():
-    """Serve the self-signed certificate for mobile installation."""
+    """Serve the CA root certificate for mobile trust setup.
+
+    Tries mkcert CA root first (preferred — iOS trusts CA-issued certs for
+    PWA icon fetching), then falls back to the self-signed leaf cert.
+    """
+    # Prefer mkcert CA root — iOS system processes honour user-installed CAs
+    # better than plain self-signed leaf certs (needed for PWA home-screen icons).
+    mkcert_root = os.path.expanduser("~/Library/Application Support/mkcert/rootCA.pem")
+    if not os.path.isfile(mkcert_root):
+        # Linux default
+        mkcert_root = os.path.expanduser("~/.local/share/mkcert/rootCA.pem")
+
+    if os.path.isfile(mkcert_root):
+        return FileResponse(
+            mkcert_root,
+            media_type="application/x-x509-ca-cert",
+            filename="agenthive-ca.crt",
+        )
+
+    # Fallback: serve the leaf cert directly
     cert_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "certs", "selfsigned.crt")
     cert_path = os.path.normpath(cert_path)
     if not os.path.isfile(cert_path):
@@ -37,6 +59,96 @@ async def download_cert():
         media_type="application/x-x509-ca-cert",
         filename="agenthive.crt",
     )
+
+
+@router.get("/api/webclip")
+async def download_webclip(request: Request):
+    """Generate a .mobileconfig Web Clip profile with the icon embedded.
+
+    iOS Add-to-Home-Screen fetches icons via a system process that rejects
+    self-signed / private-CA certs.  A Web Clip profile embeds the icon
+    directly, bypassing the fetch entirely.
+    """
+    icon_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "..", "frontend", "public", "apple-touch-icon.png",
+    )
+    icon_path = os.path.normpath(icon_path)
+    if not os.path.isfile(icon_path):
+        raise HTTPException(status_code=404, detail="Icon not found")
+
+    with open(icon_path, "rb") as f:
+        icon_b64 = base64.b64encode(f.read()).decode()
+
+    # Determine the host the user actually connects to.
+    # Explicit ?host= param takes priority (set by the frontend guide page),
+    # then origin/referer, then fall back to the request hostname.
+    port = os.environ.get("FRONTEND_PORT", "3000")
+    host = request.query_params.get("host")
+    if not host:
+        origin = request.headers.get("origin") or request.headers.get("referer") or ""
+        if origin:
+            from urllib.parse import urlparse
+            host = urlparse(origin).hostname
+    if not host:
+        host = request.url.hostname
+    url = f"https://{host}:{port}/"
+
+    payload_uuid = str(uuid.uuid4()).upper()
+    profile_uuid = str(uuid.uuid4()).upper()
+
+    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>FullScreen</key>
+      <true/>
+      <key>Icon</key>
+      <data>{icon_b64}</data>
+      <key>IsRemovable</key>
+      <true/>
+      <key>Label</key>
+      <string>AgentHive</string>
+      <key>PayloadDisplayName</key>
+      <string>AgentHive Web Clip</string>
+      <key>PayloadIdentifier</key>
+      <string>com.agenthive.webclip.{payload_uuid}</string>
+      <key>PayloadType</key>
+      <string>com.apple.webClip.managed</string>
+      <key>PayloadUUID</key>
+      <string>{payload_uuid}</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>URL</key>
+      <string>{url}</string>
+    </dict>
+  </array>
+  <key>PayloadDisplayName</key>
+  <string>AgentHive</string>
+  <key>PayloadIdentifier</key>
+  <string>com.agenthive.profile.{profile_uuid}</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>{profile_uuid}</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+  <key>PayloadDescription</key>
+  <string>Adds AgentHive to your Home Screen with the correct app icon.</string>
+</dict>
+</plist>"""
+
+    return Response(
+        content=plist,
+        media_type="application/x-apple-aspen-config",
+        headers={"Content-Disposition": "attachment; filename=AgentHive.mobileconfig"},
+    )
+
 
 
 # ---- Health ----
