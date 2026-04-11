@@ -31,7 +31,7 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
         if (localStorage.getItem(`draft:task-edit:${taskId}:title`) === null) setTitleDraft(t.title || "");
         if (localStorage.getItem(`draft:task-edit:${taskId}:desc`) === null) setDescDraft(t.description || "");
       })
-      .catch(() => {})
+      .catch((e) => console.warn("Task fetch failed:", e))
       .finally(() => setLoading(false));
   }, [taskId]);
 
@@ -50,7 +50,7 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
       const updated = await updateTaskV2(task.id, { title: titleDraft.trim() });
       setTask(updated);
       clearTitleDraft();
-    } catch {}
+    } catch (e) { console.warn("Task update failed:", e); }
     setEditingTitle(false);
   };
 
@@ -60,7 +60,7 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
       const updated = await updateTaskV2(task.id, { description: descDraft.trim() });
       setTask(updated);
       clearDescDraft();
-    } catch {}
+    } catch (e) { console.warn("Task update failed:", e); }
     setEditingDesc(false);
   };
 

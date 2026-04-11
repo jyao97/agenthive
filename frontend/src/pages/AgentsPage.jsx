@@ -31,7 +31,7 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
     navigator.clipboard.writeText(agent.id).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {});
+    }).catch(() => console.warn("Clipboard write failed"));
   };
 
   const handleClick = () => {
@@ -164,7 +164,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
     const next = !agentNotifsOn;
     setAgentNotifsOn(next);
     setAgentNotificationsEnabled(next);
-    updateNotificationSettings({ agents_enabled: next }).catch(() => {});
+    updateNotificationSettings({ agents_enabled: next }).catch(() => console.warn("Failed to update notification settings"));
     showToast(next ? "Agent notifications enabled" : "Agent notifications disabled");
     window.dispatchEvent(new CustomEvent("agent-notifs-changed", { detail: { enabled: next } }));
   }, [agentNotifsOn, showToast]);

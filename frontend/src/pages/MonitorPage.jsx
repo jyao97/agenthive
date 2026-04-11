@@ -260,8 +260,8 @@ export default function MonitorPage({ theme, onToggleTheme }) {
     try {
       const info = await fetchBackupStatus();
       setBackupInfo(info);
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.warn("Backup operation failed:", e);
     }
   }, []);
 
@@ -284,8 +284,8 @@ export default function MonitorPage({ theme, onToggleTheme }) {
       await purgeBackups();
       await loadBackupInfo();
       refresh();
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.warn("Backup operation failed:", e);
     } finally {
       setBackupBusy(false);
     }
@@ -296,8 +296,8 @@ export default function MonitorPage({ theme, onToggleTheme }) {
     try {
       await triggerBackup();
       await loadBackupInfo();
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.warn("Backup operation failed:", e);
     } finally {
       setBackupBusy(false);
     }
@@ -308,8 +308,8 @@ export default function MonitorPage({ theme, onToggleTheme }) {
     try {
       await deleteSingleBackup(name);
       await loadBackupInfo();
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.warn("Backup operation failed:", e);
     }
   }, [loadBackupInfo]);
 
@@ -352,8 +352,8 @@ export default function MonitorPage({ theme, onToggleTheme }) {
     try {
       await updateBackupConfig(updates);
       await loadBackupInfo();
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.warn("Backup operation failed:", e);
     }
   }, [loadBackupInfo]);
 

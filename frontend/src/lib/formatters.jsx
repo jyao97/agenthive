@@ -11,7 +11,7 @@ function CodeBlock({ code }) {
     navigator.clipboard.writeText(code).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {});
+    }).catch(() => console.warn("Clipboard write failed"));
   }, [code]);
   return (
     <div className="group/code relative my-2">
@@ -232,7 +232,7 @@ function linkifyAgentIds(text, keyPrefix) {
         onDoubleClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          navigator.clipboard.writeText(agentId).catch(() => {});
+          navigator.clipboard.writeText(agentId).catch(() => console.warn("Clipboard write failed"));
         }}
         title="Click to open, double-tap to copy"
       >
