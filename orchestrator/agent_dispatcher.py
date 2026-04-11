@@ -1635,6 +1635,8 @@ class AgentDispatcher:
 
         # Cache: tmux pane_id -> True if a human client is attached
         self._pane_attached: dict[str, bool] = {}
+        self._pane_active: dict[str, bool] = {}
+        self._window_active: dict[str, bool] = {}
 
         # Per-tick cache of _build_tmux_claude_map() to avoid spawning
         # N+1 subprocesses multiple times per tick.
@@ -1747,31 +1749,48 @@ class AgentDispatcher:
         try:
             result = sp.run(
                 ["tmux", "list-panes", "-a",
-                 "-F", "#{pane_id} #{session_attached}"],
+                 "-F", "#{pane_id} #{session_attached} #{pane_active} #{window_active}"],
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode != 0:
                 self._pane_attached = {}
+                self._pane_active = {}
+                self._window_active = {}
                 return
             attached = {}
+            pane_active = {}
+            window_active = {}
             for line in result.stdout.strip().splitlines():
-                parts = line.split(None, 1)
-                if len(parts) == 2:
+                parts = line.split()
+                if len(parts) >= 4:
+                    attached[parts[0]] = parts[1] != "0"
+                    pane_active[parts[0]] = parts[2] != "0"
+                    window_active[parts[0]] = parts[3] != "0"
+                elif len(parts) >= 2:
                     attached[parts[0]] = parts[1] != "0"
             self._pane_attached = attached
+            self._pane_active = pane_active
+            self._window_active = window_active
         except (sp.TimeoutExpired, FileNotFoundError, OSError) as e:
             logger.warning("_refresh_pane_attached: tmux list-panes failed: %s", e)
             self._pane_attached = {}
+            self._pane_active = {}
+            self._window_active = {}
 
     def _is_agent_in_use(self, agent_id: str, tmux_pane: str | None = None) -> bool:
         """Check if a user is actively viewing this agent (tmux or web)."""
         from websocket import ws_manager
         webapp_active = ws_manager.is_agent_viewed(agent_id)
+        has_focus = ws_manager.is_any_client_focused()
         tmux_attached = bool(tmux_pane and self._pane_attached.get(tmux_pane, False))
-        in_use = webapp_active or tmux_attached
-        logger.debug(
-            "in_use check agent=%s: webapp_active=%s, tmux_pane=%s tmux_attached=%s → %s",
-            agent_id[:8], webapp_active, tmux_pane, tmux_attached, in_use,
+        pane_active = bool(tmux_pane and self._pane_active.get(tmux_pane, False))
+        window_active = bool(tmux_pane and self._window_active.get(tmux_pane, False))
+        in_use = (webapp_active and has_focus) or (tmux_attached and pane_active and window_active)
+        logger.info(
+            "in_use check agent=%s: webapp=%s focus=%s "
+            "tmux=%s pane_active=%s win_active=%s → %s",
+            agent_id[:8], webapp_active, has_focus,
+            tmux_attached, pane_active, window_active, in_use,
         )
         return in_use
 

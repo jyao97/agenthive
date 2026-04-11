@@ -41,7 +41,7 @@ export function WebSocketProvider({ children }) {
   const _syncViewing = useCallback(() => {
     const agents = viewingAgentsRef.current;
     const ids = document.visibilityState === "visible" ? [...agents] : [];
-    _send({ type: "viewing", agent_ids: ids });
+    _send({ type: "viewing", agent_ids: ids, has_focus: document.hasFocus() });
   }, [_send]);
 
   const connect = useCallback(() => {
@@ -115,12 +115,19 @@ export function WebSocketProvider({ children }) {
     const onVisibilityChange = () => {
       _syncViewing();
     };
+    const onFocusChange = () => {
+      _syncViewing();
+    };
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onFocusChange);
+    window.addEventListener("blur", onFocusChange);
 
     return () => {
       clearInterval(pingInterval);
       clearTimeout(reconnectTimer.current);
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocusChange);
+      window.removeEventListener("blur", onFocusChange);
       if (wsRef.current) {
         wsRef.current.close();
       }

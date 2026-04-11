@@ -22,26 +22,46 @@ class ConnectionManager:
         self.active: list[WebSocket] = []
         # Track which agents each WS client is currently viewing
         self._viewing: dict[WebSocket, set[str]] = {}
+        # Track browser window focus state per client
+        self._has_focus: dict[WebSocket, bool] = {}
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.active.append(ws)
         self._viewing[ws] = set()
+        self._has_focus[ws] = True
         logger.info("WebSocket client connected (%d total)", len(self.active))
 
     def disconnect(self, ws: WebSocket):
         if ws in self.active:
             self.active.remove(ws)
         self._viewing.pop(ws, None)
+        self._has_focus.pop(ws, None)
         logger.info("WebSocket client disconnected (%d total)", len(self.active))
 
-    def set_viewing(self, ws: WebSocket, agent_ids: set[str]):
+    def set_viewing(self, ws: WebSocket, agent_ids: set[str],
+                    has_focus: bool | None = None):
         """Record which agents a client is currently viewing."""
+        old = self._viewing.get(ws, set())
+        old_focus = self._has_focus.get(ws)
         self._viewing[ws] = agent_ids
+        if has_focus is not None:
+            self._has_focus[ws] = has_focus
+        cur_focus = self._has_focus.get(ws)
+        if old != agent_ids or old_focus != cur_focus:
+            logger.info(
+                "viewing update: agents=%s has_focus=%s (was agents=%s has_focus=%s)",
+                sorted(a[:8] for a in agent_ids), cur_focus,
+                sorted(a[:8] for a in old), old_focus,
+            )
 
     def is_agent_viewed(self, agent_id: str) -> bool:
         """True if any connected client is currently viewing this agent."""
         return any(agent_id in v for v in self._viewing.values())
+
+    def is_any_client_focused(self) -> bool:
+        """True if any connected client's browser window has focus."""
+        return any(self._has_focus.get(ws, False) for ws in self.active)
 
     async def broadcast(self, event_type: str, data: dict) -> int:
         """Send an event to all connected clients. Returns count of successful sends."""
@@ -129,11 +149,12 @@ async def websocket_endpoint(ws: WebSocket):
                     msg = json.loads(data)
                     if msg.get("type") == "viewing":
                         ids = msg.get("agent_ids")
+                        has_focus = msg.get("has_focus")
                         if ids is not None:
-                            ws_manager.set_viewing(ws, set(ids))
+                            ws_manager.set_viewing(ws, set(ids), has_focus)
                         else:
                             aid = msg.get("agent_id")
-                            ws_manager.set_viewing(ws, {aid} if aid else set())
+                            ws_manager.set_viewing(ws, {aid} if aid else set(), has_focus)
                 except json.JSONDecodeError:
                     logger.debug("WS received invalid JSON: %s", data[:100])
     except WebSocketDisconnect:

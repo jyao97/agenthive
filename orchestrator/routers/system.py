@@ -215,9 +215,12 @@ async def test_notify(request: Request):
                 db.close()
             from websocket import ws_manager
             ws_viewed = ws_manager.is_agent_viewed(agent_id)
+            has_focus = ws_manager.is_any_client_focused()
             dispatcher._refresh_pane_attached()
             pane_attached = bool(pane and dispatcher._pane_attached.get(pane, False))
-            in_use = ws_viewed or pane_attached
+            pane_active = bool(pane and dispatcher._pane_active.get(pane, False))
+            window_active = bool(pane and dispatcher._window_active.get(pane, False))
+            in_use = (ws_viewed and has_focus) or (pane_attached and pane_active and window_active)
         else:
             in_use = False
     else:
