@@ -102,7 +102,7 @@ function TreeNode({ node, depth, project, onFileClick, expandedDirs, toggleDir }
 
 /* ---- file viewer panel ---- */
 
-function FileViewer({ project, node, onClose }) {
+function FileViewer({ project, node }) {
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -122,47 +122,13 @@ function FileViewer({ project, node, onClose }) {
   const ext = extFromName(node.name);
   const isMarkdown = ext === "md" || ext === "mdx";
 
+  if (loading) return <div className="flex items-center justify-center h-40 text-label text-sm">Loading...</div>;
+  if (error) return <div className="p-4 text-label text-sm">{error}</div>;
+  if (isMarkdown) return <div className="p-4 max-w-3xl mx-auto">{renderMarkdown(content, project)}</div>;
   return (
-    <div className="flex flex-col h-full">
-      {/* file header */}
-      <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-divider">
-        <button
-          type="button"
-          onClick={onClose}
-          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
-        >
-          <svg className="w-4 h-4 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-        <span className="text-sm font-medium text-heading truncate flex-1">{node.path}</span>
-        <button
-          type="button"
-          onClick={() => downloadFile(project, node.path, node.name)}
-          title="Download file"
-          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-input transition-colors shrink-0"
-        >
-          <svg className="w-4 h-4 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-          </svg>
-        </button>
-      </div>
-
-      {/* content */}
-      <div className="flex-1 overflow-auto">
-        {loading ? (
-          <div className="flex items-center justify-center h-40 text-label text-sm">Loading...</div>
-        ) : error ? (
-          <div className="p-4 text-label text-sm">{error}</div>
-        ) : isMarkdown ? (
-          <div className="p-4 max-w-3xl mx-auto">{renderMarkdown(content, project)}</div>
-        ) : (
-          <pre className="p-4 text-sm text-body font-mono leading-relaxed overflow-x-auto whitespace-pre">
-            <code>{content}</code>
-          </pre>
-        )}
-      </div>
-    </div>
+    <pre className="p-4 text-sm text-body font-mono leading-relaxed overflow-x-auto whitespace-pre">
+      <code>{content}</code>
+    </pre>
   );
 }
 
@@ -176,6 +142,22 @@ export default function ProjectBrowserModal({ project, onClose }) {
   const [viewingFile, setViewingFile] = useState(null);
   const scrollRef = useRef(null);
   const scrollSaveTimer = useRef(null);
+
+  // Bottom sheet animation state
+  const [mounted, setMounted] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
+  const [sheetY, setSheetY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const touchStartRef = useRef(null);
+
+  useEffect(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setMounted(true)));
+  }, []);
+
+  const dismiss = useCallback(() => {
+    setIsClosing(true);
+    setTimeout(() => onClose(), 300);
+  }, [onClose]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -209,12 +191,12 @@ export default function ProjectBrowserModal({ project, onClose }) {
     const handler = (e) => {
       if (e.key === "Escape") {
         if (viewingFile) setViewingFile(null);
-        else onClose();
+        else dismiss();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose, viewingFile]);
+  }, [dismiss, viewingFile]);
 
   // Lock body scroll
   useEffect(() => {
@@ -279,53 +261,121 @@ export default function ProjectBrowserModal({ project, onClose }) {
     } catch { /* ignore */ }
   }, [loading, viewingFile, project]);
 
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-page">
-      {/* Header */}
-      <div className="shrink-0 flex items-center gap-2 px-4 py-3 border-b border-divider safe-area-pt">
-        <button
-          type="button"
-          onClick={() => viewingFile ? setViewingFile(null) : onClose()}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors"
-        >
-          <svg className="w-5 h-5 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-        <h2 className="text-base font-bold text-heading flex-1 truncate">
-          {viewingFile ? viewingFile.name : "Browse Files"}
-        </h2>
-      </div>
+  // Swipe-down gesture on drag handle
+  const handleDragStart = (e) => {
+    touchStartRef.current = { y: e.touches[0].clientY };
+    setIsDragging(true);
+  };
+  const handleDragMove = (e) => {
+    if (!touchStartRef.current) return;
+    const dy = e.touches[0].clientY - touchStartRef.current.y;
+    if (dy > 0) setSheetY(dy);
+  };
+  const handleDragEnd = () => {
+    if (!touchStartRef.current) return;
+    setIsDragging(false);
+    if (sheetY > 120) dismiss();
+    else setSheetY(0);
+    touchStartRef.current = null;
+  };
 
-      {/* Body */}
-      <div ref={scrollRef} onScroll={handleTreeScroll} className="flex-1 overflow-y-auto">
-        {viewingFile ? (
-          <FileViewer
-            project={project}
-            node={viewingFile}
-            onClose={() => setViewingFile(null)}
-          />
-        ) : loading ? (
-          <div className="flex items-center justify-center h-40 text-label text-sm">Loading...</div>
-        ) : error ? (
-          <div className="p-4 text-red-400 text-sm">{error}</div>
-        ) : tree.length === 0 ? (
-          <div className="flex items-center justify-center h-40 text-label text-sm">No files found</div>
-        ) : (
-          <div className="p-2">
-            {tree.map((node) => (
-              <TreeNode
-                key={node.path}
-                node={node}
-                depth={0}
-                project={project}
-                onFileClick={openFile}
-                expandedDirs={expandedDirs}
-                toggleDir={toggleDir}
-              />
-            ))}
-          </div>
-        )}
+  const sheetTranslate = isClosing ? "translateY(100%)" : `translateY(${sheetY}px)`;
+  const sheetTransition = isDragging ? "none" : "transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)";
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end items-center">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 transition-opacity duration-300"
+        style={{ backgroundColor: "rgba(0,0,0,0.4)", opacity: mounted && !isClosing ? 1 : 0 }}
+        onClick={dismiss}
+      />
+
+      {/* Bottom sheet */}
+      <div
+        className="relative z-10 bg-page rounded-t-[20px] shadow-2xl flex flex-col w-full"
+        style={{
+          maxHeight: "92vh",
+          transform: mounted ? sheetTranslate : "translateY(100%)",
+          transition: sheetTransition,
+        }}
+      >
+        {/* Drag handle */}
+        <div
+          className="flex justify-center pt-3 pb-1 cursor-grab active:cursor-grabbing shrink-0"
+          onTouchStart={handleDragStart}
+          onTouchMove={handleDragMove}
+          onTouchEnd={handleDragEnd}
+        >
+          <div className="w-10 h-1 rounded-full bg-dim/40" />
+        </div>
+
+        {/* Header */}
+        <div className="shrink-0 flex items-center gap-2 px-4 pb-3 border-b border-divider">
+          {viewingFile ? (
+            <button
+              type="button"
+              onClick={() => setViewingFile(null)}
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors shrink-0"
+            >
+              <svg className="w-5 h-5 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={dismiss}
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors shrink-0"
+            >
+              <svg className="w-5 h-5 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+          <h2 className="text-base font-bold text-heading flex-1 truncate">
+            {viewingFile ? viewingFile.path : "Browse Files"}
+          </h2>
+          {viewingFile && (
+            <button
+              type="button"
+              onClick={() => downloadFile(project, viewingFile.path, viewingFile.name)}
+              title="Download file"
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors shrink-0"
+            >
+              <svg className="w-4 h-4 text-label" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+              </svg>
+            </button>
+          )}
+        </div>
+
+        {/* Body */}
+        <div ref={scrollRef} onScroll={handleTreeScroll} className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "none" }}>
+          {viewingFile ? (
+            <FileViewer project={project} node={viewingFile} />
+          ) : loading ? (
+            <div className="flex items-center justify-center h-40 text-label text-sm">Loading...</div>
+          ) : error ? (
+            <div className="p-4 text-red-400 text-sm">{error}</div>
+          ) : tree.length === 0 ? (
+            <div className="flex items-center justify-center h-40 text-label text-sm">No files found</div>
+          ) : (
+            <div className="p-2">
+              {tree.map((node) => (
+                <TreeNode
+                  key={node.path}
+                  node={node}
+                  depth={0}
+                  project={project}
+                  onFileClick={openFile}
+                  expandedDirs={expandedDirs}
+                  toggleDir={toggleDir}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
