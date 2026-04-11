@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { fetchTaskV2, updateTaskV2 } from "../lib/api";
 import useDraft from "../hooks/useDraft";
 
@@ -13,6 +14,7 @@ const STATUS_COLORS = {
 };
 
 export default function FloatingTaskCard({ taskId, onClose, onAction }) {
+  const navigate = useNavigate();
   const [task, setTask] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -77,9 +79,9 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
                 {task.status}
               </span>
             )}
-            {task?.attempt_number > 1 && (
+            {task?.attempt_agents?.length > 1 && (
               <span className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-400">
-                Retry #{task.attempt_number}
+                {task.attempt_agents.length} trials
               </span>
             )}
           </div>
@@ -138,6 +140,34 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
               >
                 {task.description || "No description"}
               </p>
+            )}
+
+            {/* Attempt agents */}
+            {task.attempt_agents?.length > 0 && (
+              <div className="rounded-lg bg-input p-3 space-y-1.5">
+                <p className="text-xs font-semibold text-dim">
+                  {task.attempt_agents.length === 1 ? "Agent" : `Agents (${task.attempt_agents.length} trials)`}
+                </p>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {task.attempt_agents.map((a, i) => {
+                    const isCurrent = a.agent_id === task.agent_id;
+                    return (
+                      <button
+                        key={a.agent_id}
+                        type="button"
+                        onClick={() => { onClose(); navigate(`/agents/${a.agent_id}`); }}
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors ${
+                          isCurrent
+                            ? "bg-cyan-500 text-white"
+                            : "bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25"
+                        }`}
+                      >
+                        #{i + 1}{a.status ? ` · ${a.status.toLowerCase()}` : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
 
             {/* Retry context */}
