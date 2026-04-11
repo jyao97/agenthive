@@ -137,7 +137,9 @@ AgentHive runs on your machine and launches Claude Code CLI instances inside tmu
 
 ### Quick Start
 
-> **Tip:** Already have Claude Code? Clone the repo, run `claude`, and tell it to set up AgentHive for you. It will handle deps, certs, config — everything. You can also add the agenthive repo itself as a project in `~/ah-projects/` (via symlink) so agents can work on AgentHive too.
+> **Tip:** Already have Claude Code? Clone the repo, run `claude`, and tell it to set up AgentHive for you. It will handle deps, certs, config — everything.
+
+> **Tip:** Want to personalize your AgentHive experience? Symlink the agenthive repo into `~/ah-projects/` and let agents improve the tool while you use it.
 
 ```bash
 # 1. Clone
