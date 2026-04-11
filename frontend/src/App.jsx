@@ -293,6 +293,22 @@ export default function App() {
     return () => clearInterval(id);
   }, [location.pathname, visible]);
 
+  // Service Worker notification click — split-screen aware navigation
+  useEffect(() => {
+    const handler = (event) => {
+      if (event.data?.type !== "notification-navigate") return;
+      const url = event.data.url || "/";
+      if (location.pathname === "/split") {
+        // Let SplitScreenPage handle it without leaving split mode
+        window.dispatchEvent(new CustomEvent("split-navigate", { detail: { url } }));
+      } else {
+        navigate(url);
+      }
+    };
+    navigator.serviceWorker?.addEventListener("message", handler);
+    return () => navigator.serviceWorker?.removeEventListener("message", handler);
+  }, [location.pathname, navigate]);
+
   // PWA app icon badge — agent unread count
   useEffect(() => {
     if (!navigator.setAppBadge) return;

@@ -95,11 +95,16 @@ const LAYOUTS = [
 
 // --- PaneShell: mini-app rendered inside each MemoryRouter pane ---
 
-function PaneShell({ theme, onToggleTheme, onPathChange }) {
+function PaneShell({ theme, onToggleTheme, onPathChange, navigateRef }) {
   const location = usePaneLocation();
   const paneNav = usePaneNavigate();
   const themeProps = { theme, onToggleTheme };
   const bgLocation = location.state?.backgroundLocation;
+
+  // Expose this pane's navigate function to the parent
+  useEffect(() => {
+    if (navigateRef) navigateRef.current = paneNav;
+  }, [navigateRef, paneNav]);
 
   // Report path changes back to parent for persistence
   useEffect(() => {
@@ -209,12 +214,57 @@ export default function SplitScreenPage() {
     }));
   });
 
+  // Refs for each pane's navigate function
+  const paneNavRefs = useRef([]);
+  if (paneNavRefs.current.length !== panes.length) {
+    paneNavRefs.current = panes.map((_, i) => paneNavRefs.current[i] || { current: null });
+  }
+
+  // Pane highlight state — index of pane to highlight, null when idle
+  const [highlightPane, setHighlightPane] = useState(null);
+  const highlightTimer = useRef(null);
+
   // Persist pane paths when they change
   const panePathsRef = useRef(panes.map((p) => p.path));
   const handlePanePathChange = useCallback((index, newPath) => {
     panePathsRef.current = [...panePathsRef.current];
     panePathsRef.current[index] = newPath;
     localStorage.setItem("ah:split-panes", JSON.stringify(panePathsRef.current));
+  }, []);
+
+  // Listen for notification navigation while in split-screen mode
+  useEffect(() => {
+    const handler = (e) => {
+      const url = e.detail?.url;
+      if (!url) return;
+      const paths = panePathsRef.current;
+
+      // Check if any pane already shows this exact path
+      let matchIdx = paths.findIndex((p) => p === url);
+
+      if (matchIdx >= 0) {
+        // Already visible — highlight it
+        clearTimeout(highlightTimer.current);
+        setHighlightPane(matchIdx);
+        highlightTimer.current = setTimeout(() => setHighlightPane(null), 1500);
+      } else {
+        // Navigate the first non-matching pane to the target
+        // Prefer a pane that isn't on an agent detail page
+        let targetIdx = paths.findIndex((p) => !p.match(/^\/agents\/[^/]+$/));
+        if (targetIdx < 0) targetIdx = 0;
+        const nav = paneNavRefs.current[targetIdx]?.current;
+        if (nav) nav(url);
+        // Highlight the navigated pane
+        clearTimeout(highlightTimer.current);
+        setHighlightPane(targetIdx);
+        highlightTimer.current = setTimeout(() => setHighlightPane(null), 1500);
+      }
+    };
+    window.addEventListener("split-navigate", handler);
+    return () => {
+      window.removeEventListener("split-navigate", handler);
+      clearTimeout(highlightTimer.current);
+    };
   }, []);
 
   // Adjust pane count when screen size changes
@@ -362,11 +412,13 @@ export default function SplitScreenPage() {
         {panes.map((pane, idx) => (
           <div
             key={pane.id}
-            className="split-pane relative overflow-hidden min-h-0 min-w-0 rounded-xl border border-divider bg-page"
+            className={`split-pane relative overflow-hidden min-h-0 min-w-0 rounded-xl border bg-page ${
+              highlightPane === idx ? "animate-pane-highlight" : "border-divider"
+            }`}
           >
             <RouterIsolator>
               <MemoryRouter initialEntries={[pane.path]}>
-                <PaneShell theme={theme} onToggleTheme={toggle} onPathChange={(p) => handlePanePathChange(idx, p)} />
+                <PaneShell theme={theme} onToggleTheme={toggle} onPathChange={(p) => handlePanePathChange(idx, p)} navigateRef={paneNavRefs.current[idx]} />
               </MemoryRouter>
             </RouterIsolator>
           </div>

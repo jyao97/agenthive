@@ -30,7 +30,8 @@ self.addEventListener("notificationclick", (event) => {
       for (const client of windowClients) {
         if (client.url.includes(self.location.origin)) {
           client.focus();
-          client.navigate(url);
+          // Let the app decide how to navigate (split-screen aware)
+          client.postMessage({ type: "notification-navigate", url });
           return;
         }
       }
