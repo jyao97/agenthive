@@ -409,7 +409,7 @@ export default function NewTaskPage({ embedded = false }) {
       <div
         ref={sheetRef}
         className="relative z-10 bg-page rounded-t-[20px] shadow-2xl flex flex-col w-full max-w-2xl"
-        style={{ maxHeight: "92vh", willChange: "transform" }}
+        style={{ maxHeight: "92vh" }}
       >
         {/* Drag handle */}
         <div
