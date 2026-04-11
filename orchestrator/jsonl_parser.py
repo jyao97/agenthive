@@ -214,6 +214,10 @@ def merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> s
         db_item = db_items.get(tid)
         if not db_item:
             continue
+        # Preserve auto_approved from DB — JSONL never has this flag,
+        # it's set by PostToolUse hook or sync based on agent config.
+        if db_item.get("auto_approved") and not item.get("auto_approved"):
+            item["auto_approved"] = True
         # JSONL answer is null but DB has a web-set answer → preserve it
         if item.get("answer") is None and db_item.get("answer") is not None:
             item["answer"] = db_item["answer"]

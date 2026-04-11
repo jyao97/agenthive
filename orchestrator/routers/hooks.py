@@ -492,7 +492,12 @@ async def hook_agent_tool_activity(request: Request):
                             if _item.get("tool_use_id") != tool_use_id:
                                 continue
                             if _item.get("answer") is not None:
-                                continue  # already answered, check next msg
+                                # Already answered (e.g. JSONL had tool_result).
+                                # Still tag auto_approved if missing.
+                                if is_auto and not _item.get("auto_approved"):
+                                    _item["auto_approved"] = True
+                                    _msg_changed = True
+                                continue
                             _item["answer"] = _answer_text
                             if is_auto:
                                 _item["auto_approved"] = True
