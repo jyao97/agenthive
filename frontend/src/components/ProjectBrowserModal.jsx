@@ -144,15 +144,30 @@ export default function ProjectBrowserModal({ project, onClose }) {
   const scrollSaveTimer = useRef(null);
   const containerRef = useRef(null);
 
-  // Bottom sheet animation state
+  // Bottom sheet animation state — drag uses refs (not state) to avoid
+  // re-rendering on every touchmove frame.
   const [mounted, setMounted] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
-  const [sheetY, setSheetY] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
+  const sheetRef = useRef(null);
+  const sheetYRef = useRef(0);
   const touchStartRef = useRef(null);
 
+  // Initial position: off-screen (before first paint)
+  useLayoutEffect(() => {
+    const el = sheetRef.current;
+    if (el) el.style.transform = 'translateY(100%)';
+  }, []);
+
+  // Slide sheet up + fade in backdrop
   useEffect(() => {
-    requestAnimationFrame(() => requestAnimationFrame(() => setMounted(true)));
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      setMounted(true);
+      const el = sheetRef.current;
+      if (el) {
+        el.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+        el.style.transform = 'translateY(0px)';
+      }
+    }));
   }, []);
 
   const dismissing = useRef(false);
@@ -160,6 +175,11 @@ export default function ProjectBrowserModal({ project, onClose }) {
     if (dismissing.current) return;
     dismissing.current = true;
     setIsClosing(true);
+    const el = sheetRef.current;
+    if (el) {
+      el.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+      el.style.transform = 'translateY(100%)';
+    }
     setTimeout(() => onClose(), 300);
   }, [onClose]);
 
@@ -202,8 +222,8 @@ export default function ProjectBrowserModal({ project, onClose }) {
     return () => window.removeEventListener("keydown", handler);
   }, [dismiss, viewingFile]);
 
-  // Block scroll on areas outside the sheet body (native listener so
-  // preventDefault works — React 18 registers touchmove as passive).
+  // Block scroll on non-body areas within the overlay (native listener —
+  // React 18 registers touchmove as passive, so preventDefault is a no-op).
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -213,6 +233,17 @@ export default function ProjectBrowserModal({ project, onClose }) {
     };
     el.addEventListener("touchmove", block, { passive: false });
     return () => el.removeEventListener("touchmove", block);
+  }, []);
+
+  // Block touchmove on ANY element outside all overlays — catches
+  // iOS Safari momentum-scroll bleed from the page behind.
+  useEffect(() => {
+    const blockBg = (e) => {
+      if (e.target.closest('[data-overlay]')) return;
+      e.preventDefault();
+    };
+    document.addEventListener("touchmove", blockBg, { passive: false });
+    return () => document.removeEventListener("touchmove", blockBg);
   }, []);
 
   const toggleDir = useCallback((path) => {
@@ -272,26 +303,40 @@ export default function ProjectBrowserModal({ project, onClose }) {
     } catch { /* ignore */ }
   }, [loading, viewingFile, project]);
 
-  // Swipe-down gesture on drag handle
+  // Swipe-down gesture — ref-based DOM updates, zero re-renders during drag
   const handleDragStart = (e) => {
     touchStartRef.current = { y: e.touches[0].clientY };
-    setIsDragging(true);
   };
   const handleDragMove = (e) => {
     if (!touchStartRef.current) return;
     const dy = e.touches[0].clientY - touchStartRef.current.y;
-    if (dy > 0) setSheetY(dy);
+    if (dy > 0) {
+      sheetYRef.current = dy;
+      const el = sheetRef.current;
+      if (el) {
+        el.style.transition = 'none';
+        el.style.transform = `translateY(${dy}px)`;
+      }
+    }
   };
   const handleDragEnd = () => {
     if (!touchStartRef.current) return;
-    setIsDragging(false);
-    if (sheetY > 120) dismiss();
-    else setSheetY(0);
+    const el = sheetRef.current;
+    if (sheetYRef.current > 120) {
+      if (el) {
+        el.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+        el.style.transform = 'translateY(100%)';
+      }
+      dismiss();
+    } else {
+      sheetYRef.current = 0;
+      if (el) {
+        el.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+        el.style.transform = 'translateY(0px)';
+      }
+    }
     touchStartRef.current = null;
   };
-
-  const sheetTranslate = isClosing ? "translateY(100%)" : `translateY(${sheetY}px)`;
-  const sheetTransition = isDragging ? "none" : "transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)";
 
   return (
     <div
@@ -306,15 +351,12 @@ export default function ProjectBrowserModal({ project, onClose }) {
         onClick={dismiss}
       />
 
-      {/* Bottom sheet */}
+      {/* Bottom sheet — transform/transition managed via sheetRef,
+           never via React state, to avoid re-render jank during drag */}
       <div
+        ref={sheetRef}
         className="relative z-10 bg-page rounded-t-[20px] shadow-2xl flex flex-col w-full"
-        style={{
-          maxHeight: "92vh",
-          transform: mounted ? sheetTranslate : "translateY(100%)",
-          transition: sheetTransition,
-          willChange: "transform",
-        }}
+        style={{ maxHeight: "92vh", willChange: "transform" }}
       >
         {/* Drag handle */}
         <div

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { createTaskV2, dispatchTask, uploadFile, generateWorktreeName } from "../lib/api";
 import { MODEL_OPTIONS } from "../lib/constants";
@@ -51,19 +51,34 @@ export default function NewTaskPage({ embedded = false }) {
   const sheetBodyRef = useRef(null);
   const containerRef = useRef(null);
 
-  // Sheet animation state
+  // Sheet animation state — drag uses refs (not state) to avoid
+  // re-rendering the entire component on every touchmove frame.
   const [mounted, setMounted] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
-  const [sheetY, setSheetY] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
+  const sheetRef = useRef(null);
+  const sheetYRef = useRef(0);
   const touchStartRef = useRef(null);
 
-  useEffect(() => {
-    requestAnimationFrame(() => requestAnimationFrame(() => setMounted(true)));
+  // Initial position: off-screen (runs before first paint)
+  useLayoutEffect(() => {
+    const el = sheetRef.current;
+    if (el) el.style.transform = 'translateY(100%)';
   }, []);
 
-  // Block scroll on areas outside the sheet body (native listener so
-  // preventDefault works — React 18 registers touchmove as passive).
+  // Slide sheet up + fade in backdrop
+  useEffect(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      setMounted(true);
+      const el = sheetRef.current;
+      if (el) {
+        el.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+        el.style.transform = 'translateY(0px)';
+      }
+    }));
+  }, []);
+
+  // Block scroll on non-body areas within the overlay (native listener —
+  // React 18 registers touchmove as passive, so preventDefault is a no-op).
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -73,6 +88,17 @@ export default function NewTaskPage({ embedded = false }) {
     };
     el.addEventListener("touchmove", block, { passive: false });
     return () => el.removeEventListener("touchmove", block);
+  }, []);
+
+  // Block touchmove on ANY element outside all overlays — catches
+  // iOS Safari momentum-scroll bleed from the page behind.
+  useEffect(() => {
+    const blockBg = (e) => {
+      if (e.target.closest('[data-overlay]')) return;
+      e.preventDefault();
+    };
+    document.addEventListener("touchmove", blockBg, { passive: false });
+    return () => document.removeEventListener("touchmove", blockBg);
   }, []);
 
   const [previewIndex, setPreviewIndex] = useState(null);
@@ -218,6 +244,11 @@ export default function NewTaskPage({ embedded = false }) {
       }
     }
     setIsClosing(true);
+    const el = sheetRef.current;
+    if (el) {
+      el.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+      el.style.transform = 'translateY(100%)';
+    }
     setTimeout(() => hasBackground ? navigate(-1) : navigate("/tasks", { replace: true }), 250);
   };
 
@@ -299,6 +330,11 @@ export default function NewTaskPage({ embedded = false }) {
       clearAttachments();
       setNotifyAt(null);
       setIsClosing(true);
+      const el = sheetRef.current;
+      if (el) {
+        el.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+        el.style.transform = 'translateY(100%)';
+      }
       setTimeout(() => navigate(`/agents/${dispatched.agent_id}`), 250);
     } catch (err) {
       showToast("Launch failed: " + err.message, "error");
@@ -319,28 +355,41 @@ export default function NewTaskPage({ embedded = false }) {
   const canSubmit = hasContent && !submitting && !anyUploading;
 
   // ---- Swipe-down gesture on drag handle ----
+  // All position updates go through the DOM ref — zero React re-renders
+  // during the gesture, so the animation runs on the GPU compositor thread.
   const handleTouchStart = (e) => {
     touchStartRef.current = { y: e.touches[0].clientY };
-    setIsDragging(true);
   };
   const handleTouchMove = (e) => {
     if (!touchStartRef.current) return;
     const dy = e.touches[0].clientY - touchStartRef.current.y;
-    if (dy > 0) setSheetY(dy);
+    if (dy > 0) {
+      sheetYRef.current = dy;
+      const el = sheetRef.current;
+      if (el) {
+        el.style.transition = 'none';
+        el.style.transform = `translateY(${dy}px)`;
+      }
+    }
   };
   const handleTouchEnd = () => {
     if (!touchStartRef.current) return;
-    setIsDragging(false);
-    if (sheetY > 120) {
+    const el = sheetRef.current;
+    if (sheetYRef.current > 120) {
+      if (el) {
+        el.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+        el.style.transform = 'translateY(100%)';
+      }
       dismiss();
     } else {
-      setSheetY(0);
+      sheetYRef.current = 0;
+      if (el) {
+        el.style.transition = 'transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)';
+        el.style.transform = 'translateY(0px)';
+      }
     }
     touchStartRef.current = null;
   };
-
-  const sheetTranslate = isClosing ? "translateY(100%)" : `translateY(${sheetY}px)`;
-  const sheetTransition = isDragging ? "none" : "transform 0.3s cubic-bezier(0.32, 0.72, 0, 1)";
 
   return (
     <div
@@ -355,15 +404,12 @@ export default function NewTaskPage({ embedded = false }) {
         onClick={() => dismiss()}
       />
 
-      {/* Bottom sheet card */}
+      {/* Bottom sheet card — transform/transition managed via sheetRef,
+           never via React state, to avoid re-render jank during drag */}
       <div
+        ref={sheetRef}
         className="relative z-10 bg-page rounded-t-[20px] shadow-2xl flex flex-col w-full max-w-2xl"
-        style={{
-          maxHeight: "92vh",
-          transform: mounted ? sheetTranslate : "translateY(100%)",
-          transition: sheetTransition,
-          willChange: "transform",
-        }}
+        style={{ maxHeight: "92vh", willChange: "transform" }}
       >
         {/* Drag handle */}
         <div
