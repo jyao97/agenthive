@@ -448,6 +448,10 @@ function NewAgentForm({ showToast, navigate }) {
           project_name: project,
           model: model || undefined,
           effort: effort || undefined,
+          skip_permissions: skipPermissions,
+          use_worktree: !!worktree,
+          use_tmux: true,
+          auto_dispatch: false,
         });
         taskId = task.id;
       }
