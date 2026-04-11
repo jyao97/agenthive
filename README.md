@@ -137,10 +137,6 @@ AgentHive runs on your machine and launches Claude Code CLI instances inside tmu
 
 ### Quick Start
 
-> **Tip:** Already have Claude Code? Clone the repo, run `claude`, and tell it to set up AgentHive for you. It will handle deps, certs, config — everything.
-
-> **Tip:** Want to personalize your AgentHive experience? Symlink the agenthive repo into `~/ah-projects/` and let agents improve the tool while you use it.
-
 ```bash
 # 1. Clone
 git clone https://github.com/jyao97/agenthive.git && cd agenthive
@@ -156,6 +152,10 @@ nano .env   # Set HOST_PROJECTS_DIR (required), optionally OPENAI_API_KEY
 ```
 
 Open `https://<machine-ip>:3000` in your browser. Set a password on first visit.
+
+> **Tip:** You can also run `claude` in the project directory and tell it to set up AgentHive for you :)
+
+> **Tip:** Symlink the agenthive repo into `~/ah-projects/` to personalize your experience — let agents improve the tool while you use it.
 
 ### First Time on iPhone
 
