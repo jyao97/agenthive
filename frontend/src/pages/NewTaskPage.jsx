@@ -376,9 +376,19 @@ export default function NewTaskPage({ embedded = false }) {
           <div className="w-10 h-1 rounded-full bg-dim/40" />
         </div>
 
+        {/* Header — swipeable like the drag handle */}
+        <div
+          className="shrink-0 px-4 pb-2"
+          style={{ touchAction: "none" }}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        >
+          <h2 className="text-lg font-bold text-heading">New Task</h2>
+        </div>
+
         {/* Scrollable content */}
         <div ref={sheetBodyRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 pb-6" style={{ overscrollBehavior: "none" }}>
-          <h2 className="text-lg font-bold text-heading mb-3">New Task</h2>
 
           <div className="space-y-3">
             {/* Title (optional) */}

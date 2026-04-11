@@ -327,8 +327,15 @@ export default function ProjectBrowserModal({ project, onClose }) {
           <div className="w-10 h-1 rounded-full bg-dim/40" />
         </div>
 
-        {/* Header */}
-        <div className="shrink-0 flex items-center gap-2 px-4 pb-3 border-b border-divider" style={{ touchAction: "none" }}>
+        {/* Header — also responds to swipe-down so the entire top
+             strip is draggable, not just the tiny pill handle */}
+        <div
+          className="shrink-0 flex items-center gap-2 px-4 pb-3 border-b border-divider"
+          style={{ touchAction: "none" }}
+          onTouchStart={handleDragStart}
+          onTouchMove={handleDragMove}
+          onTouchEnd={handleDragEnd}
+        >
           {viewingFile ? (
             <button
               type="button"
