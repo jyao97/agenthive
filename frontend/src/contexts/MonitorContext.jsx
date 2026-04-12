@@ -100,15 +100,13 @@ export function MonitorProvider({ children }) {
     ]);
   }, [fetchHealth, fetchAgents, fetchProcesses, fetchSysStats, fetchStorage, fetchTasks]);
 
-  // Initial fetch on mount
-  useEffect(() => { refreshAll(); fetchUsage(); }, [refreshAll, fetchUsage]);
-
-  // Background 5-minute poll (always running when tab is visible)
+  // Initial fetch + background poll only when MonitorPage is active
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || !monitorActive) return;
+    refreshAll(); fetchUsage();
     const id = setInterval(refreshAll, BG_INTERVAL);
     return () => clearInterval(id);
-  }, [visible, refreshAll]);
+  }, [visible, monitorActive, refreshAll, fetchUsage]);
 
   // Fast polling when MonitorPage is active and tab is visible
   useEffect(() => {

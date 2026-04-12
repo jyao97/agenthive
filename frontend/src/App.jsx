@@ -262,6 +262,8 @@ export default function App() {
   const [unread, setUnread] = useState(0);
   const [claudeMdPending, setClaudeMdPending] = useState(0);
   const visible = usePageVisible();
+  const pathnameRef = useRef(location.pathname);
+  pathnameRef.current = location.pathname;
   const lastTapRef = useRef({});
 
   const handleNavDoubleTap = useCallback((key, e) => {
@@ -275,25 +277,30 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // Only poll unread when not on login page and has a token
-    if (!visible || location.pathname === "/login" || !getAuthToken()) return;
-    const poll = () => fetchUnreadCount().then((r) => setUnread(r.unread)).catch((err) => {
-      console.warn("Unread count poll failed:", err);
-    });
+    if (!visible) return;
+    const poll = () => {
+      if (pathnameRef.current === "/login" || !getAuthToken()) return;
+      fetchUnreadCount().then((r) => setUnread(r.unread)).catch((err) => {
+        console.warn("Unread count poll failed:", err);
+      });
+    };
     poll();
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
-  }, [location.pathname, visible]);
+  }, [visible]);
 
   useEffect(() => {
-    if (!visible || location.pathname === "/login" || !getAuthToken()) return;
-    const poll = () => fetchClaudeMdPending().then((r) => setClaudeMdPending(r.count || 0)).catch((err) => {
-      console.warn("Claude MD pending poll failed:", err);
-    });
+    if (!visible) return;
+    const poll = () => {
+      if (pathnameRef.current === "/login" || !getAuthToken()) return;
+      fetchClaudeMdPending().then((r) => setClaudeMdPending(r.count || 0)).catch((err) => {
+        console.warn("Claude MD pending poll failed:", err);
+      });
+    };
     poll();
     const id = setInterval(poll, 30000);
     return () => clearInterval(id);
-  }, [location.pathname, visible]);
+  }, [visible]);
 
   // Service Worker notification click — split-screen aware navigation
   useEffect(() => {
