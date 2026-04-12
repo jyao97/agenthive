@@ -668,7 +668,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
       )}
 
       {/* Agent list */}
-      <div className={`${selecting ? "pb-28" : "pb-20"} px-4 py-2 space-y-2`}>
+      <div className={`${selecting ? "pb-32" : "pb-24"} px-4 py-2 space-y-2`}>
         {loading && agents.length === 0 && (
           <div className="flex justify-center py-12">
             <span className="text-dim text-sm animate-pulse">Loading agents...</span>

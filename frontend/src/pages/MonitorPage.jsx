@@ -408,7 +408,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
       </PageHeader>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-      <div className="pb-20 p-4 space-y-5 max-w-2xl mx-auto w-full">
+      <div className="pb-24 p-4 space-y-5 max-w-2xl mx-auto w-full">
         {/* System Health */}
         <section>
           <h2 className="text-xs font-semibold text-dim uppercase tracking-wider mb-2">System Health</h2>

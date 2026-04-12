@@ -229,7 +229,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="max-w-2xl mx-auto w-full pb-20 p-4 space-y-3">
+        <div className="max-w-2xl mx-auto w-full pb-24 p-4 space-y-3">
           {error && !task && (
             <div className="bg-red-950/40 border border-red-800 rounded-xl p-3">
               <p className="text-red-400 text-sm">{error}</p>

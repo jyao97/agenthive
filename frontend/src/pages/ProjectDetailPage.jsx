@@ -1331,7 +1331,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       </div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-      <div className="pb-20 p-4 max-w-2xl mx-auto w-full space-y-5">
+      <div className="pb-24 p-4 max-w-2xl mx-auto w-full space-y-5">
 
       {/* Inactive project banner */}
       {!project.active && (

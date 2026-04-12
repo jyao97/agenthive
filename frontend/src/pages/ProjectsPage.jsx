@@ -458,7 +458,7 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
       )}
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-      <div className="pb-20 p-4 max-w-2xl mx-auto w-full">
+      <div className="pb-24 p-4 max-w-2xl mx-auto w-full">
 
       {loading && folders.length === 0 && (
         <div className="flex justify-center py-12">
