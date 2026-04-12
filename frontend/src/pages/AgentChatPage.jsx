@@ -2675,15 +2675,19 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const el = kbContainerRef.current;
       if (!el) return;
 
-      const containerH = el.clientHeight;
+      // Use window.innerHeight (viewport) rather than el.clientHeight because
+      // the root container extends below the viewport into the safe area via
+      // negative bottom — el.clientHeight includes that extra height which
+      // would inflate the keyboard delta calculation.
+      const viewportH = window.innerHeight;
       // rawDelta: detects keyboard presence (ignores viewport scroll)
-      const rawDelta = Math.max(0, Math.round(containerH - vv.height));
+      const rawDelta = Math.max(0, Math.round(viewportH - vv.height));
       // kbOffset: actual positioning offset — subtracts vv.offsetTop so
       // the input bar stays flush with the keyboard even when iOS scrolls
       // the visual viewport (common on 2nd+ keyboard open).
-      const kbOffset = Math.max(0, Math.round(containerH - vv.height - vv.offsetTop));
+      const kbOffset = Math.max(0, Math.round(viewportH - vv.height - vv.offsetTop));
 
-      kbLog(containerH, kbOffset, rawDelta > 100);
+      kbLog(viewportH, kbOffset, rawDelta > 100);
 
       const open = rawDelta > 100;
 

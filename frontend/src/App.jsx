@@ -370,7 +370,7 @@ export default function App() {
   return (
     <ErrorBoundary>
     <ToastProvider>
-    <div className="fixed inset-0 flex flex-col bg-page text-heading min-w-[320px] overflow-hidden">
+    <div className="fixed flex flex-col bg-page text-heading min-w-[320px] overflow-hidden" style={{ top: 0, left: 0, right: 0, bottom: 'calc(-1 * env(safe-area-inset-bottom, 0px))' }}>
       {/* Main content area */}
       <main className="flex-1 min-h-0 overflow-hidden">
         <Routes>
@@ -401,7 +401,7 @@ export default function App() {
       {/* Bottom tab bar — floating glass pill */}
       {!hideNav && (
         <BottomNavBar
-          className="fixed bottom-2 left-0 right-0 z-40 flex justify-center px-4"
+          className="absolute bottom-2 left-0 right-0 z-40 flex justify-center px-4"
           badges={{ agents: unread, projects: claudeMdPending }}
           onDoubleTap={handleNavDoubleTap}
           onProjectsTap={(e) => {
