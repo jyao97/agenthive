@@ -370,7 +370,7 @@ export default function App() {
   return (
     <ErrorBoundary>
     <ToastProvider>
-    <div className="fixed inset-0 flex flex-col bg-page text-heading min-w-[320px] overflow-hidden">
+    <div className="flex flex-col h-screen bg-page text-heading min-w-[320px] overflow-x-hidden">
       {/* DEBUG: red line = container bottom edge, blue line = safe-area boundary */}
       <div className="fixed left-0 right-0 bottom-0 h-[2px] bg-red-500 z-[9999] pointer-events-none" />
       <div className="fixed left-0 right-0 z-[9999] pointer-events-none h-[2px] bg-blue-500" style={{ bottom: 'env(safe-area-inset-bottom, 0px)' }} />
