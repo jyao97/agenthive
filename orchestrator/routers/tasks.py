@@ -290,6 +290,16 @@ async def task_counts(project: str | None = None, db: Session = Depends(get_db))
         Task.completed_at >= week_ago,
     ).group_by("day", Task.status).all()
 
+    # Daily retries (sum of attempt_number - 1 per day)
+    daily_retry_rows = _pf(db.query(
+        func.date(Task.completed_at).label("day"),
+        func.coalesce(func.sum(Task.attempt_number - 1), 0),
+    )).filter(
+        Task.status.in_(terminal),
+        Task.completed_at >= week_ago,
+    ).group_by("day").all()
+    daily_retries_map = {str(d): int(r) for d, r in daily_retry_rows}
+
     daily_map: dict[str, dict] = {}
     for day_val, status, cnt in daily_rows:
         d = str(day_val)
@@ -299,12 +309,15 @@ async def task_counts(project: str | None = None, db: Session = Depends(get_db))
         if status == TaskStatus.COMPLETE:
             daily_map[d]["completed"] += cnt
 
-    # Fill missing days and compute success_pct
+    # Fill missing days and compute retry-adjusted success_pct
     daily = []
     for i in range(7):
         d = (now - timedelta(days=6 - i)).strftime("%Y-%m-%d")
         entry = daily_map.get(d, {"date": d, "total": 0, "completed": 0})
-        entry["success_pct"] = round(entry["completed"] / entry["total"] * 100) if entry["total"] else None
+        day_retries = daily_retries_map.get(d, 0)
+        adj_total = entry["total"] + day_retries
+        entry["retries"] = day_retries
+        entry["success_pct"] = round(entry["completed"] / adj_total * 100) if adj_total else None
         daily.append(entry)
 
     return {
