@@ -48,31 +48,33 @@ async function clearModuleCachesBestEffort() {
 
 function lazyPage(importer) {
   return lazy(async () => {
-    try {
-      const mod = await importer();
+    // Retry import up to 3 times before falling back to full reload.
+    // iOS Safari kills background PWA processes; on resume the network
+    // often needs a few hundred ms to reconnect — retries cover that gap.
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        sessionStorage.removeItem(MODULE_RELOAD_KEY);
-      } catch {
-        // Ignore storage errors.
+        const mod = await importer();
+        try { sessionStorage.removeItem(MODULE_RELOAD_KEY); } catch { }
+        return mod;
+      } catch (err) {
+        lastErr = err;
+        if (!isModuleImportError(err)) throw err;
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 1000));
       }
-      return mod;
-    } catch (err) {
-      if (isModuleImportError(err)) {
-        let shouldReload = true;
-        try {
-          shouldReload = sessionStorage.getItem(MODULE_RELOAD_KEY) !== "1";
-          if (shouldReload) sessionStorage.setItem(MODULE_RELOAD_KEY, "1");
-        } catch {
-          // Keep shouldReload=true when storage is unavailable.
-        }
-        if (shouldReload) {
-          await clearModuleCachesBestEffort();
-          window.location.reload();
-          return new Promise(() => {});
-        }
-      }
-      throw err;
     }
+    // All retries exhausted — one-time reload as last resort
+    let shouldReload = true;
+    try {
+      shouldReload = sessionStorage.getItem(MODULE_RELOAD_KEY) !== "1";
+      if (shouldReload) sessionStorage.setItem(MODULE_RELOAD_KEY, "1");
+    } catch { }
+    if (shouldReload) {
+      await clearModuleCachesBestEffort();
+      window.location.reload();
+      return new Promise(() => {});
+    }
+    throw lastErr;
   });
 }
 
@@ -374,7 +376,7 @@ export default function App() {
                 <WebSocketProvider>
                 <MonitorProvider>
                 <ErrorBoundary>
-                  <Suspense fallback={<div/>}>
+                  <Suspense fallback={<div className="flex items-center justify-center h-dvh bg-page"><div className="animate-pulse text-dim text-sm">Loading...</div></div>}>
                   <AppRoutes themeProps={themeProps} />
                   </Suspense>
                 </ErrorBoundary>
