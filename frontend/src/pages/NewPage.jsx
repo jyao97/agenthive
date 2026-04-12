@@ -104,7 +104,7 @@ export default function NewPage({ theme, onToggleTheme }) {
       </div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-      <div className="pb-20 p-4 max-w-xl mx-auto w-full">
+      <div className="pb-24 p-4 max-w-xl mx-auto w-full">
         {activeCard === "agent" && (
           <NewAgentForm showToast={showToast} navigate={navigate} />
         )}

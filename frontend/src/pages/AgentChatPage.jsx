@@ -2009,12 +2009,12 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "pb-2 safe-area-pb-tight"}`}
+      className="absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none"
       style={{ bottom: 'var(--kb-h, 0px)' }}
     >
       {scrollButton}
       <div
-        className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
+        className={`glass-bar-nav ${kbOpen ? "rounded-[22px]" : "rounded-t-[22px]"} px-3 pt-2 ${kbOpen ? "pb-1" : "pb-2.5 safe-area-pb"} flex flex-col gap-2 w-full relative pointer-events-auto`}
         style={{ maxWidth: "24rem" }}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
