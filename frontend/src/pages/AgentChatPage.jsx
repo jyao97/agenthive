@@ -2009,7 +2009,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "pb-2"}`}
+      className={`absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "pb-2 safe-area-pb-tight"}`}
       style={{ bottom: 'var(--kb-h, 0px)' }}
     >
       {scrollButton}
@@ -2675,19 +2675,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       const el = kbContainerRef.current;
       if (!el) return;
 
-      // Use window.innerHeight (viewport) rather than el.clientHeight because
-      // the root container extends below the viewport into the safe area via
-      // negative bottom — el.clientHeight includes that extra height which
-      // would inflate the keyboard delta calculation.
-      const viewportH = window.innerHeight;
+      const containerH = el.clientHeight;
       // rawDelta: detects keyboard presence (ignores viewport scroll)
-      const rawDelta = Math.max(0, Math.round(viewportH - vv.height));
+      const rawDelta = Math.max(0, Math.round(containerH - vv.height));
       // kbOffset: actual positioning offset — subtracts vv.offsetTop so
       // the input bar stays flush with the keyboard even when iOS scrolls
       // the visual viewport (common on 2nd+ keyboard open).
-      const kbOffset = Math.max(0, Math.round(viewportH - vv.height - vv.offsetTop));
+      const kbOffset = Math.max(0, Math.round(containerH - vv.height - vv.offsetTop));
 
-      kbLog(viewportH, kbOffset, rawDelta > 100);
+      kbLog(containerH, kbOffset, rawDelta > 100);
 
       const open = rawDelta > 100;
 
