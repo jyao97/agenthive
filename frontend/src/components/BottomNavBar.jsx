@@ -105,7 +105,7 @@ export default function BottomNavBar({ badges, onDoubleTap, onProjectsTap, class
   return (
     <div className={className}>
       <div
-        className="glass-bar-nav rounded-t-[28px] grid grid-cols-5 items-center w-full safe-area-pb"
+        className="glass-bar-nav rounded-[28px] grid grid-cols-5 items-center w-full"
         style={{ maxWidth: "24rem" }}
       >
         {navTabs.map((tab) =>
