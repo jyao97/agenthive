@@ -2009,7 +2009,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   return (
     <div
-      className={`absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "pb-4"}`}
+      className={`absolute left-0 right-0 flex flex-col items-center px-4 z-20 pointer-events-none ${kbOpen ? "" : "pb-[13px]"}`}
       style={{ bottom: 'var(--kb-h, 0px)' }}
     >
       {scrollButton}

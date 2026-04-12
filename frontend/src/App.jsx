@@ -401,7 +401,7 @@ export default function App() {
       {/* Bottom tab bar — floating glass pill */}
       {!hideNav && (
         <BottomNavBar
-          className="fixed bottom-4 left-0 right-0 z-40 flex justify-center px-4"
+          className="fixed bottom-[13px] left-0 right-0 z-40 flex justify-center px-4"
           badges={{ agents: unread, projects: claudeMdPending }}
           onDoubleTap={handleNavDoubleTap}
           onProjectsTap={(e) => {
