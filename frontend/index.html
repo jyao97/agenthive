@@ -12,6 +12,21 @@
     <title>AgentHive</title>
     <script>
       (function(){
+        // Force-clear stale PWA caches — bump version to trigger
+        var CV="v2";
+        if(navigator.serviceWorker&&!localStorage.getItem("ah-cv-"+CV)){
+          navigator.serviceWorker.getRegistrations().then(function(regs){
+            var p=regs.map(function(r){return r.unregister()});
+            return Promise.all(p);
+          }).then(function(){return caches.keys()}).then(function(ns){
+            return Promise.all(ns.map(function(n){return caches.delete(n)}));
+          }).then(function(){
+            localStorage.setItem("ah-cv-"+CV,"1");
+            location.reload();
+          }).catch(function(){});
+          return; // stop further init until reload
+        }
+        // Theme init
         var s=localStorage.getItem("agenthive-theme");
         var d=window.matchMedia("(prefers-color-scheme:dark)").matches;
         if(s==="dark"||(s!=="light"&&d)){
