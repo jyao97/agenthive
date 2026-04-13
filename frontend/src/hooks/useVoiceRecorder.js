@@ -33,6 +33,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
   const countdownRef = useRef(null);
   const startTimeRef = useRef(null);
   const startingRef = useRef(false);
+  const wakeLockRef = useRef(null);
 
   // Keep stable refs for callbacks
   const onTranscriptRef = useRef(onTranscript);
@@ -65,8 +66,25 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     }
   }, []);
 
+  // Screen Wake Lock — prevent screen from sleeping during recording
+  const acquireWakeLock = useCallback(async () => {
+    if (!navigator.wakeLock) return;
+    try {
+      wakeLockRef.current = await navigator.wakeLock.request("screen");
+      wakeLockRef.current.addEventListener("release", () => { wakeLockRef.current = null; });
+    } catch {}
+  }, []);
+
+  const releaseWakeLock = useCallback(() => {
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release().catch(() => {});
+      wakeLockRef.current = null;
+    }
+  }, []);
+
   // Helper: clean up audio resources (mic, audio context)
   const cleanup = useCallback(() => {
+    releaseWakeLock();
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
     if (recorderRef.current) {
@@ -82,7 +100,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
       audioCtxRef.current = null;
     }
     setAnalyserNode(null);
-  }, []);
+  }, [releaseWakeLock]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -184,6 +202,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
       };
 
       recorder.start();
+      acquireWakeLock();
 
       const curLimit = limitRef.current;
       setRecording(true);
@@ -209,9 +228,10 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     } finally {
       startingRef.current = false;
     }
-  }, [voiceLoading, cleanup, processRecording]);
+  }, [voiceLoading, cleanup, processRecording, acquireWakeLock]);
 
   const stopRecordingInternal = useCallback(() => {
+    releaseWakeLock();
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
 
@@ -236,7 +256,7 @@ export default function useVoiceRecorder({ onTranscript, onError, maxDurationMs 
     setRecording(false);
     startTimeRef.current = null;
     setRemainingSeconds(limitRef.current / 1000);
-  }, []);
+  }, [releaseWakeLock]);
 
   const stopRecording = useCallback(() => {
     stopRecordingInternal();
