@@ -159,27 +159,9 @@ To disable auto-start later:
 pm2 unstartup systemd
 ```
 
-#### Folder Layout
+#### Set Up Your Projects
 
-```
-~/
-├── agenthive/                      <- This repo
-│   ├── run.sh                      <- Launch script (systemd services)
-│   ├── setup.sh                    <- First-time setup script
-│   ├── orchestrator/               <- FastAPI backend
-│   ├── frontend/                   <- React PWA (Vite + TailwindCSS)
-│   ├── certs/                      <- SSL certificates
-│   ├── project-configs/            <- Project registry
-│   ├── data/                       <- SQLite database
-│   ├── backups/                    <- Automatic database backups
-│   ├── logs/                       <- Server and orchestrator logs
-│   └── .env                        <- Configuration
-│
-└── agenthive-projects/             <- Your project repositories
-    ├── my-web-app/
-    ├── ml-pipeline/
-    └── ...
-```
+Add projects in the app: **long-press the + button → New Project** — paste any GitHub URL or point to an empty folder. You can also manually create or symlink folders in the projects directory (`~/ah-projects/` by default, configured via `HOST_PROJECTS_DIR` in `.env`).
 
 ### Client Setup
 
