@@ -40,7 +40,7 @@ Assign tasks to AI agents and let them work.
 - **Parallel execution** — run 5, 10, or more agents in parallel across different projects. Each agent gets its own isolated git worktree so they never step on each other's code.
 - **AI batch processing** — got a pile of tasks in your inbox? One click to let AI triage and dispatch them in bulk, instead of handling each one manually.
 - **RAG-powered context** — when dispatching a task, AgentHive automatically retrieves relevant history from past agent sessions. Your new agent starts with the lessons learned, not from scratch.
-- **Cross-session reference** — tell an agent "check AgentHive session `<session_id>`" and it can read the full conversation history of another session. AgentHive configures an [MCP server](orchestrator/mcp_server.py) for every project with two tools: `list_sessions` (discover past conversations) and `read_session` (read one by session ID, agent ID, or prefix). Useful for handing off context between agents or asking a new agent to review a previous attempt.
+- **Cross-session reference** — tell an agent "check AgentHive session `<session_id>`" and it can read another agent's full conversation via a built-in [MCP server](orchestrator/mcp_server.py). Great for handing off context or reviewing a previous attempt.
 
 ### 3. Monitor
 
