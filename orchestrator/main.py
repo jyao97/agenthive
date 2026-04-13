@@ -180,7 +180,7 @@ async def lifespan(app: FastAPI):
     _write_global_session_hook()
 
     # Refresh project-level hook configs (ensures new hook types are registered)
-    from routers.agents import _write_agent_hooks_config
+    from routers.agents import _write_agent_hooks_config, _write_mcp_config
     _db_hooks = SessionLocal()
     _project_paths = [
         p.path for p in _db_hooks.query(Project.path).distinct().all()
@@ -189,6 +189,7 @@ async def lifespan(app: FastAPI):
     _db_hooks.close()
     for _pp in _project_paths:
         _write_agent_hooks_config(_pp)
+        _write_mcp_config(_pp)
     if _project_paths:
         logger.info("Refreshed hook configs for %d projects", len(_project_paths))
 

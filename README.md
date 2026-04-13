@@ -352,6 +352,7 @@ After installing, restart your browser.
 
 - **Double-tap an agent's session ID** to quickly copy it to the clipboard.
 - **Double-tap a message** in the chat view to quickly copy its content.
+- **Cross-reference other sessions** — tell an agent "check AgentHive session `<session_id>`" and it can read the full conversation history of that session. AgentHive configures an [MCP server](orchestrator/mcp_server.py) for every project, giving agents two tools: `list_sessions` (discover past conversations) and `read_session` (read one by session ID, agent ID, or prefix). This is useful for handing off context between agents or asking a new agent to review a previous attempt.
 
 ## Troubleshooting
 

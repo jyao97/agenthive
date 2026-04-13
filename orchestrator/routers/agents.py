@@ -292,6 +292,54 @@ def _write_agent_hooks_config(project_path: str):
         logger.warning("Preflight: failed to write agent hooks config: %s", e)
 
 
+def _write_mcp_config(project_path: str):
+    """Write .mcp.json to give agents access to the AgentHive MCP server.
+
+    For the agenthive project itself, we skip — the committed .mcp.json
+    with a relative path is preferred.  For other projects, we write an
+    absolute path so agents can call list_sessions / read_session.
+    """
+    agenthive_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+
+    # Skip if this IS the agenthive project (committed .mcp.json handles it)
+    if os.path.realpath(project_path) == os.path.realpath(agenthive_root):
+        return
+
+    mcp_server_path = os.path.join(agenthive_root, "orchestrator", "mcp_server.py")
+    if not os.path.isfile(mcp_server_path):
+        return
+
+    mcp_json_path = os.path.join(project_path, ".mcp.json")
+    desired = {
+        "mcpServers": {
+            "agenthive": {
+                "command": "python3",
+                "args": [mcp_server_path],
+            }
+        }
+    }
+
+    try:
+        existing = {}
+        if os.path.isfile(mcp_json_path):
+            with open(mcp_json_path, "r") as f:
+                existing = json.load(f)
+
+        # Merge — don't clobber other MCP servers the project may have
+        servers = existing.get("mcpServers", {})
+        if servers.get("agenthive") != desired["mcpServers"]["agenthive"]:
+            servers["agenthive"] = desired["mcpServers"]["agenthive"]
+            existing["mcpServers"] = servers
+            with open(mcp_json_path, "w") as f:
+                json.dump(existing, f, indent=2)
+                f.write("\n")
+            logger.info("Preflight: wrote MCP config to %s", mcp_json_path)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Preflight: failed to write MCP config: %s", e)
+
+
 def _write_global_session_hook():
     """Write SessionStart hook to ~/.claude/settings.json (global).
 
@@ -443,6 +491,9 @@ def _preflight_claude_project(project_path: str):
 
     # --- 3. .claude/settings.local.json (project-level agent hooks) ---
     _write_agent_hooks_config(project_path)
+
+    # --- 4. .mcp.json (MCP server for cross-session reference) ---
+    _write_mcp_config(project_path)
 
 
 # ---------------------------------------------------------------------------
