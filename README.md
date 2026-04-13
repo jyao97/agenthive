@@ -134,9 +134,9 @@ Open `https://<machine-ip>:3000` in your browser. Set a password on first visit.
 
 > **Tip:** Symlink the agenthive repo into `~/ah-projects/` to personalize your experience — let agents improve the tool while you use it.
 
-### First Time on iPhone (on client)
+### Setting Up iPhone (on client)
 
-Any device can access AgentHive by simply opening `https://<machine-ip>:3000` in a browser. The steps below are only needed if you want the full PWA app experience on iPhone (home screen icon, fullscreen, push notifications).
+After setting up the host, you can visit `https://<machine-ip>:3000` from any device with network access — no extra setup required. However, if you want the full PWA app experience on iPhone (home screen icon, fullscreen, push notifications), follow the steps below.
 
 1. Open `https://<machine-ip>:3000` in Safari (bypass the certificate warning via **Advanced → Visit Website**, then refresh).
 2. Follow the on-screen guide on the login page to install the CA certificate and the AgentHive app.
