@@ -29,7 +29,7 @@ class TaskStatus(str, enum.Enum):
     CONFLICT = "CONFLICT"
     COMPLETE = "COMPLETE"
     REJECTED = "REJECTED"
-    CANCELLED = "CANCELLED"
+    CANCELLED = "CANCELLED"  # displayed as "Dropped" in the UI
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
 
