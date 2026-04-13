@@ -12,7 +12,7 @@
 </p>
 
 
-**One hive to rule them all. Monitor every agent, from anywhere.**
+**All your AI worker bees in one hive. 🐝**
 
 AgentHive is a web-based control layer for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that turns it from a synchronous terminal tool into an asynchronous, agentic workflow. Capture ideas from your phone or by voice, dispatch to parallel agents on isolated worktrees, monitor progress in real time, and iterate with auto-summarized context when agents miss the mark. Your existing CLAUDE.md files, project setup, and CLI sessions all carry over, and project knowledge grows with every session.
 
