@@ -112,7 +112,7 @@ AgentHive hooks into Claude Code's native event system — not polling, not heur
 - **Claude subscription** — Claude Max or Pro (uses your existing subscription, no separate API billing)
 - **OpenAI API key** _(optional, for voice input)_
 
-### Quick Start
+### Quick Start (on host)
 
 ```bash
 # 1. Clone
