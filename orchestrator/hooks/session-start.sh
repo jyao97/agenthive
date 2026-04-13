@@ -24,7 +24,7 @@ HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
   -H "X-Agent-Id: ${AGENT_ID}" \
   -H "X-Session-Cwd: ${PWD}" \
   -H "X-Tmux-Pane: ${TMUX_PANE:-}" \
-  -d "$(python3 -c "import json,os; print(json.dumps({'session_id': os.environ['SESSION_ID'], 'source': os.environ.get('SESSION_SOURCE','')}))" )" \
+  -d "$(printf '{"session_id":"%s","source":"%s"}' "$SESSION_ID" "$SESSION_SOURCE")" \
   2>/dev/null)
 
 [ "$HTTP_CODE" = "200" ] && exit 0
