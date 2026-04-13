@@ -24,6 +24,12 @@
 - Commit frequently — small atomic commits, not one giant commit at the end
 - Commit to master directly when appropriate
 
+## Release Conventions
+- Tag format: `v<major>.<minor>.<patch>`
+- Release notes: overview paragraph + categorized changelists with context
+- Use `gh release create` with `--notes` — include `Full Changelog` compare link at the bottom
+- Only create releases when explicitly asked by the user
+
 ## Commit Safety (public repo)
 - **No secrets**: never commit API keys, tokens, passwords, or private keys — even as "examples". Use empty values in `.env.example` (e.g. `OPENAI_API_KEY=`), not fake-looking placeholder strings
 - **No certificates**: `.pem`, `.crt`, `.key`, `.p12` etc. are gitignored — never force-add them
