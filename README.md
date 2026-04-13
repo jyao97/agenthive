@@ -265,15 +265,15 @@ To disable auto-start later:
 pm2 unstartup systemd
 ```
 
-## Remote Access with Tailscale
+## Remote Access
 
-The easiest way to access AgentHive from your phone outside your LAN:
+AgentHive works with any tunneling or VPN solution that gives your devices a shared private network — [Tailscale](https://tailscale.com), [ZeroTier](https://www.zerotier.com), [WireGuard](https://www.wireguard.com), [frp](https://github.com/fatedier/frp), Cloudflare Tunnel, etc. The author uses Tailscale:
 
 1. Install [Tailscale](https://tailscale.com) on your server and phone
 2. `tailscale up` on both devices
 3. Access AgentHive at `https://<tailscale-ip>:3000`
 
-No port forwarding, no public exposure. Tailscale creates a secure WireGuard tunnel between your devices.
+No port forwarding, no public exposure — traffic stays in an encrypted tunnel between your devices.
 
 ## Folder Layout
 
