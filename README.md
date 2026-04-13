@@ -301,54 +301,8 @@ No port forwarding, no public exposure. Tailscale creates a secure WireGuard tun
 
 AgentHive uses a self-signed SSL certificate. Your server trusts it after setup, but other devices will show a browser warning until you install the cert.
 
-**Download the cert** from another machine:
-```bash
-scp user@server-ip:~/agenthive/certs/selfsigned.crt ~/agenthive.crt
-```
-
-<details>
-<summary><strong>iPhone / iPad</strong></summary>
-
-1. AirDrop or email `selfsigned.crt` to your device
-2. Open the file — "Profile Downloaded" prompt appears
-3. **Settings > General > VPN & Device Management** > tap the profile > **Install**
-4. **Settings > General > About > Certificate Trust Settings** > toggle full trust for "agenthive"
-</details>
-
-<details>
-<summary><strong>Android</strong></summary>
-
-1. Transfer `selfsigned.crt` to the device
-2. **Settings > Security > Encryption & credentials > Install a certificate > CA certificate**
-3. Select the file and confirm
-</details>
-
-<details>
-<summary><strong>macOS</strong></summary>
-
-```bash
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain agenthive.crt
-```
-</details>
-
-<details>
-<summary><strong>Windows</strong></summary>
-
-```powershell
-certutil -addstore "Root" agenthive.crt
-```
-</details>
-
-<details>
-<summary><strong>Linux (other machines)</strong></summary>
-
-```bash
-sudo cp agenthive.crt /usr/local/share/ca-certificates/agenthive.crt
-sudo update-ca-certificates
-```
-</details>
-
-After installing, restart your browser.
+- **iPhone / iPad** — open the login page and tap **"Install CA certificate"**, then follow the on-screen guide.
+- **Other devices** — copy `certs/selfsigned.crt` to the device (`scp`, AirDrop, etc.) and install it as a trusted CA using your OS certificate manager. Restart the browser after installing.
 
 ## Gestures & Shortcuts
 
