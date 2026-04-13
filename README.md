@@ -164,13 +164,10 @@ Open `https://<machine-ip>:3000` in your browser. Set a password on first visit.
 
 ### First Time on iPhone
 
-1. Open `https://<machine-ip>:3000` in Safari — you'll see a certificate warning because AgentHive runs on your own machine with a self-signed certificate, not one issued by a public authority. This is expected for self-hosted software. Tap **"Advanced"** → **"Visit this website"** → **"Visit Website"**, then **refresh the page** manually.
-2. Tap **"Install CA certificate"** on the login page → follow the guide to install and trust the CA certificate (**Settings → General → VPN & Device Management → Install**, then **Settings → General → About → Certificate Trust Settings → enable trust**). This eliminates the certificate warning and enables voice input and file uploads.
-3. Once the CA certificate is trusted, tap **"Install AgentHive App"** on the same guide page — this installs a Web Clip profile with the correct app icon embedded (Safari's normal Add to Home Screen cannot fetch icons over self-signed HTTPS). Enter your server IP when prompted.
-4. Go to **Settings → General → VPN & Device Management → AgentHive → Install**
-5. The AgentHive icon appears on your Home Screen — tap it and set your password
+1. Open `https://<machine-ip>:3000` in Safari (bypass the certificate warning via **Advanced → Visit Website**, then refresh).
+2. Follow the on-screen guide on the login page to install the CA certificate and the AgentHive app.
 
-> **Important:** Install the CA certificate (step 2) **before** installing the Web Clip (step 3). The Web Clip opens in fullscreen without a browser address bar, so if the certificate isn't trusted first, you'll be stuck on a warning page with no way to refresh.
+> **Important:** Install the CA certificate **before** installing the App. The App opens in fullscreen without a browser address bar — if the certificate isn't trusted first, you'll be stuck on a warning page with no way to navigate.
 
 <details>
 <summary><strong>Manual setup (without setup.sh)</strong></summary>
