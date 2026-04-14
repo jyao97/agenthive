@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import { Copy, Check } from "lucide-react";
+import katex from "katex";
 import { serverNow } from "./serverTime";
 import { uploadUrl, fileUrl, fileUrlToThumbUrl, API_FILES_PREFIX, RE_UPLOADS_PATH, RE_PROJECTS_PATH, PROJECTS_DIR_SEGMENT } from "./urls";
 
@@ -28,6 +29,15 @@ function CodeBlock({ code }) {
       </button>
     </div>
   );
+}
+
+/** Render a LaTeX string to HTML via KaTeX. Returns null on failure. */
+function renderKatex(latex, displayMode) {
+  try {
+    return katex.renderToString(latex, { displayMode, throwOnError: false });
+  } catch {
+    return null;
+  }
 }
 
 /** Shared date format options for toLocaleString / toLocaleTimeString. */
@@ -86,6 +96,36 @@ export function renderMarkdown(text, project) {
       elements.push(
         <CodeBlock key={elements.length} code={codeLines.join("\n")} />
       );
+      continue;
+    }
+
+    // Block math ($$...$$)
+    if (line.trimStart().startsWith("$$")) {
+      const opening = line.trimStart();
+      // Single-line: $$formula$$
+      if (opening.endsWith("$$") && opening.length > 4) {
+        const latex = opening.slice(2, -2).trim();
+        const html = renderKatex(latex, true);
+        if (html) {
+          elements.push(<div key={elements.length} className="my-2 overflow-x-auto bubble-scroll" dangerouslySetInnerHTML={{ __html: html }} />);
+          i++; continue;
+        }
+      }
+      // Multi-line: $$\n...\n$$
+      const mathLines = [];
+      i++;
+      while (i < lines.length && !lines[i].trimStart().startsWith("$$")) {
+        mathLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing $$
+      const latex = mathLines.join("\n").trim();
+      const html = renderKatex(latex, true);
+      if (html) {
+        elements.push(<div key={elements.length} className="my-2 overflow-x-auto bubble-scroll" dangerouslySetInnerHTML={{ __html: html }} />);
+      } else {
+        elements.push(<CodeBlock key={elements.length} code={latex} />);
+      }
       continue;
     }
 
@@ -270,11 +310,24 @@ export function renderInline(text) {
         </code>
       );
     } else {
+      // Split on inline math $...$ before tokenizing bold/italic
+      const mathParts = part.split(/(\$[^$\n]+?\$)/g);
+      for (let mi = 0; mi < mathParts.length; mi++) {
+        const mp = mathParts[mi];
+        // Inline math: require at least one LaTeX marker (\, {, ^, _) to avoid false positives
+        if (mp.startsWith("$") && mp.endsWith("$") && mp.length > 2 && /[\\{}_^]/.test(mp)) {
+          const latex = mp.slice(1, -1);
+          const html = renderKatex(latex, false);
+          if (html) {
+            elements.push(<span key={`${i}-m${mi}`} dangerouslySetInnerHTML={{ __html: html }} />);
+            continue;
+          }
+        }
       // Tokenize bold, italic, and links into safe React elements
-      const tokens = tokenizeBoldItalic(part);
+      const tokens = tokenizeBoldItalic(mp);
       for (let j = 0; j < tokens.length; j++) {
         const token = tokens[j];
-        const key = `${i}-${j}`;
+        const key = `${i}-${mi}-${j}`;
         if (token.type === "link") {
           elements.push(
             <a key={key} href={token.href} target="_blank" rel="noopener noreferrer"
@@ -293,6 +346,7 @@ export function renderInline(text) {
           }
         }
       }
+      } // end mathParts loop
     }
   }
 
