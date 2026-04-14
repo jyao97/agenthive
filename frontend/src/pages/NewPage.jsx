@@ -94,7 +94,7 @@ export default function NewPage({ theme, onToggleTheme }) {
   return (
     <div className="h-full flex flex-col">
       {/* Back header */}
-      <div className="shrink-0 bg-page border-b border-divider px-2 pt-2 pb-2 z-10">
+      <div className="shrink-0 bg-page border-b border-divider px-2 pb-2 z-10 safe-area-pt">
         <button type="button" onClick={goBack} className="flex items-center gap-1 min-h-[44px] min-w-[44px] px-2 text-sm text-label hover:text-heading active:text-heading">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />

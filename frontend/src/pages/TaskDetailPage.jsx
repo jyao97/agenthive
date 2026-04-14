@@ -171,7 +171,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="shrink-0 bg-page border-b border-divider px-4 pt-4 pb-3 z-10">
+      <div className="shrink-0 bg-page border-b border-divider px-4 pt-4 pb-3 z-10 safe-area-pt">
         <div className="flex items-center gap-2 mb-1.5">
           <button type="button" onClick={() => navigate("/tasks")} className="flex items-center gap-1 text-sm text-label hover:text-heading">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

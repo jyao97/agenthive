@@ -406,7 +406,7 @@ export default function SplitScreenPage() {
 
       {/* Panes grid */}
       <div
-        className={`flex-1 grid ${layoutDef.gridClass} gap-1.5 p-1.5 min-h-0`}
+        className={`flex-1 grid ${layoutDef.gridClass} gap-1.5 p-1.5 min-h-0 ${!isWide ? "safe-area-pt" : ""}`}
         style={!isWide ? { paddingBottom: "0.375rem" } : undefined}
       >
         {panes.map((pane, idx) => (

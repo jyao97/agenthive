@@ -3328,7 +3328,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     <div ref={kbContainerRef} className="flex flex-col h-full relative">
 
       {/* Header */}
-      <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} relative z-10`}>
+      <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10`}>
         <div className={`${embedded ? "" : "max-w-2xl"} mx-auto ${compactHeader ? "" : "space-y-1.5"}`}>
           {/* Row 1: Back + name | project + icon buttons */}
           <div className="flex items-center gap-2">

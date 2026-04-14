@@ -1201,7 +1201,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
   return (
     <div className="h-full flex flex-col">
       {/* Fixed Header */}
-      <div className="shrink-0 bg-page border-b border-divider px-4 pt-3 pb-3 relative z-10">
+      <div className="shrink-0 bg-page border-b border-divider px-4 pt-3 pb-3 relative z-10 safe-area-pt">
         <div className="max-w-2xl mx-auto">
           <button
             type="button"
