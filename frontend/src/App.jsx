@@ -253,12 +253,91 @@ function AppRoutes({ themeProps }) {
   );
 }
 
+// Debug overlay: visualizes safe-area boundaries and keyboard position.
+// Toggle on/off via browser console: localStorage.setItem("ah:debug-lines", "1") then reload.
+// Or call window.__toggleDebugLines() at runtime.
+function DebugSafeAreaOverlay() {
+  const [info, setInfo] = useState("");
+  const [kbInfo, setKbInfo] = useState(null);
+  const baseH = useRef(null);
+  useEffect(() => {
+    const update = () => {
+      const probeTop = document.createElement("div");
+      probeTop.style.cssText = "position:fixed;top:env(safe-area-inset-top,0px);left:0;visibility:hidden;pointer-events:none";
+      const probeBot = document.createElement("div");
+      probeBot.style.cssText = "position:fixed;bottom:env(safe-area-inset-bottom,0px);left:0;visibility:hidden;pointer-events:none";
+      document.body.appendChild(probeTop);
+      document.body.appendChild(probeBot);
+      const safeTop = probeTop.getBoundingClientRect().top;
+      const safeBot = window.innerHeight - probeBot.getBoundingClientRect().top;
+      document.body.removeChild(probeTop);
+      document.body.removeChild(probeBot);
+      const vv = window.visualViewport;
+      const vvh = vv?.height ?? window.innerHeight;
+      const vvOffset = vv?.offsetTop ?? 0;
+      if (baseH.current === null) baseH.current = window.innerHeight;
+      const kbH = Math.round(baseH.current - (vvOffset + vvh));
+      const kbTopPos = Math.round(vvOffset + vvh);
+      const standalone = window.navigator.standalone ? "yes" : (window.matchMedia("(display-mode: standalone)").matches ? "yes(mm)" : "no");
+      setInfo(`safe-top:${safeTop} | safe-bot:${safeBot} | vh:${baseH.current} | vvh:${Math.round(vvh)} | ${standalone}`);
+      setKbInfo(kbH > 10 ? { top: kbTopPos, label: `kb:${kbH} vvOff:${Math.round(vvOffset)}` } : null);
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("scroll", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("scroll", update);
+    };
+  }, []);
+  const line = (pos, color, extra) => <div style={{ position:"fixed", ...pos, left:0, right:0, height:"2px", background:color, zIndex:9999, pointerEvents:"none", ...extra }} />;
+  return (
+    <>
+      {/* Top: red = screen edge, blue = safe area */}
+      {line({ top:0 }, "red")}
+      {line({ top:"env(safe-area-inset-top, 0px)" }, "blue")}
+      {/* Bottom: red = screen edge, blue = safe area */}
+      {line({ bottom:0 }, "red")}
+      {line({ bottom:"env(safe-area-inset-bottom, 0px)" }, "blue")}
+      {/* Info label at safe-area top */}
+      <div style={{ position:"fixed", top:"env(safe-area-inset-top, 0px)", left:0, right:0, zIndex:9999, pointerEvents:"none", display:"flex", justifyContent:"center" }}>
+        <span style={{ background:"rgba(0,0,0,0.75)", color:"#0f0", fontSize:"10px", padding:"2px 8px", borderRadius:"0 0 4px 4px", fontFamily:"monospace", whiteSpace:"nowrap" }}>{info}</span>
+      </div>
+      {/* Keyboard top: green line + label */}
+      {kbInfo && (
+        <>
+          <div style={{ position:"fixed", top:kbInfo.top, left:0, right:0, height:"4px", background:"#00ff00", zIndex:9999, pointerEvents:"none", boxShadow:"0 0 6px #00ff00" }} />
+          <div style={{ position:"fixed", top:kbInfo.top - 18, left:0, right:0, zIndex:9999, pointerEvents:"none", display:"flex", justifyContent:"center" }}>
+            <span style={{ background:"rgba(0,0,0,0.75)", color:"#0f0", fontSize:"10px", padding:"2px 8px", borderRadius:"4px", fontFamily:"monospace" }}>{kbInfo.label}</span>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function useDebugLines() {
+  const [on, setOn] = useState(() => localStorage.getItem("ah:debug-lines") === "1");
+  useEffect(() => {
+    window.__toggleDebugLines = () => {
+      const next = localStorage.getItem("ah:debug-lines") !== "1";
+      localStorage.setItem("ah:debug-lines", next ? "1" : "0");
+      setOn(next);
+    };
+    return () => { delete window.__toggleDebugLines; };
+  }, []);
+  return on;
+}
+
 export default function App() {
   const { theme, toggle } = useTheme();
   const themeProps = { theme, onToggleTheme: toggle };
   const location = useLocation();
   const navigate = useNavigate();
   const hideNav = location.pathname.match(/^\/agents\/[^/]+$/) || location.pathname.match(/^\/tasks\/[^/]+$/) || location.pathname === "/login" || location.pathname === "/split";
+  const showDebug = useDebugLines();
   const [unread, setUnread] = useState(0);
   const [claudeMdPending, setClaudeMdPending] = useState(0);
   const visible = usePageVisible();
@@ -371,6 +450,7 @@ export default function App() {
     <ErrorBoundary>
     <ToastProvider>
     <div className="flex flex-col h-screen bg-page text-heading min-w-[320px] overflow-x-hidden">
+      {showDebug && <DebugSafeAreaOverlay />}
       {/* Main content area */}
       <main className="flex-1 min-h-0 overflow-hidden">
         <Routes>
