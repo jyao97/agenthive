@@ -49,7 +49,18 @@ def _resolve_project_file(project: str, path: str, db) -> str:
 
     full_path = os.path.realpath(os.path.join(base_dir, clean))
     if not full_path.startswith(base_dir + os.sep):
-        raise HTTPException(status_code=400, detail="Invalid path")
+        # Path may be an absolute path with leading / stripped by the URL router.
+        # Reconstruct it and check if it falls inside any registered project dir.
+        abs_candidate = os.path.realpath("/" + clean)
+        resolved_abs = False
+        for p in db.query(Project).all():
+            p_base = os.path.realpath(p.path)
+            if abs_candidate.startswith(p_base + os.sep) and os.path.isfile(abs_candidate):
+                full_path = abs_candidate
+                resolved_abs = True
+                break
+        if not resolved_abs:
+            raise HTTPException(status_code=400, detail="Invalid path")
 
     # Fallback: try the original path as-is if normalised version doesn't exist
     if not os.path.isfile(full_path):
