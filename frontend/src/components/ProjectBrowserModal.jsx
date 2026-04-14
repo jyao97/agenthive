@@ -223,7 +223,7 @@ export default function ProjectBrowserModal({ project, agentId, onClose }) {
     } finally {
       setLoading(false);
     }
-  }, [project]);
+  }, [project, cachePrefix]);
 
   useEffect(() => { load(); }, [load]);
 
