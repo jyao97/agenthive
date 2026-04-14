@@ -499,7 +499,7 @@ export default function PageHeader({ title, theme, onToggleTheme, actions, selec
   const ringColor = wTotal === 0 ? "#9ca3af" : wPct >= 80 ? "#22c55e" : wPct >= 50 ? "#eab308" : "#f87171";
 
   return (
-    <div className="shrink-0 bg-page border-b border-divider z-10">
+    <div className="sticky top-0 bg-page border-b border-divider z-20">
       <div className="flex items-center gap-3 px-4 pb-2" style={{ paddingTop: "max(1rem, env(safe-area-inset-top, 1rem))" }}>
         <h1 className="text-xl font-bold text-heading flex-1 shrink-0">{title}</h1>
         {showTaskRing && taskStats && (

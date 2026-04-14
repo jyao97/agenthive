@@ -170,8 +170,9 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
 
   return (
     <div className="h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       {/* Header */}
-      <div className="shrink-0 bg-page border-b border-divider px-4 pt-4 pb-3 z-10 safe-area-pt">
+      <div className="sticky top-0 bg-page border-b border-divider px-4 pt-4 pb-3 z-20 safe-area-pt">
         <div className="flex items-center gap-2 mb-1.5">
           <button type="button" onClick={() => navigate("/tasks")} className="flex items-center gap-1 text-sm text-label hover:text-heading">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -228,7 +229,6 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="max-w-2xl mx-auto w-full pb-24 p-4 space-y-3">
           {error && !task && (
             <div className="bg-red-950/40 border border-red-800 rounded-xl p-3">

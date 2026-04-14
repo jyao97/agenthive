@@ -416,6 +416,18 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
 
   return (
     <div className="h-full flex flex-col">
+      {/* Scan result toast */}
+      {scanResult && (
+        <div className="fixed left-1/2 -translate-x-1/2 z-50 pointer-events-none safe-area-toast toast-pill toast-enter" style={{ maxWidth: 300, padding: '10px 14px', borderRadius: 14, background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', boxShadow: '0 2px 16px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06)', fontSize: 13, fontWeight: 500, color: '#1c1c1e' }}>
+          {scanResult.added.length > 0
+            ? `Added ${scanResult.added.length} project${scanResult.added.length !== 1 ? "s" : ""}: ${scanResult.added.join(", ")}`
+            : `Scanned ${scanResult.scanned} folders — no new projects`}
+          {scanResult.skipped_archived?.length > 0 &&
+            ` (${scanResult.skipped_archived.length} archived skipped)`}
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <PageHeader title="Projects" theme={theme} onToggleTheme={onToggleTheme} showTaskRing hideMonitor actions={headerButtons}>
         <div className="flex items-center px-4 pb-3 gap-1.5">
           <div className="flex gap-1.5 overflow-x-auto no-scrollbar min-w-0">
@@ -446,18 +458,6 @@ export default function ProjectsPage({ theme, onToggleTheme }) {
           <div className="ml-auto max-w-[7rem]">{sortDropdown}</div>
         </div>
       </PageHeader>
-      {/* Scan result toast */}
-      {scanResult && (
-        <div className="fixed left-1/2 -translate-x-1/2 z-50 pointer-events-none safe-area-toast toast-pill toast-enter" style={{ maxWidth: 300, padding: '10px 14px', borderRadius: 14, background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', boxShadow: '0 2px 16px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06)', fontSize: 13, fontWeight: 500, color: '#1c1c1e' }}>
-          {scanResult.added.length > 0
-            ? `Added ${scanResult.added.length} project${scanResult.added.length !== 1 ? "s" : ""}: ${scanResult.added.join(", ")}`
-            : `Scanned ${scanResult.scanned} folders — no new projects`}
-          {scanResult.skipped_archived?.length > 0 &&
-            ` (${scanResult.skipped_archived.length} archived skipped)`}
-        </div>
-      )}
-
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-24 p-4 max-w-2xl mx-auto w-full">
 
       {loading && folders.length === 0 && (

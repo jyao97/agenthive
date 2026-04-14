@@ -452,6 +452,7 @@ export default function AgentsPage({ theme, onToggleTheme }) {
 
   return (
     <div className="h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <PageHeader
         title="Agents"
         theme={theme}
@@ -524,8 +525,6 @@ export default function AgentsPage({ theme, onToggleTheme }) {
           </div>
         )}
       </PageHeader>
-
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="max-w-2xl mx-auto w-full">
       {/* Search bar */}
       <div className="px-4 pt-3 pb-1">

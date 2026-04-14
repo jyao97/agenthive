@@ -255,6 +255,14 @@ export default function TasksPage({ theme, onToggleTheme }) {
 
   return (
     <div className="h-full flex flex-col">
+      <div
+        ref={inboxScrollRef}
+        className="flex-1 overflow-y-auto overflow-x-hidden"
+        onScroll={handleInboxScroll}
+        onClick={(e) => {
+          if (expandedTaskId && !e.target.closest("[data-card]")) setExpandedTaskId(null);
+        }}
+      >
       <PageHeader
         title="Inbox"
         theme={theme}
@@ -312,15 +320,6 @@ export default function TasksPage({ theme, onToggleTheme }) {
           </div>
         )}
       </PageHeader>
-
-      <div
-        ref={inboxScrollRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden"
-        onScroll={handleInboxScroll}
-        onClick={(e) => {
-          if (expandedTaskId && !e.target.closest("[data-card]")) setExpandedTaskId(null);
-        }}
-      >
         <div className="max-w-2xl mx-auto w-full">
           <CardSwipeContext.Provider value={null}>
             <div className="pb-24 px-4 py-3">

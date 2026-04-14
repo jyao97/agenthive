@@ -1200,8 +1200,9 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
 
   return (
     <div className="h-full flex flex-col">
-      {/* Fixed Header */}
-      <div className="shrink-0 bg-page border-b border-divider px-4 pt-3 pb-3 relative z-10 safe-area-pt">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      {/* Sticky Header */}
+      <div className="sticky top-0 bg-page border-b border-divider px-4 pt-3 pb-3 relative z-20 safe-area-pt">
         <div className="max-w-2xl mx-auto">
           <button
             type="button"
@@ -1336,7 +1337,6 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-24 p-4 max-w-2xl mx-auto w-full space-y-5">
 
       {/* Inactive project banner */}

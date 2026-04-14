@@ -391,6 +391,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
 
   return (
     <div className="h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <PageHeader title="Monitor" theme={theme} onToggleTheme={onToggleTheme}>
         <div className="px-4 pb-2 flex items-center justify-between">
           <span className="text-xs text-faint">Auto-refreshing every 5s</span>
@@ -406,8 +407,6 @@ export default function MonitorPage({ theme, onToggleTheme }) {
           </button>
         </div>
       </PageHeader>
-
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-24 p-4 space-y-5 max-w-2xl mx-auto w-full">
         {/* System Health */}
         <section>

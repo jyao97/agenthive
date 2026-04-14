@@ -403,6 +403,7 @@ export default function GitPage({ theme, onToggleTheme }) {
   // --- Render ---
   return (
     <div className="h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <PageHeader title="Git" theme={theme} onToggleTheme={onToggleTheme} hideMonitor>
         {loadingProjects ? (
           <div className="flex gap-1.5 px-4 pb-3 animate-pulse">
@@ -418,7 +419,6 @@ export default function GitPage({ theme, onToggleTheme }) {
           />
         ) : null}
       </PageHeader>
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="max-w-2xl mx-auto w-full">
       <div className="pb-24 p-4 space-y-4">
 

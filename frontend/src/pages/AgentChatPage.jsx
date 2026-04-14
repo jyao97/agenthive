@@ -3327,8 +3327,15 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   return (
     <div ref={kbContainerRef} className="flex flex-col h-full relative">
 
+      <div
+        ref={scrollContainerRef}
+        data-chat-container
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col"
+        style={{ overflowAnchor: "auto", overscrollBehavior: "contain" }}
+      >
       {/* Header */}
-      <div className={`shrink-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt relative z-10`}>
+      <div className={`sticky top-0 bg-surface border-b border-divider px-4 ${compactHeader ? "py-1.5" : "py-2"} safe-area-pt z-20`}>
         <div className={`${embedded ? "" : "max-w-2xl"} mx-auto ${compactHeader ? "" : "space-y-1.5"}`}>
           {/* Row 1: Back + name | project + icon buttons */}
           <div className="flex items-center gap-2">
@@ -3575,7 +3582,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       </div>
 
       {/* Agent ID + session size + parent link */}
-      {!compactHeader && <div className="shrink-0 bg-surface border-b border-divider px-4 py-1">
+      {!compactHeader && <div className="bg-surface border-b border-divider px-4 py-1">
         <div className={`${embedded ? "" : "max-w-2xl"} mx-auto flex items-center gap-2 pl-2.5`}>
           {agent.parent_id && (
             <button
@@ -3626,13 +3633,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       </div>}
 
       {/* Messages */}
-      <div
-        ref={scrollContainerRef}
-        data-chat-container
-        onScroll={handleScroll}
-        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 ${kbOpen ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}
-        style={{ overflowAnchor: "auto", overscrollBehavior: "contain" }}
-      >
+      <div className={`flex-1 px-4 py-3 ${kbOpen ? "" : "pb-36"} ${embedded ? "" : "max-w-2xl"} mx-auto w-full flex flex-col`}>
         <div className="mt-auto" />
         {messages.length === 0 && agent.status === "STARTING" ? (
           <InitializingIndicator />
@@ -3865,6 +3866,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         )}
 
         <div ref={messagesEndRef} />
+      </div>
       </div>
 
       {/* Sync stale banner */}
