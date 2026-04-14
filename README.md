@@ -5,7 +5,7 @@
 [![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
 
-> [**Getting Started**](#getting-started) · [**The Loop**](#the-loop) · [**Features**](#features) · [**Roadmap**](#roadmap) · [**Contributing**](CONTRIBUTING.md) · [**Host Setup**](#host-setup) · [**Client Setup**](#client-setup)
+> [**Getting Started**](#getting-started) · [**The Loop**](#the-loop) · [**Features**](#features) · [**Known Issues**](#known-issues) · [**Roadmap**](#roadmap) · [**Contributing**](CONTRIBUTING.md) · [**Host Setup**](#host-setup) · [**Client Setup**](#client-setup)
 
 <p align="center">
   <img src="docs/hero.png" alt="AgentHive — Orchestrate AI Agents from Anywhere" width="820">
@@ -203,6 +203,11 @@ For Android, macOS, Windows, and Linux — see [detailed instructions](docs/inst
 - **Conversation appears stuck or not updating?** — Try clicking the **refresh button** at the top of the chat view. This manually re-syncs the agent's session data from the CLI and often resolves display issues without restarting the agent.
 - **Agent shows IDLE after server restart but is still running?** — When the backend restarts while agents are executing, their status may temporarily show as IDLE even though the underlying Claude CLI process is still active. This is normal — the status will automatically restore to EXECUTING the next time the agent makes a tool call (which triggers a heartbeat via the `agent-tool-activity` hook). If the agent is in a long thinking phase with no tool calls, you can wait or send it a message to trigger activity.
 - **Don't name tmux sessions with the `ah-` prefix** — AgentHive uses `ah-{id}` as its internal naming convention for managed agent sessions. User-created tmux sessions starting with `ah-` will not be detected or synced by the orchestrator.
+
+## Known Issues
+
+- **iPad layout** — Apple returns `safe-area-inset-top: 0` on iPad (no notch), so the status bar overlaps content in PWA standalone mode. Functional but visually misaligned.
+- **Mobile browser (non-PWA)** — layout is optimized for PWA (Add to Home Screen) mode. Running in a regular mobile browser may have minor visual differences due to the address bar and different viewport behavior.
 
 ## Roadmap
 
