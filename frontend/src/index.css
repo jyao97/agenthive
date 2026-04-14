@@ -139,6 +139,10 @@ body::after {
   height: 1px;
 }
 @media all and (display-mode: standalone), all and (display-mode: fullscreen) {
+  html, body {
+    overflow: hidden;
+    height: 100%;
+  }
   body::after { display: none; }
 }
 
