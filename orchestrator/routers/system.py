@@ -10,7 +10,7 @@ import base64
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -912,3 +912,55 @@ async def sync_status(request: Request):
         "idle_agents": len(agents),
         "agents": agents,
     }
+
+
+@router.get("/api/debug/clear-cache", response_class=HTMLResponse)
+async def clear_client_cache():
+    """Serve a page that clears browser-side caches and redirects back.
+
+    Auth-exempt so it works even when the PWA is stuck on stale code.
+    Clears: filebrowser localStorage, SW caches, then reloads.
+    """
+    return HTMLResponse("""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Clearing cache…</title>
+<style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;
+height:100vh;margin:0;background:#111;color:#eee}
+.box{text-align:center;padding:2rem}
+</style></head><body><div class="box"><p id="status">Clearing caches…</p></div>
+<script>
+(async function() {
+  const el = document.getElementById('status');
+  const log = (m) => { el.textContent = m; console.log(m); };
+  try {
+    // 1. Clear filebrowser localStorage entries
+    const toRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('filebrowser:')) toRemove.push(k);
+    }
+    toRemove.forEach(k => localStorage.removeItem(k));
+    log('Cleared ' + toRemove.length + ' filebrowser entries');
+
+    // 2. Unregister all service workers
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) await r.unregister();
+      log('Unregistered ' + regs.length + ' service workers');
+    }
+
+    // 3. Clear Cache API
+    if ('caches' in window) {
+      const names = await caches.keys();
+      for (const n of names) await caches.delete(n);
+      log('Deleted ' + names.length + ' cache stores');
+    }
+
+    log('Done! Redirecting…');
+    setTimeout(() => { window.location.href = '/'; }, 800);
+  } catch(e) {
+    log('Error: ' + e.message);
+  }
+})();
+</script></body></html>""")
+
