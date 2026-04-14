@@ -402,6 +402,7 @@ def scaffold_project(project_name: str, project_path: str,
 - Keep responses concise — no long explanations unless asked
 - For large outputs (logs, data), write to a file instead of printing to stdout
 - Truncate error logs to the relevant section, don't paste entire stack traces
+- When generating or referencing media files (images, videos, plots), save them inside the project directory so the web UI can display them. Files in /tmp/ or other external paths cannot be previewed.
 
 ## Git Conventions
 - Commit message format: `[scope] brief description` (e.g. `[frontend] fix image zoom gesture`)
