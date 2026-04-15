@@ -313,9 +313,9 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
               );
             })()}
 
-            {/* ── Notes section ── */}
+            {/* ── Quick Note — personal memo, not sent to model ── */}
             <div className="px-5 pt-4">
-              <p className="text-[11px] font-medium text-dim uppercase tracking-wider mb-2">Notes</p>
+              <p className="text-[11px] font-medium text-dim uppercase tracking-wider mb-2">Quick Note</p>
               {editingNote ? (
                 <textarea
                   autoFocus
@@ -325,7 +325,7 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
                   onKeyDown={(e) => { if (e.key === "Escape") { setNoteDraft(task.note || ""); setEditingNote(false); } }}
                   rows={3}
                   className="w-full text-sm text-body bg-transparent px-0 py-0 resize-none focus:outline-none border-0 placeholder-hint"
-                  placeholder="Add a note..."
+                  placeholder="Jot something down..."
                 />
               ) : (
                 <div
@@ -335,7 +335,7 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
                   {task.note ? (
                     <div className="text-sm text-body leading-relaxed prose-sm">{renderMarkdown(task.note, task.project_name)}</div>
                   ) : (
-                    <p className="text-sm text-hint">Add a note</p>
+                    <p className="text-sm text-hint">Jot something down...</p>
                   )}
                 </div>
               )}
