@@ -1866,7 +1866,10 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       return;
     }
     const uploaded = attachments.filter((a) => a.uploadedPath);
-    if (!text.trim() && uploaded.length === 0) return;
+    if (!text.trim() && uploaded.length === 0) {
+      pendingSendRef.current = null;
+      return;
+    }
     if (disabled && !isBusy) return;
     const msg = buildMessageText(text.trim(), uploaded);
     onSend(msg);
@@ -1882,7 +1885,10 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       return;
     }
     const uploaded = attachments.filter((a) => a.uploadedPath);
-    if (!text.trim() && uploaded.length === 0) return;
+    if (!text.trim() && uploaded.length === 0) {
+      pendingSendRef.current = null;
+      return;
+    }
     const msg = buildMessageText(text.trim(), uploaded);
     onSendLater(msg, scheduledAt);
     setText("");
