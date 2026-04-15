@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchTaskV2, updateTaskV2 } from "../lib/api";
 import { renderMarkdown, relativeTime } from "../lib/formatters";
+import { modelDisplayName } from "../lib/constants";
 import useDraft from "../hooks/useDraft";
 
 const STATUS_DOT = {
@@ -28,16 +29,6 @@ const STATUS_LABEL = {
   planning: "Planning",
   rejected: "Rejected",
 };
-
-/* Metadata row — label on left, value on right, bottom divider */
-function MetaRow({ label, children, last }) {
-  return (
-    <div className={`flex items-center justify-between py-2.5 ${last ? "" : "border-b border-divider"}`}>
-      <span className="text-xs text-dim shrink-0">{label}</span>
-      <span className="text-xs text-heading text-right truncate ml-4">{children}</span>
-    </div>
-  );
-}
 
 export default function FloatingTaskCard({ taskId, onClose, onAction }) {
   const navigate = useNavigate();
@@ -149,40 +140,51 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
           <div className="px-5 pb-5 text-center text-dim text-sm">Loading...</div>
         ) : task ? (
           <>
-            {/* ── Metadata rows ── */}
-            <div className="px-5">
-              {/* Status */}
-              <MetaRow label="Status">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${STATUS_DOT[statusKey] || "bg-gray-400"} ${statusKey === "executing" ? "animate-pulse" : ""}`} />
-                  <span>{STATUS_LABEL[statusKey] || task.status}</span>
-                </span>
-              </MetaRow>
-
+            {/* ── Tags (matches InboxCard style) ── */}
+            <div className="px-5 flex flex-wrap items-center gap-1.5">
+              {/* Status dot + label */}
+              <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-elevated text-dim inline-flex items-center gap-1">
+                <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[statusKey] || "bg-gray-400"} ${statusKey === "executing" ? "animate-pulse" : ""}`} />
+                {STATUS_LABEL[statusKey] || task.status}
+              </span>
               {/* Project */}
               {task.project_name && (
-                <MetaRow label="Project">
+                <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-cyan-500/15 text-cyan-600 dark:text-cyan-400">
                   {task.project_name}
-                </MetaRow>
+                </span>
               )}
-
-              {/* Created */}
-              <MetaRow label="Created" last={!task.model && !task.effort}>
-                {relativeTime(task.created_at)}
-              </MetaRow>
-
-              {/* Model — if set */}
+              {/* Worktree */}
+              {task.use_worktree !== false && (
+                <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-purple-500/15 text-purple-500 dark:text-purple-400 inline-flex items-center gap-0.5">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
+                  </svg>
+                  {task.worktree_name || "Worktree"}
+                </span>
+              )}
+              {/* Auto */}
+              {task.skip_permissions && (
+                <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 dark:text-amber-400">
+                  Auto
+                </span>
+              )}
+              {/* Model */}
               {task.model && (
-                <MetaRow label="Model" last={!task.effort}>
-                  {task.model.replace("claude-", "").replace(/-\d+$/, "")}
-                </MetaRow>
+                <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-elevated text-dim">
+                  {modelDisplayName(task.model)}
+                </span>
               )}
-
-              {/* Effort — if set */}
+              {/* Effort */}
               {task.effort && (
-                <MetaRow label="Effort" last>
-                  <span className="capitalize">{task.effort}</span>
-                </MetaRow>
+                <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-elevated text-dim">
+                  {task.effort.charAt(0).toUpperCase() + task.effort.slice(1)}
+                </span>
+              )}
+              {/* Retry */}
+              {task.attempt_number > 1 && (
+                <span className="text-[10px] font-semibold px-1.5 py-px rounded-full bg-orange-500/15 text-orange-500 dark:text-orange-400">
+                  Retry #{task.attempt_number}
+                </span>
               )}
             </div>
 
