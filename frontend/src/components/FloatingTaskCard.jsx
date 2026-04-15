@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchTaskV2, updateTaskV2 } from "../lib/api";
 import { renderMarkdown, relativeTime } from "../lib/formatters";
 import { modelDisplayName } from "../lib/constants";
+import { uploadUrl } from "../lib/urls";
+import ImageLightbox from "./ImageLightbox";
 import useDraft from "../hooks/useDraft";
 
 const STATUS_DOT = {
@@ -30,6 +32,19 @@ const STATUS_LABEL = {
   rejected: "Rejected",
 };
 
+const ATTACH_RE = /\[Attached file: ([^\]]+)\]/g;
+function parseDesc(desc) {
+  if (!desc) return { text: "", files: [] };
+  const files = [];
+  let m;
+  while ((m = ATTACH_RE.exec(desc)) !== null) files.push(m[1]);
+  ATTACH_RE.lastIndex = 0;
+  const text = desc.replace(ATTACH_RE, "").replace(/\n{2,}/g, "\n").trim();
+  return { text, files };
+}
+function fileName(p) { return p.split("/").pop() || p; }
+function isImagePath(p) { return /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(p); }
+
 export default function FloatingTaskCard({ taskId, onClose, onAction }) {
   const navigate = useNavigate();
   const [task, setTask] = useState(null);
@@ -38,10 +53,12 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
   const [editingDesc, setEditingDesc] = useState(false);
   const [selectedPill, setSelectedPill] = useState(null);
   const [editingNote, setEditingNote] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(null);
   const [titleDraft, setTitleDraft, clearTitleDraft] = useDraft(taskId ? `task-edit:${taskId}:title` : null);
   const [descDraft, setDescDraft, clearDescDraft] = useDraft(taskId ? `task-edit:${taskId}:desc` : null);
   const [noteDraft, setNoteDraft, clearNoteDraft] = useDraft(taskId ? `task-edit:${taskId}:note` : null);
   const cardRef = useRef(null);
+  const parsed = useMemo(() => parseDesc(task?.description), [task?.description]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -206,11 +223,37 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
                   onClick={() => { if (canEdit) setEditingDesc(true); }}
                   className={canEdit ? "cursor-pointer" : ""}
                 >
-                  {task.description ? (
-                    <p className="text-sm text-body leading-relaxed whitespace-pre-wrap">{task.description}</p>
-                  ) : (
+                  {parsed.text ? (
+                    <p className="text-sm text-body leading-relaxed whitespace-pre-wrap">{parsed.text}</p>
+                  ) : !parsed.files.length ? (
                     <p className="text-sm text-hint">Add description</p>
-                  )}
+                  ) : null}
+                </div>
+              )}
+              {/* Attachment thumbnails */}
+              {!editingDesc && parsed.files.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {parsed.files.map((f, i) => {
+                    const name = fileName(f);
+                    const isImg = isImagePath(f);
+                    const src = uploadUrl(name);
+                    return (
+                      <div
+                        key={f}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[180px] cursor-pointer hover:bg-hover transition-colors"
+                        onClick={(e) => { e.stopPropagation(); if (isImg) setLightboxIndex(i); }}
+                      >
+                        {isImg ? (
+                          <img src={src} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
+                        ) : (
+                          <svg className="w-4 h-4 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                          </svg>
+                        )}
+                        <span className="truncate flex-1 min-w-0 text-dim">{name}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -320,6 +363,25 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
 
             {/* Bottom spacing */}
             <div className="h-5" />
+
+            {/* Image lightbox */}
+            {lightboxIndex != null && (() => {
+              const imageFiles = parsed.files.filter(isImagePath);
+              const media = imageFiles.map((f) => ({
+                type: "image",
+                src: uploadUrl(fileName(f)),
+                filename: fileName(f),
+              }));
+              // Map clicked index in parsed.files to index in imageFiles
+              const imgIdx = imageFiles.indexOf(parsed.files[lightboxIndex]);
+              return media.length > 0 ? (
+                <ImageLightbox
+                  media={media}
+                  initialIndex={imgIdx >= 0 ? imgIdx : 0}
+                  onClose={() => setLightboxIndex(null)}
+                />
+              ) : null;
+            })()}
           </>
         ) : (
           <div className="px-5 pb-5 text-center text-dim text-sm">Task not found</div>
