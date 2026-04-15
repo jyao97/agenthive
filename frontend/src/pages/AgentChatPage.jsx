@@ -1386,7 +1386,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
           ) : (
             <div className="text-sm break-words chat-bubble-content" ref={markdownRef} onClick={handleMarkdownClick}>
               <SafeMarkdown fallback={displayContent}>
-                {renderMarkdown(displayContent, project, { role: "AGENT" })}
+                {renderMarkdown(displayContent, project)}
               </SafeMarkdown>
             </div>
           )}

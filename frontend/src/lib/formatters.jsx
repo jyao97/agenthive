@@ -72,7 +72,7 @@ export function relativeTime(dateStr) {
  * Handles ## headers, fenced code blocks, tables, inline code, bold,
  * italic, and image paths that look like local file references.
  */
-export function renderMarkdown(text, project, { role } = {}) {
+export function renderMarkdown(text, project) {
   if (typeof text !== "string" || !text) return null;
   project = project || "";
   try {
@@ -158,30 +158,8 @@ export function renderMarkdown(text, project, { role } = {}) {
       continue;
     }
 
-    // Image reference
-    const imgMatch = line.trim().match(/^!\[.*?\]\((.+?)\)$/);
-    const plainImgMatch =
-      !imgMatch && line.trim().match(/^(\S+\.(png|jpg|jpeg|gif|svg|webp))$/i);
-    if (imgMatch || plainImgMatch) {
-      // AGENT images: skip inline, shown uniformly via FileAttachments below.
-      // Non-agent (USER etc.): render inline since FileAttachments won't pick them up.
-      if (role === "AGENT") {
-        i++;
-        continue;
-      }
-      const src = imgMatch ? imgMatch[1] : plainImgMatch[1];
-      const resolvedSrc = resolveFileUrl(src, project);
-      elements.push(
-        <img
-          key={elements.length}
-          src={resolvedSrc}
-          alt=""
-          className="my-2 max-w-full rounded-lg border border-divider cursor-pointer"
-        />
-      );
-      i++;
-      continue;
-    }
+    // Image lines — no inline <img>; fall through to paragraph rendering.
+    // Images are displayed uniformly via FileAttachments below the bubble.
 
     // Markdown table
     if (line.trim().startsWith("|") && line.trim().endsWith("|")) {
