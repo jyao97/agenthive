@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchTaskV2, updateTaskV2 } from "../lib/api";
+import { renderMarkdown } from "../lib/formatters";
 import useDraft from "../hooks/useDraft";
 
 const STATUS_COLORS = {
@@ -222,30 +223,29 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
             })()}
 
             {/* Note */}
-            <div className="rounded-lg bg-inset border border-edge p-3 space-y-1.5">
-              <span className="text-[11px] font-semibold text-dim">Note</span>
-              {editingNote ? (
-                <textarea
-                  autoFocus
-                  value={noteDraft}
-                  onChange={(e) => setNoteDraft(e.target.value)}
-                  onBlur={saveNote}
-                  onKeyDown={(e) => { if (e.key === "Escape") { setNoteDraft(task.note || ""); setEditingNote(false); } }}
-                  rows={3}
-                  className="w-full text-sm text-body bg-input rounded-lg px-2 py-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
-                  placeholder="Write a note..."
-                />
-              ) : (
-                <p
-                  onClick={() => { setNoteDraft(task.note || ""); setEditingNote(true); }}
-                  className={`text-sm whitespace-pre-wrap cursor-pointer rounded-lg transition-colors ${
-                    task.note ? "text-body" : "text-dim/50 italic"
-                  }`}
-                >
-                  {task.note || "Add note..."}
-                </p>
-              )}
-            </div>
+            {editingNote ? (
+              <textarea
+                autoFocus
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                onBlur={saveNote}
+                onKeyDown={(e) => { if (e.key === "Escape") { setNoteDraft(task.note || ""); setEditingNote(false); } }}
+                rows={3}
+                className="w-full text-sm text-body bg-transparent px-0 py-0 resize-none focus:outline-none border-0 placeholder-hint/40"
+                placeholder="Notes"
+              />
+            ) : (
+              <div
+                onClick={() => { setNoteDraft(task.note || ""); setEditingNote(true); }}
+                className="cursor-pointer"
+              >
+                {task.note ? (
+                  <div className="text-sm text-body prose-sm">{renderMarkdown(task.note, task.project_name)}</div>
+                ) : (
+                  <p className="text-sm text-hint/40 italic">Notes</p>
+                )}
+              </div>
+            )}
 
             {/* Actions */}
             {task.status === "executing" && onAction && (
