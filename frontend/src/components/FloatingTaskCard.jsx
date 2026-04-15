@@ -1,18 +1,43 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchTaskV2, updateTaskV2 } from "../lib/api";
-import { renderMarkdown } from "../lib/formatters";
+import { renderMarkdown, relativeTime } from "../lib/formatters";
 import useDraft from "../hooks/useDraft";
 
-const STATUS_COLORS = {
-  inbox: "bg-slate-500",
+const STATUS_DOT = {
+  inbox: "bg-slate-400",
   pending: "bg-blue-500",
   executing: "bg-amber-500",
   complete: "bg-green-500",
   failed: "bg-red-500",
-  cancelled: "bg-gray-500",
+  cancelled: "bg-gray-400",
   timeout: "bg-orange-500",
 };
+
+const STATUS_LABEL = {
+  inbox: "Inbox",
+  pending: "Pending",
+  executing: "In Progress",
+  complete: "Complete",
+  failed: "Failed",
+  cancelled: "Dropped",
+  timeout: "Timeout",
+  review: "Review",
+  merging: "Merging",
+  conflict: "Conflict",
+  planning: "Planning",
+  rejected: "Rejected",
+};
+
+/* Metadata row — label on left, value on right, bottom divider */
+function MetaRow({ label, children, last }) {
+  return (
+    <div className={`flex items-center justify-between py-2.5 ${last ? "" : "border-b border-divider"}`}>
+      <span className="text-xs text-dim shrink-0">{label}</span>
+      <span className="text-xs text-heading text-right truncate ml-4">{children}</span>
+    </div>
+  );
+}
 
 export default function FloatingTaskCard({ taskId, onClose, onAction }) {
   const navigate = useNavigate();
@@ -33,9 +58,7 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
     fetchTaskV2(taskId)
       .then((t) => {
         setTask(t);
-        // Default selected pill to last attempt
         if (t.attempt_agents?.length) setSelectedPill(t.attempt_agents.length - 1);
-        // Only initialize from server if no draft exists (preserve crash recovery drafts)
         if (localStorage.getItem(`draft:task-edit:${taskId}:title`) === null) setTitleDraft(t.title || "");
         if (localStorage.getItem(`draft:task-edit:${taskId}:desc`) === null) setDescDraft(t.description || "");
         if (localStorage.getItem(`draft:task-edit:${taskId}:note`) === null) setNoteDraft(t.note || "");
@@ -44,7 +67,6 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
       .finally(() => setLoading(false));
   }, [taskId]);
 
-  // Close on click outside
   useEffect(() => {
     const handler = (e) => {
       if (cardRef.current && !cardRef.current.contains(e.target)) onClose();
@@ -85,190 +107,220 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
 
   if (!taskId) return null;
 
+  const canEdit = task?.status === "inbox";
+  const statusKey = task?.status?.toLowerCase();
+
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
-      <div ref={cardRef} className="bg-surface rounded-2xl shadow-card max-w-md w-full max-h-[80vh] overflow-y-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 pb-2">
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            {task && (
-              <span className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold text-white uppercase ${STATUS_COLORS[task.status] || "bg-gray-500"}`}>
-                {task.status}
-              </span>
-            )}
-            {task?.attempt_agents?.length > 1 && (
-              <span className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-400">
-                {task.attempt_agents.length} trials
-              </span>
-            )}
+      <div ref={cardRef} className="bg-surface rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4)] border border-divider max-w-md w-full max-h-[80vh] overflow-y-auto">
+
+        {/* ── Header: close + title ── */}
+        <div className="px-5 pt-5 pb-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              {editingTitle ? (
+                <input
+                  autoFocus
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onBlur={saveTitle}
+                  onKeyDown={(e) => { if (e.key === "Enter") saveTitle(); if (e.key === "Escape") { setTitleDraft(task?.title || ""); setEditingTitle(false); } }}
+                  className="w-full text-lg font-semibold text-heading bg-transparent px-0 py-0 border-0 border-b border-cyan-500 focus:outline-none"
+                />
+              ) : (
+                <h3
+                  onClick={() => { if (canEdit) setEditingTitle(true); }}
+                  className={`text-lg font-semibold text-heading leading-snug ${canEdit ? "cursor-pointer hover:text-cyan-400" : ""}`}
+                >
+                  {task?.title || "Untitled"}
+                </h3>
+              )}
+            </div>
+            <button type="button" onClick={onClose}
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-faint hover:text-body hover:bg-input transition-colors -mt-0.5">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
-          <button type="button" onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded-lg text-dim hover:text-body hover:bg-input transition-colors">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
         </div>
 
         {loading ? (
-          <div className="p-4 text-center text-dim text-sm">Loading...</div>
+          <div className="px-5 pb-5 text-center text-dim text-sm">Loading...</div>
         ) : task ? (
-          <div className="px-4 pb-4 space-y-3">
-            {/* Title */}
-            {editingTitle ? (
-              <input
-                autoFocus
-                value={titleDraft}
-                onChange={(e) => setTitleDraft(e.target.value)}
-                onBlur={saveTitle}
-                onKeyDown={(e) => { if (e.key === "Enter") saveTitle(); if (e.key === "Escape") { setTitleDraft(task.title || ""); setEditingTitle(false); } }}
-                className="w-full text-base font-semibold text-heading bg-input rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-              />
-            ) : (
-              <h3
-                onClick={() => { if (task.status === "inbox") setEditingTitle(true); }}
-                className={`text-base font-semibold text-heading ${task.status === "inbox" ? "cursor-pointer hover:text-amber-400" : ""}`}
-                title={task.status === "inbox" ? "Click to edit" : undefined}
-              >
-                {task.title || "Untitled"}
-              </h3>
-            )}
+          <>
+            {/* ── Metadata rows ── */}
+            <div className="px-5">
+              {/* Status */}
+              <MetaRow label="Status">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full ${STATUS_DOT[statusKey] || "bg-gray-400"} ${statusKey === "executing" ? "animate-pulse" : ""}`} />
+                  <span>{STATUS_LABEL[statusKey] || task.status}</span>
+                </span>
+              </MetaRow>
 
-            {/* Project */}
-            {task.project_name && (
-              <p className="text-xs text-dim">{task.project_name}</p>
-            )}
+              {/* Project */}
+              {task.project_name && (
+                <MetaRow label="Project">
+                  {task.project_name}
+                </MetaRow>
+              )}
 
-            {/* Description */}
-            {editingDesc ? (
-              <textarea
-                autoFocus
-                value={descDraft}
-                onChange={(e) => setDescDraft(e.target.value)}
-                onBlur={saveDesc}
-                rows={4}
-                className="w-full text-sm text-body bg-input rounded-lg px-2 py-1 resize-none focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-              />
-            ) : (
-              <p
-                onClick={() => { if (task.status === "inbox") setEditingDesc(true); }}
-                className={`text-sm text-body whitespace-pre-wrap ${task.status === "inbox" ? "cursor-pointer hover:text-amber-400" : ""} ${!task.description ? "text-dim italic" : ""}`}
-                title={task.status === "inbox" ? "Click to edit" : undefined}
-              >
-                {task.description || "No description"}
-              </p>
-            )}
+              {/* Created */}
+              <MetaRow label="Created" last={!task.model && !task.effort}>
+                {relativeTime(task.created_at)}
+              </MetaRow>
 
-            {/* Attempt agents — pill toggles summary/context inline */}
+              {/* Model — if set */}
+              {task.model && (
+                <MetaRow label="Model" last={!task.effort}>
+                  {task.model.replace("claude-", "").replace(/-\d+$/, "")}
+                </MetaRow>
+              )}
+
+              {/* Effort — if set */}
+              {task.effort && (
+                <MetaRow label="Effort" last>
+                  <span className="capitalize">{task.effort}</span>
+                </MetaRow>
+              )}
+            </div>
+
+            {/* ── Description section ── */}
+            <div className="px-5 pt-4">
+              <p className="text-[11px] font-medium text-dim uppercase tracking-wider mb-2">Description</p>
+              {editingDesc ? (
+                <textarea
+                  autoFocus
+                  value={descDraft}
+                  onChange={(e) => setDescDraft(e.target.value)}
+                  onBlur={saveDesc}
+                  rows={4}
+                  className="w-full text-sm text-body bg-transparent px-0 py-0 resize-none focus:outline-none border-0 placeholder-hint"
+                  placeholder="Add description..."
+                />
+              ) : (
+                <div
+                  onClick={() => { if (canEdit) setEditingDesc(true); }}
+                  className={canEdit ? "cursor-pointer" : ""}
+                >
+                  {task.description ? (
+                    <p className="text-sm text-body leading-relaxed whitespace-pre-wrap">{task.description}</p>
+                  ) : (
+                    <p className="text-sm text-hint">Add description</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* ── Attempts section ── */}
             {task.attempt_agents?.length > 0 && (() => {
               const total = task.attempt_agents.length;
               const sel = selectedPill ?? total - 1;
-              const isFirst = sel === 0;
-              const isLast = sel === total - 1;
-
-              // agent_summary describes attempt (total-2); retry_context is feedback about (total-2)
-              const showSummary = !isLast && sel === total - 2 && task.agent_summary;
-              const showUserFeedback = !isLast && sel === total - 2 && task.retry_context;
+              const showSummary = sel < total - 1 && sel === total - 2 && task.agent_summary;
+              const showUserFeedback = sel < total - 1 && sel === total - 2 && task.retry_context;
 
               return (
-                <div className="rounded-lg bg-orange-500/10 border border-orange-500/20 p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-orange-500 dark:text-orange-400">Attempts</span>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {task.attempt_agents.map((a, i) => (
-                        <button
-                          key={a.agent_id}
-                          type="button"
-                          onClick={() => setSelectedPill(i)}
-                          className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold transition-colors ${
-                            i === sel
-                              ? "bg-orange-500 text-white"
-                              : "bg-transparent border border-orange-500/40 text-orange-500 dark:text-orange-400 hover:bg-orange-500/15"
-                          }`}
-                        >
-                          #{i + 1}
-                        </button>
-                      ))}
-                    </div>
+                <div className="px-5 pt-4">
+                  <p className="text-[11px] font-medium text-dim uppercase tracking-wider mb-2">Attempts</p>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {task.attempt_agents.map((a, i) => (
+                      <button
+                        key={a.agent_id}
+                        type="button"
+                        onClick={() => setSelectedPill(i)}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
+                          i === sel
+                            ? "bg-cyan-500 text-white"
+                            : "bg-input text-dim hover:text-body"
+                        }`}
+                      >
+                        #{i + 1}
+                      </button>
+                    ))}
                     <button
                       type="button"
                       onClick={() => { onClose(); navigate(`/agents/${task.attempt_agents[sel].agent_id}`); }}
-                      className="ml-auto text-[10px] text-orange-500 dark:text-orange-400 hover:underline"
+                      className="ml-auto text-[11px] font-medium text-cyan-500 hover:text-cyan-400 transition-colors"
                     >
-                      Enter Chat →
+                      Enter Chat &rarr;
                     </button>
                   </div>
 
-                  {/* Agent Summary — what this attempt did */}
                   {showSummary && (
-                    <div className="pt-1 space-y-1">
-                      <p className="text-[11px] font-semibold text-orange-500 dark:text-orange-400">Agent Summary</p>
+                    <div className="mt-3">
+                      <p className="text-[11px] font-medium text-dim mb-1">Agent Summary</p>
                       {task.agent_summary === ":::generating:::" ? (
-                        <p className="text-xs text-dim/50 italic">Generating summary...</p>
+                        <p className="text-xs text-faint italic">Generating summary...</p>
                       ) : (
-                        <p className="text-xs text-body whitespace-pre-wrap">{task.agent_summary}</p>
+                        <p className="text-xs text-body leading-relaxed whitespace-pre-wrap">{task.agent_summary}</p>
                       )}
                     </div>
                   )}
 
-                  {/* User Feedback — why this attempt was retried */}
                   {showUserFeedback && (
-                    <div className="pt-1 space-y-1">
-                      <p className="text-[11px] font-semibold text-orange-500 dark:text-orange-400">User Feedback</p>
-                      <p className="text-xs text-body whitespace-pre-wrap">{task.retry_context}</p>
+                    <div className="mt-3">
+                      <p className="text-[11px] font-medium text-dim mb-1">User Feedback</p>
+                      <p className="text-xs text-body leading-relaxed whitespace-pre-wrap">{task.retry_context}</p>
                     </div>
                   )}
                 </div>
               );
             })()}
 
-            {/* Note */}
-            {editingNote ? (
-              <textarea
-                autoFocus
-                value={noteDraft}
-                onChange={(e) => setNoteDraft(e.target.value)}
-                onBlur={saveNote}
-                onKeyDown={(e) => { if (e.key === "Escape") { setNoteDraft(task.note || ""); setEditingNote(false); } }}
-                rows={3}
-                className="w-full text-sm text-body bg-transparent px-0 py-0 resize-none focus:outline-none border-0 placeholder-hint/40"
-                placeholder="Notes"
-              />
-            ) : (
-              <div
-                onClick={() => { setNoteDraft(task.note || ""); setEditingNote(true); }}
-                className="cursor-pointer"
-              >
-                {task.note ? (
-                  <div className="text-sm text-body prose-sm">{renderMarkdown(task.note, task.project_name)}</div>
-                ) : (
-                  <p className="text-sm text-hint/40 italic">Notes</p>
-                )}
-              </div>
-            )}
+            {/* ── Notes section ── */}
+            <div className="px-5 pt-4">
+              <p className="text-[11px] font-medium text-dim uppercase tracking-wider mb-2">Notes</p>
+              {editingNote ? (
+                <textarea
+                  autoFocus
+                  value={noteDraft}
+                  onChange={(e) => setNoteDraft(e.target.value)}
+                  onBlur={saveNote}
+                  onKeyDown={(e) => { if (e.key === "Escape") { setNoteDraft(task.note || ""); setEditingNote(false); } }}
+                  rows={3}
+                  className="w-full text-sm text-body bg-transparent px-0 py-0 resize-none focus:outline-none border-0 placeholder-hint"
+                  placeholder="Add a note..."
+                />
+              ) : (
+                <div
+                  onClick={() => { setNoteDraft(task.note || ""); setEditingNote(true); }}
+                  className="cursor-pointer"
+                >
+                  {task.note ? (
+                    <div className="text-sm text-body leading-relaxed prose-sm">{renderMarkdown(task.note, task.project_name)}</div>
+                  ) : (
+                    <p className="text-sm text-hint">Add a note</p>
+                  )}
+                </div>
+              )}
+            </div>
 
-            {/* Actions */}
+            {/* ── Actions ── */}
             {task.status === "executing" && onAction && (
-              <div className="flex gap-2 pt-1">
+              <div className="px-5 pt-4 flex gap-2">
                 <button
                   type="button"
                   onClick={() => onAction("complete")}
-                  className="flex-1 px-3 py-2 rounded-lg text-xs font-medium bg-green-600 text-white hover:bg-green-500 transition-colors"
+                  className="flex-1 px-3 py-2 rounded-lg text-xs font-semibold bg-green-600 text-white hover:bg-green-500 transition-colors"
                 >
                   Complete
                 </button>
                 <button
                   type="button"
                   onClick={() => onAction("incomplete")}
-                  className="flex-1 px-3 py-2 rounded-lg text-xs font-medium bg-amber-600 text-white hover:bg-amber-500 transition-colors"
+                  className="flex-1 px-3 py-2 rounded-lg text-xs font-semibold bg-transparent border border-edge text-dim hover:text-body hover:border-ring-hover transition-colors"
                 >
                   Mark Incomplete
                 </button>
               </div>
             )}
-          </div>
+
+            {/* Bottom spacing */}
+            <div className="h-5" />
+          </>
         ) : (
-          <div className="p-4 text-center text-dim text-sm">Task not found</div>
+          <div className="px-5 pb-5 text-center text-dim text-sm">Task not found</div>
         )}
       </div>
     </div>
