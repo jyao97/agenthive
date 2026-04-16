@@ -153,13 +153,14 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
               failed
             </span>
           )}
-          {agent.insight_status === "generating" && !agent.has_pending_suggestions && (
-            <span className="text-[10px] font-semibold px-1.5 py-px rounded-full bg-blue-500/15 text-blue-400 animate-pulse">
-              generating
-            </span>
-          )}
         </div>
       </div>
+      {agent.insight_status === "generating" && !agent.has_pending_suggestions && (
+        <span
+          className="shrink-0 self-center w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse"
+          title="Generating insights"
+        />
+      )}
       {agent.unread_count > 0 && (
         <span
           className={`shrink-0 self-center inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-white text-xs font-bold ${
