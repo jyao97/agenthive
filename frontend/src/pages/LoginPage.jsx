@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { authCheck, authLogin, authSetPassword, setAuthToken } from "../lib/api";
-import beeLogo from "../assets/xylocopa-bee.svg";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -90,19 +89,17 @@ export default function LoginPage() {
       <div
         className={`relative z-10 w-full max-w-xs mx-4 ${shake ? "animate-shake" : ""}`}
       >
-        {/* Xylocopa bee — liquid glass badge */}
+        {/* Xylocopa app icon — direct SVG, no wrapper */}
         <div className="flex justify-center mb-6">
           <div className="relative">
             {/* Ambient cyan glow */}
-            <div className="absolute inset-0 rounded-full bg-cyan-500/20 blur-2xl scale-150" />
-            <div className="glass-bar relative w-24 h-24 rounded-full flex items-center justify-center overflow-hidden">
-              <img
-                src={beeLogo}
-                alt="Xylocopa"
-                className="relative z-10 w-[78%] h-[78%] object-contain select-none"
-                draggable={false}
-              />
-            </div>
+            <div className="absolute inset-0 bg-cyan-500/20 blur-2xl scale-150" />
+            <img
+              src="/icon.svg"
+              alt="Xylocopa"
+              className="relative w-24 h-24 rounded-[22%] select-none"
+              draggable={false}
+            />
           </div>
         </div>
 
