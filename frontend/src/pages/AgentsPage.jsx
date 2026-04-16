@@ -78,7 +78,7 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
           onClick={(e) => e.stopPropagation()}
         >
           <div className={`w-2.5 h-2.5 rounded-full ${
-            agent.status === "EXECUTING" ? "bg-cyan-400 animate-breathe"
+            agent.status === "EXECUTING" ? "bg-cyan-400 animate-glow"
               : agent.status === "IDLE" ? "bg-cyan-300/60"
               : agent.status === "ERROR" ? "bg-red-400"
               : "bg-zinc-400/50"
