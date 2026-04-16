@@ -79,9 +79,9 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
         >
           <div className={`w-2.5 h-2.5 rounded-full ${
             agent.status === "EXECUTING" ? "bg-cyan-400 animate-breathe"
-              : agent.status === "IDLE" ? "bg-green-400"
+              : agent.status === "IDLE" ? "bg-cyan-300/60"
               : agent.status === "ERROR" ? "bg-red-400"
-              : "bg-zinc-500"
+              : "bg-zinc-400/50"
           }`} />
         </button>
       )}
