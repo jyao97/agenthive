@@ -68,20 +68,21 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
       }`}
     >
       <div className="flex items-start gap-3 px-5 py-[18px]">
-      {/* Drag handle */}
+      {/* Status ring — doubles as drag handle */}
       {dragHandleProps && (
         <button
           type="button"
           {...dragHandleProps.listeners}
           {...dragHandleProps.attributes}
-          className="touch-none p-1 -ml-2 mr-0 rounded text-ghost hover:text-faint transition-colors cursor-grab active:cursor-grabbing self-center"
+          className="touch-none -ml-1 mr-0 rounded-full cursor-grab active:cursor-grabbing self-center"
           onClick={(e) => e.stopPropagation()}
         >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
-            <rect x="3" y="4" width="10" height="1.5" rx="0.75" />
-            <rect x="3" y="8" width="10" height="1.5" rx="0.75" />
-            <rect x="3" y="12" width="10" height="1.5" rx="0.75" />
-          </svg>
+          <div className={`w-3.5 h-3.5 rounded-full border-2 ${
+            agent.status === "EXECUTING" ? "border-cyan-400 animate-breathe"
+              : agent.status === "IDLE" ? "border-emerald-400"
+              : agent.status === "ERROR" ? "border-red-400"
+              : "border-zinc-500"
+          }`} />
         </button>
       )}
       {/* Selection checkbox */}
