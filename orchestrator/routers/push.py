@@ -1,8 +1,10 @@
 """Push notification routes — VAPID key, subscribe, unsubscribe."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -10,6 +12,42 @@ from database import get_db
 logger = logging.getLogger("orchestrator")
 
 router = APIRouter(prefix="/api/push", tags=["push"])
+
+# A subscription is pruned if it has never acked AND was created more
+# than ZOMBIE_AFTER_DAYS ago, OR if its last ack is older than that.
+ZOMBIE_AFTER_DAYS = 14
+
+
+def prune_zombie_subscriptions(db: Session) -> int:
+    """Delete push subs that haven't ACK'd within the zombie window.
+
+    A freshly-registered sub is kept during the grace period even if
+    it hasn't acked yet — the first push it's included in will tell
+    us whether it's alive.  Returns the count deleted.
+    """
+    from models import PushSubscription
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=ZOMBIE_AFTER_DAYS)
+    stale = db.query(PushSubscription).filter(
+        or_(
+            PushSubscription.last_ack_at < cutoff,
+            (PushSubscription.last_ack_at.is_(None))
+            & (PushSubscription.created_at < cutoff),
+        )
+    ).all()
+    if not stale:
+        return 0
+    ids = [s.id for s in stale]
+    for s in stale:
+        logger.info(
+            "push prune: removing zombie sub=%s last_ack=%s created=%s endpoint=%s…",
+            s.id, s.last_ack_at, s.created_at, (s.endpoint or "")[:50],
+        )
+    db.query(PushSubscription).filter(
+        PushSubscription.id.in_(ids)
+    ).delete(synchronize_session=False)
+    db.commit()
+    return len(ids)
 
 
 @router.get("/vapid-public-key")
@@ -50,6 +88,14 @@ async def push_subscribe(request: Request, db: Session = Depends(get_db)):
         ))
         logger.info("push/subscribe: registered new subscription (endpoint=%s…)", endpoint[:60])
     db.commit()
+    # Opportunistic zombie sweep: any time a real client subscribes,
+    # try to prune subs that haven't acked in the zombie window.
+    try:
+        pruned = prune_zombie_subscriptions(db)
+        if pruned:
+            logger.info("push/subscribe: pruned %d zombie subscriptions", pruned)
+    except Exception:
+        logger.exception("push/subscribe: prune failed (non-fatal)")
     total = db.query(PushSubscription).count()
     logger.info("push/subscribe: total active subscriptions = %d", total)
     return {"status": "subscribed"}
@@ -102,6 +148,8 @@ async def push_ack(request: Request, db: Session = Depends(get_db)):
         ).first()
         if sub:
             sub_id = sub.id
+            sub.last_ack_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            db.commit()
     logger.info(
         "push ack: nid=%s sub=%s host=%s shown=%s ts=%s ua=%s",
         nid, sub_id, host, shown, ts, ua,

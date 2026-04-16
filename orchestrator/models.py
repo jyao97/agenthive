@@ -239,6 +239,7 @@ class PushSubscription(Base):
     p256dh_key: Mapped[str] = mapped_column(String(200), nullable=False)
     auth_key: Mapped[str] = mapped_column(String(200), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    last_ack_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ProgressInsight(Base):

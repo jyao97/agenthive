@@ -675,6 +675,14 @@ def init_db():
             conn.execute(text("ALTER TABLE tasks ADD COLUMN note TEXT"))
             conn.commit()
 
+        # --- Add last_ack_at column to push_subscriptions if missing ---
+        push_cols = _table_columns(conn, "push_subscriptions")
+        if "last_ack_at" not in push_cols:
+            conn.execute(text(
+                "ALTER TABLE push_subscriptions ADD COLUMN last_ack_at DATETIME"
+            ))
+            conn.commit()
+
         # --- Migrate SYNCING → IDLE agent status (tmux-only agents) ---
         _syncing_count = conn.execute(text(
             "SELECT COUNT(*) FROM agents WHERE status = 'SYNCING'"
