@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
 import { Bell, BellOff, Link2, ChevronDown, ChevronUp } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { fetchAgents, stopAgent, deleteAgent, scanAgents, wakeSyncAll, searchMessages, markAgentRead, updateNotificationSettings, fetchUnlinkedSessions, adoptUnlinkedSession } from "../lib/api";
+import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove, defaultAnimateLayoutChanges } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
+import { fetchAgents, stopAgent, deleteAgent, scanAgents, wakeSyncAll, searchMessages, markAgentRead, updateNotificationSettings, fetchUnlinkedSessions, adoptUnlinkedSession, reorderAgents } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import { POLL_INTERVAL, modelDisplayName } from "../lib/constants";
-// BotIcon removed — cards now use a left-edge color strip
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import useDraft from "../hooks/useDraft";
@@ -19,7 +22,31 @@ const FILTER_TABS = [
   { key: "STOPPED", label: "Stopped" },
 ];
 
-const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, onToggle }) {
+function noDropAnimation(args) {
+  if (args.wasDragging) return false;
+  return defaultAnimateLayoutChanges(args);
+}
+
+function SortableAgentRow(props) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: props.agent.id,
+    animateLayoutChanges: noDropAnimation,
+  });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.3 : 1,
+    WebkitUserSelect: "none",
+    userSelect: "none",
+  };
+  return (
+    <div ref={setNodeRef} style={style}>
+      <AgentRow {...props} dragHandleProps={{ listeners, attributes }} />
+    </div>
+  );
+}
+
+const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, onToggle, dragHandleProps }) {
   const navigate = useNavigate();
 
   const handleClick = () => {
@@ -49,6 +76,22 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
             : "bg-zinc-600"
         }`} />
         <div className="flex-1 min-w-0 flex items-start gap-3 px-5 py-[18px]">
+      {/* Drag handle */}
+      {dragHandleProps && (
+        <button
+          type="button"
+          {...dragHandleProps.listeners}
+          {...dragHandleProps.attributes}
+          className="touch-none p-1 -ml-2 mr-0 rounded text-ghost hover:text-faint transition-colors cursor-grab active:cursor-grabbing self-center"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
+            <rect x="3" y="4" width="10" height="1.5" rx="0.75" />
+            <rect x="3" y="8" width="10" height="1.5" rx="0.75" />
+            <rect x="3" y="12" width="10" height="1.5" rx="0.75" />
+          </svg>
+        </button>
+      )}
       {/* Selection checkbox */}
       {selecting && (
         <div className="shrink-0 flex items-center justify-center w-6 h-6 mt-0.5">
@@ -311,8 +354,8 @@ export default function AgentsPage({ theme, onToggleTheme }) {
           : agents.filter((a) => a.status === "STOPPED"),
     [agents, filter]);
 
-  const filtered = useMemo(() =>
-    search.trim()
+  const filtered = useMemo(() => {
+    let list = search.trim()
       ? statusFiltered.filter((a) => {
           const q = search.toLowerCase();
           return (
@@ -322,8 +365,48 @@ export default function AgentsPage({ theme, onToggleTheme }) {
             a.last_message_preview?.toLowerCase().includes(q)
           );
         })
-      : statusFiltered,
-    [statusFiltered, search]);
+      : statusFiltered;
+    // Sort by sort_order, then newest
+    list = [...list].sort((a, b) => {
+      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+    if (optimisticIds) {
+      const map = Object.fromEntries(list.map(a => [a.id, a]));
+      return optimisticIds.map(id => map[id]).filter(Boolean);
+    }
+    return list;
+  }, [statusFiltered, search, optimisticIds]);
+
+  // DnD state
+  const [optimisticIds, setOptimisticIds] = useState(null);
+  const prevAgentsRef = useRef(agents);
+  if (agents !== prevAgentsRef.current) {
+    prevAgentsRef.current = agents;
+    if (optimisticIds) setOptimisticIds(null);
+  }
+  const [activeDragId, setActiveDragId] = useState(null);
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 350, tolerance: 10 } }),
+  );
+  const handleDragStart = useCallback((event) => {
+    if (navigator.vibrate) navigator.vibrate(10);
+    setActiveDragId(event.active.id);
+  }, []);
+  const handleDragEnd = useCallback((event) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) { setActiveDragId(null); return; }
+    const ids = filtered.map(a => a.id);
+    const oldIdx = ids.indexOf(active.id);
+    const newIdx = ids.indexOf(over.id);
+    if (oldIdx === -1 || newIdx === -1) { setActiveDragId(null); return; }
+    const newIds = arrayMove(ids, oldIdx, newIdx);
+    setOptimisticIds(newIds);
+    setActiveDragId(null);
+    reorderAgents(newIds).then(() => load());
+  }, [filtered, load]);
+  const handleDragCancel = useCallback(() => setActiveDragId(null), []);
 
   const enterSelectMode = () => {
     setSelecting(true);
@@ -698,16 +781,42 @@ export default function AgentsPage({ theme, onToggleTheme }) {
           </div>
         )}
 
-        {filtered.map((agent) => (
-          <AgentRow
-            key={agent.id}
-            agent={agent}
-            onClick={() => navigate(`/agents/${agent.id}`)}
-            selecting={selecting}
-            selected={selected.has(agent.id)}
-            onToggle={toggleOne}
-          />
-        ))}
+        <DndContext
+          sensors={dndSensors}
+          collisionDetection={closestCenter}
+          modifiers={[restrictToVerticalAxis]}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
+        >
+          <SortableContext items={filtered.map(a => a.id)} strategy={verticalListSortingStrategy}>
+            <div className="space-y-3">
+              {filtered.map((agent) => (
+                <SortableAgentRow
+                  key={agent.id}
+                  agent={agent}
+                  onClick={() => navigate(`/agents/${agent.id}`)}
+                  selecting={selecting}
+                  selected={selected.has(agent.id)}
+                  onToggle={toggleOne}
+                />
+              ))}
+            </div>
+          </SortableContext>
+          <DragOverlay dropAnimation={null}>
+            {activeDragId && filtered.find(a => a.id === activeDragId) ? (
+              <div className="opacity-90 scale-[1.02] shadow-xl rounded-2xl">
+                <AgentRow
+                  agent={filtered.find(a => a.id === activeDragId)}
+                  onClick={() => {}}
+                  selecting={false}
+                  selected={false}
+                  onToggle={() => {}}
+                />
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
 
         <div className="h-4" />
       </div>

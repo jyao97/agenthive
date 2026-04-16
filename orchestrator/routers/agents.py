@@ -2247,6 +2247,20 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
     return agent
 
 
+@router.put("/api/agents/reorder")
+async def reorder_agents(body: dict, db: Session = Depends(get_db)):
+    """Set sort_order for a list of agent IDs. Body: { "agent_ids": ["id1", "id2", ...] }"""
+    agent_ids = body.get("agent_ids", [])
+    if not agent_ids:
+        raise HTTPException(400, "agent_ids required")
+    for i, aid in enumerate(agent_ids):
+        agent = db.get(Agent, aid)
+        if agent:
+            agent.sort_order = i
+    db.commit()
+    return {"ok": True, "count": len(agent_ids)}
+
+
 @router.put("/api/agents/read-all")
 async def mark_all_agents_read(db: Session = Depends(get_db)):
     """Mark all agents as read (reset unread count for every agent)."""

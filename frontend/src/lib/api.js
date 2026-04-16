@@ -254,6 +254,8 @@ export const updateAgent = (id, data) =>
   request(`/api/agents/${id}`, { method: "PUT", body: JSON.stringify(data) });
 export const launchTmuxAgent = (data) =>
   request("/api/agents/launch-tmux", { method: "POST", body: JSON.stringify(data) });
+export const reorderAgents = (agentIds) =>
+  request("/api/agents/reorder", { method: "PUT", body: JSON.stringify({ agent_ids: agentIds }) });
 export const scanAgents = () =>
   request("/api/agents/scan", { method: "POST" });
 export const wakeSyncAll = () =>
