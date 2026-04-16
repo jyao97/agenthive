@@ -44,7 +44,7 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
     >
       <div className="flex items-stretch">
         {/* Left color strip */}
-        <div className={`w-[3px] shrink-0 ${
+        <div className={`w-[5px] shrink-0 ${
           agent.status === "EXECUTING" ? "bg-cyan-400 animate-breathe"
             : agent.status === "IDLE" ? "bg-emerald-400"
             : agent.status === "ERROR" ? "bg-red-400"

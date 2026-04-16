@@ -92,7 +92,7 @@ const FolderCard = memo(function FolderCard({ folder, onClick, onActivate, onArc
       )}
       <div className="flex items-stretch">
         {/* Left color strip */}
-        <div className={`w-[3px] shrink-0 ${
+        <div className={`w-[5px] shrink-0 ${
           state === "running" ? "bg-cyan-400 animate-breathe" : state === "completed" ? "bg-emerald-400" : "bg-zinc-600"
         }`} />
         <div className="flex-1 min-w-0 p-5">
