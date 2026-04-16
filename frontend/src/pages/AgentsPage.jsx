@@ -74,7 +74,7 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
           type="button"
           {...dragHandleProps.listeners}
           {...dragHandleProps.attributes}
-          className="touch-none -ml-1 mr-0 rounded-full cursor-grab active:cursor-grabbing self-center"
+          className="touch-none -ml-1 mr-1 rounded-full cursor-grab active:cursor-grabbing self-center"
           onClick={(e) => e.stopPropagation()}
         >
           <div className={`w-2.5 h-2.5 rounded-full ${
