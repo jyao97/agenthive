@@ -619,25 +619,31 @@ _translate_cache: dict[str, str] = {}
 
 
 def _translate_to_english(text_input: str) -> str:
-    """Translate non-English text to English keywords via OpenAI. Returns original if already English or on error."""
+    """Translate non-English text to English keywords via OpenAI. Returns original if already English, no API key, or on error."""
     if not _NON_ENGLISH_RE.search(text_input):
+        return text_input
+    if not os.getenv("OPENAI_API_KEY"):
         return text_input
     # Check cache
     cache_key = text_input[:200]
     if cache_key in _translate_cache:
         return _translate_cache[cache_key]
-    import openai
-    client = openai.OpenAI(timeout=5)
-    resp = client.chat.completions.create(
-        model=os.getenv("SUMMARY_MODEL", "gpt-4o-mini"),
-        messages=[{
-            "role": "user",
-            "content": f"Translate the following to English technical keywords (no explanation, just the keywords separated by spaces):\n{text_input[:300]}",
-        }],
-        max_tokens=100,
-        temperature=0,
-    )
-    translated = resp.choices[0].message.content.strip()
+    try:
+        import openai
+        client = openai.OpenAI(timeout=5)
+        resp = client.chat.completions.create(
+            model=os.getenv("SUMMARY_MODEL", "gpt-4o-mini"),
+            messages=[{
+                "role": "user",
+                "content": f"Translate the following to English technical keywords (no explanation, just the keywords separated by spaces):\n{text_input[:300]}",
+            }],
+            max_tokens=100,
+            temperature=0,
+        )
+        translated = resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning("_translate_to_english: OpenAI call failed (%s) — using original text", e)
+        return text_input
     if translated:
         if len(_translate_cache) >= _TRANSLATE_CACHE_MAX:
             # Evict oldest entry
@@ -730,6 +736,10 @@ def query_insights_ai(db, project: str, user_message: str, limit: int = 50) -> l
     candidates = query_insights(db, project, user_message, limit=limit, pad_recent=True)
     if not candidates:
         return []
+
+    # Stage 2 requires OpenAI — fall back to FTS5 results if no key configured
+    if not os.getenv("OPENAI_API_KEY"):
+        return candidates[:10]
 
     # Stage 2: semantic reranking via 4o-mini
     numbered = "\n".join(f"{i+1}. {c}" for i, c in enumerate(candidates))
