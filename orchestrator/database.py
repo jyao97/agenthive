@@ -502,6 +502,14 @@ def init_db():
             ))
             conn.commit()
 
+        # --- Add sort_order column to agents if missing ---
+        agent_cols_sort = _table_columns(conn, "agents")
+        if "sort_order" not in agent_cols_sort:
+            conn.execute(text(
+                "ALTER TABLE agents ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+
         # --- progress_insights FTS5 ---
         tables = [r[0] for r in conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table'"
