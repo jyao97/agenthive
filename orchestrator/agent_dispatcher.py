@@ -1215,7 +1215,7 @@ def _is_orchestrator_process(pid: int) -> bool:
     never use ``-p``, even though they may use ``--output-format``.
 
     We check the process cmdline rather than the environment because the
-    service sets AGENTHIVE_MANAGED=1 on the uvicorn server, and that env
+    service sets XYLOCOPA_MANAGED=1 on the uvicorn server, and that env
     var propagates to the tmux server and all panes, making
     environment-based detection unreliable.
     """
@@ -1704,24 +1704,27 @@ class AgentDispatcher:
     ):
         """Clear agent's tmux pane reference with optional session kill.
 
-        When *kill_tmux* is True (default), kills the ``ah-{id[:8]}``
-        tmux session before clearing the reference.  Pass False when
-        the pane is already dead or is being transferred to a new agent.
+        When *kill_tmux* is True (default), kills the agent's tmux session
+        (both new ``xy-`` and legacy ``ah-`` candidates) before clearing the
+        reference.  Pass False when the pane is already dead or is being
+        transferred to a new agent.
         """
         if not agent.tmux_pane:
             return
         if kill_tmux:
             import subprocess as _sp
-            result = _sp.run(
-                ["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
-                capture_output=True, timeout=5,
-            )
-            if result.returncode != 0:
-                logger.warning(
-                    "tmux kill-session failed for agent %s (rc=%d): %s",
-                    agent.id[:8], result.returncode,
-                    result.stderr.decode(errors="replace").strip() if result.stderr else "",
+            from route_helpers import tmux_session_candidates
+            for sess_name in tmux_session_candidates(agent.id):
+                result = _sp.run(
+                    ["tmux", "kill-session", "-t", sess_name],
+                    capture_output=True, timeout=5,
                 )
+                if result.returncode != 0:
+                    logger.debug(
+                        "tmux kill-session %s failed for agent %s (rc=%d): %s",
+                        sess_name, agent.id[:8], result.returncode,
+                        result.stderr.decode(errors="replace").strip() if result.stderr else "",
+                    )
         agent.tmux_pane = None
 
     def _refresh_pane_attached(self):
@@ -2270,11 +2273,9 @@ Here are the day's conversations (with timestamps):
             self._stale_session_retries.pop(agent.id, None)
             self._idle_no_pane_retries.pop(agent.id, None)
             self._known_subagents.pop(agent.id, None)
-            # Clean up hook signal files
-            try:
-                os.unlink(os.path.join(tempfile.gettempdir(), f"ahive-{agent.id}.newsession"))
-            except FileNotFoundError:
-                pass
+            # Clean up hook signal files (both new and legacy paths)
+            from route_helpers import unlink_session_signals
+            unlink_session_signals(agent.id)
 
             # Clear pending permission requests for this agent
             from main import app as _app
@@ -3756,12 +3757,13 @@ Here are the day's conversations (with timestamps):
                 continue
             proj = proj_by_path[proj_path]
 
-            if not session_name.startswith("ah-"):
+            from route_helpers import tmux_session_to_agent_prefix
+            agent_prefix = tmux_session_to_agent_prefix(session_name)
+            if agent_prefix is None:
                 # Non-managed tmux session — detected via SessionStart hook
                 continue
 
-            # Tier 0: ah-{prefix} → find stopped agent by ID prefix
-            agent_prefix = session_name[3:]
+            # Tier 0: managed session prefix → find stopped agent by ID prefix
             named_agent = db.query(Agent).filter(
                 Agent.id.like(f"{agent_prefix}%"),
                 Agent.status == AgentStatus.STOPPED,
@@ -3772,14 +3774,14 @@ Here are the day's conversations (with timestamps):
             agent_sid = named_agent.session_id
             if not agent_sid:
                 # No session_id — check signal file from SessionStart hook
-                signal_path = os.path.join(tempfile.gettempdir(), f"ahive-{named_agent.id}.newsession")
-                try:
-                    with open(signal_path, "r") as f:
-                        agent_sid = f.read().strip()
-                except FileNotFoundError:
-                    pass  # Signal file not yet created — expected
-                except OSError as e:
-                    logger.debug("Failed to read session signal file: %s", e)
+                from route_helpers import find_session_signal
+                signal_path = find_session_signal(named_agent.id)
+                if signal_path:
+                    try:
+                        with open(signal_path, "r") as f:
+                            agent_sid = f.read().strip()
+                    except OSError as e:
+                        logger.debug("Failed to read session signal file: %s", e)
 
             if not agent_sid:
                 continue
@@ -4092,19 +4094,20 @@ Here are the day's conversations (with timestamps):
         (e.g. after /clear or context compaction).
 
         Relies solely on the SessionStart hook signal file written by:
-        - Managed agents: hook has AHIVE_AGENT_ID → writes signal directly
+        - Managed agents: hook has XY_AGENT_ID → writes signal directly
         - Detected agents: hook handler checks pane ownership → writes signal
         """
         sdir = session_source_dir(project_path)
 
-        signal_path = os.path.join(tempfile.gettempdir(), f"ahive-{agent_id}.newsession")
+        from route_helpers import find_session_signal
+        signal_path = find_session_signal(agent_id)
+        if not signal_path:
+            return None
         try:
             with open(signal_path) as f:
                 hook_sid = f.read().strip()
             # Consume the signal file immediately to prevent re-processing
             os.unlink(signal_path)
-        except FileNotFoundError:
-            return None
         except OSError as e:
             logger.debug("_detect_successor: hook signal read failed: %s", e)
             return None
@@ -4778,8 +4781,10 @@ Here are the day's conversations (with timestamps):
             agents_to_sync: list[tuple[str, str, str]] = []  # (id, session_id, project_path)
 
             # Build pane map ONCE for definitive tmux session name matching.
-            # Each agent launched via tmux has session name `ah-{id[:8]}`,
-            # so we can resolve pane→agent without fragile CWD heuristics.
+            # Each agent launched via tmux has session name `xy-{id[:8]}` (or
+            # legacy `ah-{id[:8]}`), so we can resolve pane→agent without
+            # fragile CWD heuristics.
+            from route_helpers import tmux_session_candidates
             pane_map = _build_tmux_claude_map()
             # session_name → pane_id for quick lookup
             session_name_to_pane: dict[str, str] = {
@@ -4787,6 +4792,13 @@ Here are the day's conversations (with timestamps):
                 for pane_id, info in pane_map.items()
                 if not info["is_orchestrator"]
             }
+
+            def _find_pane_for_agent(agent_id: str) -> str | None:
+                for cand in tmux_session_candidates(agent_id):
+                    pane = session_name_to_pane.get(cand)
+                    if pane:
+                        return pane
+                return None
 
             for agent in agents:
                 if agent.status == AgentStatus.STARTING:
@@ -4808,8 +4820,7 @@ Here are the day's conversations (with timestamps):
                         session_active = False
                         if os.path.exists(jsonl_path) and not self._session_has_ended(jsonl_path):
                             # Resolve pane definitively via tmux session name
-                            expected_name = f"ah-{agent.id[:8]}"
-                            pane = session_name_to_pane.get(expected_name)
+                            pane = _find_pane_for_agent(agent.id)
                             if not pane:
                                 # Fallback: try generic detection
                                 pane = _detect_tmux_pane_for_session(
@@ -4851,8 +4862,7 @@ Here are the day's conversations (with timestamps):
                 # Try to find this agent's tmux pane — use session name
                 # for definitive matching first.
                 if not agent.tmux_pane:
-                    expected_name = f"ah-{agent.id[:8]}"
-                    pane = session_name_to_pane.get(expected_name)
+                    pane = _find_pane_for_agent(agent.id)
                     if not pane and project_path and agent.session_id:
                         pane = _detect_tmux_pane_for_session(agent.session_id, project_path)
                     if pane:
@@ -4928,8 +4938,7 @@ Here are the day's conversations (with timestamps):
                 Agent.status == AgentStatus.STOPPED,
             ).all()
             for agent in stopped_cli:
-                expected_name = f"ah-{agent.id[:8]}"
-                pane = session_name_to_pane.get(expected_name)
+                pane = _find_pane_for_agent(agent.id)
                 if pane and agent.session_id:
                     project = db.get(Project, agent.project)
                     if project:
@@ -4939,8 +4948,8 @@ Here are the day's conversations (with timestamps):
                             (agent.id, agent.session_id, project.path)
                         )
                         logger.info(
-                            "Recovered STOPPED agent %s — tmux session %s still alive (pane=%s)",
-                            agent.id, expected_name, pane,
+                            "Recovered STOPPED agent %s — tmux session still alive (pane=%s)",
+                            agent.id, pane,
                         )
 
             # Deduplicate pane ownership

@@ -1,4 +1,4 @@
-"""AgentHive — FastAPI entry point."""
+"""Xylocopa — FastAPI entry point."""
 
 import asyncio
 import logging
@@ -110,8 +110,14 @@ async def lifespan(app: FastAPI):
             import sys
             sys.exit(1)
 
-    logger.info("AgentHive starting up...")
+    logger.info("Xylocopa starting up...")
     _main_event_loop = asyncio.get_event_loop()
+
+    # One-time migration: rename legacy ~/.agenthive → ~/.xylocopa if needed
+    try:
+        _migrate_legacy_user_dirs()
+    except Exception:
+        logger.exception("Legacy path migration failed (non-fatal)")
 
     # Make the event loop available to routers that need it for background threads
     from routers import projects as _projects_router
@@ -262,13 +268,26 @@ async def lifespan(app: FastAPI):
                 logger.exception("Background task raised during shutdown")
     if agent_dispatch_task:
         agent_dispatcher.stop()
-    logger.info("AgentHive shutting down...")
+    logger.info("Xylocopa shutting down...")
+
+
+def _migrate_legacy_user_dirs():
+    """Rename legacy ~/.agenthive → ~/.xylocopa on startup.
+
+    Only runs if the new dir does not already exist. Safe to call repeatedly.
+    """
+    home = os.path.expanduser("~")
+    old = os.path.join(home, ".agenthive")
+    new = os.path.join(home, ".xylocopa")
+    if os.path.isdir(old) and not os.path.exists(new):
+        os.rename(old, new)
+        logger.info("Migrated legacy %s → %s", old, new)
 
 
 # ---- App creation ----
 
 app = FastAPI(
-    title="AgentHive",
+    title="Xylocopa",
     description="Multi-instance Claude Code orchestration system",
     version="0.2.0",
     lifespan=lifespan,

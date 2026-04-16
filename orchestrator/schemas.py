@@ -354,6 +354,6 @@ class AgentInsightSuggestionOut(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    service: str = "agenthive"
+    service: str = "xylocopa"
     db: str = "ok"
     claude_cli: str = "unknown"

@@ -35,6 +35,7 @@ from route_helpers import (
     enrich_agent_briefs,
     BROWSE_MAX_FILE_SIZE, API_REQUEST_TIMEOUT, SUBPROCESS_STRIP_VARS,
     subprocess_clean_env, graceful_kill_tmux,
+    graceful_kill_tmux_agent, tmux_session_candidates,
 )
 from utils import utcnow as _utcnow, is_interrupt_message
 
@@ -1323,7 +1324,7 @@ async def archive_project(name: str, request: Request, db: Session = Depends(get
     for agent in active_agents:
         # Kill tmux pane if active
         if agent.tmux_pane:
-            graceful_kill_tmux(agent.tmux_pane, f"ah-{agent.id[:8]}")
+            graceful_kill_tmux_agent(agent.tmux_pane, agent.id)
         if ad:
             ad.stop_agent_cleanup(db, agent, "Agent stopped — project archived",
                                   kill_tmux=False, emit=True)
@@ -1383,14 +1384,16 @@ async def delete_project(name: str, request: Request, db: Session = Depends(get_
         _check_no_active_agents(name, db)
 
         # Kill any lingering tmux sessions before deleting DB records
+        # (try both new xy- and legacy ah- session names)
         import subprocess as _sp_del
         agents_to_delete = db.query(Agent).filter(Agent.project == name).all()
         for agent in agents_to_delete:
-            try:
-                _sp_del.run(["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
-                            capture_output=True, timeout=5)
-            except (OSError, _sp_del.TimeoutExpired):
-                pass
+            for sess_name in tmux_session_candidates(agent.id):
+                try:
+                    _sp_del.run(["tmux", "kill-session", "-t", sess_name],
+                                capture_output=True, timeout=5)
+                except (OSError, _sp_del.TimeoutExpired):
+                    pass
 
         # Clean up session files for all agents being deleted
         from session_cache import cleanup_source_session, evict_session

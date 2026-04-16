@@ -23,6 +23,7 @@ from websocket import emit_task_update, emit_agent_update
 from route_helpers import (
     check_project_capacity, create_tmux_claude_session,
     generate_worktree_name_local, resolve_project_path,
+    tmux_session_candidates, tmux_session_name,
 )
 from utils import utcnow as _utcnow
 
@@ -44,10 +45,11 @@ def _stop_task_agents(db: Session, task, ad, reason, *, emit=True, add_message=F
                 import subprocess as _sp
                 agent.status = AgentStatus.STOPPED
                 if agent.tmux_pane:
-                    _kill = _sp.run(["tmux", "kill-session", "-t", f"ah-{agent.id[:8]}"],
-                            capture_output=True, timeout=5)
-                    if _kill.returncode != 0:
-                        logger.debug("tmux kill-session failed for agent %s", agent.id[:8])
+                    for _sess in tmux_session_candidates(agent.id):
+                        _kill = _sp.run(["tmux", "kill-session", "-t", _sess],
+                                capture_output=True, timeout=5)
+                        if _kill.returncode != 0:
+                            logger.debug("tmux kill-session %s failed for agent %s", _sess, agent.id[:8])
                     agent.tmux_pane = None
                 if emit:
                     asyncio.ensure_future(emit_agent_update(agent.id, "STOPPED", agent.project))
@@ -94,7 +96,7 @@ def _dispatch_task_tmux(db: Session, task: Task, proj: Project, ad) -> str | Non
     # Generate unique agent ID
     for _ in range(20):
         agent_hex = secrets.token_hex(6)
-        tmux_session = f"ah-{agent_hex[:8]}"
+        tmux_session = tmux_session_name(agent_hex)
         if db.get(Agent, agent_hex) is None and tmux_session not in _existing_tmux:
             break
     else:
@@ -581,7 +583,7 @@ async def batch_process_tasks(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(400, "No projects available to host the agent")
 
     api_base = os.getenv("API_BASE_URL", f"http://localhost:{os.getenv('PORT', '8080')}")
-    prompt = f"""You are a task triage assistant for AgentHive. Analyze the inbox tasks below, then update each one via the local API.
+    prompt = f"""You are a task triage assistant for Xylocopa. Analyze the inbox tasks below, then update each one via the local API.
 
 FOR EACH TASK:
 1. **Title**: Rewrite to be clear, specific, and actionable (<80 chars). Keep good titles unchanged.

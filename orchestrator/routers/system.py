@@ -46,7 +46,7 @@ async def download_cert():
         return FileResponse(
             mkcert_root,
             media_type="application/x-x509-ca-cert",
-            filename="agenthive-ca.crt",
+            filename="xylocopa-ca.crt",
         )
 
     # Fallback: serve the leaf cert directly
@@ -57,7 +57,7 @@ async def download_cert():
     return FileResponse(
         cert_path,
         media_type="application/x-x509-ca-cert",
-        filename="agenthive.crt",
+        filename="xylocopa.crt",
     )
 
 
@@ -113,11 +113,11 @@ async def download_webclip(request: Request):
       <key>IsRemovable</key>
       <true/>
       <key>Label</key>
-      <string>AgentHive</string>
+      <string>Xylocopa</string>
       <key>PayloadDisplayName</key>
-      <string>AgentHive Web Clip</string>
+      <string>Xylocopa Web Clip</string>
       <key>PayloadIdentifier</key>
-      <string>com.agenthive.webclip.{payload_uuid}</string>
+      <string>com.xylocopa.webclip.{payload_uuid}</string>
       <key>PayloadType</key>
       <string>com.apple.webClip.managed</string>
       <key>PayloadUUID</key>
@@ -129,9 +129,9 @@ async def download_webclip(request: Request):
     </dict>
   </array>
   <key>PayloadDisplayName</key>
-  <string>AgentHive</string>
+  <string>Xylocopa</string>
   <key>PayloadIdentifier</key>
-  <string>com.agenthive.profile.{profile_uuid}</string>
+  <string>com.xylocopa.profile.{profile_uuid}</string>
   <key>PayloadRemovalDisallowed</key>
   <false/>
   <key>PayloadType</key>
@@ -141,14 +141,14 @@ async def download_webclip(request: Request):
   <key>PayloadVersion</key>
   <integer>1</integer>
   <key>PayloadDescription</key>
-  <string>Adds AgentHive to your Home Screen with the correct app icon.</string>
+  <string>Adds Xylocopa to your Home Screen with the correct app icon.</string>
 </dict>
 </plist>"""
 
     return Response(
         content=plist,
         media_type="application/x-apple-aspen-config",
-        headers={"Content-Disposition": "attachment; filename=AgentHive.mobileconfig"},
+        headers={"Content-Disposition": "attachment; filename=Xylocopa.mobileconfig"},
     )
 
 
@@ -227,7 +227,7 @@ async def test_notify(request: Request):
         in_use = in_use_param.lower() == "true"
 
     from notify import notify
-    decision = notify(channel, agent_id, "AgentHive Test",
+    decision = notify(channel, agent_id, "Xylocopa Test",
            f"Test via {channel} (muted={muted}, in_use={in_use})",
            "/agents", muted=muted, in_use=in_use)
 
@@ -354,7 +354,7 @@ async def system_stats():
     # GPU
     stats["gpus"] = _platform.get_gpu_stats()
 
-    # AgentHive own process usage (uvicorn + vite)
+    # Xylocopa own process usage (uvicorn + vite)
     try:
         import psutil
         proc = psutil.Process(os.getpid())
@@ -367,14 +367,17 @@ async def system_stats():
                 cpu += child.cpu_percent(interval=0)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-        stats["agenthive"] = {
+        stats["xylocopa"] = {
             "mem_mb": round(mem_mb, 1),
             "cpu_pct": round(cpu, 1),
         }
     except ImportError:
         # Fallback: use platform layer for process memory
         mem_mb = _platform.get_process_memory_mb(os.getpid())
-        stats["agenthive"] = {"mem_mb": round(mem_mb, 1), "cpu_pct": 0} if mem_mb else None
+        stats["xylocopa"] = {"mem_mb": round(mem_mb, 1), "cpu_pct": 0} if mem_mb else None
+
+    # Legacy alias for older frontends; remove once UI is fully migrated.
+    stats["agenthive"] = stats["xylocopa"]
 
     return stats
 
@@ -700,7 +703,7 @@ async def download_backup(name: str):
 
 @router.post("/api/system/restart")
 async def system_restart():
-    """Restart the AgentHive server.
+    """Restart the Xylocopa server.
 
     Pre-checks that the code can import successfully (catches syntax
     errors, reserved names, missing deps) before killing the current
@@ -726,7 +729,7 @@ async def system_restart():
             [sys.executable, "-c", "import main"],
             cwd=orchestrator_dir,
             capture_output=True, text=True, timeout=_IMPORT_CHECK_TIMEOUT,
-            env={**os.environ, "AGENTHIVE_IMPORT_CHECK": "1"},
+            env={**os.environ, "XYLOCOPA_IMPORT_CHECK": "1", "AGENTHIVE_IMPORT_CHECK": "1"},
         )
         if check.returncode != 0:
             # Extract the last meaningful error line

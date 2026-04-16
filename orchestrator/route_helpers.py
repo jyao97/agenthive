@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import subprocess as _sp
+import tempfile
 
 from fastapi import HTTPException
 from sqlalchemy import func
@@ -48,13 +49,58 @@ IMPORT_CHECK_TIMEOUT = 15
 API_REQUEST_TIMEOUT = 10
 
 # Env vars stripped from claude -p subprocesses to prevent false session
-# rotation signals.
-SUBPROCESS_STRIP_VARS = {"AHIVE_AGENT_ID", "TMUX", "TMUX_PANE"}
+# rotation signals. Includes both the new XY_AGENT_ID and the legacy
+# AHIVE_AGENT_ID (kept for back-compat with in-flight panes).
+SUBPROCESS_STRIP_VARS = {"XY_AGENT_ID", "AHIVE_AGENT_ID", "TMUX", "TMUX_PANE"}
 
 
 def subprocess_clean_env() -> dict[str, str]:
     """Return os.environ without vars that can trigger false session rotation."""
     return {k: v for k, v in os.environ.items() if k not in SUBPROCESS_STRIP_VARS}
+
+
+# SessionStart signal files written by the SessionStart hook and consumed
+# by the dispatcher.  New writes use the xy- prefix; reads check both
+# prefixes so in-flight signals from pre-rename agents survive an upgrade.
+_SESSION_SIGNAL_PREFIX = "xy-"
+_SESSION_SIGNAL_LEGACY_PREFIX = "ahive-"
+
+
+def session_signal_path(agent_id: str) -> str:
+    """Path for *writing* a SessionStart signal file (always new prefix)."""
+    return os.path.join(tempfile.gettempdir(), f"{_SESSION_SIGNAL_PREFIX}{agent_id}.newsession")
+
+
+def find_session_signal(agent_id: str) -> str | None:
+    """Return existing signal file path (new prefix preferred), or None."""
+    new = os.path.join(tempfile.gettempdir(), f"{_SESSION_SIGNAL_PREFIX}{agent_id}.newsession")
+    if os.path.exists(new):
+        return new
+    legacy = os.path.join(tempfile.gettempdir(), f"{_SESSION_SIGNAL_LEGACY_PREFIX}{agent_id}.newsession")
+    if os.path.exists(legacy):
+        return legacy
+    return None
+
+
+def unlink_session_signals(agent_id: str) -> None:
+    """Remove signal files at both new and legacy paths (no-op if missing)."""
+    for prefix in (_SESSION_SIGNAL_PREFIX, _SESSION_SIGNAL_LEGACY_PREFIX):
+        try:
+            os.unlink(os.path.join(tempfile.gettempdir(), f"{prefix}{agent_id}.newsession"))
+        except FileNotFoundError:
+            pass
+
+
+# Pending-session entries written by the SessionStart hook for unmanaged
+# CLI sessions awaiting user adoption.  New writes use xy-pending-sessions;
+# reads scan both directories.
+PENDING_SESSIONS_DIR = "/tmp/xy-pending-sessions"
+PENDING_SESSIONS_LEGACY_DIR = "/tmp/ahive-pending-sessions"
+
+
+def pending_sessions_dirs() -> list[str]:
+    """Return both possible pending-sessions dirs (new first, legacy second)."""
+    return [PENDING_SESSIONS_DIR, PENDING_SESSIONS_LEGACY_DIR]
 
 
 def check_project_capacity(db, project_name: str) -> tuple[int, int]:
@@ -112,13 +158,14 @@ def create_tmux_claude_session(
     pane_result = _sp.run(["tmux", "display-message", "-p", "-t", session_name, "#{pane_id}"],
                           capture_output=True, text=True, timeout=TMUX_CMD_TIMEOUT)
     pane_id = pane_result.stdout.strip()
-    # Unset problematic env vars, export AHIVE_AGENT_ID for hooks,
-    # and disable prompt suggestions so tmux send-keys Enter always
-    # reaches onSubmit (avoids autocomplete intercepting Enter).
-    env_setup = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT AGENTHIVE_MANAGED CLAUDE_CODE_OAUTH_TOKEN"
+    # Unset problematic env vars, export XY_AGENT_ID (and legacy
+    # AHIVE_AGENT_ID alias) for hooks, and disable prompt suggestions so
+    # tmux send-keys Enter always reaches onSubmit (avoids autocomplete
+    # intercepting Enter).
+    env_setup = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT XYLOCOPA_MANAGED AGENTHIVE_MANAGED CLAUDE_CODE_OAUTH_TOKEN"
     env_setup += " && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"
     if agent_id:
-        env_setup += f" && export AHIVE_AGENT_ID={agent_id}"
+        env_setup += f" && export XY_AGENT_ID={agent_id} && export AHIVE_AGENT_ID={agent_id}"
     _sp.run(["tmux", "send-keys", "-t", pane_id, env_setup, "Enter"],
             check=True, capture_output=True, timeout=TMUX_CMD_TIMEOUT)
     # Launch Claude
@@ -139,6 +186,62 @@ def graceful_kill_tmux(pane_id: str, session_name: str):
         _sp.run(["tmux", "kill-session", "-t", session_name], capture_output=True, timeout=TMUX_CMD_TIMEOUT)
     except (OSError, _sp.TimeoutExpired):
         logger.debug("tmux kill-session %s failed (may already be dead)", session_name)
+
+
+# ---- Tmux session naming -----------------------------------------------------
+# New agents launch with `xy-{id[:8]}`; legacy agents used `ah-{id[:8]}`.
+# Detection / cleanup must accept both prefixes so running pre-rename agents
+# keep working after upgrade.
+
+TMUX_SESSION_PREFIX = "xy-"
+TMUX_SESSION_LEGACY_PREFIX = "ah-"
+
+
+def tmux_session_name(agent_id: str) -> str:
+    """Canonical tmux session name for new agents (`xy-{id[:8]}`)."""
+    return f"{TMUX_SESSION_PREFIX}{agent_id[:8]}"
+
+
+def tmux_session_candidates(agent_id: str) -> list[str]:
+    """All tmux session names that could belong to this agent (new + legacy)."""
+    return [
+        f"{TMUX_SESSION_PREFIX}{agent_id[:8]}",
+        f"{TMUX_SESSION_LEGACY_PREFIX}{agent_id[:8]}",
+    ]
+
+
+def is_managed_tmux_session(name: str) -> bool:
+    """True if this tmux session was launched by the orchestrator."""
+    return name.startswith(TMUX_SESSION_PREFIX) or name.startswith(TMUX_SESSION_LEGACY_PREFIX)
+
+
+def tmux_session_to_agent_prefix(name: str) -> str | None:
+    """Extract agent_id prefix from a managed tmux session name, or None."""
+    if name.startswith(TMUX_SESSION_PREFIX):
+        return name[len(TMUX_SESSION_PREFIX):]
+    if name.startswith(TMUX_SESSION_LEGACY_PREFIX):
+        return name[len(TMUX_SESSION_LEGACY_PREFIX):]
+    return None
+
+
+def graceful_kill_tmux_agent(pane_id: str | None, agent_id: str):
+    """Kill the agent's tmux pane (if given) and ALL session candidates.
+
+    Tries both the new `xy-` and legacy `ah-` session names so pre-rename
+    agents are properly cleaned up.
+    """
+    if pane_id:
+        try:
+            _sp.run(["tmux", "send-keys", "-t", pane_id, "C-c"], capture_output=True, timeout=TMUX_CMD_TIMEOUT)
+            _sp.run(["tmux", "send-keys", "-t", pane_id, "C-c"], capture_output=True, timeout=TMUX_CMD_TIMEOUT)
+            _sp.run(["tmux", "kill-pane", "-t", pane_id], capture_output=True, timeout=TMUX_CMD_TIMEOUT)
+        except (OSError, _sp.TimeoutExpired):
+            logger.warning("Failed graceful tmux kill for pane %s", pane_id, exc_info=True)
+    for session_name in tmux_session_candidates(agent_id):
+        try:
+            _sp.run(["tmux", "kill-session", "-t", session_name], capture_output=True, timeout=TMUX_CMD_TIMEOUT)
+        except (OSError, _sp.TimeoutExpired):
+            logger.debug("tmux kill-session %s failed (may already be dead)", session_name)
 
 
 def generate_worktree_name_local(prompt: str) -> str:

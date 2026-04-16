@@ -1,4 +1,4 @@
-"""AgentHive configuration — loaded from environment variables."""
+"""Xylocopa configuration — loaded from environment variables."""
 
 import os
 
@@ -92,10 +92,11 @@ PROJECT_CONFIGS_PATH = _resolve(os.getenv("PROJECT_CONFIGS_PATH", "project-confi
 # VAPID (Web Push)
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
-VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:agenthive@example.com")
+VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:xylocopa@example.com")
 
-# Uploads
-UPLOADS_DIR = os.path.expanduser(os.getenv("UPLOADS_DIR", "~/.agenthive/uploads"))
+# Uploads — startup migration moves legacy ~/.agenthive/uploads to the new
+# location (see migrate_legacy_paths() in main.py).
+UPLOADS_DIR = os.path.expanduser(os.getenv("UPLOADS_DIR", "~/.xylocopa/uploads"))
 
 # CORS
 CORS_ORIGINS = [

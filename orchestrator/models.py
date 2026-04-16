@@ -1,4 +1,4 @@
-"""Database models for AgentHive."""
+"""Database models for Xylocopa."""
 
 import enum
 import uuid

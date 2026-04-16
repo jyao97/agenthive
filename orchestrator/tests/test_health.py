@@ -9,7 +9,7 @@ async def test_health_returns_200(client):
     resp = await client.get("/api/health")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["service"] == "agenthive"
+    assert data["service"] == "xylocopa"
     assert "status" in data
     assert "db" in data
     assert "claude_cli" in data

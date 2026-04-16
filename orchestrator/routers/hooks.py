@@ -26,7 +26,7 @@ router = APIRouter(tags=["hooks"])
 def _resolve_agent_id_from_body(body: dict) -> str:
     """Resolve agent_id from hook body when X-Agent-Id header is empty.
 
-    For adopted CLI sessions (cli_sync=True) that lack AHIVE_AGENT_ID in
+    For adopted CLI sessions (cli_sync=True) that lack XY_AGENT_ID in
     their environment, look up the session_id in the agents table to find
     the owning agent.  This allows Stop/PreToolUse/PostToolUse hooks to
     wake the sync engine for these sessions.
@@ -55,7 +55,7 @@ def _is_subprocess_session(agent_id: str, hook_session_id: str, request: Request
     """Return True if a hook is from a Claude Code subprocess, not the main agent.
 
     When Claude Code's Agent tool spawns ``claude -p`` subprocesses, they
-    inherit AHIVE_AGENT_ID and fire hooks with the parent agent's ID.
+    inherit XY_AGENT_ID and fire hooks with the parent agent's ID.
     These must be ignored to prevent session theft and false state changes.
 
     Checks if the hook's session_id differs from the agent's tracked
@@ -76,7 +76,7 @@ def _is_subprocess_session(agent_id: str, hook_session_id: str, request: Request
 
 # Stop hook signal file directory.  The dispatcher reads (and deletes)
 # these when harvesting task completions.
-_HOOK_SIGNAL_DIR = os.path.join(tempfile.gettempdir(), "ahive-hooks")
+_HOOK_SIGNAL_DIR = os.path.join(tempfile.gettempdir(), "xy-hooks")
 
 
 
@@ -100,7 +100,7 @@ async def hook_agent_session_end(request: Request):
             logger.warning("hook_agent_session_end: no X-Agent-Id and no session match")
             return {}
 
-    # Guard: ignore hooks from subprocess sessions (Agent tool inherits AHIVE_AGENT_ID)
+    # Guard: ignore hooks from subprocess sessions (Agent tool inherits XY_AGENT_ID)
     hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
     if _is_subprocess_session(agent_id, hook_sid, request):
         logger.info("hook_agent_session_end: ignoring subprocess session %s for agent %s",
@@ -151,7 +151,7 @@ async def hook_agent_user_prompt(request: Request):
             logger.warning("hook_agent_user_prompt: no X-Agent-Id and no session match (headers: %s)", dict(request.headers))
             return {}
 
-    # Guard: ignore hooks from subprocess sessions (Agent tool inherits AHIVE_AGENT_ID)
+    # Guard: ignore hooks from subprocess sessions (Agent tool inherits XY_AGENT_ID)
     hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
     if _is_subprocess_session(agent_id, hook_sid, request):
         logger.info("hook_agent_user_prompt: ignoring subprocess session %s for agent %s",
@@ -237,7 +237,7 @@ async def hook_agent_stop(request: Request):
             logger.warning("hook_agent_stop: no X-Agent-Id and no session match")
             return {}
 
-    # Guard: ignore hooks from subprocess sessions (Agent tool inherits AHIVE_AGENT_ID)
+    # Guard: ignore hooks from subprocess sessions (Agent tool inherits XY_AGENT_ID)
     hook_sid = body.get("session_id", "") if isinstance(body, dict) else ""
     if _is_subprocess_session(agent_id, hook_sid, request):
         logger.info("hook_agent_stop: ignoring subprocess session %s for agent %s",
@@ -778,7 +778,7 @@ async def _handle_ask_user_question(request, agent_id: str, tool_input: dict):
     })
 
     # Block until user answers (reuse permission timeout)
-    _perm_timeout = int(os.getenv("AHIVE_PERMISSION_TIMEOUT", "7200"))
+    _perm_timeout = int(os.getenv("XY_PERMISSION_TIMEOUT") or os.getenv("AHIVE_PERMISSION_TIMEOUT") or "7200")
     try:
         decision, reason, updated_input = await asyncio.wait_for(
             pm.wait_for_decision(req.id), timeout=_perm_timeout,
@@ -796,7 +796,7 @@ async def _handle_ask_user_question(request, agent_id: str, tool_input: dict):
         return {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
-            "permissionDecisionReason": reason or "Answered from AgentHive web UI",
+            "permissionDecisionReason": reason or "Answered from Xylocopa web UI",
             "updatedInput": updated_input,
         }}
     else:
@@ -945,7 +945,7 @@ async def hook_agent_permission(request: Request):
     })
 
     # Block until user responds, with configurable timeout (default 2h)
-    _perm_timeout = int(os.getenv("AHIVE_PERMISSION_TIMEOUT", "7200"))
+    _perm_timeout = int(os.getenv("XY_PERMISSION_TIMEOUT") or os.getenv("AHIVE_PERMISSION_TIMEOUT") or "7200")
     try:
         decision, reason, _updated_input = await asyncio.wait_for(
             pm.wait_for_decision(req.id), timeout=_perm_timeout,
@@ -1200,7 +1200,8 @@ async def hook_agent_session_start(request: Request):
                         )
                 else:
                     # Fallback: write signal file for poll-based detection
-                    signal_path = os.path.join(tempfile.gettempdir(), f"ahive-{agent_id}.newsession")
+                    from route_helpers import session_signal_path
+                    signal_path = session_signal_path(agent_id)
                     try:
                         with open(signal_path, "w") as f:
                             f.write(session_id)
@@ -1220,7 +1221,7 @@ async def hook_agent_session_start(request: Request):
             _sc.mark_delivered_and_completed(agent_id, "/clear")
 
         # Guard: ignore SessionStart from subprocesses (Agent tool inherits
-        # AHIVE_AGENT_ID).  Accept if awaiting_rotation (set by SessionEnd)
+        # XY_AGENT_ID).  Accept if awaiting_rotation (set by SessionEnd)
         # or if this is a /clear rotation.
         if source != "clear":
             ad_check = getattr(request.app.state, "agent_dispatcher", None)
@@ -1238,7 +1239,8 @@ async def hook_agent_session_start(request: Request):
                         ctx.awaiting_rotation = False
 
         # Managed agent — session rotation signal
-        signal_path = os.path.join(tempfile.gettempdir(), f"ahive-{agent_id}.newsession")
+        from route_helpers import session_signal_path
+        signal_path = session_signal_path(agent_id)
         try:
             with open(signal_path, "w") as f:
                 f.write(session_id)
@@ -1272,7 +1274,8 @@ async def hook_agent_session_start(request: Request):
             Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
         ).first()
         if pane_owner:
-            signal_path = os.path.join(tempfile.gettempdir(), f"ahive-{pane_owner.id}.newsession")
+            from route_helpers import session_signal_path
+            signal_path = session_signal_path(pane_owner.id)
             try:
                 with open(signal_path, "w") as f:
                     f.write(session_id)

@@ -151,11 +151,11 @@ async def test_notification_settings_roundtrip(client):
 
 @pytest.mark.anyio
 async def test_health_service_name(client):
-    """Health endpoint should return service='agenthive'."""
+    """Health endpoint should return service='xylocopa'."""
     resp = await client.get("/api/health")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["service"] == "agenthive"
+    assert data["service"] == "xylocopa"
 
 
 @pytest.mark.anyio

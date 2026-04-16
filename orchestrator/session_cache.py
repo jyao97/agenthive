@@ -115,7 +115,7 @@ def migrate_session_dirs(project_path: str) -> bool:
     """Find and migrate existing Claude session dirs for a project.
 
     When a project is registered at a new path (e.g. moved from
-    ~/Work/mast3r to ~/agenthive-projects/mast3r), the old session
+    ~/Work/mast3r to ~/xylocopa-projects/mast3r), the old session
     directory under ~/.claude/projects/ still uses the old path encoding.
 
     This scans for any existing session dir whose name ends with the same

@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for AgentHive backend tests."""
+"""Shared pytest fixtures for Xylocopa backend tests."""
 
 import os
 import sys

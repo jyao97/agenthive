@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse safety hook: deterministic guardrails for AgentHive agents.
+"""PreToolUse safety hook: deterministic guardrails for Xylocopa agents.
 Blocks dangerous shell commands and out-of-project file modifications
 BEFORE they execute — replaces prompt-based safety rules with hard blocks.
 

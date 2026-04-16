@@ -167,14 +167,19 @@ def delete_orphans(scan_result: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _active_tmux_sessions() -> set[str]:
-    """Return set of active tmux session names (ah-* prefix)."""
+    """Return set of active orchestrator-managed tmux session names
+    (new ``xy-`` and legacy ``ah-`` prefixes)."""
+    from route_helpers import is_managed_tmux_session
     try:
         result = subprocess.run(
             ["tmux", "list-sessions", "-F", "#{session_name}"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            return {s.strip() for s in result.stdout.splitlines() if s.strip().startswith("ah-")}
+            return {
+                s.strip() for s in result.stdout.splitlines()
+                if s.strip() and is_managed_tmux_session(s.strip())
+            }
     except (FileNotFoundError, subprocess.SubprocessError, OSError) as e:
         logger.debug("Failed to list tmux sessions: %s", e)
     return set()
@@ -200,8 +205,12 @@ def scan_stale_agents(db: SASession, *, max_age_days: int = STALE_AGENT_DAYS) ->
     }
 
     # Active tmux sessions → protected agent ID prefixes
+    from route_helpers import tmux_session_to_agent_prefix
     active_tmux = _active_tmux_sessions()
-    protected_prefixes = {s.replace("ah-", "") for s in active_tmux}
+    protected_prefixes = {
+        prefix for s in active_tmux
+        if (prefix := tmux_session_to_agent_prefix(s)) is not None
+    }
 
     # Query stale parent agents (not subagents)
     candidates = (

@@ -36,8 +36,11 @@ from route_helpers import (
     check_project_capacity, compute_successor_id,
     create_tmux_claude_session, enrich_agent_briefs,
     generate_worktree_name_local, graceful_kill_tmux,
+    graceful_kill_tmux_agent,
     subprocess_clean_env, tmux_launch_sem,
-    TMUX_CMD_TIMEOUT, TUI_STARTUP_TIMEOUT, TUI_SETTLE_DELAY,
+    tmux_session_candidates, tmux_session_name,
+    TMUX_CMD_TIMEOUT, TMUX_SESSION_PREFIX,
+    TUI_STARTUP_TIMEOUT, TUI_SETTLE_DELAY,
     MAX_STARTING_AGENTS, MAX_SEND_ATTEMPTS, JSONL_POLL_PER_ATTEMPT,
     IMPORT_CHECK_TIMEOUT, SUBPROCESS_STRIP_VARS,
 )
@@ -70,7 +73,8 @@ def _discover_session_id_from_pane(tmux_pane: str, project_path: str) -> str:
     """Discover the active session_id for a tmux pane.
 
     Strategy (in order):
-    1. Check /tmp/ahive-pending-sessions/ for an entry matching this pane
+    1. Check /tmp/xy-pending-sessions/ (and legacy /tmp/ahive-pending-sessions/)
+       for an entry matching this pane
     2. Scan open files for JSONL belonging to the pane's process tree
     3. Read Claude Code's session_id from its tasks dir (latest lock file)
     """
@@ -78,8 +82,10 @@ def _discover_session_id_from_pane(tmux_pane: str, project_path: str) -> str:
         return ""
 
     # Strategy 1: pending session files written by the SessionStart hook
-    pending_dir = "/tmp/ahive-pending-sessions"
-    if os.path.isdir(pending_dir):
+    from route_helpers import pending_sessions_dirs
+    for pending_dir in pending_sessions_dirs():
+        if not os.path.isdir(pending_dir):
+            continue
         for fname in os.listdir(pending_dir):
             if not fname.endswith(".json"):
                 continue
@@ -168,8 +174,8 @@ def _write_agent_hooks_config(project_path: str):
     _tool_activity_hook = {
         "type": "http",
         "url": f"{base_url}/agent-tool-activity",
-        "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
-        "allowedEnvVars": ["AHIVE_AGENT_ID"],
+        "headers": {"X-Agent-Id": "$XY_AGENT_ID"},
+        "allowedEnvVars": ["XY_AGENT_ID", "AHIVE_AGENT_ID"],
     }
 
     # Permission gate hook — separate URL so Claude Code doesn't dedup
@@ -178,8 +184,8 @@ def _write_agent_hooks_config(project_path: str):
     _permission_hook = {
         "type": "http",
         "url": f"{base_url}/agent-permission",
-        "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
-        "allowedEnvVars": ["AHIVE_AGENT_ID"],
+        "headers": {"X-Agent-Id": "$XY_AGENT_ID"},
+        "allowedEnvVars": ["XY_AGENT_ID", "AHIVE_AGENT_ID"],
         "timeout": 86400,
     }
 
@@ -188,8 +194,8 @@ def _write_agent_hooks_config(project_path: str):
     _permission_request_hook = {
         "type": "http",
         "url": f"{base_url}/agent-permission-request",
-        "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
-        "allowedEnvVars": ["AHIVE_AGENT_ID"],
+        "headers": {"X-Agent-Id": "$XY_AGENT_ID"},
+        "allowedEnvVars": ["XY_AGENT_ID", "AHIVE_AGENT_ID"],
         "timeout": 86400,
     }
 
@@ -235,8 +241,8 @@ def _write_agent_hooks_config(project_path: str):
             "hooks": [{
                 "type": "http",
                 "url": f"{base_url}/agent-post-compact",
-                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
-                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+                "headers": {"X-Agent-Id": "$XY_AGENT_ID"},
+                "allowedEnvVars": ["XY_AGENT_ID", "AHIVE_AGENT_ID"],
             }],
         }],
         "PermissionRequest": [{
@@ -246,24 +252,24 @@ def _write_agent_hooks_config(project_path: str):
             "hooks": [{
                 "type": "http",
                 "url": f"{base_url}/agent-stop",
-                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
-                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+                "headers": {"X-Agent-Id": "$XY_AGENT_ID"},
+                "allowedEnvVars": ["XY_AGENT_ID", "AHIVE_AGENT_ID"],
             }],
         }],
         "SessionEnd": [{
             "hooks": [{
                 "type": "http",
                 "url": f"{base_url}/agent-session-end",
-                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
-                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+                "headers": {"X-Agent-Id": "$XY_AGENT_ID"},
+                "allowedEnvVars": ["XY_AGENT_ID", "AHIVE_AGENT_ID"],
             }],
         }],
         "UserPromptSubmit": [{
             "hooks": [{
                 "type": "http",
                 "url": f"{base_url}/agent-user-prompt",
-                "headers": {"X-Agent-Id": "$AHIVE_AGENT_ID"},
-                "allowedEnvVars": ["AHIVE_AGENT_ID"],
+                "headers": {"X-Agent-Id": "$XY_AGENT_ID"},
+                "allowedEnvVars": ["XY_AGENT_ID", "AHIVE_AGENT_ID"],
             }],
         }],
     }
@@ -293,32 +299,31 @@ def _write_agent_hooks_config(project_path: str):
 
 
 def _write_mcp_config(project_path: str):
-    """Write .mcp.json to give agents access to the AgentHive MCP server.
+    """Write .mcp.json to give agents access to the Xylocopa MCP server.
 
-    For the agenthive project itself, we skip — the committed .mcp.json
+    For the xylocopa project itself, we skip — the committed .mcp.json
     with a relative path is preferred.  For other projects, we write an
     absolute path so agents can call list_sessions / read_session.
+
+    Transparently migrates legacy "agenthive" key to "xylocopa" when it
+    points at our mcp_server.py.
     """
-    agenthive_root = os.path.dirname(
+    xylocopa_root = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
 
-    # Skip if this IS the agenthive project (committed .mcp.json handles it)
-    if os.path.realpath(project_path) == os.path.realpath(agenthive_root):
+    # Skip if this IS the xylocopa project (committed .mcp.json handles it)
+    if os.path.realpath(project_path) == os.path.realpath(xylocopa_root):
         return
 
-    mcp_server_path = os.path.join(agenthive_root, "orchestrator", "mcp_server.py")
+    mcp_server_path = os.path.join(xylocopa_root, "orchestrator", "mcp_server.py")
     if not os.path.isfile(mcp_server_path):
         return
 
     mcp_json_path = os.path.join(project_path, ".mcp.json")
-    desired = {
-        "mcpServers": {
-            "agenthive": {
-                "command": "python3",
-                "args": [mcp_server_path],
-            }
-        }
+    desired_entry = {
+        "command": "python3",
+        "args": [mcp_server_path],
     }
 
     try:
@@ -329,8 +334,19 @@ def _write_mcp_config(project_path: str):
 
         # Merge — don't clobber other MCP servers the project may have
         servers = existing.get("mcpServers", {})
-        if servers.get("agenthive") != desired["mcpServers"]["agenthive"]:
-            servers["agenthive"] = desired["mcpServers"]["agenthive"]
+        changed = False
+
+        # Migrate legacy "agenthive" key when it points at our mcp_server.py
+        legacy = servers.get("agenthive")
+        if isinstance(legacy, dict) and mcp_server_path in (legacy.get("args") or []):
+            servers.pop("agenthive", None)
+            changed = True
+
+        if servers.get("xylocopa") != desired_entry:
+            servers["xylocopa"] = desired_entry
+            changed = True
+
+        if changed:
             existing["mcpServers"] = servers
             with open(mcp_json_path, "w") as f:
                 json.dump(existing, f, indent=2)
@@ -344,7 +360,7 @@ def _write_global_session_hook():
     """Write SessionStart hook to ~/.claude/settings.json (global).
 
     This ensures ALL claude processes on this machine fire the hook,
-    regardless of which project they're in or whether AgentHive started
+    regardless of which project they're in or whether Xylocopa started
     them.  The hook script tries HTTP POST to the orchestrator and falls
     back to writing a local file when the orchestrator is offline.
     """
@@ -603,10 +619,10 @@ async def create_agent(body: AgentCreate, request: Request, db: Session = Depend
         except (OSError, _sp.TimeoutExpired):
             _existing_tmux = set()
 
-        tmux_session = f"ah-{agent_id[:8]}"
+        tmux_session = tmux_session_name(agent_id)
         if tmux_session in _existing_tmux:
             # Collision — regenerate (extremely unlikely since agent_id is unique)
-            tmux_session = f"ah-{secrets.token_hex(4)}"
+            tmux_session = f"{TMUX_SESSION_PREFIX}{secrets.token_hex(4)}"
 
         # Pre-generate session UUID and write .owner sidecar
         pre_session_id = str(_uuid.uuid4())
@@ -718,7 +734,7 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
     # Enforce per-project capacity
     _check_project_capacity(db, project_name)
 
-    # Each agent gets its own tmux session: "ah-{agent_id_prefix}"
+    # Each agent gets its own tmux session: tmux_session_name(agent_id)
     # Pre-generate agent ID, ensuring no DB or tmux session name collision
     import secrets
     import subprocess as _sp
@@ -735,7 +751,7 @@ async def launch_tmux_agent(request: Request, db: Session = Depends(get_db)):
 
     for _ in range(20):
         agent_hex = secrets.token_hex(6)
-        tmux_session = f"ah-{agent_hex[:8]}"
+        tmux_session = tmux_session_name(agent_hex)
         if db.get(Agent, agent_hex) is None and tmux_session not in _existing_tmux:
             break
     else:
@@ -1699,7 +1715,7 @@ async def stop_agent(agent_id: str, request: Request,
 
     # Kill the tmux pane/session if active
     if agent.tmux_pane:
-        _graceful_kill_tmux(agent.tmux_pane, f"ah-{agent.id[:8]}")
+        graceful_kill_tmux_agent(agent.tmux_pane, agent.id)
         logger.info("Killed tmux pane %s for agent %s", agent.tmux_pane, agent.id)
 
     ad = getattr(request.app.state, "agent_dispatcher", None)
@@ -2013,16 +2029,16 @@ async def permanently_delete_agent(agent_id: str, request: Request, db: Session 
     if agent.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
         raise HTTPException(status_code=400, detail="Agent must be stopped before deleting")
 
-    # 0. Kill tmux session if still alive (always try by name —
-    #    tmux_pane is cleared to None during stop, but session may linger)
+    # 0. Kill tmux sessions if still alive (try both new xy- and legacy ah-
+    #    names; tmux_pane is cleared to None during stop, but sessions may linger)
     import subprocess as _sp
-    sess_name = f"ah-{agent.id[:8]}"
-    try:
-        _sp.run(["tmux", "kill-session", "-t", sess_name],
-                capture_output=True, timeout=5)
-        logger.info("Killed tmux session %s for permanent delete of agent %s", sess_name, agent.id)
-    except (OSError, _sp.TimeoutExpired):
-        logger.debug("tmux kill-session %s failed (may already be dead) for agent %s", sess_name, agent.id)
+    for sess_name in tmux_session_candidates(agent.id):
+        try:
+            _sp.run(["tmux", "kill-session", "-t", sess_name],
+                    capture_output=True, timeout=5)
+            logger.info("Killed tmux session %s for permanent delete of agent %s", sess_name, agent.id)
+        except (OSError, _sp.TimeoutExpired):
+            logger.debug("tmux kill-session %s failed (may already be dead) for agent %s", sess_name, agent.id)
 
     # Cancel dispatcher tasks
     ad = getattr(request.app.state, "agent_dispatcher", None)
@@ -2160,7 +2176,7 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
             cmd_parts += ["--resume", agent.session_id]
         claude_cmd = " ".join(shlex.quote(p) for p in cmd_parts)
 
-        tmux_session = f"ah-{agent.id[:8]}"
+        tmux_session = tmux_session_name(agent.id)
         _preflight_claude_project(project.path)
 
         pane_id = _create_tmux_claude_session(tmux_session, project.path, claude_cmd, agent_id=agent.id)
@@ -2245,20 +2261,6 @@ async def resume_agent(agent_id: str, request: Request, db: Session = Depends(ge
     asyncio.ensure_future(emit_agent_update(agent.id, agent.status.value, agent.project))
     logger.info("Agent %s resumed (sync=%s, mode=%s)", agent.id, resumed_sync, resume_mode)
     return agent
-
-
-@router.put("/api/agents/reorder")
-async def reorder_agents(body: dict, db: Session = Depends(get_db)):
-    """Set sort_order for a list of agent IDs. Body: { "agent_ids": ["id1", "id2", ...] }"""
-    agent_ids = body.get("agent_ids", [])
-    if not agent_ids:
-        raise HTTPException(400, "agent_ids required")
-    for i, aid in enumerate(agent_ids):
-        agent = db.get(Agent, aid)
-        if agent:
-            agent.sort_order = i
-    db.commit()
-    return {"ok": True, "count": len(agent_ids)}
 
 
 @router.put("/api/agents/read-all")
@@ -3003,7 +3005,7 @@ async def answer_agent_interactive(
             answers = _build_answers_from_metadata(db, agent_id, body.tool_use_id)
             questions = _get_questions_from_metadata(db, agent_id, body.tool_use_id)
             updated_input = {"questions": questions, "answers": answers}
-            pm.respond(pending_id, "allow", reason="Answered from AgentHive", updated_input=updated_input)
+            pm.respond(pending_id, "allow", reason="Answered from Xylocopa", updated_input=updated_input)
             logger.info("AskUserQuestion resolved via updatedInput for agent %s: %s", agent_id[:8], list(answers.keys()))
             return {"detail": "ok", "method": "updatedInput"}
         else:
@@ -3092,7 +3094,7 @@ async def answer_agent_interactive(
 
                 # Kill tmux session
                 if has_tmux:
-                    _graceful_kill_tmux(pane_id, f"ah-{agent.id[:8]}")
+                    graceful_kill_tmux_agent(pane_id, agent.id)
 
                 asyncio.ensure_future(emit_task_update(
                     _task.id, _task.status.value, _task.project_name or "",

@@ -16,6 +16,7 @@ from agent_dispatcher import (
 from jsonl_parser import (
     _parse_agenthive_marker,
     _parse_session_turns,
+    _parse_xylocopa_marker,
     _strip_agent_preamble,
 )
 
@@ -62,6 +63,28 @@ class TestParseAgenthiveMarker:
         result = _parse_agenthive_marker(text)
         assert result is not None
         assert result["agent_id"] == "xyz789"
+
+
+class TestParseXylocopaMarker:
+    """New xylocopa marker — parser should accept both new and legacy prefixes."""
+
+    def test_parse_xylocopa_marker_new_format(self):
+        text = "<!-- xylocopa-prompt agent_id=abc123 msg_id=def456 -->"
+        result = _parse_xylocopa_marker(text)
+        assert result == {"agent_id": "abc123", "msg_id": "def456"}
+
+    def test_parse_xylocopa_marker_legacy_prefix(self):
+        text = "<!-- agenthive-prompt agent_id=abc123 -->"
+        result = _parse_xylocopa_marker(text)
+        assert result == {"agent_id": "abc123"}
+
+    def test_parse_xylocopa_marker_missing(self):
+        text = "no marker here"
+        result = _parse_xylocopa_marker(text)
+        assert result is None
+
+    def test_legacy_alias_is_same_callable(self):
+        assert _parse_agenthive_marker is _parse_xylocopa_marker
 
 
 # ===========================================================================

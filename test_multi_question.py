@@ -15,7 +15,7 @@ import sys
 import time
 import requests
 
-BASE = os.getenv("AHIVE_URL", "http://localhost:8080")
+BASE = os.getenv("XY_URL") or os.getenv("AHIVE_URL") or "http://localhost:8080"
 PROJECT = "cc-orchestrator"  # Use this project for testing
 MODEL = "claude-haiku-4-5-20251001"  # Fast/cheap model for testing
 TOKEN = None

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AgentHive MCP Server — gives Claude Code agents access to orchestrator data.
+"""Xylocopa MCP Server — gives Claude Code agents access to orchestrator data.
 
 First tool: session history (list + read previous conversations).
 Framework designed for easy addition of more tools (task queries, agent
@@ -32,14 +32,15 @@ from jsonl_parser import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # Configuration — all from env vars, no config.py import
 # ---------------------------------------------------------------------------
-AGENTHIVE_ROOT = os.environ.get(
-    "AGENTHIVE_ROOT", os.path.dirname(_SCRIPT_DIR)
+XYLOCOPA_ROOT = os.environ.get(
+    "XYLOCOPA_ROOT",
+    os.environ.get("AGENTHIVE_ROOT", os.path.dirname(_SCRIPT_DIR)),  # legacy fallback
 )
-DB_PATH = os.path.join(AGENTHIVE_ROOT, "data", "orchestrator.db")
+DB_PATH = os.path.join(XYLOCOPA_ROOT, "data", "orchestrator.db")
 CLAUDE_HOME = os.path.expanduser(os.environ.get("CLAUDE_HOME", "~/.claude"))
 
 logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger("agenthive.mcp")
+logger = logging.getLogger("xylocopa.mcp")
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +97,9 @@ def _get_db() -> sqlite3.Connection | None:
 # ---------------------------------------------------------------------------
 
 server = FastMCP(
-    "agenthive",
+    "xylocopa",
     instructions=(
-        "AgentHive orchestrator tools. Use list_sessions to discover "
+        "Xylocopa orchestrator tools. Use list_sessions to discover "
         "previous conversations, read_session to read one.\n\n"
         "File handling: when generating or referencing media files "
         "(images, videos, plots), save them inside the project directory "
@@ -110,7 +111,7 @@ server = FastMCP(
 
 @server.tool()
 def list_sessions(project: str = "") -> str:
-    """List recent AgentHive agent sessions.
+    """List recent Xylocopa agent sessions.
 
     Shows agent name, project, status, session ID, and last message preview.
     Use this to discover session IDs that can be passed to read_session().
@@ -120,7 +121,7 @@ def list_sessions(project: str = "") -> str:
     """
     db = _get_db()
     if db is None:
-        return "AgentHive database not found. Is the orchestrator running?"
+        return "Xylocopa database not found. Is the orchestrator running?"
 
     try:
         query = (
@@ -156,7 +157,7 @@ def list_sessions(project: str = "") -> str:
 
 @server.tool()
 def read_session(session_id: str, max_turns: int = 50) -> str:
-    """Read a previous AgentHive conversation by session ID or agent ID.
+    """Read a previous Xylocopa conversation by session ID or agent ID.
 
     Returns formatted conversation turns (user prompts, agent responses,
     system events). Orchestrator preamble is stripped for readability.
@@ -167,7 +168,7 @@ def read_session(session_id: str, max_turns: int = 50) -> str:
     """
     db = _get_db()
     if db is None:
-        return "AgentHive database not found. Is the orchestrator running?"
+        return "Xylocopa database not found. Is the orchestrator running?"
 
     try:
         row = _lookup_agent(db, session_id)

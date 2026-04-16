@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "agenthive": {
+    "xylocopa": {
       "command": "python3",
       "args": ["orchestrator/mcp_server.py"]
     }

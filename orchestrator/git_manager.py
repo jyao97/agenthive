@@ -205,8 +205,8 @@ class GitManager:
         if current.startswith("ERROR:"):
             return {"success": False, "error": current, "current_branch": "unknown"}
 
-        self._run_git(project_path, ["config", "user.name", "AgentHive"])
-        self._run_git(project_path, ["config", "user.email", os.getenv("GIT_USER_EMAIL", "agenthive@localhost")])
+        self._run_git(project_path, ["config", "user.name", "Xylocopa"])
+        self._run_git(project_path, ["config", "user.email", os.getenv("GIT_USER_EMAIL", "xylocopa@localhost")])
 
         merge_args = ["merge", branch]
         if no_ff:

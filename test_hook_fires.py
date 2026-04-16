@@ -15,7 +15,7 @@ import time
 import threading
 import requests
 
-BASE = os.getenv("AHIVE_URL", "http://localhost:8080")
+BASE = os.getenv("XY_URL") or os.getenv("AHIVE_URL") or "http://localhost:8080"
 PROJECT = "cc-orchestrator"
 LOG_FILE = os.path.join(os.path.dirname(__file__), "logs", "orchestrator.log")
 TIMEOUT_AGENT_READY = 90

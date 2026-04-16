@@ -11,7 +11,7 @@ Public API:
     merge_interactive_meta       — merge JSONL + web-UI interactive metadata
     strip_agent_preamble         — remove orchestrator preamble/postamble
     format_tool_summary          — format tool_use as one-line markdown
-    parse_agenthive_marker       — legacy marker parsing
+    parse_xylocopa_marker        — legacy marker parsing (also accepts old agenthive marker)
     derive_selected_index        — derive selection from answer text
 """
 
@@ -30,8 +30,10 @@ logger = logging.getLogger("orchestrator.jsonl_parser")
 # Constants
 # ---------------------------------------------------------------------------
 
-# Legacy marker prefix — kept for backward-compat parsing of old sessions.
-AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt"
+# Marker prefixes — new code writes XYLOCOPA, parser also accepts the legacy
+# agenthive prefix so old session JSONL files keep working unchanged.
+XYLOCOPA_PROMPT_MARKER = "<!-- xylocopa-prompt"
+AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt"  # legacy — still parsed for back-compat
 
 # Preamble prefix used to detect system-wrapped prompts in JSONL content.
 PREAMBLE_PREFIX = "You are working in project:"
@@ -41,7 +43,7 @@ _IMAGE_META_RE = re.compile(
 )
 
 _PREAMBLE_RE = re.compile(
-    r"^(?:<!-- agenthive-prompt[^>]*-->\n)?"        # optional marker line
+    r"^(?:<!-- (?:xylocopa|agenthive)-prompt[^>]*-->\n)?"  # optional marker line (new or legacy)
     r"You are working in project: .+?\n"
     r"Project path: .+?\n\n"
     r"First read the project's CLAUDE\.md to understand project conventions\.\n"
@@ -266,17 +268,24 @@ def merge_interactive_meta(db_meta_json: str | None, new_meta: dict | None) -> s
 # Prompt detection and stripping
 # ---------------------------------------------------------------------------
 
-def parse_agenthive_marker(text: str) -> dict | None:
-    """Extract agent_id and msg_id from a legacy agenthive-prompt marker.
+def parse_xylocopa_marker(text: str) -> dict | None:
+    """Extract agent_id and msg_id from a xylocopa-prompt marker.
+
+    Also accepts the legacy ``<!-- agenthive-prompt`` prefix so JSONL
+    files written before the rename keep deduping correctly.
 
     Returns dict of attributes if marker found, None otherwise.
     Old-format markers (no attributes) return an empty dict.
-    Kept for backward compat with sessions created before the sidecar system.
     """
-    prefix = AGENTHIVE_PROMPT_MARKER
-    pos = text[:200].find(prefix)
-    if pos < 0:
-        return None
+    head = text[:200]
+    pos = head.find(XYLOCOPA_PROMPT_MARKER)
+    if pos >= 0:
+        prefix = XYLOCOPA_PROMPT_MARKER
+    else:
+        pos = head.find(AGENTHIVE_PROMPT_MARKER)
+        if pos < 0:
+            return None
+        prefix = AGENTHIVE_PROMPT_MARKER
     end = text.find("-->", pos)
     if end < 0:
         return {}
@@ -289,18 +298,23 @@ def parse_agenthive_marker(text: str) -> dict | None:
     return attrs
 
 
+# Legacy alias — pre-rename code/tests import this name
+parse_agenthive_marker = parse_xylocopa_marker
+
+
 def is_wrapped_prompt(content: str) -> bool:
     """Check if content is a system-wrapped prompt from _build_agent_prompt
     or _build_task_prompt.
 
     Detects:
     - Agent preamble: ``You are working in project:``
-    - Legacy marker: ``<!-- agenthive-prompt``
+    - Marker: ``<!-- xylocopa-prompt`` (or legacy ``<!-- agenthive-prompt``)
     - Task prompt header: ``# Task:`` (remains after strip_agent_preamble)
     """
     head = content[:80]
     return (
         PREAMBLE_PREFIX in head
+        or XYLOCOPA_PROMPT_MARKER in head
         or AGENTHIVE_PROMPT_MARKER in head
         or head.startswith("# Task:")
     )
@@ -636,7 +650,9 @@ _is_wrapped_prompt = is_wrapped_prompt
 _merge_interactive_meta = merge_interactive_meta
 _strip_agent_preamble = strip_agent_preamble
 _format_tool_summary = format_tool_summary
-_parse_agenthive_marker = parse_agenthive_marker
+_parse_xylocopa_marker = parse_xylocopa_marker
+_parse_agenthive_marker = parse_agenthive_marker  # legacy alias
 _derive_selected_index = derive_selected_index
-_AGENTHIVE_PROMPT_MARKER = AGENTHIVE_PROMPT_MARKER
+_XYLOCOPA_PROMPT_MARKER = XYLOCOPA_PROMPT_MARKER
+_AGENTHIVE_PROMPT_MARKER = AGENTHIVE_PROMPT_MARKER  # legacy alias
 _PREAMBLE_PREFIX = PREAMBLE_PREFIX
