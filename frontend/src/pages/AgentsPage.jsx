@@ -160,14 +160,13 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
           )}
         </div>
       </div>
-      {agent.has_pending_suggestions && (
-        <span
-          className="shrink-0 self-center w-2.5 h-2.5 rounded-full bg-amber-500"
-          title="Insights ready"
-        />
-      )}
       {agent.unread_count > 0 && (
-        <span className="shrink-0 self-center inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-cyan-500 text-white text-xs font-bold">
+        <span
+          className={`shrink-0 self-center inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-white text-xs font-bold ${
+            agent.has_pending_suggestions ? "bg-amber-500" : "bg-cyan-500"
+          }`}
+          title={agent.has_pending_suggestions ? "Insights ready" : undefined}
+        >
           {agent.unread_count}
         </span>
       )}
