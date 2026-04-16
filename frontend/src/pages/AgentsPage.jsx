@@ -50,10 +50,10 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
             : agent.status === "ERROR" ? "bg-red-400"
             : "bg-zinc-600"
         }`} />
-        <div className="flex-1 min-w-0 p-4 flex items-center gap-3">
+        <div className="flex-1 min-w-0 flex items-start gap-3 px-5 py-[18px]">
       {/* Selection checkbox */}
       {selecting && (
-        <div className="shrink-0 flex items-center justify-center w-6 h-6">
+        <div className="shrink-0 flex items-center justify-center w-6 h-6 mt-0.5">
           <div
             className={`w-[22px] h-[22px] rounded-full border-2 flex items-center justify-center transition-colors ${
               selected
@@ -71,41 +71,20 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
       )}
 
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-heading truncate flex-1">
+        {/* Title + time */}
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="text-base font-medium leading-snug text-heading truncate">
             {agent.name}
           </h3>
-          {agent.last_message_at && (
-            <span className="text-xs text-dim shrink-0">
-              {relativeTime(agent.last_message_at)}
-            </span>
-          )}
+          <span className="text-[11px] text-faint shrink-0 mt-0.5">
+            {agent.last_message_at ? relativeTime(agent.last_message_at) : ""}
+          </span>
         </div>
-        <div className="flex items-center gap-2 mt-1">
-          <p className="text-xs text-label truncate flex-1">
-            {agent.last_message_preview || "No messages yet"}
-          </p>
-          {agent.has_pending_suggestions && (
-            <span className="shrink-0 inline-flex items-center justify-center h-5 px-1.5 rounded-full bg-amber-500 text-white text-[10px] font-bold">
-              insights
-            </span>
-          )}
-          {agent.insight_status === "failed" && !agent.has_pending_suggestions && (
-            <span className="shrink-0 inline-flex items-center justify-center h-5 px-1.5 rounded-full bg-red-500 text-white text-[10px] font-bold">
-              failed
-            </span>
-          )}
-          {agent.insight_status === "generating" && !agent.has_pending_suggestions && (
-            <span className="shrink-0 inline-flex items-center justify-center h-5 px-1.5 rounded-full bg-blue-500 text-white text-[10px] font-bold animate-pulse">
-              generating
-            </span>
-          )}
-          {agent.unread_count > 0 && (
-            <span className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-cyan-500 text-white text-xs font-bold">
-              {agent.unread_count}
-            </span>
-          )}
-        </div>
+        {/* Preview */}
+        <p className="text-sm text-dim leading-relaxed mt-1 line-clamp-2">
+          {agent.last_message_preview || "No messages yet"}
+        </p>
+        {/* Tags */}
         <div className="flex flex-wrap items-center gap-1 mt-1.5">
           <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusDotColor}${agent.status === "EXECUTING" ? " animate-pulse" : ""}`} />
           <span className={`text-[10px] lowercase ${statusTextColor}`}>
@@ -119,6 +98,26 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
           {agent.model && (
             <span className="text-[10px] text-dim font-medium px-1.5 py-px rounded-full bg-elevated">
               {modelDisplayName(agent.model)}
+            </span>
+          )}
+          {agent.has_pending_suggestions && (
+            <span className="text-[10px] font-semibold px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 dark:text-amber-400">
+              insights
+            </span>
+          )}
+          {agent.insight_status === "failed" && !agent.has_pending_suggestions && (
+            <span className="text-[10px] font-semibold px-1.5 py-px rounded-full bg-red-500/15 text-red-500 dark:text-red-400">
+              failed
+            </span>
+          )}
+          {agent.insight_status === "generating" && !agent.has_pending_suggestions && (
+            <span className="text-[10px] font-semibold px-1.5 py-px rounded-full bg-blue-500/15 text-blue-400 animate-pulse">
+              generating
+            </span>
+          )}
+          {agent.unread_count > 0 && (
+            <span className="text-[10px] font-bold px-1.5 py-px rounded-full bg-cyan-500 text-white">
+              {agent.unread_count}
             </span>
           )}
         </div>
