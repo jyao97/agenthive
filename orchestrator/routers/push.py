@@ -70,3 +70,25 @@ async def push_unsubscribe(request: Request, db: Session = Depends(get_db)):
     ).delete(synchronize_session=False)
     db.commit()
     return {"status": "unsubscribed"}
+
+
+@router.post("/ack")
+async def push_ack(request: Request):
+    """Diagnostic: SW posts here from its push handler so we can tell
+    'push reached device' apart from 'push never arrived'.
+
+    Body: {nid, shown, ts, ua?}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    nid = body.get("nid", "")
+    shown = body.get("shown")
+    ts = body.get("ts")
+    ua = (body.get("ua") or "")[:120]
+    logger.info(
+        "push ack: nid=%s shown=%s ts=%s ua=%s",
+        nid, shown, ts, ua,
+    )
+    return {"status": "ok"}

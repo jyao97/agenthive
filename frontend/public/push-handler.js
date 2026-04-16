@@ -1,5 +1,20 @@
 /* AgentHive Service Worker — Web Push notifications */
 
+function sendAck(nid, shown) {
+  if (!nid) return Promise.resolve();
+  return fetch("/api/push/ack", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      nid,
+      shown,
+      ts: Date.now(),
+      ua: (self.navigator && self.navigator.userAgent) || "",
+    }),
+    keepalive: true,
+  }).catch(() => {});
+}
+
 self.addEventListener("push", (event) => {
   let data = { title: "AgentHive", body: "An agent finished.", url: "/" };
   try {
@@ -8,14 +23,18 @@ self.addEventListener("push", (event) => {
     // use defaults
   }
 
-  event.waitUntil(
-    self.registration.showNotification(data.title, {
+  const shownPromise = self.registration
+    .showNotification(data.title, {
       body: data.body,
       icon: "/icon-192.png",
       badge: "/icon-192.png",
       vibrate: [100, 50, 100],
-      data: { url: data.url },
-    }),
+      data: { url: data.url, nid: data.nid },
+    })
+    .then(() => true, () => false);
+
+  event.waitUntil(
+    shownPromise.then((ok) => sendAck(data.nid, ok)),
   );
 });
 

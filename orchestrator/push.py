@@ -5,6 +5,7 @@ Backend: Web Push (VAPID) — browser-based, works when PWA is open.
 
 import json
 import logging
+import secrets
 
 import requests as _requests
 
@@ -56,7 +57,12 @@ def _send_webpush(title: str, body: str, url: str = "/") -> None:
         if not subs:
             return
 
-        payload = json.dumps({"title": title, "body": body, "url": url})
+        # Diagnostic correlation id — SW echoes this back via /api/push/ack
+        nid = secrets.token_hex(4)
+        payload = json.dumps({"title": title, "body": body, "url": url, "nid": nid})
+        logger.info(
+            "push send: nid=%s subs=%d title=%r", nid, len(subs), title[:60],
+        )
         expired_ids = []
 
         for sub in subs:
