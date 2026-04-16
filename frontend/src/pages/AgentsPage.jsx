@@ -84,7 +84,7 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
         <p className="text-sm text-dim leading-relaxed mt-1 line-clamp-2">
           {agent.last_message_preview || "No messages yet"}
         </p>
-        {/* Tags */}
+        {/* Tags — same order as InboxCard */}
         <div className="flex flex-wrap items-center gap-1 mt-1.5">
           <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusDotColor}${agent.status === "EXECUTING" ? " animate-pulse" : ""}`} />
           <span className={`text-[10px] lowercase ${statusTextColor}`}>
@@ -95,9 +95,27 @@ const AgentRow = memo(function AgentRow({ agent, onClick, selecting, selected, o
             onClick={(e) => { e.stopPropagation(); navigate(`/projects/${encodeURIComponent(agent.project)}`); }}
             title={agent.project}
           >{agent.project}</span>
+          {agent.worktree && (
+            <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-purple-500/15 text-purple-500 dark:text-purple-400 flex items-center gap-0.5">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zm0 0v3a3 3 0 01-3 3H9m-3 0a3 3 0 100 6 3 3 0 000-6z" />
+              </svg>
+              Worktree
+            </span>
+          )}
+          {agent.skip_permissions && (
+            <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-amber-500/15 text-amber-500 dark:text-amber-400">
+              Auto
+            </span>
+          )}
           {agent.model && (
             <span className="text-[10px] text-dim font-medium px-1.5 py-px rounded-full bg-elevated">
               {modelDisplayName(agent.model)}
+            </span>
+          )}
+          {agent.effort && (
+            <span className="text-[10px] text-dim font-medium px-1.5 py-px rounded-full bg-elevated">
+              {agent.effort.charAt(0).toUpperCase() + agent.effort.slice(1)}
             </span>
           )}
           {agent.has_pending_suggestions && (
