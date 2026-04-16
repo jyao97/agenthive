@@ -140,7 +140,7 @@ def init_db():
         columns = _table_columns(conn, "projects")
         if "default_model" not in columns:
             conn.execute(text(
-                "ALTER TABLE projects ADD COLUMN default_model VARCHAR(100) NOT NULL DEFAULT 'claude-opus-4-6'"
+                "ALTER TABLE projects ADD COLUMN default_model VARCHAR(100) NOT NULL DEFAULT 'claude-opus-4-7'"
             ))
             conn.commit()
 
@@ -499,14 +499,6 @@ def init_db():
         if "sync_stale" not in agent_cols_suggestions:
             conn.execute(text(
                 "ALTER TABLE agents ADD COLUMN sync_stale BOOLEAN NOT NULL DEFAULT 0"
-            ))
-            conn.commit()
-
-        # --- Add sort_order column to agents if missing ---
-        agent_cols_sort = _table_columns(conn, "agents")
-        if "sort_order" not in agent_cols_sort:
-            conn.execute(text(
-                "ALTER TABLE agents ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
             ))
             conn.commit()
 

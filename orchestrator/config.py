@@ -30,10 +30,11 @@ MAX_CONCURRENT_WORKERS = int(os.getenv("MAX_CONCURRENT_WORKERS", "5"))
 TASK_TIMEOUT_SECONDS = int(os.getenv("TASK_TIMEOUT_SECONDS", "1800"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 MAX_IDLE_AGENTS = int(os.getenv("MAX_IDLE_AGENTS", "20"))
-CC_MODEL = os.getenv("CC_MODEL", "claude-opus-4-6")
+CC_MODEL = os.getenv("CC_MODEL", "claude-opus-4-7")
 
 # Valid model names — keep in sync with frontend MODEL_OPTIONS
 VALID_MODELS = {
+    "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",

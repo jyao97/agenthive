@@ -90,7 +90,6 @@ class Task(Base):
     sync_mode: Mapped[bool] = mapped_column(Boolean, default=False)
     use_worktree: Mapped[bool] = mapped_column(Boolean, default=True)
     use_tmux: Mapped[bool] = mapped_column(Boolean, default=False)
-    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     notify_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deferred_to: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
@@ -214,7 +213,7 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     max_concurrent: Mapped[int] = mapped_column(Integer, default=8)
     default_model: Mapped[str] = mapped_column(
-        String(100), default="claude-opus-4-6"
+        String(100), default="claude-opus-4-7"
     )
     archived: Mapped[bool] = mapped_column(default=False)
     auto_progress_summary: Mapped[bool] = mapped_column(Boolean, default=False)

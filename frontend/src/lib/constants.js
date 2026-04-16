@@ -44,7 +44,8 @@ export const AGENT_MODES = [
 ];
 
 export const MODEL_OPTIONS = [
-  { value: "claude-opus-4-6", label: "Opus" },
+  { value: "claude-opus-4-7", label: "Opus 4.7" },
+  { value: "claude-opus-4-6", label: "Opus 4.6" },
   { value: "claude-sonnet-4-6", label: "Sonnet" },
   { value: "claude-haiku-4-5-20251001", label: "Haiku" },
 ];
