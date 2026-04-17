@@ -39,7 +39,7 @@ import { uploadUrl } from "../lib/urls";
 
 const PERM_MODES = [
   { key: "normal", label: "Normal", active: "bg-zinc-600 text-white", idle: "text-dim hover:text-body hover:bg-input" },
-  { key: "auto", label: "Auto", active: "bg-emerald-600 text-white", idle: "text-dim hover:text-body hover:bg-input" },
+  { key: "auto", label: "AcceptEdits", active: "bg-emerald-600 text-white", idle: "text-dim hover:text-body hover:bg-input" },
   { key: "plan", label: "Plan", active: "bg-amber-600 text-white", idle: "text-dim hover:text-body hover:bg-input" },
 ];
 
@@ -105,6 +105,21 @@ import usePageVisible from "../hooks/usePageVisible";
 import { useToast } from "../contexts/ToastContext";
 
 const ACTIVE_AGENT_STATUSES = new Set(["EXECUTING", "IDLE"]);
+
+// Per-agent favicon: hash id → hue, skip blue range (reserved for main app).
+// Returns a data URL SVG of a bot icon tinted with that hue.
+function agentFaviconDataUrl(agentId) {
+  let h = 0;
+  for (let i = 0; i < agentId.length; i++) h = (h * 31 + agentId.charCodeAt(i)) >>> 0;
+  const spanStart = 270; // purple
+  const spanEnd = 560;   // 200° ≡ cyan/blue (wraps past 360) — keep blue 200–269 out
+  const hue = (spanStart + (h % (spanEnd - spanStart))) % 360;
+  const light = `hsl(${hue}, 75%, 55%)`;
+  const dark = `hsl(${hue}, 70%, 30%)`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${light}"/><stop offset="100%" stop-color="${dark}"/></linearGradient></defs><rect width="512" height="512" rx="96" fill="url(#g)"/><g fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"><circle cx="256" cy="56" r="18" fill="#fff" stroke="none"/><line x1="256" y1="74" x2="256" y2="140"/><rect x="78" y="140" width="356" height="264" rx="44"/><circle cx="184" cy="268" r="32" fill="#fff" stroke="none"/><circle cx="328" cy="268" r="32" fill="#fff" stroke="none"/><line x1="160" y1="404" x2="160" y2="468"/><line x1="352" y1="404" x2="352" y2="468"/></g></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
 // --- Chat Bubble ---
 
 function SystemBubble({ message }) {
@@ -2353,26 +2368,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const toastCtx = useToast();
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const [permMode, setPermMode] = useState("auto"); // "normal" | "auto" | "plan"
+  const [permMode, setPermMode] = useState("auto"); // "normal" | "auto" | "plan" — CLI TUI Shift+Tab cycle
   const [cyclingMode, setCyclingMode] = useState(false);
-  const permModeInitedRef = useRef(false);
   useEffect(() => {
     if (!id) return;
-    permModeInitedRef.current = false;
     const stored = localStorage.getItem(`xy.permMode.${id}`);
-    if (stored === "normal" || stored === "auto" || stored === "plan") {
-      setPermMode(stored);
-      permModeInitedRef.current = true;
-    }
+    if (stored === "normal" || stored === "auto" || stored === "plan") setPermMode(stored);
   }, [id]);
-  // When agent loads, if no localStorage override, sync permMode with skip_permissions
-  // from project-page launch toggle: true → "auto", false → "normal".
-  useEffect(() => {
-    if (permModeInitedRef.current) return;
-    if (agent?.skip_permissions === undefined) return;
-    setPermMode(agent.skip_permissions ? "auto" : "normal");
-    permModeInitedRef.current = true;
-  }, [agent?.skip_permissions]);
   const handleSetMode = async (target) => {
     if (cyclingMode || target === permMode) return;
     const order = ["normal", "auto", "plan"];
@@ -2811,7 +2813,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     document.title = label;
     const iconLink = document.querySelector('link[rel="shortcut icon"]');
     const prevHref = iconLink?.getAttribute("href");
-    iconLink?.setAttribute("href", "/agent-favicon.svg");
+    if (iconLink) iconLink.setAttribute("href", agentFaviconDataUrl(id));
     return () => {
       document.title = prevTitle;
       if (iconLink && prevHref) iconLink.setAttribute("href", prevHref);

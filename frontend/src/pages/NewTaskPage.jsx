@@ -620,7 +620,7 @@ export default function NewTaskPage({ embedded = false }) {
                   >
                     <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${skipPermissions ? "translate-x-[16px]" : ""}`} />
                   </div>
-                  <span className="text-sm text-label">Auto</span>
+                  <span className="text-sm text-label">Fully Auto</span>
                 </label>
                 <div className="flex items-center gap-1.5 min-w-0">
                   <button
