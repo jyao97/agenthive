@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, Component } from "react";
-import { Bell, BellOff } from "lucide-react";
+import { Bell, BellOff, Sparkles, X as XIcon } from "lucide-react";
+import SkillPickerPanel, { bumpSkillUsage } from "../components/SkillPickerPanel";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   fetchAgent,
@@ -1788,6 +1789,8 @@ import SendLaterPicker from "../components/SendLaterPicker";
 function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, scrollButton, kbOpen = false }) {
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
+  const [showSkillPicker, setShowSkillPicker] = useState(false);
+  const [selectedSkill, setSelectedSkill] = useState(null);
   const [escCooldown, setEscCooldown] = useState(false);
 
   const [attPreviewIndex, setAttPreviewIndex] = useState(null);
@@ -1876,11 +1879,12 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
     }
   }, [attachments, attachmentCacheKey]);
 
-  const buildMessageText = useCallback((baseText, atts) => {
+  const buildMessageText = useCallback((baseText, atts, skill) => {
     let msg = baseText;
     for (const a of atts) {
       if (a.uploadedPath) msg += `\n[Attached file: ${a.uploadedPath}]`;
     }
+    if (skill) msg = `/${skill}\n${msg}`;
     return msg;
   }, []);
 
@@ -1906,12 +1910,13 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       return;
     }
     if (disabled && !isBusy) return;
-    const msg = buildMessageText(text.trim(), uploaded);
+    const msg = buildMessageText(text.trim(), uploaded, selectedSkill);
     onSend(msg);
+    if (selectedSkill) { bumpSkillUsage(selectedSkill); setSelectedSkill(null); }
     setText("");
     clearAttachments();
     pendingSendRef.current = null;
-  }, [text, attachments, disabled, isBusy, onSend, setText, buildMessageText, clearAttachments]);
+  }, [text, attachments, disabled, isBusy, onSend, setText, buildMessageText, clearAttachments, selectedSkill]);
 
   const handleSchedule = useCallback((scheduledAt) => {
     const uploading = attachments.some((a) => a.uploading);
@@ -1924,13 +1929,14 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       pendingSendRef.current = null;
       return;
     }
-    const msg = buildMessageText(text.trim(), uploaded);
+    const msg = buildMessageText(text.trim(), uploaded, selectedSkill);
     onSendLater(msg, scheduledAt);
+    if (selectedSkill) { bumpSkillUsage(selectedSkill); setSelectedSkill(null); }
     setText("");
     clearAttachments();
     setShowPicker(false);
     pendingSendRef.current = null;
-  }, [text, attachments, onSendLater, setText, buildMessageText, clearAttachments]);
+  }, [text, attachments, onSendLater, setText, buildMessageText, clearAttachments, selectedSkill]);
 
   // Check pending send when attachments finish uploading
   useEffect(() => {
@@ -2125,6 +2131,20 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
         {(uploadError || voiceError) && (
           <p className="text-xs text-red-400 px-1">{uploadError || voiceError}</p>
         )}
+        {selectedSkill && (
+          <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-500/15 text-xs w-fit ml-1">
+            <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            <span className="text-cyan-300 font-mono">/{selectedSkill}</span>
+            <button
+              type="button"
+              onClick={() => setSelectedSkill(null)}
+              title="Clear skill"
+              className="text-dim hover:text-heading shrink-0"
+            >
+              <XIcon className="w-3 h-3" />
+            </button>
+          </div>
+        )}
         <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.txt,.csv,.json,.md,.py,.js,.ts,.jsx,.tsx,.html,.css,.yaml,.yml,.xml,.log,.zip,.tar,.gz" multiple className="hidden" onChange={handleFileSelect} />
         <div className="flex items-center gap-1.5 px-1">
           {/* Attach button */}
@@ -2138,6 +2158,28 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
             </svg>
           </button>
+          {/* Skill picker button */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowSkillPicker(v => !v)}
+              title={selectedSkill ? `Skill: /${selectedSkill}` : "Select a skill"}
+              className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                selectedSkill
+                  ? "bg-cyan-500/80 hover:bg-cyan-500 text-white"
+                  : "bg-elevated hover:bg-hover text-label"
+              }`}
+            >
+              <Sparkles className="w-5 h-5" />
+            </button>
+            {showSkillPicker && (
+              <SkillPickerPanel
+                selected={selectedSkill}
+                onSelect={setSelectedSkill}
+                onClose={() => setShowSkillPicker(false)}
+              />
+            )}
+          </div>
           <div className="flex-1 min-w-0 flex items-center justify-end gap-1.5">
             {voice.recording && voice.remainingSeconds != null && (
               <span className={`text-xs font-semibold tabular-nums ${voice.remainingSeconds <= 10 ? "text-red-400" : "text-red-500"}`}>
