@@ -359,6 +359,8 @@ def format_tool_summary(name: str, input_data: dict) -> str | None:
         return f"> `Glob` {input_data.get('pattern', '')}"
     if name == "Task":
         return f"> `Task` {input_data.get('description', '')}"
+    if name == "Skill":
+        return f"> `Skill` {input_data.get('skill', '')}"
     # Skip noisy internal tools
     if name in ("ToolSearch",):
         return None
@@ -437,6 +439,8 @@ def parse_session_turns_from_lines(
     text_uuid: str | None = None
     # Timestamp for the current accumulated text segment
     text_ts: str | None = None
+    # Most recent Skill tool_use meta dict, awaiting its isMeta body message
+    last_skill_meta: dict | None = None
 
     def flush_text():
         """Emit accumulated text as a kind='text' turn."""
@@ -481,6 +485,21 @@ def parse_session_turns_from_lines(
         if entry_type == "user":
             msg = entry.get("message", {})
             content = msg.get("content", "")
+            # isMeta user entries are injected skill bodies (or other meta text).
+            # If one follows a Skill tool_use, attach its text to that tool_use's
+            # metadata as `skill_body` and drop it from the visible turn stream.
+            if entry.get("isMeta"):
+                if last_skill_meta is not None:
+                    if isinstance(content, list):
+                        body_text = "\n".join(
+                            b.get("text", "") for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    else:
+                        body_text = content if isinstance(content, str) else ""
+                    last_skill_meta["skill_body"] = body_text
+                    last_skill_meta = None
+                continue
             # Check for tool_result in list-type content
             if isinstance(content, list):
                 has_tool_result = False
@@ -601,6 +620,9 @@ def parse_session_turns_from_lines(
                         if summary:
                             tool_uuid = f"tool-{tool_use_id}" if tool_use_id else None
                             tool_meta = {"tool_name": tool_name, "tool_use_id": tool_use_id}
+                            if tool_name == "Skill":
+                                tool_meta["skill_name"] = tool_input.get("skill", "")
+                                last_skill_meta = tool_meta
                             turns.append(("assistant", summary, tool_meta, tool_uuid, "tool_use", entry_ts))
 
         elif entry_type == "system":

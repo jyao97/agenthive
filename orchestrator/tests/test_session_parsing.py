@@ -473,6 +473,46 @@ class TestParseSessionTurns:
         assert user_turns[0][3] == "uuid-for-question"
 
 
+class TestParseSkillInvocation:
+    def test_skill_tool_use_captures_skill_name_and_body(self, tmp_path):
+        jsonl = tmp_path / "session.jsonl"
+        _write_jsonl(jsonl, [
+            {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "run xlsx"}, "sessionId": "s1"},
+            {"type": "assistant", "uuid": "a1", "message": {"content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "Skill", "input": {"skill": "xlsx"}},
+            ]}, "sessionId": "s1"},
+            {"type": "user", "uuid": "u2", "isMeta": True, "message": {"role": "user", "content": [
+                {"type": "text", "text": "# xlsx skill\n\nDo spreadsheet work."},
+            ]}, "sessionId": "s1"},
+            {"type": "assistant", "uuid": "a2", "message": {"content": [
+                {"type": "text", "text": "ok"},
+            ]}, "sessionId": "s1"},
+        ])
+        turns = _parse_session_turns(str(jsonl))
+        tool_turns = [t for t in turns if len(t) > 4 and t[4] == "tool_use"]
+        assert len(tool_turns) == 1
+        _, content, meta, _, _, _ = tool_turns[0]
+        assert content == "> `Skill` xlsx"
+        assert meta["tool_name"] == "Skill"
+        assert meta["skill_name"] == "xlsx"
+        assert meta["skill_body"] == "# xlsx skill\n\nDo spreadsheet work."
+        # isMeta body must NOT surface as a user turn
+        user_texts = [t[1] for t in turns if t[0] == "user"]
+        assert "# xlsx skill\n\nDo spreadsheet work." not in user_texts
+
+    def test_ismeta_without_preceding_skill_is_dropped(self, tmp_path):
+        jsonl = tmp_path / "session.jsonl"
+        _write_jsonl(jsonl, [
+            {"type": "user", "uuid": "u1", "isMeta": True, "message": {"role": "user", "content": [
+                {"type": "text", "text": "stray meta"},
+            ]}, "sessionId": "s1"},
+            {"type": "user", "uuid": "u2", "message": {"role": "user", "content": "real"}, "sessionId": "s1"},
+        ])
+        turns = _parse_session_turns(str(jsonl))
+        user_texts = [t[1] for t in turns if t[0] == "user"]
+        assert user_texts == ["real"]
+
+
 # ===========================================================================
 # 5. _get_first_user_uuid() tests
 # ===========================================================================

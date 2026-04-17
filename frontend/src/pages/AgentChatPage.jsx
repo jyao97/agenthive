@@ -1589,6 +1589,41 @@ function ToolLogBubble({ entries }) {
   );
 }
 
+/**
+ * Collapsed skill.md insertion bubble. Mirrors Claude Code CLI's Skill tool-use
+ * byline but lets the user expand to read the injected skill body.
+ */
+function SkillBubble({ message, project }) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = message.metadata || {};
+  const skillName = meta.skill_name || "";
+  const body = meta.skill_body || "";
+  const hasBody = body.trim().length > 0;
+  return (
+    <div className="flex justify-start my-2">
+      <div className="max-w-[min(85%,30rem)] rounded-2xl px-4 py-2.5 bg-surface shadow-card rounded-bl-md">
+        <button
+          type="button"
+          onClick={() => hasBody && setExpanded(e => !e)}
+          disabled={!hasBody}
+          className="flex items-center gap-1.5 text-xs font-mono text-dim hover:text-cyan-300 disabled:hover:text-dim disabled:cursor-default"
+        >
+          <span className="shrink-0">{expanded ? "▾" : "▸"}</span>
+          <span className="text-cyan-300">Skill</span>
+          {skillName && <span className="text-faint">{skillName}</span>}
+        </button>
+        {expanded && hasBody && (
+          <div className="mt-2 pt-2 border-t border-divider/40 text-sm break-words chat-bubble-content">
+            <SafeMarkdown fallback={body}>
+              {renderMarkdown(body, project)}
+            </SafeMarkdown>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 // --- Tool Activity Log (real-time feed of tool calls via CC hooks) ---
 
@@ -3757,13 +3792,20 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   return m;
                 });
               console.log('[messages] rendering', visible.length, 'messages after filter');
-              // Build tool groups: consecutive tool_use + tool_activity messages get merged
+              // Build tool groups: consecutive tool_use + tool_activity messages get merged.
+              // Skill tool_uses render as their own SkillBubble — they break the group
+              // so they're neither collapsed into ToolLogBubble nor absorb neighbors.
               const toolGroups = new Map(); // first msg id -> [entries]
               let groupStart = null;
               for (let i = 0; i < visible.length; i++) {
                 const m = visible[i];
                 const isToolUse = m.role === "AGENT" && m.kind === "tool_use";
                 const isToolActivity = m.kind === "tool_activity";
+                const isSkill = isToolUse && m.metadata?.tool_name === "Skill";
+                if (isSkill) {
+                  groupStart = null;
+                  continue;
+                }
                 if (isToolUse || isToolActivity) {
                   if (!groupStart) groupStart = m.id;
                   if (!toolGroups.has(groupStart)) toolGroups.set(groupStart, []);
@@ -3804,6 +3846,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                 }
               }
               return visible.map((msg) => {
+                // Skill tool_use — standalone collapsible bubble with injected skill.md body
+                if (msg.kind === "tool_use" && msg.metadata?.tool_name === "Skill") {
+                  return <div key={msg.id} data-msg-id={msg.id} data-msg-type="skill"><SkillBubble message={msg} project={agent.project} /></div>;
+                }
                 // Grouped tool entries (tool_use + tool_activity) — handled before role checks
                 if (msg.kind === "tool_use" || msg.kind === "tool_activity") {
                   if (toolGroups.has(msg.id)) {
