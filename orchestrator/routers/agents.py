@@ -3245,15 +3245,25 @@ async def send_escape_to_agent(agent_id: str, request: Request, db: Session = De
 _last_cycle_mode: dict[str, float] = {}  # agent_id → timestamp
 
 @router.post("/api/agents/{agent_id}/cycle-permission-mode")
-async def cycle_permission_mode(agent_id: str, steps: int = 1, db: Session = Depends(get_db)):
+async def cycle_permission_mode(
+    agent_id: str,
+    steps: int = 1,
+    target: str | None = None,
+    db: Session = Depends(get_db),
+):
     """Send Shift+Tab N times to the agent's tmux pane to cycle permission mode.
 
     Claude Code TUI cycles: normal → auto-accept(⏵⏵) → plan → normal.
     `steps` (1 or 2) selects how many cycles to advance; caller computes it
     from the target and believed-current mode. Backend only forwards keys —
     TUI state isn't programmatically readable.
+
+    When `target == "plan"`, the TUI shows a confirmation dialog after the
+    BTab ("Enter to confirm · Esc to cancel"); we send Enter to accept it so
+    the mode actually enters plan rather than sitting on the dialog.
     """
     import time
+    import asyncio
 
     if steps < 1 or steps > 2:
         raise HTTPException(status_code=400, detail="steps must be 1 or 2")
@@ -3277,5 +3287,13 @@ async def cycle_permission_mode(agent_id: str, steps: int = 1, db: Session = Dep
     if not send_tmux_keys(agent.tmux_pane, ["BTab"] * steps):
         raise HTTPException(status_code=500, detail="Failed to send BTab to tmux")
 
-    logger.info("cycle-mode: sent BTab×%d to agent %s pane %s", steps, agent_id[:8], agent.tmux_pane)
+    if target == "plan":
+        await asyncio.sleep(0.2)
+        send_tmux_keys(agent.tmux_pane, ["Enter"])
+
+    logger.info(
+        "cycle-mode: sent BTab×%d%s to agent %s pane %s",
+        steps, " +Enter" if target == "plan" else "",
+        agent_id[:8], agent.tmux_pane,
+    )
     return {"detail": "ok"}
