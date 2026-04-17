@@ -16,7 +16,7 @@
 
 _Named after [Xylocopa caerulea](https://en.wikipedia.org/wiki/Xylocopa_caerulea) — the blue carpenter bee._
 
-> **Note:** Xylocopa was previously named **AgentHive**. The repo URL still reads `agenthive` and the `agenthive` CLI alias keeps working — see the [migration notes](#migration-from-agenthive) below.
+> **Note:** Xylocopa was previously named **AgentHive**. The `agenthive` CLI alias keeps working — see the [migration notes](#migration-from-agenthive) below.
 
 Xylocopa is a web-based control layer for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that turns it from a synchronous terminal tool into an asynchronous, agentic workflow. Capture ideas from your phone or by voice, dispatch to parallel agents on isolated worktrees, monitor progress in real time, and iterate with auto-summarized context when agents miss the mark. Your existing CLAUDE.md files, project setup, and CLI sessions all carry over, and project knowledge grows with every session.
 
@@ -123,7 +123,7 @@ Xylocopa hooks into Claude Code's native event system — not polling, not heuri
 
 ```bash
 # 1. Clone
-git clone https://github.com/jyao97/AgentHive.git xylocopa && cd xylocopa
+git clone https://github.com/jyao97/xylocopa.git && cd xylocopa
 
 # 2. Run automated setup (installs deps, creates venv, generates SSL certs)
 chmod +x setup.sh && ./setup.sh

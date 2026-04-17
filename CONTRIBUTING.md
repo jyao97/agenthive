@@ -4,7 +4,7 @@ Thanks for your interest in contributing to Xylocopa! Whether you're reporting a
 
 ## Reporting Bugs
 
-Open a [GitHub issue](https://github.com/jyao97/AgentHive/issues) with:
+Open a [GitHub issue](https://github.com/jyao97/xylocopa/issues) with:
 
 - A clear, descriptive title
 - Steps to reproduce the problem
@@ -14,7 +14,7 @@ Open a [GitHub issue](https://github.com/jyao97/AgentHive/issues) with:
 
 ## Suggesting Features
 
-Open a [GitHub issue](https://github.com/jyao97/AgentHive/issues) and label it as a feature request. Describe the use case and why the feature would be valuable. If you have ideas about implementation, include them — but the "why" matters more than the "how."
+Open a [GitHub issue](https://github.com/jyao97/xylocopa/issues) and label it as a feature request. Describe the use case and why the feature would be valuable. If you have ideas about implementation, include them — but the "why" matters more than the "how."
 
 ## Development Setup
 
@@ -30,7 +30,7 @@ Open a [GitHub issue](https://github.com/jyao97/AgentHive/issues) and label it a
 
 ```bash
 # Clone the repo
-git clone https://github.com/jyao97/AgentHive.git xylocopa
+git clone https://github.com/jyao97/xylocopa.git
 cd xylocopa
 
 # Set up Python

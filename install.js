@@ -97,7 +97,7 @@ async function main() {
       info(`Xylocopa already cloned at ${ROOT}`);
     } else {
       info(`Cloning Xylocopa to ${ROOT}...`);
-      run(`git clone https://github.com/jyao97/AgentHive.git "${ROOT}"`);
+      run(`git clone https://github.com/jyao97/xylocopa.git "${ROOT}"`);
       info('Repository cloned');
     }
   }
