@@ -319,8 +319,8 @@ export const answerAgent = (agentId, payload) =>
   });
 export const escapeAgent = (agentId) =>
   request(`/api/agents/${agentId}/escape`, { method: "POST" });
-export const cyclePermissionMode = (agentId) =>
-  request(`/api/agents/${agentId}/cycle-permission-mode`, { method: "POST" });
+export const cyclePermissionMode = (agentId, steps = 1) =>
+  request(`/api/agents/${agentId}/cycle-permission-mode?steps=${steps}`, { method: "POST" });
 // --- Tool Permission Approval ---
 export const respondPermission = (agentId, requestId, payload) =>
   request(`/api/agents/${agentId}/permission/${requestId}/respond`, {

@@ -37,12 +37,34 @@ import { relativeTime, renderMarkdown, extractFileAttachments, stripAttachmentTa
 import { serverNow } from "../lib/serverTime";
 import { uploadUrl } from "../lib/urls";
 
-const permModeLabel = (m) => (m === "plan" ? "Plan" : m === "auto" ? "Auto" : "Normal");
-const permModeBtnCls = (m) => {
-  if (m === "plan") return "bg-amber-600 text-white hover:bg-amber-500";
-  if (m === "auto") return "bg-emerald-600 text-white hover:bg-emerald-500";
-  return "bg-zinc-600 text-white hover:bg-zinc-500";
-};
+const PERM_MODES = [
+  { key: "normal", label: "Normal", active: "bg-zinc-600 text-white", idle: "text-dim hover:text-body hover:bg-input" },
+  { key: "auto", label: "Auto", active: "bg-emerald-600 text-white", idle: "text-dim hover:text-body hover:bg-input" },
+  { key: "plan", label: "Plan", active: "bg-amber-600 text-white", idle: "text-dim hover:text-body hover:bg-input" },
+];
+
+function PermModeSegmented({ mode, onSelect, disabled, compact }) {
+  const size = compact ? "h-6 text-[10px] px-1.5" : "h-7 text-xs px-2";
+  return (
+    <div className={`inline-flex items-center rounded-lg bg-input/60 border border-divider/40 p-0.5 ${disabled ? "opacity-60" : ""}`}>
+      {PERM_MODES.map((m) => {
+        const active = mode === m.key;
+        return (
+          <button
+            key={m.key}
+            type="button"
+            disabled={disabled || active}
+            onClick={() => onSelect(m.key)}
+            title={`Switch to ${m.label}`}
+            className={`${size} flex items-center rounded-md font-medium transition-colors ${active ? m.active : m.idle}`}
+          >
+            {m.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 // Mini error boundary that wraps individual markdown renders so a single
 // broken message doesn't crash the entire chat page.
@@ -2304,17 +2326,18 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const stored = localStorage.getItem(`xy.permMode.${id}`);
     if (stored === "normal" || stored === "auto" || stored === "plan") setPermMode(stored);
   }, [id]);
-  const handleCycleMode = async () => {
-    if (cyclingMode) return;
+  const handleSetMode = async (target) => {
+    if (cyclingMode || target === permMode) return;
     const order = ["normal", "auto", "plan"];
-    const next = order[(order.indexOf(permMode) + 1) % order.length];
+    const steps = (order.indexOf(target) - order.indexOf(permMode) + 3) % 3;
+    if (steps === 0) return;
     setCyclingMode(true);
     try {
-      await cyclePermissionMode(id);
-      setPermMode(next);
-      try { localStorage.setItem(`xy.permMode.${id}`, next); } catch { /* ignore */ }
+      await cyclePermissionMode(id, steps);
+      setPermMode(target);
+      try { localStorage.setItem(`xy.permMode.${id}`, target); } catch { /* ignore */ }
     } catch (e) {
-      toastCtx?.error?.(`Mode cycle failed: ${e.message || e}`);
+      toastCtx?.error?.(`Mode switch failed: ${e.message || e}`);
     } finally {
       setCyclingMode(false);
     }
@@ -3496,11 +3519,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               <div className="shrink-0 flex items-center gap-1.5">
                 <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${statusDot}`} />
                 {!(isStopped || isError) && (
-                  <button type="button" onClick={handleCycleMode} disabled={cyclingMode}
-                    title={`Permission mode: ${permMode} (click to cycle Normal → Auto → Plan)`}
-                    className={`px-2 h-6 flex items-center rounded-md text-[10px] font-medium disabled:opacity-50 ${permModeBtnCls(permMode)}`}>
-                    {permModeLabel(permMode)}
-                  </button>
+                  <PermModeSegmented mode={permMode} onSelect={handleSetMode} disabled={cyclingMode} compact />
                 )}
                 {(isStopped || isError) ? (
                   <button type="button" onClick={() => handleResume()} disabled={resuming}
@@ -3661,17 +3680,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   </svg>
                 </button>
               )}
-              {/* Permission mode cycle — hidden when stopped */}
+              {/* Permission mode segmented — hidden when stopped */}
               {!(isStopped || isError) && (
-                <button
-                  type="button"
-                  onClick={handleCycleMode}
-                  disabled={cyclingMode}
-                  title={`Permission mode: ${permMode} (click to cycle Normal → Auto → Plan)`}
-                  className={`px-2.5 h-7 flex items-center rounded-lg text-xs font-medium transition-colors disabled:opacity-50 ${permModeBtnCls(permMode)}`}
-                >
-                  {permModeLabel(permMode)}
-                </button>
+                <PermModeSegmented mode={permMode} onSelect={handleSetMode} disabled={cyclingMode} />
               )}
               {/* Resume / Stop — show one at a time */}
               {(isStopped || isError) ? (

@@ -3245,14 +3245,18 @@ async def send_escape_to_agent(agent_id: str, request: Request, db: Session = De
 _last_cycle_mode: dict[str, float] = {}  # agent_id → timestamp
 
 @router.post("/api/agents/{agent_id}/cycle-permission-mode")
-async def cycle_permission_mode(agent_id: str, db: Session = Depends(get_db)):
-    """Send Shift+Tab to the agent's tmux pane to cycle permission mode.
+async def cycle_permission_mode(agent_id: str, steps: int = 1, db: Session = Depends(get_db)):
+    """Send Shift+Tab N times to the agent's tmux pane to cycle permission mode.
 
     Claude Code TUI cycles: normal → auto-accept(⏵⏵) → plan → normal.
-    Caller is responsible for tracking/displaying the current mode — backend
-    only forwards the key because TUI state isn't programmatically readable.
+    `steps` (1 or 2) selects how many cycles to advance; caller computes it
+    from the target and believed-current mode. Backend only forwards keys —
+    TUI state isn't programmatically readable.
     """
     import time
+
+    if steps < 1 or steps > 2:
+        raise HTTPException(status_code=400, detail="steps must be 1 or 2")
 
     agent = db.get(Agent, agent_id)
     if not agent:
@@ -3270,8 +3274,8 @@ async def cycle_permission_mode(agent_id: str, db: Session = Depends(get_db)):
     if not verify_tmux_pane(agent.tmux_pane):
         raise HTTPException(status_code=400, detail="Tmux pane no longer exists")
 
-    if not send_tmux_keys(agent.tmux_pane, ["BTab"]):
+    if not send_tmux_keys(agent.tmux_pane, ["BTab"] * steps):
         raise HTTPException(status_code=500, detail="Failed to send BTab to tmux")
 
-    logger.info("cycle-mode: sent BTab to agent %s pane %s", agent_id[:8], agent.tmux_pane)
+    logger.info("cycle-mode: sent BTab×%d to agent %s pane %s", steps, agent_id[:8], agent.tmux_pane)
     return {"detail": "ok"}
