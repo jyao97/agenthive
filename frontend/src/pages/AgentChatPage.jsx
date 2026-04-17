@@ -1865,6 +1865,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       pendingSendRef.current = "send";
       return;
     }
+    if (attachments.some((a) => a.error)) return;
     const uploaded = attachments.filter((a) => a.uploadedPath);
     if (!text.trim() && uploaded.length === 0) return;
     if (disabled && !isBusy) return;
@@ -1881,6 +1882,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       pendingSendRef.current = { type: "schedule", scheduledAt };
       return;
     }
+    if (attachments.some((a) => a.error)) return;
     const uploaded = attachments.filter((a) => a.uploadedPath);
     if (!text.trim() && uploaded.length === 0) return;
     const msg = buildMessageText(text.trim(), uploaded);
@@ -1900,11 +1902,11 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
   handleScheduleRef.current = handleSchedule;
 
   // Fire deferred send ONLY when attachments change (upload completes/fails).
-  // Clear pendingSendRef before calling so a failed-upload early-return in
-  // handleSend doesn't leave it stuck.
+  // Don't auto-send if any attachment failed — let the user retry or remove it.
   useEffect(() => {
     if (!pendingSendRef.current) return;
     if (attachments.some((a) => a.uploading)) return;
+    if (attachments.some((a) => a.error)) return;
     const pending = pendingSendRef.current;
     pendingSendRef.current = null;
     if (pending === "send") {
@@ -1934,12 +1936,32 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
           a.id === id ? { ...a, uploading: false, uploadedPath: result.path } : a
         ));
       }).catch((err) => {
-        setAttachments((prev) => prev.filter((a) => a.id !== id));
-        if (previewUrl) URL.revokeObjectURL(previewUrl);
-        setUploadError(`Upload failed: ${err.message}`);
+        setAttachments((prev) => prev.map((a) =>
+          a.id === id ? { ...a, uploading: false, error: err.message } : a
+        ));
       });
     }
   }, []);
+
+  const retryUpload = useCallback((attId) => {
+    setAttachments((prev) => {
+      const att = prev.find((a) => a.id === attId);
+      if (!att?.file) return prev;
+      return prev.map((a) => a.id === attId ? { ...a, uploading: true, error: null } : a);
+    });
+    // Find the attachment's file from current state
+    const att = attachments.find((a) => a.id === attId);
+    if (!att?.file) return;
+    uploadFile(att.file).then((result) => {
+      setAttachments((prev) => prev.map((a) =>
+        a.id === attId ? { ...a, uploading: false, uploadedPath: result.path, error: null } : a
+      ));
+    }).catch((err) => {
+      setAttachments((prev) => prev.map((a) =>
+        a.id === attId ? { ...a, uploading: false, error: err.message } : a
+      ));
+    });
+  }, [attachments]);
 
   const handleFileSelect = useCallback((e) => {
     const files = Array.from(e.target.files || []);
@@ -2019,8 +2041,9 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
 
   const canType = !disabled || isBusy;
   const anyUploading = attachments.some((a) => a.uploading);
+  const anyFailed = attachments.some((a) => a.error);
   const hasContent = text.trim() || attachments.some((a) => a.uploadedPath);
-  const sendDisabled = (disabled && !isBusy) || !hasContent || anyUploading;
+  const sendDisabled = (disabled && !isBusy) || !hasContent || anyUploading || anyFailed;
 
   // No-op: keyboard dismiss handled by App-level focusout micro-scroll
   const handleBlur = useCallback(() => {}, []);
@@ -2066,23 +2089,38 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-1">
             {attachments.map((att, i) => (
-              <div key={att.id} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-elevated text-xs max-w-[140px] cursor-pointer"
-                onClick={() => { if (!att.uploading) setAttPreviewIndex(i); }}>
+              <div key={att.id} className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs max-w-[160px] cursor-pointer ${att.error ? "bg-red-500/15 ring-1 ring-red-500/30" : "bg-elevated"}`}
+                onClick={() => { if (!att.uploading && !att.error) setAttPreviewIndex(i); }}>
                 {att.previewUrl ? (
-                  <img src={att.previewUrl} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
+                  <img src={att.previewUrl} alt="" className={`w-8 h-8 rounded object-cover shrink-0 ${att.error ? "opacity-50" : ""}`} />
                 ) : (
                   <svg className="w-4 h-4 text-dim shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
                   </svg>
                 )}
-                <span className="truncate text-label flex-1 min-w-0">{att.originalName}</span>
+                <span className={`truncate flex-1 min-w-0 ${att.error ? "text-red-400" : "text-label"}`}>
+                  {att.error ? "Failed" : att.originalName}
+                </span>
                 {att.uploading ? (
                   <svg className="w-3.5 h-3.5 text-cyan-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
+                ) : att.error ? (
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button type="button" onClick={(e) => { e.stopPropagation(); retryUpload(att.id); }} className="text-cyan-400 hover:text-cyan-300" title="Retry upload">
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
+                      </svg>
+                    </button>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); removeAttachment(att.id); }} className="text-dim hover:text-heading" title="Remove">
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
                 ) : (
-                  <button type="button" onClick={() => removeAttachment(att.id)} className="text-dim hover:text-heading shrink-0">
+                  <button type="button" onClick={(e) => { e.stopPropagation(); removeAttachment(att.id); }} className="text-dim hover:text-heading shrink-0">
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                     </svg>
