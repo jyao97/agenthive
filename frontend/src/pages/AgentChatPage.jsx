@@ -111,8 +111,9 @@ const ACTIVE_AGENT_STATUSES = new Set(["EXECUTING", "IDLE"]);
 function agentFaviconDataUrl(agentId) {
   let h = 0;
   for (let i = 0; i < agentId.length; i++) h = (h * 31 + agentId.charCodeAt(i)) >>> 0;
-  const spanStart = 270; // purple
-  const spanEnd = 560;   // 200° ≡ cyan/blue (wraps past 360) — keep blue 200–269 out
+  // Skip cyan/blue entirely (180–279°). Allowed: 280–360 ∪ 0–160 — purple, pink, red, orange, yellow, green.
+  const spanStart = 280;
+  const spanEnd = 520;
   const hue = (spanStart + (h % (spanEnd - spanStart))) % 360;
   const light = `hsl(${hue}, 75%, 55%)`;
   const dark = `hsl(${hue}, 70%, 30%)`;
