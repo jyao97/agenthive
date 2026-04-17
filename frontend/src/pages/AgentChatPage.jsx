@@ -1866,10 +1866,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       return;
     }
     const uploaded = attachments.filter((a) => a.uploadedPath);
-    if (!text.trim() && uploaded.length === 0) {
-      pendingSendRef.current = null;
-      return;
-    }
+    if (!text.trim() && uploaded.length === 0) return;
     if (disabled && !isBusy) return;
     const msg = buildMessageText(text.trim(), uploaded);
     onSend(msg);
@@ -1885,10 +1882,7 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
       return;
     }
     const uploaded = attachments.filter((a) => a.uploadedPath);
-    if (!text.trim() && uploaded.length === 0) {
-      pendingSendRef.current = null;
-      return;
-    }
+    if (!text.trim() && uploaded.length === 0) return;
     const msg = buildMessageText(text.trim(), uploaded);
     onSendLater(msg, scheduledAt);
     setText("");
@@ -1897,17 +1891,28 @@ function ChatInput({ agentId, onSend, onSendLater, disabled, disabledReason, isB
     pendingSendRef.current = null;
   }, [text, attachments, onSendLater, setText, buildMessageText, clearAttachments]);
 
-  // Check pending send when attachments finish uploading
+  // Refs so the upload-complete effect always calls the latest version
+  // without depending on handleSend/handleSchedule (which change on every
+  // keystroke because they capture `text`).
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
+  const handleScheduleRef = useRef(handleSchedule);
+  handleScheduleRef.current = handleSchedule;
+
+  // Fire deferred send ONLY when attachments change (upload completes/fails).
+  // Clear pendingSendRef before calling so a failed-upload early-return in
+  // handleSend doesn't leave it stuck.
   useEffect(() => {
     if (!pendingSendRef.current) return;
     if (attachments.some((a) => a.uploading)) return;
     const pending = pendingSendRef.current;
+    pendingSendRef.current = null;
     if (pending === "send") {
-      handleSend();
+      handleSendRef.current();
     } else if (pending?.type === "schedule") {
-      handleSchedule(pending.scheduledAt);
+      handleScheduleRef.current(pending.scheduledAt);
     }
-  }, [attachments, handleSend, handleSchedule]);
+  }, [attachments]);
 
   const addFiles = useCallback((files) => {
     for (const file of files) {
