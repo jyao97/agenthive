@@ -18,6 +18,7 @@ import {
   updateAgent,
   answerAgent,
   escapeAgent,
+  cyclePermissionMode,
   uploadFile,
   fetchProjectFile,
   respondPermission,
@@ -35,6 +36,13 @@ import ProjectBrowserModal from "../components/ProjectBrowserModal";
 import { relativeTime, renderMarkdown, extractFileAttachments, stripAttachmentTags } from "../lib/formatters";
 import { serverNow } from "../lib/serverTime";
 import { uploadUrl } from "../lib/urls";
+
+const permModeLabel = (m) => (m === "plan" ? "Plan" : m === "auto" ? "Auto" : "Normal");
+const permModeBtnCls = (m) => {
+  if (m === "plan") return "bg-amber-600 text-white hover:bg-amber-500";
+  if (m === "auto") return "bg-emerald-600 text-white hover:bg-emerald-500";
+  return "bg-zinc-600 text-white hover:bg-zinc-500";
+};
 
 // Mini error boundary that wraps individual markdown renders so a single
 // broken message doesn't crash the entire chat page.
@@ -2289,6 +2297,28 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const toastCtx = useToast();
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [permMode, setPermMode] = useState("auto"); // "normal" | "auto" | "plan"
+  const [cyclingMode, setCyclingMode] = useState(false);
+  useEffect(() => {
+    if (!id) return;
+    const stored = localStorage.getItem(`xy.permMode.${id}`);
+    if (stored === "normal" || stored === "auto" || stored === "plan") setPermMode(stored);
+  }, [id]);
+  const handleCycleMode = async () => {
+    if (cyclingMode) return;
+    const order = ["normal", "auto", "plan"];
+    const next = order[(order.indexOf(permMode) + 1) % order.length];
+    setCyclingMode(true);
+    try {
+      await cyclePermissionMode(id);
+      setPermMode(next);
+      try { localStorage.setItem(`xy.permMode.${id}`, next); } catch { /* ignore */ }
+    } catch (e) {
+      toastCtx?.error?.(`Mode cycle failed: ${e.message || e}`);
+    } finally {
+      setCyclingMode(false);
+    }
+  };
   const [generateSummary, setGenerateSummary] = useState(false);
   const [taskOutcome, setTaskOutcome] = useState("complete"); // "complete" | "incomplete" | "drop"
   const [incompleteReason, setIncompleteReason] = useState("");
@@ -3465,6 +3495,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
               /* Compact: status dot + stop/resume + expand chevron */
               <div className="shrink-0 flex items-center gap-1.5">
                 <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${statusDot}`} />
+                {!(isStopped || isError) && (
+                  <button type="button" onClick={handleCycleMode} disabled={cyclingMode}
+                    title={`Permission mode: ${permMode} (click to cycle Normal → Auto → Plan)`}
+                    className={`px-2 h-6 flex items-center rounded-md text-[10px] font-medium disabled:opacity-50 ${permModeBtnCls(permMode)}`}>
+                    {permModeLabel(permMode)}
+                  </button>
+                )}
                 {(isStopped || isError) ? (
                   <button type="button" onClick={() => handleResume()} disabled={resuming}
                     className="px-2 h-6 flex items-center gap-1 rounded-md text-[10px] font-medium bg-cyan-600 text-white disabled:opacity-50 enabled:hover:bg-cyan-500">
@@ -3622,6 +3659,18 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                   </svg>
+                </button>
+              )}
+              {/* Permission mode cycle — hidden when stopped */}
+              {!(isStopped || isError) && (
+                <button
+                  type="button"
+                  onClick={handleCycleMode}
+                  disabled={cyclingMode}
+                  title={`Permission mode: ${permMode} (click to cycle Normal → Auto → Plan)`}
+                  className={`px-2.5 h-7 flex items-center rounded-lg text-xs font-medium transition-colors disabled:opacity-50 ${permModeBtnCls(permMode)}`}
+                >
+                  {permModeLabel(permMode)}
                 </button>
               )}
               {/* Resume / Stop — show one at a time */}
