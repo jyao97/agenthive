@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { fetchSkills } from "../lib/api";
 
 const USAGE_KEY = "xy.skillUsage";
 
@@ -22,8 +23,7 @@ export default function SkillPickerPanel({ onSelect, onClose, selected }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/skills", { credentials: "include" })
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+    fetchSkills()
       .then(d => {
         if (cancelled) return;
         const usage = readUsage();
