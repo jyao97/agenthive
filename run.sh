@@ -75,6 +75,7 @@ case "$CMD" in
         ;;
     startup)
         echo "Configuring auto-start on boot..."
+        "$SCRIPT_DIR/heal-venv.sh" || echo "heal-venv: continuing despite errors"
         pm2 start "$ECOSYSTEM" 2>/dev/null || true
         pm2 save
         pm2 startup
@@ -82,6 +83,8 @@ case "$CMD" in
         ;;
     restart|start)
         echo "Restarting Xylocopa..."
+        # Self-heal venv shebangs/activate paths if the project dir was moved
+        "$SCRIPT_DIR/heal-venv.sh" || echo "heal-venv: continuing despite errors"
         # Delete stale processes first — a prior crash or direct-kill can leave
         # PM2's process table referencing dead PIDs, causing TypeError crashes
         # on `pm2 restart`.  `delete` is idempotent and clears that state.

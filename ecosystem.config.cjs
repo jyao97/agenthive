@@ -7,7 +7,11 @@ const path = require('path');
 const fs = require('fs');
 
 const ROOT = __dirname;
-const VENV_UVICORN = path.join(ROOT, '.venv', 'bin', 'uvicorn');
+// Use the venv's python directly with `-m uvicorn` instead of the `uvicorn`
+// console-script. pip-installed scripts have hardcoded absolute-path shebangs
+// that break when the project directory is moved; `.venv/bin/python` is a
+// symlink and doesn't have that problem.
+const VENV_PYTHON = path.join(ROOT, '.venv', 'bin', 'python');
 const ENV_FILE = path.join(ROOT, '.env');
 
 // Load .env into a plain object for pm2 env injection
@@ -40,9 +44,9 @@ module.exports = {
     {
       name: 'xylocopa-backend',
       cwd: path.join(ROOT, 'orchestrator'),
-      script: VENV_UVICORN,
-      args: `main:app --host 0.0.0.0 --port ${port}`,
-      interpreter: 'none',  // uvicorn is its own binary
+      script: VENV_PYTHON,
+      args: `-m uvicorn main:app --host 0.0.0.0 --port ${port}`,
+      interpreter: 'none',
       env: {
         ...dotenv,
         PROJECTS_DIR: dotenv.HOST_PROJECTS_DIR || path.join(require('os').homedir(), 'xylocopa-projects'),
