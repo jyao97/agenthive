@@ -2321,11 +2321,24 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [stopping, setStopping] = useState(false);
   const [permMode, setPermMode] = useState("auto"); // "normal" | "auto" | "plan"
   const [cyclingMode, setCyclingMode] = useState(false);
+  const permModeInitedRef = useRef(false);
   useEffect(() => {
     if (!id) return;
+    permModeInitedRef.current = false;
     const stored = localStorage.getItem(`xy.permMode.${id}`);
-    if (stored === "normal" || stored === "auto" || stored === "plan") setPermMode(stored);
+    if (stored === "normal" || stored === "auto" || stored === "plan") {
+      setPermMode(stored);
+      permModeInitedRef.current = true;
+    }
   }, [id]);
+  // When agent loads, if no localStorage override, sync permMode with skip_permissions
+  // from project-page launch toggle: true → "auto", false → "normal".
+  useEffect(() => {
+    if (permModeInitedRef.current) return;
+    if (agent?.skip_permissions === undefined) return;
+    setPermMode(agent.skip_permissions ? "auto" : "normal");
+    permModeInitedRef.current = true;
+  }, [agent?.skip_permissions]);
   const handleSetMode = async (target) => {
     if (cyclingMode || target === permMode) return;
     const order = ["normal", "auto", "plan"];
