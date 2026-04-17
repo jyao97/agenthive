@@ -126,7 +126,8 @@ export default function LoginPage() {
                 onChange={(e) => { setPassword(e.target.value); setError(""); }}
                 placeholder={needsSetup ? "New password" : "Password"}
                 autoFocus
-                className="w-full px-3 py-2 rounded-lg bg-page/40 border border-divider/60 text-sm text-heading placeholder-dim focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition-colors"
+                className="w-full px-3 py-2 rounded-lg bg-black/5 dark:bg-black/30 border-0 text-sm text-heading placeholder-dim focus:outline-none transition-shadow"
+                style={{ boxShadow: "inset 0 1.5px 3px rgba(0,0,0,0.18), inset 0 -0.5px 0 rgba(255,255,255,0.4)" }}
               />
 
               {needsSetup && (
@@ -138,7 +139,8 @@ export default function LoginPage() {
                   value={confirmPassword}
                   onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
                   placeholder="Confirm password"
-                  className="w-full px-3 py-2 rounded-lg bg-page/40 border border-divider/60 text-sm text-heading placeholder-dim focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition-colors"
+                  className="w-full px-3 py-2 rounded-lg bg-black/5 dark:bg-black/30 border-0 text-sm text-heading placeholder-dim focus:outline-none transition-shadow"
+                  style={{ boxShadow: "inset 0 1.5px 3px rgba(0,0,0,0.18), inset 0 -0.5px 0 rgba(255,255,255,0.4)" }}
                 />
               )}
 
