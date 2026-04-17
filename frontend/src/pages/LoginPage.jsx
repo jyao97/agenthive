@@ -72,97 +72,93 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Frosted glass background */}
-      <div className="absolute inset-0 bg-page/60 backdrop-blur-2xl" />
-
-      {/* Subtle animated gradient underneath */}
-      <div className="absolute inset-0 opacity-30">
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+      {/* Soft color blobs behind the glass — give the blur something to refract */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div
-          className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] rounded-full"
-          style={{
-            background: "radial-gradient(circle, rgba(6,182,212,0.15) 0%, transparent 70%)",
-          }}
+          className="absolute top-[20%] left-[30%] w-[420px] h-[420px] rounded-full opacity-60"
+          style={{ background: "radial-gradient(circle, rgba(6,182,212,0.35) 0%, transparent 65%)" }}
+        />
+        <div
+          className="absolute bottom-[15%] right-[25%] w-[380px] h-[380px] rounded-full opacity-50"
+          style={{ background: "radial-gradient(circle, rgba(127,119,221,0.30) 0%, transparent 65%)" }}
+        />
+        <div
+          className="absolute top-[55%] left-[60%] w-[300px] h-[300px] rounded-full opacity-40"
+          style={{ background: "radial-gradient(circle, rgba(168,85,247,0.25) 0%, transparent 65%)" }}
         />
       </div>
 
-      {/* Lock + form card */}
-      <div
-        className={`relative z-10 w-full max-w-xs mx-4 ${shake ? "animate-shake" : ""}`}
-      >
-        {/* Xylocopa bee — bare SVG, no background */}
-        <div className="flex justify-center mb-6">
+      <div className={`relative z-10 w-full max-w-md ${shake ? "animate-shake" : ""}`}>
+        {/* Single horizontal liquid-glass card: bee | form */}
+        <div className="glass-bar rounded-3xl p-5 flex items-center gap-5">
           <img
             src={beeLogo}
             alt="Xylocopa"
-            className="w-28 h-28 select-none"
+            className="w-24 h-24 shrink-0 select-none drop-shadow-[0_2px_8px_rgba(0,0,0,0.15)]"
             draggable={false}
           />
-        </div>
 
-        {/* Title */}
-        <div className="text-center mb-6">
-          <h1 className="text-lg font-semibold text-heading">Xylocopa</h1>
-          <p className="text-sm text-dim mt-1">
-            {needsSetup ? "Set a password to get started" : "Locked"}
-          </p>
-        </div>
+          <div className="flex-1 min-w-0">
+            <h1 className="text-base font-semibold text-heading leading-tight">Xylocopa</h1>
+            <p className="text-xs text-dim mb-3">
+              {needsSetup ? "Set a password to get started" : "Locked"}
+            </p>
 
-        {/* Glass form card */}
-        <div className="rounded-2xl bg-surface/60 backdrop-blur-md border border-divider/50 p-5 shadow-lg">
-          <form onSubmit={handleSubmit} autoComplete="on" className="space-y-3">
-            {/* Hidden username for iOS autofill credential matching */}
-            <input
-              type="text"
-              name="username"
-              autoComplete="username"
-              value="user"
-              readOnly
-              aria-hidden="true"
-              tabIndex={-1}
-              style={{ position: "absolute", width: 0, height: 0, overflow: "hidden", opacity: 0 }}
-            />
-            <input
-              type="password"
-              name="password"
-              id="password"
-              autoComplete={needsSetup ? "new-password" : "current-password"}
-              value={password}
-              onChange={(e) => { setPassword(e.target.value); setError(""); }}
-              placeholder={needsSetup ? "New password" : "Password"}
-              autoFocus
-              className="w-full px-4 py-3 rounded-xl bg-page/50 border border-divider text-heading placeholder-dim focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition-colors"
-            />
-
-            {needsSetup && (
+            <form onSubmit={handleSubmit} autoComplete="on" className="space-y-2">
+              {/* Hidden username for iOS autofill credential matching */}
+              <input
+                type="text"
+                name="username"
+                autoComplete="username"
+                value="user"
+                readOnly
+                aria-hidden="true"
+                tabIndex={-1}
+                style={{ position: "absolute", width: 0, height: 0, overflow: "hidden", opacity: 0 }}
+              />
               <input
                 type="password"
-                name="confirm-password"
-                id="confirm-password"
-                autoComplete="new-password"
-                value={confirmPassword}
-                onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
-                placeholder="Confirm password"
-                className="w-full px-4 py-3 rounded-xl bg-page/50 border border-divider text-heading placeholder-dim focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition-colors"
+                name="password"
+                id="password"
+                autoComplete={needsSetup ? "new-password" : "current-password"}
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                placeholder={needsSetup ? "New password" : "Password"}
+                autoFocus
+                className="w-full px-3 py-2 rounded-lg bg-page/40 border border-divider/60 text-sm text-heading placeholder-dim focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition-colors"
               />
-            )}
 
-            {error && (
-              <p className="text-red-400 text-xs text-center">{error}</p>
-            )}
+              {needsSetup && (
+                <input
+                  type="password"
+                  name="confirm-password"
+                  id="confirm-password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
+                  placeholder="Confirm password"
+                  className="w-full px-3 py-2 rounded-lg bg-page/40 border border-divider/60 text-sm text-heading placeholder-dim focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition-colors"
+                />
+              )}
 
-            <button
-              type="submit"
-              disabled={submitting || !password}
-              className="w-full py-3 rounded-xl font-medium transition-all bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
-            >
-              {submitting
-                ? "..."
-                : needsSetup
-                  ? "Set Password"
-                  : "Unlock"}
-            </button>
-          </form>
+              {error && (
+                <p className="text-red-400 text-xs">{error}</p>
+              )}
+
+              <button
+                type="submit"
+                disabled={submitting || !password}
+                className="w-full py-2 rounded-lg text-sm font-medium transition-all bg-cyan-600/90 text-white hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
+              >
+                {submitting
+                  ? "..."
+                  : needsSetup
+                    ? "Set Password"
+                    : "Unlock"}
+              </button>
+            </form>
+          </div>
         </div>
 
         {/* Cert install hint for mobile */}
