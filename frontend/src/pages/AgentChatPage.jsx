@@ -1786,24 +1786,58 @@ function SyncPrompt({ agentId, onSync }) {
 
 // --- Streaming Bubble (live output while agent is executing) ---
 
-function StreamingBubble({ content, project, activeTool }) {
+function ToolStepRow({ step, nowMs }) {
+  const isRunning = step.status === "running";
+  const elapsed = Math.max(0, Math.round(((isRunning ? nowMs : step.endedAt) - step.startedAt) / 100) / 10);
+  const dotColor = step.isError
+    ? "bg-red-400"
+    : isRunning
+    ? "bg-cyan-400 animate-pulse"
+    : "bg-emerald-400/70";
+  return (
+    <div className="flex items-baseline gap-1.5 text-[11px] leading-snug">
+      <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 translate-y-[1px] ${dotColor}`} />
+      <code className="px-1 rounded bg-elevated text-cyan-300 font-mono text-[10.5px]">{step.name}</code>
+      {step.summary ? (
+        <span className="text-dim truncate">{step.summary}</span>
+      ) : null}
+      <span className="ml-auto text-faint shrink-0">{elapsed.toFixed(1)}s</span>
+    </div>
+  );
+}
+
+function StreamingBubble({ content, project, toolSteps }) {
+  const [nowMs, setNowMs] = useState(Date.now());
+  const hasRunning = toolSteps?.some((s) => s.status === "running");
+  useEffect(() => {
+    if (!hasRunning) return;
+    const t = setInterval(() => setNowMs(Date.now()), 200);
+    return () => clearInterval(t);
+  }, [hasRunning]);
+  const steps = toolSteps || [];
   return (
     <div className="flex justify-start my-2">
       <div className="max-w-[min(85%,30rem)] min-w-0">
         <div className="rounded-2xl px-4 py-2.5 bg-surface shadow-card text-body rounded-bl-md overflow-hidden">
-          <div className="text-sm break-words chat-bubble-content">
-            <SafeMarkdown fallback={content}>
-              {renderMarkdown(content, project)}
-            </SafeMarkdown>
-          </div>
-          <div className="flex items-center gap-1.5 mt-1">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-            {activeTool ? (
-              <span className="text-xs text-dim"><code className="text-[11px] px-1 py-0.5 rounded bg-elevated text-cyan-300 font-mono">{activeTool.name}</code> running...</span>
-            ) : (
+          {content ? (
+            <div className="text-sm break-words chat-bubble-content">
+              <SafeMarkdown fallback={content}>
+                {renderMarkdown(content, project)}
+              </SafeMarkdown>
+            </div>
+          ) : null}
+          {steps.length > 0 ? (
+            <div className="flex flex-col gap-0.5 mt-1.5">
+              {steps.map((s) => (
+                <ToolStepRow key={s.key} step={s} nowMs={nowMs} />
+              ))}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 mt-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
               <span className="text-xs text-dim">Streaming...</span>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -2346,7 +2380,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     if (steps === 0) return;
     setCyclingMode(true);
     try {
-      await cyclePermissionMode(id, steps);
+      await cyclePermissionMode(id, steps, target);
       setPermMode(target);
       try { localStorage.setItem(`xy.permMode.${id}`, target); } catch { /* ignore */ }
     } catch (e) {
@@ -2420,6 +2454,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [muted, setMuted] = useState(() => isAgentMuted(id));
   const [streamingContent, setStreamingContent] = useState(null);
   const [activeTool, setActiveTool] = useState(null);
+  // Rolling list of tool invocations in the current streaming turn (most recent last).
+  // Each entry: { key, name, summary, outputSummary, isError, status: "running"|"done", startedAt, endedAt }
+  const [toolSteps, setToolSteps] = useState([]);
+  const MAX_TOOL_STEPS = 8;
+  const toolStepSeq = useRef(0);
   const [toolStartTime, setToolStartTime] = useState(null);
   // Permission cards are now persisted in DB as interactive messages (no WS-only state needed)
   const streamTimeoutRef = useRef(null);
@@ -2760,6 +2799,25 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     showToast(nextMuted ? "Notifications muted for this agent" : "Notifications enabled for this agent");
   };
 
+  // Tab title + favicon: distinguish each agent chat tab. Not applied in
+  // split-screen (embedded) where a single tab hosts multiple panes.
+  useEffect(() => {
+    if (embedded) return;
+    const name = agent?.name;
+    const shortId = id ? id.slice(0, 6) : "";
+    const label = name || (shortId ? `Agent ${shortId}` : "");
+    if (!label) return;
+    const prevTitle = document.title;
+    document.title = label;
+    const iconLink = document.querySelector('link[rel="shortcut icon"]');
+    const prevHref = iconLink?.getAttribute("href");
+    iconLink?.setAttribute("href", "/agent-favicon.svg");
+    return () => {
+      document.title = prevTitle;
+      if (iconLink && prevHref) iconLink.setAttribute("href", prevHref);
+    };
+  }, [embedded, agent?.name, id]);
+
   // Sync mute & star state across split-screen panes
   useEffect(() => {
     const onMute = (e) => { if (e.detail?.agentId === id) setMuted(e.detail.muted); };
@@ -2801,32 +2859,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       e.preventDefault();
     };
 
-    // --- KB debug logging: batch samples and flush to backend ---
-    const kbSamples = [];
-    let kbFlushTimer = null;
-    const kbFlush = () => {
-      if (!kbSamples.length) return;
-      const batch = kbSamples.splice(0);
-      fetch("/api/debug/kb-log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ samples: batch }),
-      }).catch(() => {});
-    };
-    const kbLog = (containerH, off, open) => {
-      kbSamples.push({
-        t: Date.now(),
-        cH: containerH,
-        iH: window.innerHeight,
-        vvH: Math.round(vv.height),
-        vvOT: Math.round(vv.offsetTop),
-        off,
-        open,
-      });
-      clearTimeout(kbFlushTimer);
-      kbFlushTimer = setTimeout(kbFlush, 500);
-    };
-
     const update = () => {
       const el = kbContainerRef.current;
       if (!el) return;
@@ -2838,8 +2870,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       // the input bar stays flush with the keyboard even when iOS scrolls
       // the visual viewport (common on 2nd+ keyboard open).
       const kbOffset = Math.max(0, Math.round(containerH - vv.height - vv.offsetTop));
-
-      kbLog(containerH, kbOffset, rawDelta > 100);
 
       const open = rawDelta > 100;
 
@@ -2935,7 +2965,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       clearTimeout(padTimer);
       document.removeEventListener('touchmove', blockTouchOutsideScroll);
       document.body.style.touchAction = '';
-      kbFlush(); // flush remaining samples
     };
   }, []);
 
@@ -3089,19 +3118,55 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       setStreamingContent(null);
       setActiveTool(null);
       setToolStartTime(null);
+      setToolSteps([]);
       return;
     }
 
     if (event.type === "tool_activity") {
       console.log('[ws] tool_activity', event.data.tool_name, event.data.phase);
       pushWsEvent('tool_activity', { tool: event.data.tool_name, phase: event.data.phase });
-      const { tool_name, phase, summary } = event.data;
+      const { tool_name, phase, summary, output_summary, is_error } = event.data;
       if (phase === "start") {
         setActiveTool({ name: tool_name, summary: summary || "" });
         setToolStartTime(Date.now());
+        toolStepSeq.current += 1;
+        const entry = {
+          key: `ts-${toolStepSeq.current}`,
+          name: tool_name,
+          summary: summary || "",
+          status: "running",
+          startedAt: Date.now(),
+          endedAt: null,
+        };
+        setToolSteps((prev) => {
+          const next = [...prev, entry];
+          return next.length > MAX_TOOL_STEPS ? next.slice(-MAX_TOOL_STEPS) : next;
+        });
       } else if (phase === "end") {
         setActiveTool(null);
         setToolStartTime(null);
+        setToolSteps((prev) => {
+          // Find last running entry with matching name; fall back to last running entry.
+          let idx = -1;
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].status === "running" && prev[i].name === tool_name) { idx = i; break; }
+          }
+          if (idx < 0) {
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].status === "running") { idx = i; break; }
+            }
+          }
+          if (idx < 0) return prev;
+          const next = prev.slice();
+          next[idx] = {
+            ...next[idx],
+            status: "done",
+            endedAt: Date.now(),
+            outputSummary: output_summary || next[idx].outputSummary || "",
+            isError: !!is_error,
+          };
+          return next;
+        });
       }
       return;
     }
@@ -3125,6 +3190,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       setStreamingContent(null);
       setActiveTool(null);
       setToolStartTime(null);
+      setToolSteps([]);
       refreshMessagesRef.current({ syncHint: event.data?.message_id === "sync" });
       return;
     }
@@ -3188,6 +3254,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         setStreamingContent(null);
         setActiveTool(null);
         setToolStartTime(null);
+        setToolSteps([]);
         generationIdRef.current = null;
       }
       refreshMessagesRef.current();
@@ -3208,48 +3275,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       clearTimeout(streamTimeoutRef.current);
     };
   }, []);
-
-  // Debug: POST rendered message state + DOM elements to backend every 10s
-  useEffect(() => {
-    if (!id || !messages?.length) return;
-    const timer = setInterval(() => {
-      // Scan DOM for actual rendered message elements
-      const domElements = [];
-      const container = document.querySelector('[data-chat-container]');
-      if (container) {
-        const containerRect = container.getBoundingClientRect();
-        container.querySelectorAll('[data-msg-id]').forEach(el => {
-          const rect = el.getBoundingClientRect();
-          domElements.push({
-            msgId: el.dataset.msgId,
-            type: el.dataset.msgType || '?',
-            y: Math.round(rect.top - containerRect.top),
-            h: Math.round(rect.height),
-            visible: rect.top < window.innerHeight && rect.bottom > 0,
-            text: el.textContent?.slice(0, 80)?.replace(/\n/g, ' '),
-          });
-        });
-      }
-      const snapshot = {
-        agentId: id,
-        page: 'AgentChatPage',
-        messages: messages.map(m => ({
-          id: m.id, role: m.role, kind: m.kind,
-          session_seq: m.session_seq, source: m.source,
-          created_at: m.created_at,
-          content: (m.content || '').slice(0, 100),
-        })),
-        domElements,
-        wsEvents: wsEventLog.current.slice(),
-      };
-      fetch('/api/debug/frontend-state', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(snapshot),
-      }).catch(() => {});  // fire and forget
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [id, messages]);
 
   // Auto-select name input when rename starts (useEffect runs after DOM commit)
   useEffect(() => {
@@ -3284,6 +3309,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       // New turn — clear previous tool activity state
       setActiveTool(null);
       setToolStartTime(null);
+      setToolSteps([]);
       await sendMessage(id, content);
       refreshMessages();
     } catch (err) {
@@ -4015,9 +4041,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   lastAgent.content === streamingContent
                   || lastAgent.content.startsWith(streamingContent.slice(0, 200))
                 );
-                if (!isDuplicate) return <div data-msg-id="streaming" data-msg-type="streaming_bubble"><StreamingBubble content={streamingContent} project={agent.project} activeTool={activeTool} /></div>;
+                if (!isDuplicate) return <div data-msg-id="streaming" data-msg-type="streaming_bubble"><StreamingBubble content={streamingContent} project={agent.project} toolSteps={toolSteps} /></div>;
               }
-              // Tool activity log — shows completed + in-progress tool calls
+              // No streamed text yet but tools are running — show the bubble with just the tool step list
+              if (toolSteps.length > 0) {
+                return <div data-msg-id="streaming" data-msg-type="streaming_bubble"><StreamingBubble content={null} project={agent.project} toolSteps={toolSteps} /></div>;
+              }
               return isExecuting ? <div data-msg-id="typing" data-msg-type="typing_indicator"><TypingIndicator /></div> : null;
             })()}
 
