@@ -169,15 +169,30 @@ def classify(content: str) -> CommandConfig | None:
     return COMMANDS.get(cmd)
 
 
+def _is_user_skill(cmd: str) -> bool:
+    """True if cmd matches an installed user-level skill (~/.claude/skills/<name>/SKILL.md)."""
+    import os
+    from config import CLAUDE_HOME
+    if not cmd.startswith("/"):
+        return False
+    name = cmd[1:]
+    if not name or "/" in name or ".." in name:
+        return False
+    return os.path.isfile(os.path.join(CLAUDE_HOME, "skills", name, "SKILL.md"))
+
+
 def is_allowed(content: str) -> bool:
     """Check if a slash command is allowed from web UI.
 
     Regular (non-slash) messages are always allowed.
+    Lifecycle commands in COMMANDS are allowed, plus any installed user skill.
     """
     if not is_slash_command(content):
         return True
     cmd, _ = parse(content)
-    return cmd in COMMANDS
+    if cmd in COMMANDS:
+        return True
+    return _is_user_skill(cmd)
 
 
 def rejection_message(content: str) -> str:
