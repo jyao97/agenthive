@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Xylocopa MCP Server — gives Claude Code agents access to orchestrator data.
 
-First tool: session history (list + read previous conversations).
-Framework designed for easy addition of more tools (task queries, agent
-coordination, insights, etc.).
+Read tools: list_sessions, read_session (previous conversations).
+Write tools: create_task (drops a task into the Xylocopa inbox).
 
 Runs as a stdio MCP server, spawned per-agent by Claude Code via .mcp.json.
-Read-only — never writes to the database or session files.
 """
 
 import hashlib
@@ -100,13 +98,50 @@ server = FastMCP(
     "xylocopa",
     instructions=(
         "Xylocopa orchestrator tools. Use list_sessions to discover "
-        "previous conversations, read_session to read one.\n\n"
+        "previous conversations, read_session to read one, and create_task "
+        "to drop a new task into the Xylocopa inbox.\n\n"
         "File handling: when generating or referencing media files "
         "(images, videos, plots), save them inside the project directory "
         "so the web UI can display them. Files in /tmp/ or other external "
         "paths cannot be previewed."
     ),
 )
+
+
+# Lazy write-session factory — keeps MCP startup cheap for read-only callers.
+_WriteSession = None
+
+
+def _get_write_session():
+    """Construct a write-capable SQLAlchemy session on first use.
+
+    Mirrors the main app's pragmas (WAL, FK, busy_timeout) so inserts
+    made here are consistent with those made by the backend.
+    """
+    global _WriteSession
+    if _WriteSession is not None:
+        return _WriteSession()
+
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(
+        f"sqlite:///{DB_PATH}",
+        connect_args={"check_same_thread": False},
+        poolclass=NullPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _pragma(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute("PRAGMA busy_timeout=5000")
+        cur.close()
+
+    _WriteSession = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    return _WriteSession()
 
 
 @server.tool()
@@ -256,6 +291,105 @@ def read_session(session_id: str, max_turns: int = 50) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+@server.tool()
+def create_task(
+    title: str,
+    project: str = "",
+    description: str = "",
+    model: str = "",
+    effort: str = "",
+    priority: int = 0,
+) -> str:
+    """Create a task in the Xylocopa inbox.
+
+    Tasks land in INBOX status. The user can promote/queue them in the web UI.
+    If model or effort are left empty, the project's defaults apply at launch.
+
+    Args:
+        title: Short task title (required, max 300 chars).
+        project: Project name. Leave empty to infer from the caller's cwd
+            (the project whose path is the longest prefix of cwd wins,
+            which covers worktree subdirectories). Pass explicitly if you
+            want a task in a project other than the one you're in.
+        description: Longer task body (optional, markdown supported).
+        model: Claude model id, e.g. claude-opus-4-7. Empty = project default.
+        effort: low | medium | high | xhigh | max. Empty = project default.
+        priority: 0 (normal) or 1 (high). Default 0.
+    """
+    # Lazy imports so read-only callers don't pay the cost
+    from pydantic import ValidationError
+
+    from models import Project, Task, TaskStatus
+    from schemas import TaskCreate
+
+    inferred_from_cwd = False
+
+    with _get_write_session() as db:
+        if project:
+            proj = db.query(Project).filter_by(name=project).one_or_none()
+            if proj is None:
+                available = sorted(p.name for p in db.query(Project).all())
+                return (
+                    f"Project `{project}` not found.\n"
+                    f"Available: {', '.join(available)}"
+                )
+        else:
+            cwd = os.getcwd()
+            candidates = [
+                p for p in db.query(Project).all()
+                if p.path and (cwd == p.path or cwd.startswith(p.path + "/"))
+            ]
+            candidates.sort(key=lambda p: len(p.path), reverse=True)
+            if not candidates:
+                available = sorted(
+                    p.name for p in db.query(Project).all()
+                )
+                return (
+                    f"Could not infer project from cwd ({cwd}).\n"
+                    f"Pass `project` explicitly. "
+                    f"Available: {', '.join(available)}"
+                )
+            proj = candidates[0]
+            project = proj.name
+            inferred_from_cwd = True
+
+        try:
+            payload = TaskCreate(
+                title=title,
+                description=description or None,
+                project_name=project,
+                model=model or None,
+                effort=effort or None,
+                priority=priority,
+            )
+        except ValidationError as e:
+            return f"Validation error:\n{e}"
+
+        task = Task(
+            title=payload.title,
+            description=payload.description,
+            project_name=payload.project_name,
+            model=payload.model,
+            effort=payload.effort,
+            priority=payload.priority,
+            skip_permissions=payload.skip_permissions,
+            use_worktree=payload.use_worktree,
+            use_tmux=payload.use_tmux,
+            status=TaskStatus.INBOX,
+        )
+        db.add(task)
+        db.commit()
+        task_id = task.id
+
+    project_note = f"{project}" + (" (inferred from cwd)" if inferred_from_cwd else "")
+    return (
+        f"Created task `{task_id}` in project `{project_note}` [INBOX].\n"
+        f"Title: {title}\n"
+        f"Model: {model or '(project default)'}  "
+        f"Effort: {effort or '(default)'}  Priority: {priority}"
+    )
 
 
 def _lookup_agent(db: sqlite3.Connection, identifier: str) -> dict | None:
