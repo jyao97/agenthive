@@ -86,6 +86,25 @@ errors.
 - Match the indentation, naming, and structure of surrounding code.
 - No unnecessary refactors or renames — keep changes focused on the task.
 
+## State & Sync Logic
+
+When code synchronizes state with an external source (TUI pane, JSONL stream,
+filesystem, another browser tab, another agent), these rules are non-negotiable:
+
+- **Detect ground truth, don't guess.** Read directly from the authoritative
+  source (e.g., parse `tmux capture-pane` output, replay JSONL, check file
+  mtime, query the DB). State derived from partial signals, stored history, or
+  "what we last sent" will drift.
+- **No optimistic / guessed state for sync.** If you flip UI or DB state before
+  confirming the underlying source agrees, anything else touching the source
+  (user keystroke in tmux, process restart, parallel tab, another contributor)
+  will silently desync you with no recovery path. Always read-back to confirm,
+  and reconcile when the read disagrees.
+- **Full-scan is deprecated.** New sync code must be event-driven or use a
+  cursor/watermark (`last_seen_seq`, `mtime > last_check`, file watcher,
+  WebSocket push). Re-scanning every record on every tick does not scale and
+  will be rejected in review.
+
 ## Submitting a Pull Request
 
 1. Fork the repository and create a branch from `master`.
