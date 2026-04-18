@@ -92,6 +92,22 @@ Already using Claude Code? Xylocopa plugs right in. It wraps the same `claude` C
 
 Xylocopa hooks into Claude Code's native event system — not polling, not heuristics. Notifications, message delivery, and session sync are all event-driven. Messages reach agents through stop-hook dispatch with guaranteed ordering. Session lifecycle is tracked via SessionStart/SessionEnd hooks. Each agent runs in its own tmux session with a dedicated git worktree, with configurable timeouts and automatic crash recovery. A deterministic `PreToolUse` [safety hook](#safety-guardrails) hard-blocks destructive operations (`rm -rf`, `git push --force`, `DROP TABLE`, out-of-project writes, …) — active even when agents run in Auto mode with `--dangerously-skip-permissions`.
 
+### Durable by Default
+
+Nothing you run through Xylocopa is ephemeral — not your conversations, not your in-flight work, not your unsaved drafts. Every layer is designed to survive restarts, crashes, and process kills:
+
+- **30-second incremental session cache** — active session JSONL files are append-only-cached every 30s ([`session_cache.py`](orchestrator/session_cache.py)), just like git packfiles. Truncated lines from process kills are auto-repaired on restore.
+- **Unlimited session retention** — Xylocopa writes `cleanupPeriodDays=36500` to `~/.claude/settings.json` on boot ([`session_cache.py:183`](orchestrator/session_cache.py)), so Claude Code never auto-deletes your history. Conversations from a year ago are still resumable.
+- **Crash-recovery with partial output salvage** — when the orchestrator restarts with agents mid-flight, `_recover_agents()` ([`agent_dispatcher.py:4776`](orchestrator/agent_dispatcher.py)) reads each crashed message's stdout from `/tmp/claude-output-{msg_id}.log`, extracts the partial result, and persists it as a `(partial — interrupted by restart)` message before re-queueing the original prompt. No output is silently lost.
+- **Tmux-anchored session recovery** — every agent is launched as a deterministically-named tmux session (`xy-{id[:8]}`). On orchestrator restart, agents whose tmux is still alive are **re-linked without interrupting them** — including agents that were previously STOPPED but whose CLI kept running. Your agents survive the web app.
+- **One-click resume of stopped agents** — `POST /api/agents/{id}/resume` ([`routers/agents.py:2111`](orchestrator/routers/agents.py)) brings a STOPPED/ERROR agent back. Two modes: re-sync to existing tmux pane (default), or relaunch via `claude --resume <session_id>` in a fresh tmux (`mode: "tmux"`).
+- **Automatic periodic backups** — DB + project configs + session history snapshotted every 24h (configurable) with rolling retention ([`backup.py`](orchestrator/backup.py)). Runtime-adjustable via `PUT /api/system/backup/config`.
+- **Local draft persistence** — every text input caches to `localStorage` as you type ([`frontend/src/hooks/useDraft.js`](frontend/src/hooks/useDraft.js), used in 13+ surfaces). Close the browser, switch tabs, kill your phone — your unsaved work is still there.
+- **Session directory migration** — move a project folder (e.g. `~/Work/foo` → `~/xylocopa-projects/foo`) and Xylocopa auto-migrates Claude's old encoded session directory so nothing reindexes from scratch.
+- **Orphan cleanup** — stale worktrees, zombie tmux sessions, and tempfiles from crashed processes are periodically swept ([`orphan_cleanup.py`](orchestrator/orphan_cleanup.py)).
+
+> Every bullet above is open source and linked to its implementation. Audit it, don't trust it.
+
 ## Features
 
 ### Highlights
@@ -99,6 +115,7 @@ Xylocopa hooks into Claude Code's native event system — not polling, not heuri
 - **Try → Summarize → Retry** — when an agent misses the mark, one click captures what was tried; the next dispatch picks up from there instead of starting cold.
 - **RAG-powered context** — new agents are seeded with relevant lessons from past sessions in the same project, retrieved automatically at dispatch time.
 - **Dual-directional CLI sync** — every agent runs in a tmux session you can attach to from your terminal; sessions you start in the CLI also appear in the web UI.
+- **Crash-proof by design** — 30s incremental session cache, partial output salvage on restart, unlimited session retention, and one-click resume of stopped agents. Your work survives the app. See [Durable by Default](#durable-by-default).
 - **Deterministic [safety hook](#safety-guardrails)** — `PreToolUse` hard-blocks destructive commands (`rm -rf`, force-pushes, `DROP TABLE`, out-of-project writes) — even when agents run with `--dangerously-skip-permissions`.
 
 ### Full feature list
@@ -107,7 +124,7 @@ Xylocopa hooks into Claude Code's native event system — not polling, not heuri
 |---|---|
 | **Smart Notifications** | Hook-based notification system with dual-channel in-use detection — automatically notifies when you're away and stays quiet when you're present. Web Push (VAPID) and Telegram. Per-agent mute, global toggles. |
 | **Task Management** | Inbox with drag-to-reorder. Voice input. Lightning capture. Draft persistence. Per-project organization. Retry with auto-summarization. |
-| **Agent Control** | Start, stop, resume agents. Per-agent model selection (Opus/Sonnet/Haiku). Configurable timeouts and permission modes. AI batch dispatch. RAG-powered context from past sessions. Cross-session reference via MCP — agents can read each other's conversations on demand. |
+| **Agent Control** | Start, stop, **one-click resume** of STOPPED/ERROR agents (re-sync to existing tmux or relaunch via `claude --resume`). Per-agent model selection (Opus/Sonnet/Haiku). Configurable timeouts and permission modes. AI batch dispatch. RAG-powered context from past sessions. Cross-session reference via MCP — agents can read each other's conversations on demand. |
 | **Chat Interface** | Rich markdown rendering (code blocks, tables, images). Inline media preview. Plan mode with approve/reject. Interactive tool confirmation cards. |
 | **Monitoring** | Split screen (up to 4 panes). Real-time WebSocket streaming. System monitor (disk, memory, GPU, tokens). Weekly progress stats. |
 | **Mobile PWA** | Add to Home Screen on iOS/Android. Full functionality — voice input, push notifications, task management. |
@@ -116,7 +133,7 @@ Xylocopa hooks into Claude Code's native event system — not polling, not heuri
 | **Session History** | Every conversation persisted and searchable. Star sessions. Resume any agent anytime. Full-text search. |
 | **Security** | Password auth with exponential-backoff rate limiting. Inactivity lock. HTTPS encryption. |
 | <a id="safety-guardrails"></a>**Safety Guardrails** | Deterministic `PreToolUse` hook hard-blocks destructive operations — `rm -rf`, `git push --force`, `git reset --hard` outside worktrees, `git clean -f`, `git checkout -- .` / `git restore .`, `DROP TABLE` / `TRUNCATE`, and any `Write`/`Edit` to paths outside the project directory. Enforced even when **Auto mode** (`--dangerously-skip-permissions`) is on. |
-| **Backups** | Automatic database backups. Session JSONL caching. Crash recovery with partial output salvage. |
+| **Reliability & Recovery** | 30s incremental session JSONL cache (append-only, like git packfiles). **Unlimited retention** — `cleanupPeriodDays=36500` prevents Claude from deleting your history. Orchestrator-restart recovery re-links live tmux agents without interrupting them. Partial output salvaged from killed processes. Automatic periodic DB + config + session backups (runtime-configurable interval & retention). Truncated JSONL auto-repaired. Orphan worktree/tmux cleanup. See [Durable by Default](#durable-by-default) for source pointers. |
 
 ## Getting Started
 
