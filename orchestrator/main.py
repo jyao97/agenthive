@@ -396,6 +396,7 @@ from routers.files import router as files_router
 from routers.push import router as push_router
 from routers.workers import router as workers_router
 from routers.logs import router as logs_router
+from routers.skills import router as skills_router
 
 app.include_router(auth_router)
 app.include_router(system_router)
@@ -408,3 +409,4 @@ app.include_router(files_router)
 app.include_router(push_router)
 app.include_router(workers_router)
 app.include_router(logs_router)
+app.include_router(skills_router)

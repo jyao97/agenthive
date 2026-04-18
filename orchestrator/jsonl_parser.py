@@ -21,6 +21,7 @@ import json
 import logging
 import re
 
+from skills import format_skill_summary, is_hidden_meta_entry, skill_turn_metadata
 from utils import is_interrupt_message
 
 logger = logging.getLogger("orchestrator.jsonl_parser")
@@ -359,6 +360,8 @@ def format_tool_summary(name: str, input_data: dict) -> str | None:
         return f"> `Glob` {input_data.get('pattern', '')}"
     if name == "Task":
         return f"> `Task` {input_data.get('description', '')}"
+    if name == "Skill":
+        return format_skill_summary(input_data)
     # Skip noisy internal tools
     if name in ("ToolSearch",):
         return None
@@ -481,6 +484,8 @@ def parse_session_turns_from_lines(
         if entry_type == "user":
             msg = entry.get("message", {})
             content = msg.get("content", "")
+            if is_hidden_meta_entry(entry):
+                continue
             # Check for tool_result in list-type content
             if isinstance(content, list):
                 has_tool_result = False
@@ -601,6 +606,8 @@ def parse_session_turns_from_lines(
                         if summary:
                             tool_uuid = f"tool-{tool_use_id}" if tool_use_id else None
                             tool_meta = {"tool_name": tool_name, "tool_use_id": tool_use_id}
+                            if tool_name == "Skill":
+                                tool_meta.update(skill_turn_metadata(tool_input))
                             turns.append(("assistant", summary, tool_meta, tool_uuid, "tool_use", entry_ts))
 
         elif entry_type == "system":
