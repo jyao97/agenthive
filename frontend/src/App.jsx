@@ -163,9 +163,12 @@ function AuthGuard({ children }) {
       attempts++;
       try {
         await authCheck();
-        // Server is back — do a full reload so all hooks reinitialize cleanly
+        // Server is back — soft reset: re-run auth flow without unmounting the app
         clearInterval(interval);
-        window.location.reload();
+        setServerDown(false);
+        setRetrying(false);
+        setChecked(false);           // causes the Loading... state to render briefly
+        attemptAuth(getAuthToken()); // re-run the normal auth flow — this will set checked+authed again
       } catch (err) {
         if (attempts >= 30) {
           // 60s elapsed — stop auto-retry, keep manual button
