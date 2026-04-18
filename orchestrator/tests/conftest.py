@@ -18,6 +18,37 @@ from sqlalchemy.orm import sessionmaker
 from models import Agent, AgentMode, AgentStatus, Base, Message, MessageRole, MessageStatus, Project, Task, TaskStatus
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_test_tmux_sessions():
+    """Kill orphan ``xy-*`` tmux sessions left behind by dispatch tests.
+
+    Tests hit ``/api/v2/tasks/{id}/dispatch`` through the ASGI client, which
+    runs production code that calls real ``tmux new-session``. Claude itself
+    fails fast on ``/tmp/`` fixture dirs (not a git repo), but the wrapping
+    bash shell + tmux session linger forever. Filtering by cwd under ``/tmp/``
+    avoids touching real production agents.
+    """
+    yield
+    import subprocess as _sp
+    try:
+        result = _sp.run(
+            ["tmux", "list-panes", "-a", "-F", "#{session_name} #{pane_current_path}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, _sp.SubprocessError):
+        return
+    if result.returncode != 0:
+        return
+    for line in result.stdout.splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        name, cwd = parts
+        if name.startswith("xy-") and cwd.startswith("/tmp/"):
+            _sp.run(["tmux", "kill-session", "-t", name],
+                    capture_output=True, timeout=5)
+
+
 @pytest.fixture()
 def db_engine():
     """Create an in-memory SQLite engine with all tables."""
