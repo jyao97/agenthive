@@ -3109,9 +3109,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     };
   }, []);
 
-  // Debug: POST rendered message state + DOM elements to backend every 10s
+  // Debug: POST rendered message state + DOM elements to backend every 1s
+  // Enable via localStorage: localStorage.setItem("ah:debug-frontend-state", "1")
   useEffect(() => {
     if (!id || !messages?.length) return;
+    if (localStorage.getItem("ah:debug-frontend-state") !== "1") return;
     const timer = setInterval(() => {
       // Scan DOM for actual rendered message elements
       const domElements = [];
