@@ -11,8 +11,10 @@ from skills import (
     BUNDLED_SKILLS,
     format_skill_summary,
     is_hidden_meta_entry,
+    list_skills,
     skill_turn_metadata,
 )
+from slash_commands import COMMANDS
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +48,42 @@ class TestSkillHelpers:
         for s in BUNDLED_SKILLS:
             assert s["name"] and isinstance(s["name"], str)
             assert "description" in s
+
+
+# ---------------------------------------------------------------------------
+# list_skills — built-in command merging + dedup
+# ---------------------------------------------------------------------------
+
+class TestListSkillsMerging:
+    def test_includes_builtin_commands(self):
+        names_by_source = {(s["name"], s["source"]) for s in list_skills()}
+        # Every COMMANDS entry should appear (unless overridden by personal/etc).
+        for cmd in COMMANDS:
+            bare = cmd.lstrip("/")
+            sources = {src for (n, src) in names_by_source if n == bare}
+            assert sources, f"missing built-in command: {cmd}"
+
+    def test_command_source_label_present(self):
+        sources = {s["source"] for s in list_skills()}
+        assert "command" in sources
+
+    def test_no_duplicate_names(self):
+        all_skills = list_skills()
+        names = [s["name"] for s in all_skills]
+        assert len(names) == len(set(names)), "list_skills produced duplicate names"
+
+    def test_command_overrides_bundled_on_collision(self):
+        """Names appearing in both COMMANDS and BUNDLED_SKILLS should resolve
+        to source='command' (precedence rule)."""
+        bundled_names = {b["name"] for b in BUNDLED_SKILLS}
+        command_names = {c.lstrip("/") for c in COMMANDS}
+        overlap = bundled_names & command_names
+        assert overlap, "expected at least one overlap to validate precedence"
+        by_name = {s["name"]: s["source"] for s in list_skills()}
+        for name in overlap:
+            assert by_name.get(name) == "command", (
+                f"{name} should resolve as command, got {by_name.get(name)}"
+            )
 
 
 # ---------------------------------------------------------------------------

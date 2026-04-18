@@ -1,4 +1,7 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
+import {
+  forwardRef, useEffect, useImperativeHandle, useLayoutEffect,
+  useMemo, useRef, useState,
+} from "react";
 import { createPortal } from "react-dom";
 
 import { fetchSkills } from "../lib/api";
@@ -29,6 +32,7 @@ function bumpLRU(name) {
 function sourceLabel(source) {
   if (source === "personal") return "personal";
   if (source === "project") return "project";
+  if (source === "command") return "builtin";
   if (source === "bundled") return "bundled";
   if (source && source.startsWith("plugin:")) return source.slice(7);
   return source || "";
@@ -37,22 +41,23 @@ function sourceLabel(source) {
 function sourceColor(source) {
   if (source === "personal") return "text-cyan-400";
   if (source === "project") return "text-emerald-400";
+  if (source === "command") return "text-amber-400";
   if (source === "bundled") return "text-faint";
   if (source && source.startsWith("plugin:")) return "text-purple-400";
   return "text-faint";
 }
 
-export default function SkillPickerPanel({ project, onSelect, onClose }) {
-  const anchorRef = useRef(null);
+const SkillPickerPanel = forwardRef(function SkillPickerPanel(
+  { project, query = "", anchorEl, onSelect, onClose },
+  ref,
+) {
   const pickerRef = useRef(null);
-  const inputRef = useRef(null);
   const [pos, setPos] = useState(null);
   const [skills, setSkills] = useState(null);
   const [error, setError] = useState(null);
-  const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
 
-  // Load skills
+  // Load skills (once per project)
   useEffect(() => {
     let cancelled = false;
     fetchSkills(project)
@@ -66,26 +71,24 @@ export default function SkillPickerPanel({ project, onSelect, onClose }) {
     return () => { cancelled = true; };
   }, [project]);
 
-  // Position above anchor (matches SendLaterPicker behavior)
+  // Pin to top edge of anchor (the input bar). Re-runs when query changes
+  // because the input bar's height grows as the user types multi-line.
   useLayoutEffect(() => {
-    if (!anchorRef.current) return;
-    const rect = anchorRef.current.getBoundingClientRect();
-    const pickerW = 320;
-    const pickerH = 420;
-    let right = window.innerWidth - rect.right;
-    if (rect.right - pickerW < 8) right = window.innerWidth - pickerW - 8;
-    if (right < 8) right = 8;
-    const spaceAbove = rect.top;
-    if (spaceAbove < pickerH + 8) {
-      setPos({ top: rect.bottom + 4, right });
-    } else {
-      setPos({ bottom: window.innerHeight - rect.top + 4, right });
-    }
-  }, []);
+    if (!anchorEl) return;
+    const rect = anchorEl.getBoundingClientRect();
+    const pickerW = Math.min(rect.width, 360);
+    setPos({
+      bottom: window.innerHeight - rect.top + 6,
+      left: rect.left + (rect.width - pickerW) / 2,
+      width: pickerW,
+    });
+  }, [anchorEl, query, skills]);
 
-  // Close on outside click
+  // Outside click closes (clicks inside the input bar are ignored — those
+  // are the user typing, which already drives picker visibility)
   useEffect(() => {
     const handler = (e) => {
+      if (anchorEl?.contains(e.target)) return;
       if (pickerRef.current && !pickerRef.current.contains(e.target)) onClose();
     };
     document.addEventListener("mousedown", handler);
@@ -94,14 +97,9 @@ export default function SkillPickerPanel({ project, onSelect, onClose }) {
       document.removeEventListener("mousedown", handler);
       document.removeEventListener("touchstart", handler);
     };
-  }, [onClose]);
+  }, [onClose, anchorEl]);
 
-  // Auto-focus search input
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  const lru = useMemo(() => readLRU(), []);
+  const lru = useMemo(() => readLRU(), [skills]);
 
   const filtered = useMemo(() => {
     if (!skills) return [];
@@ -123,78 +121,54 @@ export default function SkillPickerPanel({ project, onSelect, onClose }) {
   // Reset highlight when filter changes
   useEffect(() => { setActiveIdx(0); }, [query, skills]);
 
-  const handlePick = (skill) => {
+  const commit = (skill) => {
     if (!skill) return;
     bumpLRU(skill.name);
-    onSelect(`/${skill.name}`);
+    onSelect(skill.name);
   };
 
-  const handleKeyDown = (e) => {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setActiveIdx((i) => Math.min(i + 1, filtered.length - 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setActiveIdx((i) => Math.max(i - 1, 0));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      handlePick(filtered[activeIdx]);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      onClose();
-    }
-  };
+  // Imperative API — parent (textarea) drives keyboard nav
+  useImperativeHandle(ref, () => ({
+    next: () => setActiveIdx((i) => Math.min(i + 1, Math.max(0, filtered.length - 1))),
+    prev: () => setActiveIdx((i) => Math.max(i - 1, 0)),
+    commit: () => commit(filtered[activeIdx]),
+    hasItems: () => filtered.length > 0,
+  }), [filtered, activeIdx]);
+
+  if (!anchorEl) return null;
 
   const posStyle = pos
-    ? { position: "fixed", ...pos }
+    ? { position: "fixed", left: pos.left, bottom: pos.bottom, width: pos.width }
     : { visibility: "hidden", position: "fixed" };
 
   const picker = (
     <div
       ref={pickerRef}
       data-card
-      className="w-[320px] bg-surface border border-divider rounded-2xl shadow-xl overflow-hidden z-[9999] flex flex-col"
+      className="bg-surface border border-divider rounded-2xl shadow-xl overflow-hidden z-[9999] flex flex-col"
       style={posStyle}
     >
-      <div className="px-4 py-2.5 flex items-center justify-between border-b border-divider">
-        <span className="text-sm font-semibold text-heading">Skills</span>
-        <button type="button" onClick={onClose}
-          className="w-6 h-6 rounded-full bg-elevated flex items-center justify-center text-dim hover:text-heading transition-colors">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
+      <div className="px-3 py-1.5 flex items-center justify-between border-b border-divider">
+        <span className="text-[11px] font-semibold text-faint uppercase tracking-wide">Skills</span>
+        <span className="text-[10px] text-faint">↑↓ Enter · Esc</span>
       </div>
-
-      <div className="px-3 pt-2.5 pb-1.5 border-b border-divider">
-        <input
-          ref={inputRef}
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Search skills..."
-          className="w-full h-8 rounded-lg bg-input px-3 text-sm text-heading placeholder-hint focus:outline-none focus:ring-1 focus:ring-cyan-500/40"
-        />
-      </div>
-
-      <div className="max-h-[320px] overflow-y-auto py-1">
+      <div className="max-h-[260px] overflow-y-auto py-1">
         {error && (
-          <div className="px-4 py-3 text-xs text-red-400">{error}</div>
+          <div className="px-3 py-2 text-xs text-red-400">{error}</div>
         )}
         {!error && skills === null && (
-          <div className="px-4 py-3 text-xs text-faint">Loading...</div>
+          <div className="px-3 py-2 text-xs text-faint">Loading...</div>
         )}
         {!error && skills && filtered.length === 0 && (
-          <div className="px-4 py-3 text-xs text-faint">No skills found</div>
+          <div className="px-3 py-2 text-xs text-faint">No matching skills</div>
         )}
         {!error && filtered.map((skill, i) => (
           <button
             key={`${skill.source}:${skill.name}`}
             type="button"
-            onClick={() => handlePick(skill)}
+            onMouseDown={(e) => { e.preventDefault(); commit(skill); }}
             onMouseEnter={() => setActiveIdx(i)}
-            className={`w-full text-left px-4 py-2 transition-colors flex flex-col gap-0.5 ${
+            className={`w-full text-left px-3 py-1.5 transition-colors flex flex-col gap-0.5 ${
               i === activeIdx ? "bg-input" : "hover:bg-input"
             }`}
           >
@@ -213,10 +187,7 @@ export default function SkillPickerPanel({ project, onSelect, onClose }) {
     </div>
   );
 
-  return (
-    <>
-      <span ref={anchorRef} className="absolute bottom-0 right-0 w-0 h-0 pointer-events-none" />
-      {createPortal(picker, document.body)}
-    </>
-  );
-}
+  return createPortal(picker, document.body);
+});
+
+export default SkillPickerPanel;

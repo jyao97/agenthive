@@ -1754,8 +1754,26 @@ import SkillPickerPanel from "../components/SkillPickerPanel";
 function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, voiceTarget, scrollButton, kbOpen = false }) {
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   const [showPicker, setShowPicker] = useState(false);
-  const [showSkills, setShowSkills] = useState(false);
+  const [skillsDismissed, setSkillsDismissed] = useState(false);
   const [escCooldown, setEscCooldown] = useState(false);
+  const inputBarRef = useRef(null);
+  const skillPickerRef = useRef(null);
+
+  // Slash-trigger: text is `/` followed by 0+ non-space chars (no spaces yet)
+  const slashMatch = (text || "").match(/^\/(\S*)$/);
+  const skillQuery = slashMatch ? slashMatch[1] : "";
+  const showSkills = !!slashMatch && !skillsDismissed;
+
+  // Reset dismissal when user backspaces / clears the slash trigger
+  useEffect(() => {
+    if (!slashMatch) setSkillsDismissed(false);
+  }, [slashMatch]);
+
+  const handleSkillSelect = (name) => {
+    setText(`/${name} `);
+    setSkillsDismissed(false);
+    textareaRef.current?.focus();
+  };
 
   const [attPreviewIndex, setAttPreviewIndex] = useState(null);
   const attachmentCacheKey = agentId ? `draft:chat:${agentId}:attachments` : null;
@@ -2024,6 +2042,12 @@ function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledRe
   }, []);
 
   const handleKeyDown = (e) => {
+    if (showSkills && skillPickerRef.current?.hasItems()) {
+      if (e.key === "ArrowDown") { e.preventDefault(); skillPickerRef.current.next(); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); skillPickerRef.current.prev(); return; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); skillPickerRef.current.commit(); return; }
+      if (e.key === "Escape") { e.preventDefault(); setSkillsDismissed(true); return; }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -2057,6 +2081,7 @@ function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledRe
     >
       {scrollButton}
       <div
+        ref={inputBarRef}
         className={`glass-bar-nav rounded-[22px] px-3 pt-2 ${kbOpen ? "pb-1" : "pb-2.5"} flex flex-col gap-2 w-full relative pointer-events-auto`}
         style={{ maxWidth: "24rem" }}
         onDragEnter={handleDragEnter}
@@ -2184,35 +2209,6 @@ function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledRe
               </svg>
             </button>
           )}
-          {/* Skill picker button */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowSkills((v) => !v)}
-              title="Insert skill"
-              className="shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors bg-elevated hover:bg-hover text-label"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-            </button>
-            {showSkills && (
-              <SkillPickerPanel
-                project={project}
-                onSelect={(cmd) => {
-                  setShowSkills(false);
-                  setText((prev) => {
-                    const cur = prev || "";
-                    if (!cur.trim()) return `${cmd} `;
-                    if (cur.endsWith(" ")) return `${cur}${cmd} `;
-                    return `${cur} ${cmd} `;
-                  });
-                  textareaRef.current?.focus();
-                }}
-                onClose={() => setShowSkills(false)}
-              />
-            )}
-          </div>
           {/* Send later (clock) button */}
           <div className="relative">
             <button
@@ -2255,6 +2251,16 @@ function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledRe
           </button>
         </div>
       </div>
+      {showSkills && (
+        <SkillPickerPanel
+          ref={skillPickerRef}
+          project={project}
+          query={skillQuery}
+          anchorEl={inputBarRef.current}
+          onSelect={handleSkillSelect}
+          onClose={() => setSkillsDismissed(true)}
+        />
+      )}
       {attPreviewIndex != null && attachments.length > 0 && (
         <ImageLightbox
           media={attachments.filter(a => !a.uploading).map(a => ({

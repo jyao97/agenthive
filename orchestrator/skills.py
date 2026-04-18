@@ -103,17 +103,30 @@ def list_skills(project_path: str | None = None) -> list[dict]:
 
     Returns: list of {name, description, source, path?} dicts.
     Skills with `user-invocable: false` are filtered out.
+
+    Source precedence (first wins on name collision):
+      personal > project > plugin > command > bundled
     """
     skills: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(entry: dict) -> None:
+        name = entry.get("name")
+        if not name or name in seen:
+            return
+        skills.append(entry)
+        seen.add(name)
 
     # Personal
-    skills.extend(_scan_skill_dir(os.path.join(CLAUDE_HOME, "skills"), "personal"))
+    for s in _scan_skill_dir(os.path.join(CLAUDE_HOME, "skills"), "personal"):
+        _add(s)
 
     # Project
     if project_path:
-        skills.extend(_scan_skill_dir(
+        for s in _scan_skill_dir(
             os.path.join(project_path, ".claude", "skills"), "project",
-        ))
+        ):
+            _add(s)
 
     # Plugin (one-level glob)
     plugins_root = os.path.join(CLAUDE_HOME, "plugins")
@@ -122,15 +135,27 @@ def list_skills(project_path: str | None = None) -> list[dict]:
             for plugin_name in sorted(os.listdir(plugins_root)):
                 plugin_skills_dir = os.path.join(plugins_root, plugin_name, "skills")
                 if os.path.isdir(plugin_skills_dir):
-                    skills.extend(_scan_skill_dir(
+                    for s in _scan_skill_dir(
                         plugin_skills_dir, f"plugin:{plugin_name}",
-                    ))
+                    ):
+                        _add(s)
         except OSError as e:
             logger.warning("Failed to enumerate plugins: %s", e)
 
-    # Bundled (no path)
+    # Built-in slash commands with known lifecycle (steers users away from
+    # KNOWN_PROBLEMATIC ones — anything in COMMANDS is guaranteed safe to
+    # send through the orchestrator).
+    from slash_commands import COMMANDS
+    for cmd, cfg in COMMANDS.items():
+        _add({
+            "name": cmd.lstrip("/"),
+            "description": cfg.description,
+            "source": "command",
+        })
+
+    # Bundled CLI skills (no on-disk SKILL.md)
     for b in BUNDLED_SKILLS:
-        skills.append({**b, "source": "bundled"})
+        _add({**b, "source": "bundled"})
 
     return skills
 
