@@ -53,7 +53,8 @@
 - Config: .env
 - Entry: orchestrator/main.py
 - Tests: test_multi_question.py
-- Build: `cd frontend && npx vite build` | Test: `cd frontend && npx vitest run`
+- Build (frontend): `cd frontend && npx vite build && pm2 reload xylocopa-frontend` — required after any frontend edit (prod-build mode, no HMR)
+- Test (frontend): `cd frontend && npx vitest run`
 - Verify backend: `cd orchestrator && python3 -c "from models import *; print('OK')"`
 - Restart: `./run.sh` or POST `/api/system/restart`
 - Logs: `logs/server.log`, `logs/orchestrator.log`

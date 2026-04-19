@@ -69,7 +69,7 @@ module.exports = {
       name: 'xylocopa-frontend',
       cwd: path.join(ROOT, 'frontend'),
       script: 'npx',
-      args: `vite --host 0.0.0.0 --port ${frontendPort}`,
+      args: `vite preview --host 0.0.0.0 --port ${frontendPort}`,
       interpreter: 'none',
       autorestart: true,
       max_restarts: 10,
