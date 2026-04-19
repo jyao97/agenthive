@@ -1108,8 +1108,9 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
   const isScheduled = isUser && message.scheduled_at && message.status === "PENDING";
   const isPending = isUser && (message.status === "PENDING" || message.status === "QUEUED") && !message.scheduled_at;
   const isQueued = isUser && message.status === "QUEUED";
+  const isCancelled = isUser && message.status === "CANCELLED";
   const isSlashCommand = isUser && (message.content || "").trimStart().startsWith("/");
-  const isWebUndelivered = isUser && message.source === "web" && !message.delivered_at && !isPending && !isScheduled && !isQueued && !isSlashCommand;
+  const isWebUndelivered = isUser && message.source === "web" && !message.delivered_at && !isPending && !isScheduled && !isQueued && !isCancelled && !isSlashCommand;
   const UNDELIVERED_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
   const isUndeliveredTimedOut = isWebUndelivered && (serverNow() - new Date(message.created_at).getTime()) > UNDELIVERED_TIMEOUT_MS;
 
@@ -1331,15 +1332,17 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
         <div
           className={`rounded-2xl px-4 py-2.5 ${
             isUser
-              ? isScheduled
-                ? "bg-amber-600/80 text-white rounded-br-md"
-                : isPending
-                  ? "bg-cyan-600/60 text-white/80 rounded-br-md"
-                  : isUndeliveredTimedOut
-                    ? "bg-red-600/40 text-white/70 rounded-br-md"
-                    : isWebUndelivered
-                      ? "bg-cyan-600/70 text-white/80 rounded-br-md"
-                      : "bg-cyan-600 text-white rounded-br-md"
+              ? isCancelled
+                ? "bg-cyan-600/15 text-white/40 rounded-br-md"
+                : isScheduled
+                  ? "bg-amber-600/80 text-white rounded-br-md"
+                  : isPending
+                    ? "bg-cyan-600/60 text-white/80 rounded-br-md"
+                    : isUndeliveredTimedOut
+                      ? "bg-red-600/40 text-white/70 rounded-br-md"
+                      : isWebUndelivered
+                        ? "bg-cyan-600/70 text-white/80 rounded-br-md"
+                        : "bg-cyan-600 text-white rounded-br-md"
               : "bg-surface shadow-card text-body rounded-bl-md"
           } ${canModify ? "select-none" : ""} overflow-hidden`}
           onDoubleClick={handleDoubleClick}
@@ -1411,6 +1414,9 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
                 {queueTotal > 1 ? `queued (${queuePosition} of ${queueTotal})` : "queued"}
               </span>
             )}
+            {isCancelled && (
+              <span className="text-white/40">cancelled</span>
+            )}
             {message.source && (
               <span className={`px-1 py-0.5 rounded text-[10px] font-medium leading-none ${
                 message.source === "web"
@@ -1426,7 +1432,7 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
             {message.status === "TIMEOUT" && (
               <span className="text-orange-400">Timed out</span>
             )}
-            {isUser && message.source === "web" && (isSlashCommand ? (
+            {isUser && message.source === "web" && !isCancelled && (isSlashCommand ? (
               message.delivered_at && (
                 message.completed_at ? (
                   <span className="ml-auto text-green-400" title={`Executed ${new Date(message.completed_at).toLocaleTimeString()}`}>
@@ -2622,6 +2628,26 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   }, [messages, agent?.status]);
   hasPendingInteractiveRef.current = hasPendingInteractive;
 
+  // Bottom-area user messages: active queue (PENDING/QUEUED) + recently
+  // soft-cancelled (greyed in place, kept visible per user feedback).
+  // CANCELLED messages stay in this list so the bubble doesn't disappear
+  // when the user hits Esc — they just turn grey.
+  const queuedMessages = useMemo(
+    () => messages.filter((m) =>
+      m.role === "USER" && !m.scheduled_at &&
+      (m.status === "QUEUED" || m.status === "PENDING" || m.status === "CANCELLED"),
+    ),
+    [messages],
+  );
+  // Subset that still needs dispatch — drives escape-button urgency and
+  // bulk cancel. CANCELLED is excluded (already cancelled, no action needed).
+  const activeQueuedMessages = useMemo(
+    () => queuedMessages.filter(
+      (m) => m.status === "QUEUED" || m.status === "PENDING",
+    ),
+    [queuedMessages],
+  );
+
   // Polling — faster when executing, pauses when page hidden
   useEffect(() => {
     if (!visible) return;
@@ -3093,15 +3119,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
     if (event.type === "message_update") {
       const { message_id, status, error_message, completed_at } = event.data;
-      if (status === "CANCELLED") {
-        setMessages((prev) => prev.filter((m) => m.id !== message_id));
-      } else {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === message_id
-            ? { ...m, status, ...(error_message ? { error_message } : {}), ...(completed_at ? { completed_at } : {}) }
-            : m))
-        );
-      }
+      setMessages((prev) =>
+        prev.map((m) => (m.id === message_id
+          ? { ...m, status, ...(error_message ? { error_message } : {}), ...(completed_at ? { completed_at } : {}) }
+          : m))
+      );
       return;
     }
 
@@ -3944,7 +3966,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
             {/* Queued/pending/scheduled messages always at the bottom */}
             {(() => {
-              const queued = messages.filter((m) => m.role === "USER" && (m.status === "QUEUED" || (m.status === "PENDING" && !m.scheduled_at)));
+              const queued = queuedMessages;
               const scheduled = messages.filter((m) => m.role === "USER" && m.status === "PENDING" && m.scheduled_at);
               return (
                 <>
@@ -4011,10 +4033,23 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         isBusy={!hasTmux && isExecuting}
         tmuxMode={hasTmux}
         onEscape={hasTmuxPane ? async () => {
-          try { await escapeAgent(id); loadData(); } catch (e) { showToast(e.message || "Escape failed", "error"); }
+          try {
+            await escapeAgent(id);
+            // Also cancel any active queued messages so they don't
+            // auto-dispatch after the interrupt — common when the user is
+            // bailing out of a wedged TUI command (e.g. /plugin) with
+            // backlog piled up. Soft-cancel: bubbles stay visible (greyed)
+            // via WS message_update push.
+            if (activeQueuedMessages.length > 0) {
+              await Promise.allSettled(
+                activeQueuedMessages.map((m) => cancelMessage(id, m.id)),
+              );
+            }
+            loadData();
+          } catch (e) { showToast(e.message || "Escape failed", "error"); }
         } : null}
         escapeDisabled={isStopped || isError}
-        escapeUrgent={isExecuting || hasPendingInteractive}
+        escapeUrgent={isExecuting || hasPendingInteractive || activeQueuedMessages.length > 0}
         escapeAvailable={hasTmuxPane}
         scrollButton={showScrollToBottom ? (
           <button
