@@ -55,6 +55,7 @@ class MessageStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
+    CANCELLED = "CANCELLED"  # soft-cancelled by user before dispatch; bubble stays visible (greyed)
 
 
 def _new_uuid():

@@ -2730,7 +2730,7 @@ async def cancel_message(agent_id: str, message_id: str, db: Session = Depends(g
         raise HTTPException(status_code=404, detail="Message not found")
     if msg.status not in (MessageStatus.PENDING, MessageStatus.QUEUED):
         raise HTTPException(status_code=400, detail="Only PENDING or QUEUED messages can be cancelled")
-    db.delete(msg)
+    msg.status = MessageStatus.CANCELLED
     db.commit()
     logger.info("Message %s cancelled for agent %s", message_id, agent_id)
     from websocket import emit_message_update

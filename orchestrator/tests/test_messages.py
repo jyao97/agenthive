@@ -42,7 +42,7 @@ def test_message_role_enum_values():
 
 def test_message_status_enum_values():
     """MessageStatus should have all expected values."""
-    expected = {"PENDING", "QUEUED", "EXECUTING", "COMPLETED", "FAILED", "TIMEOUT"}
+    expected = {"PENDING", "QUEUED", "EXECUTING", "COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"}
     actual = {s.value for s in MessageStatus}
     assert actual == expected
 

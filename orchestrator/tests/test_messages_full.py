@@ -283,9 +283,12 @@ async def test_delete_pending_message(client, db_engine):
     assert resp.status_code == 200
     assert resp.json()["detail"] == "Message cancelled"
 
-    # Verify deleted from DB
+    # Soft-cancel: row stays, status flips to CANCELLED so the bubble can
+    # render greyed-out instead of vanishing.
     db = _make_session(db_engine)
-    assert db.get(Message, msg_id) is None
+    cancelled = db.get(Message, msg_id)
+    assert cancelled is not None
+    assert cancelled.status == MessageStatus.CANCELLED
     db.close()
 
 
