@@ -762,6 +762,31 @@ async def system_restart():
             detail="Restart aborted — import check timed out",
         )
 
+    # --- Frontend stale-check + auto-rebuild ---
+    # `vite preview` serves dist/ statically.  If src/ has moved ahead,
+    # a restart alone wouldn't ship the new code — rebuild first.  Done
+    # synchronously so a build failure aborts the restart cleanly.
+    try:
+        build_check = _sp.run(
+            [run_script, "build-frontend-if-stale"],
+            cwd=project_root,
+            capture_output=True, text=True, timeout=120,
+        )
+        if build_check.returncode != 0:
+            err = (build_check.stderr or build_check.stdout).strip().splitlines()
+            err_summary = err[-1] if err else "Unknown build error"
+            logger.error("Restart pre-check (frontend build) failed: %s", err_summary)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Restart aborted — frontend build failed: {err_summary}",
+            )
+        logger.info("Frontend build-if-stale: %s", (build_check.stdout or "").strip().splitlines()[-1:])
+    except _sp.TimeoutExpired:
+        raise HTTPException(
+            status_code=400,
+            detail="Restart aborted — frontend build timed out",
+        )
+
     logger.warning("Restart requested via API — spawning pm2 restart")
 
     ecosystem = os.path.join(project_root, "ecosystem.config.cjs")

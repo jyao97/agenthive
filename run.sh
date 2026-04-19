@@ -2,11 +2,12 @@
 # Xylocopa — cross-platform launch script (Linux + macOS)
 # Uses pm2 for process management.  Auto-migrates from systemd on first run.
 # Usage:
-#   ./run.sh           — restart both backend + frontend
-#   ./run.sh stop      — stop both
-#   ./run.sh status    — show service status
-#   ./run.sh logs      — follow pm2 logs
-#   ./run.sh startup   — enable auto-start on boot
+#   ./run.sh                       — restart both backend + frontend
+#   ./run.sh stop                  — stop both
+#   ./run.sh status                — show service status
+#   ./run.sh logs                  — follow pm2 logs
+#   ./run.sh startup               — enable auto-start on boot
+#   ./run.sh build-frontend-if-stale — rebuild dist/ only if src is newer
 
 set -euo pipefail
 
@@ -48,6 +49,40 @@ if command -v systemctl >/dev/null 2>&1; then
     _migrate_from_systemd || true
 fi
 
+# ── Frontend stale-detection + auto-rebuild ──────────────────────────
+# Since we serve dist/ via `vite preview` (no HMR), restarts must rebuild
+# the bundle when src/ has moved ahead of dist/.  Returns 0 if a rebuild
+# is needed, 1 if dist/ is up to date.
+_needs_frontend_build() {
+    local fdir="$SCRIPT_DIR/frontend"
+    local dist_index="$fdir/dist/index.html"
+    [ -f "$dist_index" ] || return 0   # no dist at all → build
+    # Any source file newer than dist/index.html → build.  Excludes
+    # dist/, node_modules/, dev-dist/.  Tracks the same file types vite
+    # processes plus root-level config (vite.config.js, package.json).
+    local newer
+    newer=$(find "$fdir" \
+        \( -path "$fdir/dist" -o -path "$fdir/node_modules" -o -path "$fdir/dev-dist" \) -prune -o \
+        -type f \( -name "*.js" -o -name "*.jsx" -o -name "*.ts" -o -name "*.tsx" \
+                -o -name "*.css" -o -name "*.html" -o -name "*.json" \
+                -o -name "*.svg" -o -name "*.png" \) \
+        -newer "$dist_index" -print 2>/dev/null | head -1)
+    [ -n "$newer" ]
+}
+
+_build_frontend_if_stale() {
+    if _needs_frontend_build; then
+        echo "Frontend src newer than dist — rebuilding..."
+        if ! ( cd "$SCRIPT_DIR/frontend" && npx vite build ); then
+            echo "Frontend build FAILED — aborting." >&2
+            return 1
+        fi
+        echo "Frontend rebuilt."
+    else
+        echo "Frontend dist up to date — skipping build."
+    fi
+}
+
 # ── Ensure pm2 is available ──────────────────────────────────────────
 if ! command -v pm2 >/dev/null 2>&1; then
     echo "pm2 not found — installing globally..."
@@ -81,10 +116,16 @@ case "$CMD" in
         pm2 startup
         echo "Follow the instructions above if prompted."
         ;;
+    build-frontend-if-stale)
+        _build_frontend_if_stale
+        ;;
     restart|start)
         echo "Restarting Xylocopa..."
         # Self-heal venv shebangs/activate paths if the project dir was moved
         "$SCRIPT_DIR/heal-venv.sh" || echo "heal-venv: continuing despite errors"
+        # Rebuild frontend dist/ if src/ has moved ahead — `vite preview`
+        # serves the static bundle, so a stale dist would mask code changes.
+        _build_frontend_if_stale || exit 1
         # Delete stale processes first — a prior crash or direct-kill can leave
         # PM2's process table referencing dead PIDs, causing TypeError crashes
         # on `pm2 restart`.  `delete` is idempotent and clears that state.
@@ -122,7 +163,7 @@ case "$CMD" in
         echo "Xylocopa running at https://localhost:${FPORT}"
         ;;
     *)
-        echo "Usage: ./run.sh [start|stop|restart|status|logs|startup]"
+        echo "Usage: ./run.sh [start|stop|restart|status|logs|startup|build-frontend-if-stale]"
         exit 1
         ;;
 esac
