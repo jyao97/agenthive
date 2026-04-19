@@ -142,7 +142,7 @@ COMMANDS: dict[str, CommandConfig] = {
 KNOWN_PROBLEMATIC: frozenset[str] = frozenset({
     "/agents", "/auth", "/btw", "/config", "/context", "/doctor",
     "/help", "/ide", "/install", "/login", "/logout", "/model",
-    "/permissions", "/resume", "/status",
+    "/permissions", "/plugin", "/resume", "/status",
 })
 
 
